@@ -136,6 +136,10 @@ fn metric_to_json(metric: &Metric) -> Value {
             "kind": "balance", "label": label, "currency": remaining.currency().code(),
             "remainingCents": remaining.cents(), "burnPerDayCents": burn_per_day.map(Money::cents),
         }),
+        // A count of credits, not money (#150); no balance means unlimited. Older builds skip the kind.
+        Metric::Credits { label, balance, start } => json!({
+            "kind": "credits", "label": label, "balance": balance, "unlimited": balance.is_none(), "start": start,
+        }),
     }
 }
 
@@ -164,6 +168,23 @@ fn metric_from_json(value: &Value) -> Option<Metric> {
                 .and_then(Value::as_i64)
                 .map(|minor| Money::new(minor, currency(value).unwrap_or_default())),
         },
+        "credits" => {
+            let count = |key: &str| {
+                value
+                    .get(key)
+                    .and_then(Value::as_f64)
+                    .filter(|n| n.is_finite() && *n >= 0.0)
+            };
+            let balance = count("balance");
+            if balance.is_none() && value.get("unlimited").and_then(Value::as_bool) != Some(true) {
+                return None;
+            }
+            Metric::Credits {
+                label,
+                balance,
+                start: count("start"),
+            }
+        }
         "spend" => {
             let currency = currency(value)?;
             // The limit keeps its own currency, so a cap in another currency stays incomparable after a restart.

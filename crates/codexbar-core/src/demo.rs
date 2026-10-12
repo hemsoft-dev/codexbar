@@ -5,7 +5,8 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Utc, Weekday};
 use crate::account::{AccountDetail, AccountId, AccountSnapshot, Provider, WindowCurve};
 use crate::metric::{Metric, Money, Pace};
 
-/// Eight demo accounts consistent with the approved dashboard comp, relative to `now`.
+/// The eight demo accounts of the approved dashboard comp, relative to `now`, plus two Codex accounts whose weekly
+/// window is used up (#150): one still working on credits, one blocked.
 pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSnapshot> {
     let fetched = now - Duration::seconds(14);
     let next_month = first_of_next_month(now, tz);
@@ -141,6 +142,59 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             0.2, 0.22, 0.21, 0.25, 0.27, 0.26, 0.3, 0.29, 0.31, 0.33, 0.32, 0.35, 0.36, 0.38,
         ]),
         AccountSnapshot::new(
+            AccountId::new("codex-team"),
+            Provider::Codex,
+            vec![
+                Metric::Window {
+                    label: "5-hour window".into(),
+                    used: 0.12,
+                    resets_at: now + Duration::minutes(210),
+                    pace: None,
+                },
+                Metric::Window {
+                    label: "Weekly".into(),
+                    used: 1.0,
+                    resets_at: thursday_nine,
+                    pace: None,
+                },
+                Metric::Credits {
+                    label: "Credits".into(),
+                    balance: Some(18_400.0),
+                    start: Some(50_000.0),
+                },
+            ],
+            fetched,
+        )
+        .with_label("team")
+        .with_credits_placed()
+        .with_trend(vec![
+            50_000.0, 48_200.0, 45_900.0, 43_100.0, 40_800.0, 37_500.0, 34_900.0, 32_000.0, 29_600.0, 27_100.0,
+            24_800.0, 22_300.0, 20_100.0, 18_400.0,
+        ]),
+        AccountSnapshot::new(
+            AccountId::new("codex-work"),
+            Provider::Codex,
+            vec![
+                Metric::Window {
+                    label: "Weekly".into(),
+                    used: 1.0,
+                    resets_at: thursday_nine,
+                    pace: None,
+                },
+                Metric::Credits {
+                    label: "Credits".into(),
+                    balance: Some(0.0),
+                    start: Some(5_000.0),
+                },
+            ],
+            fetched,
+        )
+        .with_label("work")
+        .with_credits_placed()
+        .with_trend(vec![
+            0.3, 0.38, 0.45, 0.52, 0.6, 0.66, 0.72, 0.79, 0.85, 0.9, 0.94, 0.97, 1.0, 1.0,
+        ]),
+        AccountSnapshot::new(
             AccountId::new("moonshot"),
             Provider::Moonshot,
             vec![Metric::Balance {
@@ -231,11 +285,13 @@ mod tests {
         assert_eq!(
             names,
             [
+                "ChatGPT · Codex (work)",
                 "ChatGPT · Codex (personal)",
                 "Copilot · work",
                 "Claude · personal",
                 "Cursor",
                 "OpenRouter",
+                "ChatGPT · Codex (team)",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
                 "Moonshot (Kimi)",
@@ -259,11 +315,14 @@ mod tests {
         assert_eq!(severity("copilot-work"), Severity::AtRisk);
         assert_eq!(severity("claude-personal"), Severity::Watch);
         assert_eq!(severity("cursor"), Severity::Normal);
+        // #150: the used-up weekly window blocks the account without credits, not the one still on credits.
+        assert_eq!(severity("codex-work"), Severity::LimitSoon);
+        assert_eq!(severity("codex-team"), Severity::Normal);
         let attention = accounts
             .iter()
             .filter(|a| a.assess(now()).severity().needs_attention())
             .count();
-        assert_eq!(attention, 2);
+        assert_eq!(attention, 3);
     }
 
     #[test]

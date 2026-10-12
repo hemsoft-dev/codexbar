@@ -35,11 +35,24 @@ impl Severity {
 pub struct Assessment {
     severity: Severity,
     pressure: f64,
+    /// The assessed limit is fully used (#150).
+    exhausted: bool,
 }
 
 impl Assessment {
     pub fn severity(self) -> Severity {
         self.severity
+    }
+
+    /// True when the assessed limit is fully used.
+    pub fn is_exhausted(self) -> bool {
+        self.exhausted
+    }
+
+    /// The pill shown beside the account. A fully used limit has none (#150): its 100%, full bar and status dot say
+    /// it already, and "Limit soon" would be wrong once the limit is reached.
+    pub fn label(self) -> Option<&'static str> {
+        if self.exhausted { None } else { self.severity.label() }
     }
 
     /// 0..=1, higher is closer to blocking.
@@ -99,7 +112,20 @@ pub fn assess(metric: &Metric, now: DateTime<Utc>) -> Assessment {
         };
         // Map the balance's watch boundary onto the window's, so 5 days of credit ranks like 80% used.
         let pressure = (WATCH_FRACTION * BALANCE_WATCH_DAYS / days.max(f64::EPSILON)).clamp(0.0, 1.0);
-        return Assessment { severity, pressure };
+        return Assessment {
+            severity,
+            pressure,
+            exhausted: false,
+        };
+    }
+    // Credits have no severity threshold (#150): no limit or reset to project against. Their spend from the
+    // remembered start only orders accounts.
+    if let Metric::Credits { .. } = metric {
+        return Assessment {
+            severity: Severity::Normal,
+            pressure: metric.progress().unwrap_or_default(),
+            exhausted: false,
+        };
     }
 
     let Some(used) = metric.used_fraction() else {
@@ -123,6 +149,7 @@ pub fn assess(metric: &Metric, now: DateTime<Utc>) -> Assessment {
     Assessment {
         severity,
         pressure: used,
+        exhausted: metric.is_exhausted(),
     }
 }
 
@@ -244,12 +271,44 @@ mod tests {
         let watch = Assessment {
             severity: Severity::Watch,
             pressure: 0.99,
+            exhausted: false,
         };
         let at_risk = Assessment {
             severity: Severity::AtRisk,
             pressure: 0.5,
+            exhausted: false,
         };
         assert!(at_risk > watch);
+    }
+
+    #[test]
+    fn a_fully_used_limit_has_no_pill_but_stays_limit_soon() {
+        let full = assess(&window(1.0, Duration::days(3), None), now());
+        assert_eq!(full.severity(), Severity::LimitSoon, "still the most urgent");
+        assert!(full.is_exhausted());
+        assert_eq!(full.label(), None);
+        let nearly = assess(&window(0.99, Duration::days(3), None), now());
+        assert!(!nearly.is_exhausted());
+        assert_eq!(nearly.label(), Some("Limit soon"));
+        assert_eq!(
+            assess(&window(0.96, Duration::days(3), None), now()).label(),
+            Some("Limit soon")
+        );
+    }
+
+    #[test]
+    fn credits_have_no_severity_and_rank_by_spend_from_start() {
+        let credits = |balance, start| Metric::Credits {
+            label: "Credits".into(),
+            balance,
+            start,
+        };
+        let spent = assess(&credits(Some(5.0), Some(100.0)), now());
+        assert_eq!(spent.severity(), Severity::Normal);
+        assert!((spent.pressure() - 0.95).abs() < 1e-9);
+        assert_eq!(spent.label(), None);
+        assert_eq!(assess(&credits(None, None), now()).pressure(), 0.0);
+        assert_eq!(observed_severity(&credits(Some(1.0), Some(100.0))), Severity::Normal);
     }
 
     #[test]

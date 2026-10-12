@@ -38,5 +38,5 @@ the organization's AI credits and each user's share, configured per account.
 | Home-screen / lock-screen widgets | Yes | Not yet: Windows widgets need a packaged app ([#93](https://github.com/hemsoft-dev/codexbar/issues/93)-[#95](https://github.com/hemsoft-dev/codexbar/issues/95)) |
 | watchOS companion | Yes | Not applicable |
 | System tray icon and tooltip | Not applicable | Yes |
-| Codex credits pool metric | Yes | No |
+| Codex credits pool metric | Yes, opt-in per account | Yes, always on; the headline once a window is used up ([CODEX_CREDITS.md](CODEX_CREDITS.md)) |
 | Distribution | App Store | Built from source for now; MSIX planned ([#93](https://github.com/hemsoft-dev/codexbar/issues/93)) |

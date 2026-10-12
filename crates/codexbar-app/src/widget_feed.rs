@@ -40,7 +40,7 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
                 health,
                 updated_at: has_usage.then(|| account.fetched_at()),
                 status: has_usage
-                    .then(|| account.assess(now).severity().label().map(str::to_owned))
+                    .then(|| account.assess(now).label().map(str::to_owned))
                     .flatten(),
                 metrics: if has_usage {
                     account.metrics().iter().map(|m| metric(m, now)).collect()
@@ -62,6 +62,11 @@ fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
             codexbar_core::group_thousands(*limit)
         ),
         Metric::Spend { .. } | Metric::Balance { .. } => metric.used_display(),
+        // A count, never a percentage (#150).
+        Metric::Credits {
+            balance: Some(balance), ..
+        } => format!("{} credits left", codexbar_core::format_credits(*balance)),
+        Metric::Credits { balance: None, .. } => "Unlimited credits".to_owned(),
     };
     WidgetMetric {
         key: metric.key(),
@@ -69,7 +74,7 @@ fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
         value,
         used_percent: metric.used_fraction().map(|used| (used * 100.0).clamp(0.0, 100.0)),
         resets_at: metric.resets_at(),
-        status: codexbar_core::assess(metric, now).severity().label().map(str::to_owned),
+        status: codexbar_core::assess(metric, now).label().map(str::to_owned),
     }
 }
 
@@ -160,6 +165,41 @@ mod tests {
         assert_eq!(balance.value, "$12.30 left");
         assert_eq!(balance.used_percent, None, "a balance has no limit to fill");
         assert_eq!(snapshot.generated_at, now());
+    }
+
+    #[test]
+    fn credits_are_a_count_and_a_used_up_window_has_no_status() {
+        let account = |id: &str, balance| {
+            AccountSnapshot::new(
+                AccountId::new(id),
+                Provider::Codex,
+                vec![
+                    Metric::Window {
+                        label: "Weekly".into(),
+                        used: 1.0,
+                        resets_at: now() + chrono::Duration::days(2),
+                        pace: None,
+                    },
+                    Metric::Credits {
+                        label: "Credits".into(),
+                        balance,
+                        start: Some(50_000.0),
+                    },
+                ],
+                now(),
+            )
+            .with_credits_placed()
+        };
+        let accounts = [account("on-credits", Some(18_400.0)), account("unlimited", None)];
+        let snapshot = build(&accounts, &States::new(), &Layout::default(), now());
+        let credits = &snapshot.accounts[0].metrics[0];
+        assert_eq!(credits.value, "18,400 credits left");
+        assert_eq!(credits.used_percent, None, "never a percentage");
+        assert_eq!(snapshot.accounts[0].status, None);
+        assert_eq!(snapshot.accounts[1].metrics[0].value, "Unlimited credits");
+        let weekly = &snapshot.accounts[0].metrics[1];
+        assert_eq!(weekly.used_percent, Some(100.0));
+        assert_eq!(weekly.status, None, "no pill on a used-up window");
     }
 
     #[test]

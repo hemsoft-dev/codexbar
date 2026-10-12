@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 
 use crate::metric::Metric;
+#[cfg(test)]
+use crate::severity::Severity;
 use crate::severity::{Assessment, assess};
 
 /// An AI provider whose usage CodexBar reads.
@@ -230,13 +232,57 @@ impl AccountSnapshot {
         self.fetched_at
     }
 
-    /// The most urgent assessment across all of the account's metrics.
+    /// The most urgent assessment across all of the account's metrics. A fully used window doesn't block an account
+    /// that can still spend credits (#150).
     pub fn assess(&self, now: DateTime<Utc>) -> Assessment {
+        let on_credits = self.metrics.iter().any(Metric::has_spendable_credits);
         self.metrics
             .iter()
+            .filter(|metric| !(on_credits && matches!(metric, Metric::Window { .. }) && metric.is_exhausted()))
             .map(|metric| assess(metric, now))
             .max()
             .unwrap_or_default()
+    }
+
+    /// Puts the account's credits where they belong (#150): first, as the headline, when a window is used up and the
+    /// credits can still be spent; otherwise after the limits, as a secondary metric.
+    pub fn with_credits_placed(mut self) -> Self {
+        let Some(ix) = self
+            .metrics
+            .iter()
+            .position(|metric| matches!(metric, Metric::Credits { .. }))
+        else {
+            return self;
+        };
+        let credits = self.metrics.remove(ix);
+        let window_used_up = self
+            .metrics
+            .iter()
+            .any(|metric| matches!(metric, Metric::Window { .. }) && metric.is_exhausted());
+        if window_used_up && credits.has_spendable_credits() {
+            self.metrics.insert(0, credits);
+        } else {
+            self.metrics.push(credits);
+        }
+        self
+    }
+
+    /// Sets the remembered starting balance on the account's credits, so their bar runs down from it (#150).
+    pub fn with_credit_start(mut self, start: f64) -> Self {
+        for metric in &mut self.metrics {
+            if let Metric::Credits { start: slot, .. } = metric {
+                *slot = Some(start);
+            }
+        }
+        self
+    }
+
+    /// The account's credit balance, when it reports a counted one.
+    pub fn credit_balance(&self) -> Option<f64> {
+        self.metrics.iter().find_map(|metric| match metric {
+            Metric::Credits { balance, .. } => *balance,
+            _ => None,
+        })
     }
 }
 
@@ -247,4 +293,81 @@ pub fn sort_by_urgency(accounts: &mut [AccountSnapshot], now: DateTime<Utc>) {
             .cmp(&a.assess(now))
             .then_with(|| a.id.as_str().cmp(b.id.as_str()))
     });
+}
+
+#[cfg(test)]
+mod credits_tests {
+    use chrono::Duration;
+
+    use super::*;
+
+    fn now() -> DateTime<Utc> {
+        "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    fn weekly(used: f64) -> Metric {
+        Metric::Window {
+            label: "Weekly".into(),
+            used,
+            resets_at: now() + Duration::days(3),
+            pace: None,
+        }
+    }
+
+    fn credits(balance: Option<f64>) -> Metric {
+        Metric::Credits {
+            label: "Credits".into(),
+            balance,
+            start: None,
+        }
+    }
+
+    fn account(metrics: Vec<Metric>) -> AccountSnapshot {
+        AccountSnapshot::new(AccountId::new("codex"), Provider::Codex, metrics, now())
+    }
+
+    #[test]
+    fn an_exhausted_window_with_credits_makes_credits_the_headline() {
+        let placed = account(vec![credits(Some(500.0)), weekly(1.0)]).with_credits_placed();
+        assert!(matches!(placed.primary(), Some(Metric::Credits { .. })));
+        let unlimited = account(vec![weekly(1.0), credits(None)]).with_credits_placed();
+        assert!(matches!(unlimited.primary(), Some(Metric::Credits { .. })));
+    }
+
+    #[test]
+    fn an_open_window_or_no_credits_keeps_the_window_headline() {
+        let open = account(vec![credits(Some(500.0)), weekly(0.6)]).with_credits_placed();
+        assert_eq!(open.primary(), Some(&weekly(0.6)));
+        assert!(matches!(open.metrics().last(), Some(Metric::Credits { .. })));
+        let empty = account(vec![credits(Some(0.0)), weekly(1.0)]).with_credits_placed();
+        assert_eq!(
+            empty.primary(),
+            Some(&weekly(1.0)),
+            "zero credits can't carry the account"
+        );
+    }
+
+    #[test]
+    fn spendable_credits_keep_an_exhausted_window_from_blocking() {
+        let on_credits = account(vec![weekly(1.0), credits(Some(500.0))]).with_credits_placed();
+        let assessment = on_credits.assess(now());
+        assert_eq!(assessment.severity(), Severity::Normal);
+        assert!(!assessment.is_exhausted());
+        let blocked = account(vec![weekly(1.0), credits(Some(0.0))]);
+        assert_eq!(blocked.assess(now()).severity(), Severity::LimitSoon);
+        assert!(blocked.assess(now()).is_exhausted());
+        assert_eq!(blocked.assess(now()).label(), None, "no pill on a used-up limit");
+    }
+
+    #[test]
+    fn credit_start_lands_on_the_credits_metric() {
+        let account = account(vec![weekly(1.0), credits(Some(40.0))]).with_credit_start(100.0);
+        assert_eq!(account.credit_balance(), Some(40.0));
+        let progress = account
+            .metrics()
+            .iter()
+            .find(|metric| matches!(metric, Metric::Credits { .. }))
+            .and_then(Metric::progress);
+        assert!((progress.unwrap() - 0.6).abs() < 1e-9);
+    }
 }

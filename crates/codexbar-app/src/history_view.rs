@@ -32,6 +32,8 @@ const MAX_CHART_POINTS: usize = 120;
 pub enum ValueKind {
     Percent,
     Money(Currency),
+    /// A count of credits (#150), never a percentage.
+    Credits,
 }
 
 impl ValueKind {
@@ -40,6 +42,7 @@ impl ValueKind {
             // Spend is stored as money whether or not it has a cap.
             Metric::Balance { remaining, .. } => Self::Money(remaining.currency()),
             Metric::Spend { spent, .. } => Self::Money(spent.currency()),
+            Metric::Credits { .. } => Self::Credits,
             _ => Self::Percent,
         }
     }
@@ -49,6 +52,8 @@ impl ValueKind {
             Self::Percent => format!("{:.0}%", value * 100.0),
             Self::Money(currency) if value < 0.0 => format!("\u{2212}{}", amount(currency, value)),
             Self::Money(currency) => amount(currency, value),
+            Self::Credits if value < 0.0 => format!("\u{2212}{}", codexbar_core::format_credits(value.abs())),
+            Self::Credits => codexbar_core::format_credits(value),
         }
     }
 
@@ -60,6 +65,8 @@ impl ValueKind {
             Self::Percent => format!("{sign}{:.0} pts", (delta * 100.0).abs()),
             Self::Money(currency) if negligible(currency, delta) => "no change".into(),
             Self::Money(currency) => format!("{sign}{}", amount(currency, delta)),
+            Self::Credits if delta.abs() < 0.005 => "no change".into(),
+            Self::Credits => format!("{sign}{}", codexbar_core::format_credits(delta.abs())),
         }
     }
 
@@ -71,6 +78,8 @@ impl ValueKind {
             Self::Percent => format!("{direction} {:.0} points", (delta * 100.0).abs()),
             Self::Money(currency) if negligible(currency, delta) => "unchanged".into(),
             Self::Money(currency) => format!("{direction} {}", amount(currency, delta)),
+            Self::Credits if delta.abs() < 0.005 => "unchanged".into(),
+            Self::Credits => format!("{direction} {} credits", codexbar_core::format_credits(delta.abs())),
         }
     }
 }
@@ -574,7 +583,9 @@ impl HistoryView {
                 ValueKind::Percent => (0.0, 1.0),
                 // Balances start at zero so a drop reads as a drop; a flat series still gets visible headroom.
                 // A negative (overdrawn) balance extends the axis below zero instead of being clipped.
-                ValueKind::Money(_) => (summary.low.min(0.0) * 1.15, (summary.high * 1.15).max(1.0)),
+                ValueKind::Money(_) | ValueKind::Credits => {
+                    (summary.low.min(0.0) * 1.15, (summary.high * 1.15).max(1.0))
+                }
             };
             AreaChart::new(data)
                 .id("history-chart")
@@ -746,6 +757,9 @@ mod tests {
         assert_eq!(ValueKind::Money(Currency::Usd).value(-9.3), "\u{2212}$9.30");
         assert_eq!(ValueKind::Money(Currency::Usd).change(-9.3), "\u{2212}$9.30");
         assert_eq!(ValueKind::Money(Currency::Usd).change(0.0), "no change");
+        assert_eq!(ValueKind::Credits.value(18_400.0), "18,400");
+        assert_eq!(ValueKind::Credits.change(-1_700.0), "\u{2212}1,700");
+        assert_eq!(ValueKind::Credits.change_words(2_000.0), "up 2,000 credits");
     }
 
     #[test]
