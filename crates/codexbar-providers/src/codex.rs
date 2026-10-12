@@ -150,14 +150,14 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
 
 /// The account's credits from `wham/usage`'s optional `credits` object (#150): `unlimited`, or a finite, non-negative
 /// `balance` sent as a decimal string or a number. Anything else (missing, null, malformed, negative) is no metric,
-/// never a zero; `has_credits` alone never supplies a number. `has_credits: false` means no usable credits whatever
-/// the balance says, as in the Codex CLI's own status view, so a stale balance can't carry a used-up window.
+/// never a zero; `has_credits` alone never supplies a number. Like the Codex CLI's own status view, `unlimited` wins;
+/// otherwise `has_credits: false` means no usable credits whatever the balance says, so a stale balance can't carry a
+/// used-up window.
 fn parse_credits(credits: &Value) -> Option<Metric> {
-    if credits.get("has_credits").and_then(Value::as_bool) == Some(false) {
-        return None;
-    }
     let balance = if credits.get("unlimited").and_then(Value::as_bool) == Some(true) {
         None
+    } else if credits.get("has_credits").and_then(Value::as_bool) == Some(false) {
+        return None;
     } else {
         let balance = match credits.get("balance")? {
             Value::String(text) => text.trim().parse::<f64>().ok()?,
@@ -530,6 +530,12 @@ mod tests {
         let account = with_credits(100, Some(r#"{"has_credits":true,"unlimited":true,"balance":null}"#));
         assert_eq!(credits_of(&account), Some(None));
         assert_eq!(account.primary().unwrap().used_display(), "Unlimited");
+        let flagged = with_credits(100, Some(r#"{"has_credits":false,"unlimited":true}"#));
+        assert_eq!(
+            credits_of(&flagged),
+            Some(None),
+            "unlimited wins over has_credits: false"
+        );
         assert_eq!(account.primary().unwrap().progress(), None, "no bar");
     }
 

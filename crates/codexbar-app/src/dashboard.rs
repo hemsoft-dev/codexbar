@@ -885,9 +885,11 @@ impl Dashboard {
                 let urgency = Urgency {
                     severity,
                     alert,
+                    // A used-up window that credits carry projects nothing (#150).
                     projected: account
                         .metrics()
                         .iter()
+                        .filter(|metric| !account.credits_cover(metric))
                         .any(|metric| metric.exhausts_before_reset(self.now)),
                     health,
                     pressure: assessment.pressure(),

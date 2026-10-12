@@ -339,7 +339,11 @@ impl DashboardPrefs {
         let mut credit_starts = credit_starts_from_json(doc.get("creditStarts"));
         for (account, start) in &self.pending_credit_starts {
             match start {
-                Some(start) => credit_starts.insert(account.clone(), *start),
+                // Starts only ever rise between removals, so the higher of two writers' starts is the true one.
+                Some(start) => {
+                    let merged = credit_starts.get(account).map_or(*start, |saved| saved.max(*start));
+                    credit_starts.insert(account.clone(), merged)
+                }
                 None => credit_starts.remove(account),
             };
         }
@@ -620,6 +624,14 @@ mod tests {
             8.0,
             "a bad balance changes nothing"
         );
+        // Two writers see different top-ups from the same old start: the higher survives either save order.
+        let mut low = DashboardPrefs::load(&dir.0);
+        let mut high = DashboardPrefs::load(&dir.0);
+        high.remember_credit_balance("a", 500.0);
+        high.save(&dir.0).unwrap();
+        low.remember_credit_balance("a", 400.0);
+        low.save(&dir.0).unwrap();
+        assert_eq!(DashboardPrefs::load(&dir.0).credit_start("a"), Some(500.0));
     }
 
     #[test]
