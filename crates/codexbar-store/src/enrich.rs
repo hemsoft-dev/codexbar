@@ -30,7 +30,13 @@ where
     let key = primary.key();
 
     let account = if account.trend().len() < 2 {
-        match trend(&store.daily_max(&id, &key, TREND_DAYS, tz, now)) {
+        // Credits run down, so each day is where the balance ended, not its high (#150).
+        let daily = if matches!(primary, Metric::Credits { .. }) {
+            store.daily_last(&id, &key, TREND_DAYS, tz, now)
+        } else {
+            store.daily_max(&id, &key, TREND_DAYS, tz, now)
+        };
+        match trend(&daily) {
             Some(trend) => account.with_trend(trend),
             None => account,
         }
@@ -218,6 +224,38 @@ mod tests {
         assert_eq!(curve.current().len(), 13);
         assert_eq!(*curve.current().last().unwrap(), 0.5);
         assert!(curve.previous().iter().all(|value| *value <= 0.6));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_credits_trend_keeps_each_days_last_balance() {
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let path = temp_file("credits-trend");
+        let mut store = HistoryStore::open(&path, Duration::days(30), now());
+        let credits = |balance: f64, at| {
+            AccountSnapshot::new(
+                AccountId::new("codex"),
+                Provider::Codex,
+                vec![Metric::Credits {
+                    label: "Credits".into(),
+                    balance: Some(balance),
+                    start: None,
+                }],
+                at,
+            )
+        };
+        // Yesterday the balance ran from 900 down to 600; today from 600 down to 450.
+        let yesterday = now() - Duration::days(1);
+        for (hours, balance) in [(0, 900.0), (3, 750.0), (6, 600.0)] {
+            let at = yesterday + Duration::hours(hours);
+            store.record(&[credits(balance, at)], at).unwrap();
+        }
+        for (minutes, balance) in [(10, 520.0), (40, 450.0)] {
+            let at = now() - Duration::hours(1) + Duration::minutes(minutes);
+            store.record(&[credits(balance, at)], at).unwrap();
+        }
+        let account = enrich(&store, credits(450.0, now()), &tz, &English, now());
+        assert_eq!(account.trend(), [600.0, 450.0], "where each day ended, not its high");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

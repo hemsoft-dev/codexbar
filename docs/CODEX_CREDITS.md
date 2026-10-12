@@ -18,6 +18,9 @@ no new request, permission or sign-in step. The iOS app reads the same contract
 - `unlimited: true` shows as **Unlimited**, with no number and no bar.
 - A missing, null, malformed or negative balance shows nothing. It's never
   treated as zero, and `has_credits` alone never supplies a number.
+- `has_credits: false` means no usable credits, whatever `balance` says. The
+  Codex CLI's own status view treats it the same way, so a stale balance never
+  carries a used-up window.
 - A response without `credits` refreshes the windows as before.
 
 ## How the dashboard shows credits
@@ -34,8 +37,11 @@ no new request, permission or sign-in step. The iOS app reads the same contract
   blocks the account as before.
 
 Credits have no severity threshold or pace projection: there's no limit or reset
-to project against. History stores the count, and the History view charts it as
-a count. Widgets show "18,400 credits left" or "Unlimited credits", never a
+to project against. A used-up window that credits carry raises no "At risk" or
+"Limit soon" alert, and one already held recovers; a usage-threshold alert
+(say "Weekly at 100%") still fires. History stores the count, and the History
+view charts it as a count. The 14-day trend keeps where each day's balance
+ended, not its high. Widgets show "18,400 credits left" or "Unlimited credits", never a
 percentage.
 
 ## The starting balance

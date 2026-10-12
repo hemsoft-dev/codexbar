@@ -293,6 +293,33 @@ impl HistoryStore {
         out
     }
 
+    /// The last sample of each of the last `days` local days, oldest first: what a running-down balance stood at when
+    /// each day ended (#150), where `daily_max` would keep the day's starting balance.
+    pub fn daily_last<Tz: TimeZone>(
+        &self,
+        account: &str,
+        metric: &str,
+        days: usize,
+        tz: &Tz,
+        now: DateTime<Utc>,
+    ) -> Vec<Option<f64>> {
+        let today = now.with_timezone(tz).date_naive();
+        let mut last: Vec<Option<(DateTime<Utc>, f64)>> = vec![None; days];
+        for sample in self.series(account, metric) {
+            let day = sample.at().with_timezone(tz).date_naive();
+            let Ok(age) = usize::try_from((today - day).num_days()) else {
+                continue;
+            };
+            if age < days {
+                let slot = &mut last[days - 1 - age];
+                if slot.is_none_or(|(at, _)| sample.at() >= at) {
+                    *slot = Some((sample.at(), sample.v));
+                }
+            }
+        }
+        last.into_iter().map(|slot| slot.map(|(_, value)| value)).collect()
+    }
+
     fn append(&self, samples: &[Sample]) -> io::Result<()> {
         if samples.is_empty() || !self.persist {
             return Ok(());

@@ -235,13 +235,20 @@ impl AccountSnapshot {
     /// The most urgent assessment across all of the account's metrics. A fully used window doesn't block an account
     /// that can still spend credits (#150).
     pub fn assess(&self, now: DateTime<Utc>) -> Assessment {
-        let on_credits = self.metrics.iter().any(Metric::has_spendable_credits);
         self.metrics
             .iter()
-            .filter(|metric| !(on_credits && matches!(metric, Metric::Window { .. }) && metric.is_exhausted()))
+            .filter(|metric| !self.credits_cover(metric))
             .map(|metric| assess(metric, now))
             .max()
             .unwrap_or_default()
+    }
+
+    /// True when `metric` is a used-up window the account's spendable credits carry it past (#150): it neither blocks
+    /// the account nor raises severity alerts.
+    pub fn credits_cover(&self, metric: &Metric) -> bool {
+        matches!(metric, Metric::Window { .. })
+            && metric.is_exhausted()
+            && self.metrics.iter().any(Metric::has_spendable_credits)
     }
 
     /// Puts the account's credits where they belong (#150): first, as the headline, when a window is used up and the

@@ -414,7 +414,11 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         [.., before, last] if *before > 0.0 => (last - before) / before * 100.0,
         _ => 0.0,
     };
-    let takeaway = if change.abs() < 1.0 {
+    let topped_up = credits && matches!(trend, [.., before, last] if *before <= 0.0 && *last > 0.0);
+    let takeaway = if topped_up {
+        // From zero there is no percentage to give (#150).
+        "Topped up since yesterday".to_owned()
+    } else if change.abs() < 1.0 {
         "Flat since yesterday".to_owned()
     } else {
         format!(

@@ -150,8 +150,12 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
 
 /// The account's credits from `wham/usage`'s optional `credits` object (#150): `unlimited`, or a finite, non-negative
 /// `balance` sent as a decimal string or a number. Anything else (missing, null, malformed, negative) is no metric,
-/// never a zero; `has_credits` alone never supplies a number.
+/// never a zero; `has_credits` alone never supplies a number. `has_credits: false` means no usable credits whatever
+/// the balance says, as in the Codex CLI's own status view, so a stale balance can't carry a used-up window.
 fn parse_credits(credits: &Value) -> Option<Metric> {
+    if credits.get("has_credits").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
     let balance = if credits.get("unlimited").and_then(Value::as_bool) == Some(true) {
         None
     } else {
@@ -506,8 +510,19 @@ mod tests {
         assert_eq!(credits.used_fraction(), None, "never a percentage");
         let number = with_credits(40, Some(r#"{"has_credits":true,"balance":1234.5}"#));
         assert_eq!(credits_of(&number), Some(Some(1234.5)));
-        let zero = with_credits(40, Some(r#"{"has_credits":false,"balance":"0"}"#));
+        let zero = with_credits(40, Some(r#"{"has_credits":true,"balance":"0"}"#));
         assert_eq!(credits_of(&zero), Some(Some(0.0)), "zero is a real balance");
+        let unavailable = with_credits(100, Some(r#"{"has_credits":false,"balance":"5000"}"#));
+        assert_eq!(
+            credits_of(&unavailable),
+            None,
+            "has_credits: false wins over a stale balance"
+        );
+        assert_eq!(
+            unavailable.primary().unwrap().label(),
+            "Weekly",
+            "the used-up window stays the headline"
+        );
     }
 
     #[test]
@@ -544,7 +559,7 @@ mod tests {
         let account = with_credits(100, Some(r#"{"has_credits":true,"balance":"500"}"#));
         assert!(matches!(account.primary(), Some(Metric::Credits { .. })));
         assert_eq!(account.assess(now()).severity(), Severity::Normal, "not blocked");
-        let broke = with_credits(100, Some(r#"{"has_credits":false,"balance":"0"}"#));
+        let broke = with_credits(100, Some(r#"{"has_credits":true,"balance":"0"}"#));
         assert_eq!(broke.primary().unwrap().label(), "Weekly");
         assert_eq!(broke.assess(now()).severity(), Severity::LimitSoon, "blocked");
         assert_eq!(broke.assess(now()).label(), None, "but no pill");
