@@ -107,6 +107,16 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
                 })
                 .collect()
         }
+        // Credits run down evenly from a starting pool to `current`.
+        Metric::Credits { start, .. } => {
+            let from = start.unwrap_or(current).max(current);
+            (0..=steps)
+                .map(|step| {
+                    let progress = step as f64 / steps as f64;
+                    Point::new(at(step), from - (from - current) * progress)
+                })
+                .collect()
+        }
     }
 }
 

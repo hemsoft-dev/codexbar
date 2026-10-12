@@ -134,8 +134,10 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
     }
     windows.sort_by_key(|window| window.duration_secs);
 
-    let metrics = windows.iter().map(|window| window.to_metric(now)).collect();
-    let mut account = AccountSnapshot::new(AccountId::new("codex-chatgpt"), Provider::Codex, metrics, now);
+    let mut metrics: Vec<Metric> = windows.iter().map(|window| window.to_metric(now)).collect();
+    metrics.extend(json.get("credits").and_then(parse_credits));
+    let mut account =
+        AccountSnapshot::new(AccountId::new("codex-chatgpt"), Provider::Codex, metrics, now).with_credits_placed();
     if let Some(plan) = json
         .get("plan_type")
         .and_then(Value::as_str)
@@ -144,6 +146,34 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
         account = account.with_label(plan_name(plan));
     }
     Ok(account)
+}
+
+/// The account's credits from `wham/usage`'s optional `credits` object (#150): `unlimited`, or a finite, non-negative
+/// `balance` sent as a decimal string or a number. Anything else (missing, null, malformed, negative) is no metric,
+/// never a zero; `has_credits` alone never supplies a number. Like the Codex CLI's own status view, `unlimited` wins;
+/// otherwise `has_credits: false` means no usable credits whatever the balance says, so a stale balance can't carry a
+/// used-up window.
+fn parse_credits(credits: &Value) -> Option<Metric> {
+    let balance = if credits.get("unlimited").and_then(Value::as_bool) == Some(true) {
+        None
+    } else if credits.get("has_credits").and_then(Value::as_bool) == Some(false) {
+        return None;
+    } else {
+        let balance = match credits.get("balance")? {
+            Value::String(text) => text.trim().parse::<f64>().ok()?,
+            Value::Number(number) => number.as_f64()?,
+            _ => return None,
+        };
+        if !(balance.is_finite() && balance >= 0.0) {
+            return None;
+        }
+        Some(balance)
+    };
+    Some(Metric::Credits {
+        label: "Credits".to_owned(),
+        balance,
+        start: None,
+    })
 }
 
 /// "pro" -> "Pro", "prolite" -> "Pro", "team_plus" -> "Team Plus".
@@ -446,6 +476,99 @@ mod tests {
         assert_eq!(account.primary().unwrap().used_fraction(), Some(0.91));
         // 91% used, 4h 22m into the window: about 21% per hour, so the limit lands in ~26 minutes, before the reset.
         assert_eq!(account.assess(now()).severity(), Severity::LimitSoon);
+    }
+
+    /// A weekly window `used` percent full, with `credits` as the raw JSON of the `credits` field (or none).
+    fn with_credits(used: u32, credits: Option<&str>) -> AccountSnapshot {
+        let credits = credits
+            .map(|credits| format!(r#","credits":{credits}"#))
+            .unwrap_or_default();
+        let payload = format!(
+            r#"{{"rate_limit":{{"secondary_window":{{"used_percent":{used},"reset_at":1893456000,"limit_window_seconds":604800}}}}{credits}}}"#
+        );
+        parse_usage(&payload, now()).unwrap()
+    }
+
+    fn credits_of(account: &AccountSnapshot) -> Option<Option<f64>> {
+        account.metrics().iter().find_map(|metric| match metric {
+            Metric::Credits { balance, .. } => Some(*balance),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn parse_usage_reads_credit_balances_as_counts() {
+        let text = with_credits(40, Some(r#"{"has_credits":true,"unlimited":false,"balance":"62500"}"#));
+        assert_eq!(credits_of(&text), Some(Some(62_500.0)));
+        assert_eq!(
+            text.primary().unwrap().label(),
+            "Weekly",
+            "an open window stays the headline"
+        );
+        let credits = text.metrics().last().unwrap();
+        assert_eq!(credits.used_display(), "62,500 left");
+        assert_eq!(credits.used_fraction(), None, "never a percentage");
+        let number = with_credits(40, Some(r#"{"has_credits":true,"balance":1234.5}"#));
+        assert_eq!(credits_of(&number), Some(Some(1234.5)));
+        let zero = with_credits(40, Some(r#"{"has_credits":true,"balance":"0"}"#));
+        assert_eq!(credits_of(&zero), Some(Some(0.0)), "zero is a real balance");
+        let unavailable = with_credits(100, Some(r#"{"has_credits":false,"balance":"5000"}"#));
+        assert_eq!(
+            credits_of(&unavailable),
+            None,
+            "has_credits: false wins over a stale balance"
+        );
+        assert_eq!(
+            unavailable.primary().unwrap().label(),
+            "Weekly",
+            "the used-up window stays the headline"
+        );
+    }
+
+    #[test]
+    fn parse_usage_unlimited_credits_have_no_number() {
+        let account = with_credits(100, Some(r#"{"has_credits":true,"unlimited":true,"balance":null}"#));
+        assert_eq!(credits_of(&account), Some(None));
+        assert_eq!(account.primary().unwrap().used_display(), "Unlimited");
+        let flagged = with_credits(100, Some(r#"{"has_credits":false,"unlimited":true}"#));
+        assert_eq!(
+            credits_of(&flagged),
+            Some(None),
+            "unlimited wins over has_credits: false"
+        );
+        assert_eq!(account.primary().unwrap().progress(), None, "no bar");
+    }
+
+    #[test]
+    fn parse_usage_unusable_credits_are_skipped_never_zero() {
+        for credits in [
+            None,
+            Some("null"),
+            Some(r#"{"has_credits":true}"#),
+            Some(r#"{"has_credits":true,"balance":null}"#),
+            Some(r#"{"balance":"lots"}"#),
+            Some(r#"{"balance":"-5"}"#),
+            Some(r#"{"balance":-5}"#),
+            Some(r#"{"balance":"NaN"}"#),
+            Some(r#"{"balance":"inf"}"#),
+            Some(r#"{"balance":true}"#),
+            Some(r#""1000""#),
+        ] {
+            let account = with_credits(30, credits);
+            assert_eq!(credits_of(&account), None, "{credits:?}");
+            assert_eq!(account.metrics().len(), 1, "{credits:?}: the window still refreshes");
+        }
+    }
+
+    #[test]
+    fn parse_usage_exhausted_window_with_credits_puts_credits_first() {
+        let account = with_credits(100, Some(r#"{"has_credits":true,"balance":"500"}"#));
+        assert!(matches!(account.primary(), Some(Metric::Credits { .. })));
+        assert_eq!(account.assess(now()).severity(), Severity::Normal, "not blocked");
+        let broke = with_credits(100, Some(r#"{"has_credits":true,"balance":"0"}"#));
+        assert_eq!(broke.primary().unwrap().label(), "Weekly");
+        assert_eq!(broke.assess(now()).severity(), Severity::LimitSoon, "blocked");
+        assert_eq!(broke.assess(now()).label(), None, "but no pill");
     }
 
     #[test]

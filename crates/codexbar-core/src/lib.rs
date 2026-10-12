@@ -9,5 +9,5 @@ mod metric;
 mod severity;
 
 pub use account::{AccountDetail, AccountId, AccountSnapshot, Provider, WindowCurve, sort_by_urgency};
-pub use metric::{Currency, Metric, Money, Pace, group_thousands};
+pub use metric::{Currency, Metric, Money, Pace, format_credits, group_thousands};
 pub use severity::{Assessment, Severity, assess, observed_severity};

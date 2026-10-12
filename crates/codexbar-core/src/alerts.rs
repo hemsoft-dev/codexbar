@@ -188,7 +188,8 @@ pub fn evaluate(
             ] {
                 let key = alert_key(id, &slot, kind);
                 let is_active = active.contains(&key);
-                match condition(settings, metric, kind, now) {
+                let condition = account_condition(settings, account, metric, kind, now);
+                match condition {
                     Condition::Triggered if settings.enabled && !is_active => {
                         out.notify.push(alert(account, metric, kind, key, settings));
                     }
@@ -203,7 +204,7 @@ pub fn evaluate(
             if let Some(warning) = new.iter().position(|alert| alert.kind == AlertKind::Warning) {
                 let critical_key = alert_key(id, &slot, AlertKind::Critical);
                 let critical_held = matches!(
-                    condition(settings, metric, AlertKind::Critical, now),
+                    account_condition(settings, account, metric, AlertKind::Critical, now),
                     Condition::Triggered | Condition::Holding
                 );
                 if let Some(critical) = new.iter().position(|alert| alert.kind == AlertKind::Critical) {
@@ -308,7 +309,7 @@ pub fn account_alerts(
             if switched_off {
                 continue;
             }
-            let holds = match condition(settings, metric, kind, now) {
+            let holds = match account_condition(settings, account, metric, kind, now) {
                 Condition::Triggered => true,
                 Condition::Holding => notified,
                 Condition::Clear | Condition::NotApplicable => false,
@@ -380,6 +381,21 @@ enum Condition {
     Clear,
     /// The kind doesn't apply to this metric or is switched off.
     NotApplicable,
+}
+
+/// `condition` for one of `account`'s metrics. A used-up window the account's credits carry raises no severity alert,
+/// and one already held recovers (#150); threshold usage alerts stay independent.
+fn account_condition(
+    settings: &AlertSettings,
+    account: &AccountSnapshot,
+    metric: &Metric,
+    kind: AlertKind,
+    now: DateTime<Utc>,
+) -> Condition {
+    if matches!(kind, AlertKind::Warning | AlertKind::Critical) && account.credits_cover(metric) {
+        return Condition::Clear;
+    }
+    condition(settings, metric, kind, now)
 }
 
 fn condition(settings: &AlertSettings, metric: &Metric, kind: AlertKind, now: DateTime<Utc>) -> Condition {
@@ -703,6 +719,69 @@ mod tests {
             active
                 .iter()
                 .any(|key| key.starts_with("x|5-hour-window@") && key.ends_with("|warning"))
+        );
+    }
+
+    #[test]
+    fn a_used_up_window_on_credits_raises_no_severity_alert() {
+        let weekly = Metric::Window {
+            label: "Weekly".into(),
+            used: 1.0,
+            resets_at: now() + Duration::days(2),
+            pace: None,
+        };
+        let credits = |balance| Metric::Credits {
+            label: "Credits".into(),
+            balance,
+            start: None,
+        };
+        let account = |balance| {
+            AccountSnapshot::new(
+                AccountId::new("x"),
+                Provider::Codex,
+                vec![weekly.clone(), credits(balance)],
+                now(),
+            )
+        };
+        let settings = AlertSettings {
+            usage_threshold: 1.0,
+            ..AlertSettings {
+                enabled: true,
+                ..AlertSettings::default()
+            }
+        };
+        let mut active = BTreeSet::new();
+        let sent = run(&settings, &mut active, &[vec![account(Some(500.0))]]);
+        // The threshold usage alert ("Weekly at 100%") stays; only the severity alert is suppressed.
+        assert!(
+            sent[0].iter().all(|text| !text.contains("limit soon")),
+            "credits carry the account: {:?}",
+            sent[0]
+        );
+        let sent = run(&settings, &mut active, &[vec![account(Some(0.0))]]);
+        assert!(
+            sent[0].iter().any(|text| text == "ChatGPT · Codex: Weekly limit soon"),
+            "without credits it alerts: {:?}",
+            sent[0]
+        );
+        // The focused account shows no severity alert while credits carry it.
+        let shown = account_alerts(&settings, &active, &account(Some(500.0)), now());
+        assert!(
+            shown
+                .iter()
+                .all(|detail| !matches!(detail.kind, AlertKind::Warning | AlertKind::Critical)),
+            "{shown:?}"
+        );
+        let blocked = account_alerts(&settings, &active, &account(Some(0.0)), now());
+        assert!(blocked.iter().any(|detail| detail.kind == AlertKind::Critical));
+        // Credits arrive while the alert is held: it recovers.
+        let held = active.clone();
+        let evaluation = evaluate(&settings, &held, &[account(None)], now());
+        assert!(evaluation.notify.is_empty());
+        assert!(
+            evaluation.recovered.iter().any(|key| key.ends_with("|critical")),
+            "{:?}",
+            evaluation.recovered
         );
     }
 

@@ -392,6 +392,58 @@ fn history_view_handles_empty_and_single_sample_series(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn a_used_up_window_with_credits_shows_the_credits_with_no_pill(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("credits-row", "{}");
+    let (handle, _) = open_dashboard(cx, &settings);
+    assert!(
+        label(cx, handle, "provider-badge-codex-team").is_some(),
+        "the table shows the account"
+    );
+    // The demo's team account: weekly at 100%, 18,400 credits left of a 50,000 start.
+    assert_eq!(
+        label(cx, handle, "used-codex-team").as_deref(),
+        Some("50,000 credits: 18,400 left")
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-codex-team").as_deref(),
+        Some("63% used")
+    );
+    assert!(label(cx, handle, "severity-tag-codex-team").is_none(), "no pill");
+}
+
+#[gpui_kit::test]
+fn a_used_up_window_without_credits_is_blocked_with_no_pill(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("credits-none", "{}");
+    let (handle, _) = open_dashboard(cx, &settings);
+    assert!(
+        label(cx, handle, "provider-badge-codex-work").is_some(),
+        "the table shows the account"
+    );
+    assert_eq!(label(cx, handle, "used-codex-work").as_deref(), Some("Weekly: 100%"));
+    assert_eq!(
+        label(cx, handle, "progress-cell-codex-work").as_deref(),
+        Some("100% used")
+    );
+    assert!(
+        label(cx, handle, "severity-tag-codex-work").is_none(),
+        "no pill at 100%"
+    );
+    // Below 100% the pill stays: the personal account's 5-hour window at 91% is about to run out.
+    assert_eq!(
+        label(cx, handle, "severity-tag-codex-personal").as_deref(),
+        Some("Limit soon")
+    );
+    let blocked = cx.update(|_| {
+        codexbar_core::demo::demo_accounts(chrono::Utc::now(), &chrono::Local)
+            .into_iter()
+            .find(|account| account.id().as_str() == "codex-work")
+            .unwrap()
+            .assess(chrono::Utc::now())
+    });
+    assert_eq!(blocked.severity(), codexbar_core::Severity::LimitSoon, "still blocked");
+}
+
+#[gpui_kit::test]
 fn table_trend_shows_compact_history_until_hidden(cx: &mut TestAppContext) {
     let settings = TempSettings::new("history-compact", "{}");
     let (handle, _) = open_dashboard(cx, &settings);

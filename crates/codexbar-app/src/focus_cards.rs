@@ -142,6 +142,9 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         if let Some(headroom) = metric.headroom() {
             detail.push(format!("{} left to the limit", headroom.display()));
         }
+        if let Some(spent) = credit_spend(metric) {
+            detail.push(spent);
+        }
         let detail = detail.join(" · ");
         let spoken = if detail.is_empty() {
             format!("{}: {}", metric.label(), metric.used_display())
@@ -242,17 +245,21 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .enumerate()
             .map(|(ix, value)| (SharedString::from(day_label(account.trend().len(), ix)), *value))
             .collect();
+        // A credits headline trends as the count left (#150), not as a fraction.
+        let credits = on_credits(account);
+        let high = account.trend().iter().copied().fold(0.0, f64::max);
         let chart = AreaChart::new(points)
             .id("focus-trend")
             .x(|(label, _)| label.clone())
             .y(|(_, value)| *value)
             .stroke(current_color)
             .fill(area_fill(current_color))
-            .name("Pressure")
-            .y_domain(0.0, 1.0)
+            .name(if credits { "Credits left" } else { "Pressure" })
+            .y_domain(0.0, if credits { (high * 1.15).max(1.0) } else { 1.0 })
             .tick_margin(3)
-            .y_tick_format(|value| format!("{:.0}%", value * 100.0));
-        Card::new("Daily pressure", "Last 14 days", chart)
+            .y_tick_format(move |value| trend_value(credits, value));
+        let title = if credits { "Credits left" } else { "Daily pressure" };
+        Card::new(title, "Last 14 days", chart)
     };
 
     let card = match primary {
@@ -276,6 +283,9 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         return Card::new("No limits", "", div()).takeaway("This account reports no limits");
     };
 
+    if let Metric::Credits { balance, .. } = metric {
+        return credits_card(metric, *balance, cx);
+    }
     let Some(used) = metric.used_fraction() else {
         let amount = match metric {
             Metric::Balance { remaining, .. } => remaining.display(),
@@ -392,18 +402,23 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .skip(trend.len().saturating_sub(7))
         .map(|(ix, value)| (SharedString::from(day_label(trend.len(), ix)), *value))
         .collect();
+    let credits = on_credits(account);
     let chart = BarChart::new(bars)
         .id("focus-days")
         .band(|(label, _)| label.clone())
         .value(|(_, value)| *value)
         .fill(bar_fill)
-        .value_tick_format(|value| format!("{:.0}%", value * 100.0))
-        .name("Pressure");
+        .value_tick_format(move |value| trend_value(credits, value))
+        .name(if credits { "Credits left" } else { "Pressure" });
     let change = match trend {
         [.., before, last] if *before > 0.0 => (last - before) / before * 100.0,
         _ => 0.0,
     };
-    let takeaway = if change.abs() < 1.0 {
+    let topped_up = credits && matches!(trend, [.., before, last] if *before <= 0.0 && *last > 0.0);
+    let takeaway = if topped_up {
+        // From zero there is no percentage to give (#150).
+        "Topped up since yesterday".to_owned()
+    } else if change.abs() < 1.0 {
         "Flat since yesterday".to_owned()
     } else {
         format!(
@@ -412,9 +427,28 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
             change.abs()
         )
     };
+    let caption = if credits {
+        "Credits left at the end of each day"
+    } else {
+        "Share of the tightest limit"
+    };
     Card::new("Usage by day", "Last 7 days", chart)
         .takeaway(takeaway)
-        .caption("Share of the tightest limit")
+        .caption(caption)
+}
+
+/// True when the account's headline is its credits (#150), so its trend is a count of credits left.
+fn on_credits(account: &AccountSnapshot) -> bool {
+    matches!(account.primary(), Some(Metric::Credits { .. }))
+}
+
+/// A trend axis value: a credit count, or a percentage.
+fn trend_value(credits: bool, value: f64) -> String {
+    if credits {
+        codexbar_core::format_credits(value.round())
+    } else {
+        format!("{:.0}%", value * 100.0)
+    }
 }
 
 /// How much of a window's pool is left, in words.
@@ -442,6 +476,52 @@ fn no_history(cx: &App) -> impl IntoElement {
 
 /// The metric for the second card: the most severe one after the primary, so whatever raises the account's status
 /// (such as Cursor's on-demand spend) is on screen. Ties keep provider order, so it is usually the second metric.
+/// How much of the remembered starting balance the credits have used (#150): "63% of 50,000 used".
+fn credit_spend(metric: &Metric) -> Option<String> {
+    let Metric::Credits { start: Some(start), .. } = metric else {
+        return None;
+    };
+    let progress = metric.progress()?;
+    Some(format!(
+        "{:.0}% of {} used",
+        progress * 100.0,
+        codexbar_core::format_credits(*start)
+    ))
+}
+
+/// Credits left, with a bar running down from the remembered start when there is one (#150).
+fn credits_card(metric: &Metric, balance: Option<f64>, cx: &App) -> Card {
+    let amount = balance.map_or_else(|| "Unlimited".to_owned(), codexbar_core::format_credits);
+    let mut body = v_flex()
+        .size_full()
+        .gap_2()
+        .items_center()
+        .justify_center()
+        .child(div().text_3xl().font_semibold().child(amount))
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("credits left"),
+        );
+    if let Some(progress) = metric.progress() {
+        body = body.child(
+            div().w_full().px_4().child(
+                gpui_kit::component::progress::Progress::new("focus-credits")
+                    .value(progress as f32 * 100.0)
+                    .color(cx.theme().chart_1)
+                    .accessibility_label("Credits used since the last top-up"),
+            ),
+        );
+    }
+    let takeaway = match (balance, credit_spend(metric)) {
+        (None, _) => "This account's credits are unlimited".to_owned(),
+        (Some(_), Some(spent)) => format!("{spent} since the last top-up"),
+        (Some(_), None) => "The bar starts with the next refresh".to_owned(),
+    };
+    Card::new(metric.label().to_owned(), "Credits pool", body).takeaway(takeaway)
+}
+
 fn secondary_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
     account
         .metrics()

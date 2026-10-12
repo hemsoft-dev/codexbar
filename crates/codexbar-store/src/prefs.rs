@@ -1,6 +1,6 @@
 //! Dashboard preferences that only the Rust app uses: which accounts show history (#86), alert settings and the
-//! alerts currently active (#87), account groups with the manual card order (#89), and the widget builder's tiles
-//! and refresh choice (#95).
+//! alerts currently active (#87), account groups with the manual card order (#89), the widget builder's tiles and
+//! refresh choice (#95), and each account's remembered starting credit balance (#150).
 //!
 //! They live in `dashboard.json`, not `settings.json`: the WPF app reads `settings.json` into typed settings and writes
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
@@ -46,6 +46,12 @@ pub struct DashboardPrefs {
     /// The widget builder's choices (#95). Saved as a whole when changed, like the layout.
     widgets: WidgetBuilder,
     widgets_dirty: bool,
+    /// Each account's starting credit balance (#150): the highest balance seen since the last top-up. A count of
+    /// credits, never a secret.
+    credit_starts: BTreeMap<String, f64>,
+    /// Starting balances changed and not yet saved, by account: a new start, or `None` to forget it. Merged by
+    /// account like `pending`.
+    pending_credit_starts: BTreeMap<String, Option<f64>>,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -79,6 +85,8 @@ impl DashboardPrefs {
             layout_dirty: false,
             widgets: doc.get("widgets").map(WidgetBuilder::from_json).unwrap_or_default(),
             widgets_dirty: false,
+            credit_starts: credit_starts_from_json(doc.get("creditStarts")),
+            pending_credit_starts: BTreeMap::new(),
             read_only: version > VERSION,
         }
     }
@@ -109,6 +117,35 @@ impl DashboardPrefs {
             self.widgets_dirty = true;
         }
         result
+    }
+
+    /// The starting credit balance remembered for `account`, if any.
+    pub fn credit_start(&self, account: &str) -> Option<f64> {
+        self.credit_starts.get(account).copied()
+    }
+
+    /// Records a credit balance just read for `account` and returns the start its bar runs down from (#150). The
+    /// first balance seen is the start; a higher one is a top-up and becomes the new start.
+    pub fn remember_credit_balance(&mut self, account: &str, balance: f64) -> f64 {
+        if !balance.is_finite() || balance < 0.0 {
+            return self.credit_start(account).unwrap_or(0.0);
+        }
+        match self.credit_start(account) {
+            Some(start) if start >= balance => start,
+            _ => {
+                self.credit_starts.insert(account.to_owned(), balance);
+                self.pending_credit_starts.insert(account.to_owned(), Some(balance));
+                balance
+            }
+        }
+    }
+
+    fn set_credit_start(&mut self, account: &str, start: Option<f64>) {
+        match start {
+            Some(start) => self.credit_starts.insert(account.to_owned(), start),
+            None => self.credit_starts.remove(account),
+        };
+        self.pending_credit_starts.insert(account.to_owned(), start);
     }
 
     /// The appearance choice's key ("system", "light", "dark"), when one was made.
@@ -159,6 +196,7 @@ impl DashboardPrefs {
             || self.layout_dirty
             || self.appearance_dirty
             || self.widgets_dirty
+            || !self.pending_credit_starts.is_empty()
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -198,6 +236,10 @@ impl DashboardPrefs {
         if self.update_widget_builder(|builder| builder.forget_account(account)) {
             changed = true;
         }
+        if self.credit_starts.contains_key(account) {
+            self.set_credit_start(account, None);
+            changed = true;
+        }
         changed
     }
 
@@ -233,6 +275,11 @@ impl DashboardPrefs {
             changed = true;
         }
         if self.update_widget_builder(|builder| builder.rename_account(from, to)) {
+            changed = true;
+        }
+        if let Some(start) = self.credit_start(from) {
+            self.set_credit_start(from, None);
+            self.set_credit_start(to, Some(start));
             changed = true;
         }
         changed
@@ -289,6 +336,18 @@ impl DashboardPrefs {
         doc.insert("hiddenHistory".into(), json!(hidden));
         doc.insert("alerts".into(), Value::Object(alerts.clone()));
         doc.insert("activeAlerts".into(), json!(active));
+        let mut credit_starts = credit_starts_from_json(doc.get("creditStarts"));
+        for (account, start) in &self.pending_credit_starts {
+            match start {
+                // Starts only ever rise between removals, so the higher of two writers' starts is the true one.
+                Some(start) => {
+                    let merged = credit_starts.get(account).map_or(*start, |saved| saved.max(*start));
+                    credit_starts.insert(account.clone(), merged)
+                }
+                None => credit_starts.remove(account),
+            };
+        }
+        doc.insert("creditStarts".into(), json!(credit_starts));
         if self.layout_dirty {
             layout_to_json(&self.layout, &mut doc);
         }
@@ -325,8 +384,26 @@ impl DashboardPrefs {
         self.pending.clear();
         self.pending_alert_fields.clear();
         self.pending_active.clear();
+        self.credit_starts = credit_starts;
+        self.pending_credit_starts.clear();
         Ok(())
     }
+}
+
+/// `creditStarts`: account id to a finite, non-negative credit count. Anything else is skipped.
+fn credit_starts_from_json(value: Option<&Value>) -> BTreeMap<String, f64> {
+    value
+        .and_then(Value::as_object)
+        .map(|starts| {
+            starts
+                .iter()
+                .filter_map(|(account, start)| {
+                    let start = start.as_f64().filter(|start| start.is_finite() && *start >= 0.0)?;
+                    Some((account.clone(), start))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The JSON names of the alert settings, as `alerts_to_json` writes them.
@@ -475,6 +552,86 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn credit_start_tracks_first_value_spend_top_up_and_restart() {
+        let dir = Dir::new("credit-start");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(
+            prefs.remember_credit_balance("codex-a", 500.0),
+            500.0,
+            "the first balance is the start"
+        );
+        assert_eq!(
+            prefs.remember_credit_balance("codex-a", 320.0),
+            500.0,
+            "spending keeps the start"
+        );
+        prefs.save(&dir.0).unwrap();
+        assert!(!prefs.is_dirty());
+        assert_eq!(prefs.remember_credit_balance("codex-a", 120.0), 500.0);
+        assert!(!prefs.is_dirty(), "an unchanged start isn't saved again");
+
+        let mut restarted = DashboardPrefs::load(&dir.0);
+        assert_eq!(
+            restarted.credit_start("codex-a"),
+            Some(500.0),
+            "the start survives a restart"
+        );
+        assert_eq!(
+            restarted.remember_credit_balance("codex-a", 900.0),
+            900.0,
+            "a top-up resets the start"
+        );
+        restarted.save(&dir.0).unwrap();
+        assert_eq!(DashboardPrefs::load(&dir.0).credit_start("codex-a"), Some(900.0));
+    }
+
+    #[test]
+    fn credit_starts_follow_renamed_and_removed_accounts() {
+        let dir = Dir::new("credit-start-moves");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        prefs.remember_credit_balance("old", 40.0);
+        prefs.remember_credit_balance("other", 7.0);
+        prefs.save(&dir.0).unwrap();
+        assert!(prefs.rename_account("old", "new"));
+        assert!(prefs.forget_account("other"));
+        prefs.save(&dir.0).unwrap();
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.credit_start("old"), None);
+        assert_eq!(loaded.credit_start("new"), Some(40.0));
+        assert_eq!(loaded.credit_start("other"), None);
+    }
+
+    #[test]
+    fn credit_starts_skip_bad_values_and_merge_with_other_writers() {
+        let dir = Dir::new("credit-start-merge");
+        dir.write(r#"{"version":1,"creditStarts":{"a":10,"bad":-1,"text":"5","nan":null}}"#);
+        let mut mine = DashboardPrefs::load(&dir.0);
+        assert_eq!(mine.credit_start("a"), Some(10.0));
+        assert_eq!(mine.credit_start("bad"), None);
+        assert_eq!(mine.credit_start("text"), None);
+        let mut theirs = DashboardPrefs::load(&dir.0);
+        theirs.remember_credit_balance("b", 3.0);
+        theirs.save(&dir.0).unwrap();
+        mine.remember_credit_balance("c", 8.0);
+        mine.save(&dir.0).unwrap();
+        assert_eq!(mine.credit_start("b"), Some(3.0), "the other writer's start is kept");
+        assert_eq!(mine.credit_start("c"), Some(8.0));
+        assert_eq!(
+            mine.remember_credit_balance("c", f64::NAN),
+            8.0,
+            "a bad balance changes nothing"
+        );
+        // Two writers see different top-ups from the same old start: the higher survives either save order.
+        let mut low = DashboardPrefs::load(&dir.0);
+        let mut high = DashboardPrefs::load(&dir.0);
+        high.remember_credit_balance("a", 500.0);
+        high.save(&dir.0).unwrap();
+        low.remember_credit_balance("a", 400.0);
+        low.save(&dir.0).unwrap();
+        assert_eq!(DashboardPrefs::load(&dir.0).credit_start("a"), Some(500.0));
     }
 
     #[test]

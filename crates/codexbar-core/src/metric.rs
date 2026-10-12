@@ -229,6 +229,14 @@ pub enum Metric {
         remaining: Money,
         burn_per_day: Option<Money>,
     },
+    /// A prepaid pool counted in the provider's own credits, never money (#150): Codex's credits.
+    Credits {
+        label: String,
+        /// Credits left; `None` when the pool is unlimited.
+        balance: Option<f64>,
+        /// The balance the pool started from, remembered since the last top-up; the bar runs down from it.
+        start: Option<f64>,
+    },
 }
 
 impl Metric {
@@ -237,7 +245,8 @@ impl Metric {
             Self::Window { label, .. }
             | Self::Quota { label, .. }
             | Self::Spend { label, .. }
-            | Self::Balance { label, .. } => label,
+            | Self::Balance { label, .. }
+            | Self::Credits { label, .. } => label,
         }
     }
 
@@ -254,11 +263,13 @@ impl Metric {
         key.trim_end_matches('-').to_owned()
     }
 
-    /// The value history stores: fraction used for limits, money in major units for balances and spend. Spend is
-    /// always money, capped or not, so adding or removing a cap doesn't mix units in one series.
+    /// The value history stores: fraction used for limits, money in major units for balances and spend, and the
+    /// count for credits. Spend is always money, capped or not, so adding or removing a cap doesn't mix units in one
+    /// series. Unlimited credits have no value to store.
     pub fn history_value(&self) -> Option<f64> {
         match self {
             Self::Balance { remaining, .. } => Some(remaining.major()),
+            Self::Credits { balance, .. } => *balance,
             Self::Spend { spent, .. } => Some(spent.major()),
             _ => self.used_fraction(),
         }
@@ -288,7 +299,34 @@ impl Metric {
             } if limit.cents() > 0 && limit.currency() == spent.currency() => {
                 Some((spent.cents() as f64 / limit.cents() as f64).clamp(0.0, 1.0))
             }
-            Self::Quota { .. } | Self::Spend { .. } | Self::Balance { .. } => None,
+            Self::Quota { .. } | Self::Spend { .. } | Self::Balance { .. } | Self::Credits { .. } => None,
+        }
+    }
+
+    /// How full the metric's bar is, 0..=1: the fraction used for limits, and for credits how much of the remembered
+    /// starting balance is spent. `None` when there is nothing to draw against (unlimited credits, no start yet).
+    pub fn progress(&self) -> Option<f64> {
+        match self {
+            Self::Credits {
+                balance: Some(balance),
+                start: Some(start),
+                ..
+            } if *start > 0.0 => Some((1.0 - balance / start).clamp(0.0, 1.0)),
+            Self::Credits { .. } => None,
+            _ => self.used_fraction(),
+        }
+    }
+
+    /// True when the limit is fully used.
+    pub fn is_exhausted(&self) -> bool {
+        self.used_fraction().is_some_and(|used| used >= 1.0)
+    }
+
+    /// True for credits that can still be spent: a positive balance, or an unlimited pool.
+    pub fn has_spendable_credits(&self) -> bool {
+        match self {
+            Self::Credits { balance, .. } => balance.is_none_or(|balance| balance > 0.0),
+            _ => false,
         }
     }
 
@@ -296,7 +334,7 @@ impl Metric {
         match self {
             Self::Window { resets_at, .. } | Self::Quota { resets_at, .. } => Some(*resets_at),
             Self::Spend { resets_at, .. } => *resets_at,
-            Self::Balance { .. } => None,
+            Self::Balance { .. } | Self::Credits { .. } => None,
         }
     }
 
@@ -320,7 +358,7 @@ impl Metric {
     pub fn projected_at_reset(&self, now: DateTime<Utc>) -> Option<f64> {
         let pace = match self {
             Self::Window { pace, .. } | Self::Quota { pace, .. } | Self::Spend { pace, .. } => (*pace)?,
-            Self::Balance { .. } => return None,
+            Self::Balance { .. } | Self::Credits { .. } => return None,
         };
         let used = self.used_fraction()?;
         let left = self.resets_at()? - now;
@@ -362,7 +400,22 @@ impl Metric {
             } => format!("{} of {}", spent.display(), limit.display()),
             Self::Spend { spent, limit: None, .. } => format!("{} spent", spent.display()),
             Self::Balance { remaining, .. } => format!("{} left", remaining.display()),
+            Self::Credits {
+                balance: Some(balance), ..
+            } => format!("{} left", format_credits(*balance)),
+            Self::Credits { balance: None, .. } => "Unlimited".to_owned(),
         }
+    }
+}
+
+/// A credit count: "62,500", or two decimals when the balance has a fraction ("1,234.50").
+pub fn format_credits(count: f64) -> String {
+    let hundredths = (count.abs() * 100.0).round() as u64;
+    let sign = if count < 0.0 && hundredths > 0 { "-" } else { "" };
+    let whole = group_thousands(hundredths / 100);
+    match hundredths % 100 {
+        0 => format!("{sign}{whole}"),
+        cents => format!("{sign}{whole}.{cents:02}"),
     }
 }
 
@@ -528,6 +581,54 @@ mod tests {
         };
         assert!((metric.days_of_credit().unwrap() - 5.94).abs() < 0.01);
         assert_eq!(metric.used_display(), "$18.42 left");
+    }
+}
+
+#[cfg(test)]
+mod credit_tests {
+    use super::*;
+
+    fn credits(balance: Option<f64>, start: Option<f64>) -> Metric {
+        Metric::Credits {
+            label: "Credits".into(),
+            balance,
+            start,
+        }
+    }
+
+    #[test]
+    fn credits_are_a_count_never_a_percentage() {
+        let metric = credits(Some(62_500.0), Some(100_000.0));
+        assert_eq!(metric.used_fraction(), None);
+        assert_eq!(metric.used_display(), "62,500 left");
+        assert_eq!(metric.history_value(), Some(62_500.0));
+        assert_eq!(metric.key(), "credits");
+        assert_eq!(metric.resets_at(), None);
+        assert!((metric.progress().unwrap() - 0.375).abs() < 1e-9);
+    }
+
+    #[test]
+    fn credits_without_a_start_or_unlimited_have_no_bar() {
+        assert_eq!(credits(Some(10.0), None).progress(), None);
+        assert_eq!(credits(Some(10.0), Some(0.0)).progress(), None);
+        let unlimited = credits(None, None);
+        assert_eq!(unlimited.progress(), None);
+        assert_eq!(unlimited.history_value(), None);
+        assert_eq!(unlimited.used_display(), "Unlimited");
+    }
+
+    #[test]
+    fn spendable_credits_need_a_positive_or_unlimited_balance() {
+        assert!(credits(Some(0.5), None).has_spendable_credits());
+        assert!(credits(None, None).has_spendable_credits());
+        assert!(!credits(Some(0.0), None).has_spendable_credits());
+    }
+
+    #[test]
+    fn format_credits_groups_and_keeps_fractions() {
+        assert_eq!(format_credits(62_500.0), "62,500");
+        assert_eq!(format_credits(1234.5), "1,234.50");
+        assert_eq!(format_credits(0.0), "0");
     }
 }
 

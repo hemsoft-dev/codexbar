@@ -667,6 +667,7 @@ impl Dashboard {
                     for outcome in outcomes {
                         match outcome {
                             AccountOutcome::Fresh(account) => {
+                                let account = crate::prefs_hub::PrefsHub::with_credit_start(cx, account);
                                 self.states
                                     .insert(account.id().as_str().to_owned(), AccountState::Fresh);
                                 self.placeholders.remove(account.id().as_str());
@@ -884,9 +885,11 @@ impl Dashboard {
                 let urgency = Urgency {
                     severity,
                     alert,
+                    // A used-up window that credits carry projects nothing (#150).
                     projected: account
                         .metrics()
                         .iter()
+                        .filter(|metric| !account.credits_cover(metric))
                         .any(|metric| metric.exhausts_before_reset(self.now)),
                     health,
                     pressure: assessment.pressure(),
@@ -1458,7 +1461,8 @@ impl Dashboard {
                 self.now,
             );
             // A held alert (say a 50% usage alert) is at least worth watching, so the status agrees with the block.
-            let severity = account.assess(self.now).severity();
+            let assessment = account.assess(self.now);
+            let severity = assessment.severity();
             let severity = if details.is_empty() {
                 severity
             } else {
@@ -1473,7 +1477,7 @@ impl Dashboard {
                         .child(crate::brand::badge(account.provider(), "focused", cx))
                         .child(div().text_xl().font_semibold().child(account.display_name()))
                         .child(div().size_2().rounded_full().bg(severity_dot_color(severity, cx)))
-                        .children(severity_tag(severity))
+                        .children(severity_tag(severity).filter(|_| !assessment.is_exhausted()))
                         .children(crate::alert_details::projected_tag(account, self.now)),
                 )
                 .child(self.group_controls(account, cx))

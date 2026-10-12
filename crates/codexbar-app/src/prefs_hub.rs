@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use codexbar_core::AccountSnapshot;
 use codexbar_core::alerts::AlertSettings;
 use codexbar_core::layout::{Layout, LayoutError};
 use codexbar_store::prefs::DashboardPrefs;
@@ -161,6 +162,19 @@ impl PrefsHub {
     pub fn update_widget_builder(cx: &mut App, change: impl FnOnce(&mut codexbar_store::widgets::WidgetBuilder)) {
         Self::edit(cx, |prefs| prefs.update_widget_builder(change));
         cx.refresh_windows();
+    }
+
+    /// Gives a fresh account's credits their starting balance (#150): remembers the balance just read (a first one,
+    /// or a top-up, becomes the start) and saves when the start moved.
+    pub fn with_credit_start(cx: &mut App, account: AccountSnapshot) -> AccountSnapshot {
+        let Some(balance) = account.credit_balance() else {
+            return account;
+        };
+        let mut start = balance;
+        Self::edit(cx, |prefs| {
+            start = prefs.remember_credit_balance(account.id().as_str(), balance);
+        });
+        account.with_credit_start(start)
     }
 
     /// True when `dashboard.json` is from a newer CodexBar: settings are read, but nothing can be saved.

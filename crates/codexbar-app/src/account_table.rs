@@ -163,7 +163,19 @@ impl TableDelegate for AccountTable {
                         .flex_shrink_0()
                         .child(Tag::secondary().small().child(group.clone()))
                 }))
-                .children(severity_tag(severity).map(|tag| div().flex_shrink_0().child(tag)))
+                // A fully used limit has no pill (#150): its 100%, bar and dot already say so.
+                .children(
+                    severity_tag(severity)
+                        .filter(|_| !assessment.is_exhausted())
+                        .map(|tag| {
+                            div()
+                                .id(ElementId::Name(format!("severity-tag-{}", row.id().as_str()).into()))
+                                .test_support()
+                                .aria_label(severity.label().unwrap_or_default())
+                                .flex_shrink_0()
+                                .child(tag)
+                        }),
+                )
                 .children(self.state_tag(row, cx))
                 .into_any_element(),
             Col::Limit => div()
@@ -171,11 +183,17 @@ impl TableDelegate for AccountTable {
                 .truncate()
                 .child(primary.map(limit_label).unwrap_or_default())
                 .into_any_element(),
-            Col::Used => div()
-                .w_full()
-                .text_right()
-                .child(primary.map(Metric::used_display).unwrap_or_default())
-                .into_any_element(),
+            Col::Used => {
+                let used = primary.map(Metric::used_display).unwrap_or_default();
+                div()
+                    .id(ElementId::Name(format!("used-{}", row.id().as_str()).into()))
+                    .test_support()
+                    .aria_label(format!("{}: {used}", primary.map(limit_label).unwrap_or_default()))
+                    .w_full()
+                    .text_right()
+                    .child(used)
+                    .into_any_element()
+            }
             Col::Percent => div()
                 .w_full()
                 .text_right()
@@ -187,10 +205,28 @@ impl TableDelegate for AccountTable {
                 )
                 .into_any_element(),
             Col::Progress => {
-                let value = primary
-                    .and_then(Metric::used_fraction)
-                    .unwrap_or_else(|| assessment.pressure());
+                // Credits draw their spend from the remembered start, and nothing without one (#150).
+                let value = match primary {
+                    Some(metric @ Metric::Credits { .. }) => match metric.progress() {
+                        Some(progress) => progress,
+                        None => {
+                            return div()
+                                .id(ElementId::Name(format!("progress-cell-{}", row.id().as_str()).into()))
+                                .test_support()
+                                .aria_label("No bar")
+                                .text_color(muted)
+                                .child("—")
+                                .into_any_element();
+                        }
+                    },
+                    _ => primary
+                        .and_then(Metric::used_fraction)
+                        .unwrap_or_else(|| assessment.pressure()),
+                };
                 h_flex()
+                    .id(ElementId::Name(format!("progress-cell-{}", row.id().as_str()).into()))
+                    .test_support()
+                    .aria_label(format!("{:.0}% used", value * 100.0))
                     .size_full()
                     .items_center()
                     .child(
@@ -321,6 +357,8 @@ fn limit_label(metric: &Metric) -> String {
         Metric::Balance { label, remaining, .. } => {
             format!("{} {}", remaining.currency().symbol(), label.to_lowercase())
         }
+        Metric::Credits { start: Some(start), .. } => format!("{} credits", codexbar_core::format_credits(*start)),
+        Metric::Credits { label, .. } => label.clone(),
     }
 }
 

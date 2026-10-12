@@ -19,6 +19,7 @@ pub fn projected_from(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<S
     let observed = account
         .metrics()
         .iter()
+        .filter(|metric| !account.credits_cover(metric))
         .map(observed_severity)
         .max()
         .unwrap_or_default();
