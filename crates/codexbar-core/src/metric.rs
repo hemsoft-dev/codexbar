@@ -408,7 +408,7 @@ impl Metric {
     }
 }
 
-/// A credit count: "62,500", or two decimals when the pool has a fraction ("1,234.50").
+/// A credit count: "62,500", or two decimals when the balance has a fraction ("1,234.50").
 pub fn format_credits(count: f64) -> String {
     let hundredths = (count.abs() * 100.0).round() as u64;
     let sign = if count < 0.0 && hundredths > 0 { "-" } else { "" };

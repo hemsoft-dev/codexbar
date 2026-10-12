@@ -441,7 +441,7 @@ fn on_credits(account: &AccountSnapshot) -> bool {
 /// A trend axis value: a credit count, or a percentage.
 fn trend_value(credits: bool, value: f64) -> String {
     if credits {
-        codexbar_core::format_credits(value)
+        codexbar_core::format_credits(value.round())
     } else {
         format!("{:.0}%", value * 100.0)
     }

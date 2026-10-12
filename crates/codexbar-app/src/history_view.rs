@@ -52,8 +52,8 @@ impl ValueKind {
             Self::Percent => format!("{:.0}%", value * 100.0),
             Self::Money(currency) if value < 0.0 => format!("\u{2212}{}", amount(currency, value)),
             Self::Money(currency) => amount(currency, value),
-            Self::Credits if value < 0.0 => format!("\u{2212}{}", codexbar_core::format_credits(value.abs())),
-            Self::Credits => codexbar_core::format_credits(value),
+            Self::Credits if value < 0.0 => format!("\u{2212}{}", codexbar_core::format_credits(value.abs().round())),
+            Self::Credits => codexbar_core::format_credits(value.round()),
         }
     }
 
@@ -65,8 +65,8 @@ impl ValueKind {
             Self::Percent => format!("{sign}{:.0} pts", (delta * 100.0).abs()),
             Self::Money(currency) if negligible(currency, delta) => "no change".into(),
             Self::Money(currency) => format!("{sign}{}", amount(currency, delta)),
-            Self::Credits if delta.abs() < 0.005 => "no change".into(),
-            Self::Credits => format!("{sign}{}", codexbar_core::format_credits(delta.abs())),
+            Self::Credits if delta.abs() < 0.5 => "no change".into(),
+            Self::Credits => format!("{sign}{}", codexbar_core::format_credits(delta.abs().round())),
         }
     }
 
@@ -78,8 +78,11 @@ impl ValueKind {
             Self::Percent => format!("{direction} {:.0} points", (delta * 100.0).abs()),
             Self::Money(currency) if negligible(currency, delta) => "unchanged".into(),
             Self::Money(currency) => format!("{direction} {}", amount(currency, delta)),
-            Self::Credits if delta.abs() < 0.005 => "unchanged".into(),
-            Self::Credits => format!("{direction} {} credits", codexbar_core::format_credits(delta.abs())),
+            Self::Credits if delta.abs() < 0.5 => "unchanged".into(),
+            Self::Credits => format!(
+                "{direction} {} credits",
+                codexbar_core::format_credits(delta.abs().round())
+            ),
         }
     }
 }
@@ -758,6 +761,11 @@ mod tests {
         assert_eq!(ValueKind::Money(Currency::Usd).change(-9.3), "\u{2212}$9.30");
         assert_eq!(ValueKind::Money(Currency::Usd).change(0.0), "no change");
         assert_eq!(ValueKind::Credits.value(18_400.0), "18,400");
+        assert_eq!(
+            ValueKind::Credits.value(29_614.1),
+            "29,614",
+            "whole credits on axes and summaries"
+        );
         assert_eq!(ValueKind::Credits.change(-1_700.0), "\u{2212}1,700");
         assert_eq!(ValueKind::Credits.change_words(2_000.0), "up 2,000 credits");
     }
