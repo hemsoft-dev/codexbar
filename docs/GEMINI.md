@@ -41,8 +41,9 @@ Signing an account in again asks for the same Google account, since another
 account's usage would continue this one's history; add another Gemini account
 for a different Google account. Gemini accounts always use this browser
 sign-in, whatever method was chosen. A temporary profile the browser kept
-locked is deleted again when the sign-in ends, and a failure to delete it is
-shown in Settings.
+locked is deleted again when the sign-in ends, and a failure to delete it, or
+to list the folder, is shown in Settings. One sign-in runs at a time, each in a
+new folder with an unpredictable name.
 
 ## Reading usage
 

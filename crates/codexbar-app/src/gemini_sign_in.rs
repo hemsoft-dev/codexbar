@@ -143,6 +143,11 @@ impl SignInService for Browser {
     }
 }
 
+/// Present while a sign-in's browser is open or closing.
+pub(crate) struct Running;
+
+impl Global for Running {}
+
 pub struct Service(pub Arc<dyn SignInService>);
 
 impl Global for Service {}
@@ -181,6 +186,17 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
     if !is_managed(&record) || hub.is_read_only() {
         return;
     }
+    // One sign-in at a time: an attempt that is still closing its browser would otherwise clean the next one's profile
+    // away.
+    if cx.try_global::<Running>().is_some() {
+        SettingsHub::set_error(
+            cx,
+            Some("The last Gemini sign-in is still closing its browser. Try again in a moment.".into()),
+        );
+        return;
+    }
+    cx.set_global(Running);
+    let hub = SettingsHub::global(cx);
     let parent = profiles(hub.dir());
     let stage = Rc::new(RefCell::new(Stage::Starting));
     let cancel = Arc::new(AtomicBool::new(false));
@@ -272,7 +288,10 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
             let result = task.await;
             // The browser deletes its profile as it closes; one a lingering process kept locked is deleted again here,
             // and a failure is shown rather than left silently on disk.
-            let _ = cx.update(|_, cx| clean_up(cx));
+            let _ = cx.update(|_, cx| {
+                clean_up(cx);
+                cx.remove_global::<Running>();
+            });
             if cancel.load(Ordering::SeqCst) {
                 return;
             }

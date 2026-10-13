@@ -5126,6 +5126,26 @@ fn signing_a_gemini_account_in_again_asks_for_the_same_google_account(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn one_gemini_sign_in_runs_at_a_time(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("gemini-one-at-a-time", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    // An earlier attempt is still closing its browser.
+    cx.update(|cx| cx.set_global(crate::gemini_sign_in::Running));
+    click(cx, handle, "sign-in-gm-1");
+    assert!(!exists(cx, handle, "gemini-sign-in-status"), "no second browser");
+    assert!(fake.0.parents.lock().unwrap().is_empty());
+    assert!(
+        cx.update(|cx| SettingsHub::global(cx).notice())
+            .is_some_and(|error| error.contains("still closing"))
+    );
+    // Once it has closed, signing in works again.
+    cx.update(|cx| cx.remove_global::<crate::gemini_sign_in::Running>());
+    click(cx, handle, "sign-in-gm-1");
+    assert_eq!(fake.0.parents.lock().unwrap().len(), 1);
+}
+
+#[gpui_kit::test]
 fn a_gemini_account_always_signs_in_through_the_browser(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
         "gemini-method",

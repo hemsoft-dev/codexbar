@@ -131,6 +131,7 @@ pub fn read_frame(stream: &mut impl Read) -> std::io::Result<(u8, Vec<u8>)> {
     Ok((opcode, payload))
 }
 
+/// Random bytes for the WebSocket handshake; profile names get their own, checked, source.
 fn random_bytes<const N: usize>() -> [u8; N] {
     let mut bytes = [0u8; N];
     // A failed source only weakens the WebSocket key and mask, which carry no secret on a local connection.
@@ -231,11 +232,13 @@ pub struct DisposableBrowser {
 impl DisposableBrowser {
     /// Starts `browser` on a new profile folder inside `parent` and opens `url` in it.
     pub fn open(browser: &Path, parent: &Path, url: &str) -> Result<Self, BrowserError> {
-        let profile = parent.join(format!(
-            "browser-{}",
-            base64(&random_bytes::<9>()).replace(['+', '/'], "-")
-        ));
-        std::fs::create_dir_all(&profile).map_err(|_| BrowserError::NotStarted)?;
+        // A name nobody can predict, in a folder that must not exist yet: a sign-in never starts in a profile another
+        // attempt left or is still using.
+        let mut name = [0u8; 9];
+        getrandom::fill(&mut name).map_err(|_| BrowserError::NotStarted)?;
+        let profile = parent.join(format!("browser-{}", base64(&name).replace(['+', '/'], "-")));
+        std::fs::create_dir_all(parent).map_err(|_| BrowserError::NotStarted)?;
+        std::fs::create_dir(&profile).map_err(|_| BrowserError::NotStarted)?;
         let mut session = Self {
             profile,
             process: None,
@@ -308,13 +311,17 @@ impl Drop for DisposableBrowser {
     }
 }
 
-/// Deletes disposable profiles an interrupted attempt left in `parent`.
+/// Deletes disposable profiles an interrupted attempt left in `parent`. Only a missing `parent` is nothing to do; a
+/// folder that can't be listed is an error, never a clean result, since a profile holds a Google session.
 pub fn clean_up(parent: &Path) -> std::io::Result<usize> {
     let mut removed = 0;
-    let Ok(entries) = std::fs::read_dir(parent) else {
-        return Ok(0);
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err),
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry?;
         let name = entry.file_name();
         if name.to_string_lossy().starts_with("browser-") && entry.path().is_dir() {
             std::fs::remove_dir_all(entry.path())?;
@@ -379,6 +386,10 @@ mod tests {
         std::fs::create_dir_all(parent.join("keep")).unwrap();
         assert_eq!(clean_up(&parent).unwrap(), 1);
         assert!(parent.join("keep").is_dir());
+        // A folder that isn't there is nothing to do; one that can't be listed is an error, never a clean result.
+        assert_eq!(clean_up(&parent.join("missing")).unwrap(), 0);
+        std::fs::write(parent.join("not-a-folder"), "").unwrap();
+        assert!(clean_up(&parent.join("not-a-folder")).is_err());
         std::fs::remove_dir_all(&parent).unwrap();
     }
 }
