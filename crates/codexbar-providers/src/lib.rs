@@ -15,6 +15,7 @@ pub mod cursor_cli;
 mod error;
 pub mod gemini;
 pub mod gemini_apps;
+pub mod gemini_coding;
 pub mod gh_login;
 pub mod github_allowances;
 pub mod github_billing;

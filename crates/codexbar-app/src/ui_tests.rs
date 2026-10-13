@@ -5172,6 +5172,31 @@ fn gemini_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn one_gemini_account_shows_the_antigravity_clis_coding_quotas(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "gemini-coding-once",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gm-1", "providerId": "Gemini", "displayLabel": "Personal", "enabled": true,
+              "authenticationMethod": "BrowserSession", "geminiCodingFromCli": true } ] }"#,
+    );
+    let handle = open_gemini_accounts(cx, &settings, &FakeGemini::default());
+    assert!(saved_settings(&settings).accounts()[0].gemini_coding);
+    click(cx, handle, "add-Gemini");
+    // Name, method, then coding quotas: from Off, the second Down reaches the CLI.
+    press(cx, handle, "tab");
+    press(cx, handle, "tab");
+    press(cx, handle, "down");
+    press(cx, handle, "down");
+    press(cx, handle, "enter");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("“Personal” already shows the Antigravity CLI's coding quotas. It has one sign-in.")
+    );
+    assert_eq!(saved_settings(&settings).accounts().len(), 1);
+}
+
+#[gpui_kit::test]
 fn each_greptile_account_uses_its_own_saved_key_over_the_environment(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
         "greptile-saved-first",

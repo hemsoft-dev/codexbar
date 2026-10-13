@@ -169,6 +169,7 @@ impl SettingsHub {
             copilot_organization: None,
             copilot_pool_total: None,
             billing_organization: None,
+            gemini_coding: false,
         }
     }
 

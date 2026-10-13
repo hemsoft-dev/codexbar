@@ -30,6 +30,10 @@ For the GitHub CLI's Copilot accounts, CodexBar also runs `gh auth status` on
 each refresh to list them; the GitHub CLI checks each account with GitHub while
 it does.
 
+A Gemini account with coding quotas on runs Google's Antigravity CLI
+(`agy -p "/usage" --output-format json`) on each refresh; the CLI reads the
+quotas from Google with its own sign-in. It runs no model turn.
+
 Signing an account in from Settings runs the provider's own CLI (Codex CLI,
 GitHub CLI, Claude Code or the Cursor CLI), which talks to that provider's
 sign-in service. CodexBar opens the provider's sign-in page in your default

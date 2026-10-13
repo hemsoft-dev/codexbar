@@ -86,18 +86,20 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     // never followed, so the session goes nowhere but Gemini.
     for account in enabled_accounts(hub, names::GEMINI) {
         let session = crate::gemini_sign_in::apps_session(hub, &account);
-        let provider = GeminiProvider::new(
+        let mut provider = GeminiProvider::new(
             UreqClient::without_redirects(),
             session.as_ref().ok().cloned().flatten(),
             account.id.clone(),
             account.label.clone(),
         );
         // A session Credential Manager couldn't read is reported, not taken for signed out.
-        let provider = if session.is_err() {
-            provider.with_unreadable_session()
-        } else {
-            provider
-        };
+        if session.is_err() {
+            provider = provider.with_unreadable_session();
+        }
+        // Coding quotas (#107) come from the Antigravity CLI's own sign-in.
+        if account.gemini_coding {
+            provider = provider.with_coding(Arc::new(SystemCommandRunner));
+        }
         providers.push(Arc::new(provider));
     }
 
