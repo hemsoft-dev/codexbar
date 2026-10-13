@@ -41,9 +41,11 @@ pub mod names {
     pub const OPENCODE_GO: &str = "OpenCodeGo";
     pub const OPENCODE_ZEN: &str = "OpenCodeZen";
     pub const MOONSHOT: &str = "Moonshot";
+    /// Rust-only providers (#103 onward) follow the WPF ones; the retired WPF app never reads them.
+    pub const GREPTILE: &str = "Greptile";
 
-    /// Every provider, in the WPF enum's order.
-    pub const ALL: [&str; 8] = [
+    /// Every provider: the WPF enum's order, then the Rust-only ones.
+    pub const ALL: [&str; 9] = [
         OPENROUTER,
         COPILOT,
         CLAUDE,
@@ -52,6 +54,7 @@ pub mod names {
         OPENCODE_GO,
         OPENCODE_ZEN,
         MOONSHOT,
+        GREPTILE,
     ];
 }
 
@@ -336,11 +339,13 @@ impl Settings {
     }
 
     /// A provider is on while its legacy switch is on (kept in sync with its accounts on save). WPF defaults apply
-    /// when the provider is absent: on, except Moonshot.
+    /// when the provider is absent: on, except Moonshot. Providers added since (#103 onward) are off until an account
+    /// is added for them: they have no sign-in to find on their own.
     pub fn is_enabled(&self, provider: &str) -> bool {
         match provider_entry(&self.doc, provider) {
             Some(Value::Object(entry)) => entry.get("enabled").and_then(Value::as_bool).unwrap_or(true),
             Some(_) => true,
+            None if provider == names::GREPTILE => self.accounts_for(provider).next().is_some(),
             None => provider != names::MOONSHOT,
         }
     }
@@ -1223,6 +1228,10 @@ mod tests {
         let settings = Settings::load(&dir.0).unwrap();
         assert!(settings.is_enabled(names::CODEX));
         assert!(!settings.is_enabled(names::MOONSHOT));
+        assert!(
+            !settings.is_enabled(names::GREPTILE),
+            "new providers wait for an account"
+        );
         assert!(settings.accounts().is_empty());
     }
 

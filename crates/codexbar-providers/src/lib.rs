@@ -13,6 +13,7 @@ pub mod cursor;
 pub mod cursor_cli;
 mod error;
 pub mod gh_login;
+pub mod greptile;
 mod http;
 mod jwt;
 pub mod oauth;

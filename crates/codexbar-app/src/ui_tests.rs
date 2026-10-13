@@ -4664,3 +4664,89 @@ fn a_cookie_that_cant_be_saved_with_the_account_gives_the_sign_in_back(cx: &mut 
     let saved = saved_console_sign_in(cx, "oc-1").expect("the OAuth account keeps its sign-in");
     assert_eq!(saved.workspace_id, "wrk_01ABC");
 }
+
+// Greptile (#103): review activity is a count, never a bar or a percentage.
+
+#[gpui_kit::test]
+fn a_greptile_row_shows_completed_reviews_as_a_count(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("greptile-row", "{}");
+    let (handle, _) = open_dashboard(cx, &settings);
+    assert!(
+        label(cx, handle, "provider-badge-greptile").is_some(),
+        "the table shows the account"
+    );
+    assert_eq!(
+        label(cx, handle, "used-greptile").as_deref(),
+        Some("Completed reviews: 37")
+    );
+    assert_eq!(label(cx, handle, "progress-cell-greptile").as_deref(), Some("No bar"));
+    assert!(label(cx, handle, "severity-tag-greptile").is_none(), "no pill");
+}
+
+#[gpui_kit::test]
+fn a_greptile_account_reads_with_its_own_key_under_its_own_id(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "greptile-accounts",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": true,
+              "authenticationMethod": "ApiKey" },
+            { "id": "gr-2", "providerId": "Greptile", "displayLabel": "Side", "enabled": false,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let greptile: Vec<_> = adapters.iter().filter(|a| a.name() == "Greptile").collect();
+    assert_eq!(greptile.len(), 1, "only the enabled account");
+    assert_eq!(greptile[0].account_id(), Some("gr-1"));
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("gr-1").map(String::as_str), Some("gr-1"));
+}
+
+#[gpui_kit::test]
+fn greptile_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("greptile-off", "{}");
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let greptile: Vec<_> = adapters.iter().filter(|a| a.name() == "Greptile").collect();
+    // A real GREPTILE_API_KEY on this machine stands in as the implicit account; without one, nothing runs.
+    if std::env::var("GREPTILE_API_KEY").is_ok_and(|key| !key.trim().is_empty()) {
+        assert_eq!(greptile.len(), 1, "the environment key is the implicit account");
+    } else {
+        assert!(greptile.is_empty());
+    }
+}
+
+#[gpui_kit::test]
+fn each_greptile_account_uses_its_own_saved_key_over_the_environment(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "greptile-saved-first",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": true,
+              "authenticationMethod": "ApiKey" },
+            { "id": "gr-2", "providerId": "Greptile", "displayLabel": "Side", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    cx.update(|cx| {
+        let store = SettingsHub::global(cx).credentials();
+        store.write("gr-1", "key-for-acme").unwrap();
+        store.write("gr-2", "key-for-side").unwrap();
+    });
+    let resolved = cx.update(|cx| {
+        let hub = SettingsHub::global(cx);
+        hub.settings()
+            .accounts()
+            .iter()
+            .map(|record| hub.secret_for(record))
+            .collect::<Vec<_>>()
+    });
+    // Whatever GREPTILE_API_KEY holds on this machine, each organization keeps its own key.
+    assert!(
+        resolved[0].0.as_deref() == Some("key-for-acme") && resolved[1].0.as_deref() == Some("key-for-side"),
+        "each account's saved key wins"
+    );
+    assert!(matches!(
+        resolved[0].1,
+        codexbar_store::credentials::SecretSource::CredentialManager
+    ));
+}

@@ -207,6 +207,21 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         .with_trend(vec![
             0.05, 0.05, 0.04, 0.05, 0.05, 0.05, 0.04, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05,
         ]),
+        // #103: a count with no limit, so its trend is the count too.
+        AccountSnapshot::new(
+            AccountId::new("greptile"),
+            Provider::Greptile,
+            vec![Metric::Activity {
+                label: "Completed reviews".into(),
+                count: 37,
+            }],
+            fetched,
+        )
+        .with_label("HemSoft")
+        .with_message("Also 2 pending.")
+        .with_trend(vec![
+            12.0, 14.0, 15.0, 15.0, 18.0, 21.0, 22.0, 24.0, 27.0, 29.0, 30.0, 33.0, 35.0, 37.0,
+        ]),
     ]
 }
 
@@ -294,6 +309,7 @@ mod tests {
                 "ChatGPT · Codex (team)",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
+                "Greptile · HemSoft",
                 "Moonshot (Kimi)",
             ]
         );

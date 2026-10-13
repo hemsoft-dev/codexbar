@@ -117,6 +117,10 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
                 })
                 .collect()
         }
+        // Activity counts only grow: an even climb to today's count.
+        Metric::Activity { .. } => (0..=steps)
+            .map(|step| Point::new(at(step), (current * step as f64 / steps as f64).round()))
+            .collect(),
     }
 }
 

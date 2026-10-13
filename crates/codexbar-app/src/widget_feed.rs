@@ -67,6 +67,8 @@ fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
             balance: Some(balance), ..
         } => format!("{} credits left", codexbar_core::format_credits(*balance)),
         Metric::Credits { balance: None, .. } => "Unlimited credits".to_owned(),
+        // A count with no limit (#103): "12 completed reviews".
+        Metric::Activity { label, .. } => format!("{} {}", metric.used_display(), label.to_lowercase()),
     };
     WidgetMetric {
         key: metric.key(),
@@ -200,6 +202,25 @@ mod tests {
         let weekly = &snapshot.accounts[0].metrics[1];
         assert_eq!(weekly.used_percent, Some(100.0));
         assert_eq!(weekly.status, None, "no pill on a used-up window");
+    }
+
+    #[test]
+    fn an_activity_count_names_what_it_counts() {
+        let account = AccountSnapshot::new(
+            AccountId::new("gr-1"),
+            Provider::Greptile,
+            vec![Metric::Activity {
+                label: "Completed reviews".into(),
+                count: 37,
+            }],
+            now(),
+        );
+        let snapshot = build(&[account], &States::new(), &Layout::default(), now());
+        let reviews = &snapshot.accounts[0].metrics[0];
+        assert_eq!(reviews.value, "37 completed reviews");
+        assert_eq!(reviews.used_percent, None, "never a percentage");
+        assert_eq!(reviews.resets_at, None);
+        assert_eq!(reviews.status, None);
     }
 
     #[test]

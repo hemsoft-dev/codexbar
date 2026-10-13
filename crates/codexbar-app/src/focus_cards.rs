@@ -245,8 +245,10 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .enumerate()
             .map(|(ix, value)| (SharedString::from(day_label(account.trend().len(), ix)), *value))
             .collect();
-        // A credits headline trends as the count left (#150), not as a fraction.
-        let credits = on_credits(account);
+        // A credits headline trends as the count left (#150), an activity headline as its count (#103); neither
+        // is a fraction.
+        let counted = counted_name(account);
+        let credits = counted.is_some();
         let high = account.trend().iter().copied().fold(0.0, f64::max);
         let chart = AreaChart::new(points)
             .id("focus-trend")
@@ -254,11 +256,11 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .y(|(_, value)| *value)
             .stroke(current_color)
             .fill(area_fill(current_color))
-            .name(if credits { "Credits left" } else { "Pressure" })
+            .name(counted.clone().unwrap_or_else(|| "Pressure".into()))
             .y_domain(0.0, if credits { (high * 1.15).max(1.0) } else { 1.0 })
             .tick_margin(3)
             .y_tick_format(move |value| trend_value(credits, value));
-        let title = if credits { "Credits left" } else { "Daily pressure" };
+        let title = counted.unwrap_or_else(|| "Daily pressure".into());
         Card::new(title, "Last 14 days", chart)
     };
 
@@ -290,6 +292,7 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         let amount = match metric {
             Metric::Balance { remaining, .. } => remaining.display(),
             Metric::Spend { spent, .. } => spent.display(),
+            Metric::Activity { .. } => metric.used_display(),
             _ => "—".into(),
         };
         let body = v_flex()
@@ -306,6 +309,9 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         if let Metric::Spend { .. } = metric {
             return Card::new(metric.label().to_owned(), "Spent so far", body)
                 .takeaway("No spend limit is set for this account");
+        }
+        if let Metric::Activity { .. } = metric {
+            return Card::new(metric.label().to_owned(), "Activity", body).takeaway("A count with no limit or reset");
         }
         let takeaway = metric
             .days_of_credit()
@@ -402,22 +408,36 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .skip(trend.len().saturating_sub(7))
         .map(|(ix, value)| (SharedString::from(day_label(trend.len(), ix)), *value))
         .collect();
-    let credits = on_credits(account);
+    let counted = counted_name(account);
+    let credits = counted.is_some();
     let chart = BarChart::new(bars)
         .id("focus-days")
         .band(|(label, _)| label.clone())
         .value(|(_, value)| *value)
         .fill(bar_fill)
         .value_tick_format(move |value| trend_value(credits, value))
-        .name(if credits { "Credits left" } else { "Pressure" });
+        .name(counted.clone().unwrap_or_else(|| "Pressure".into()));
     let change = match trend {
         [.., before, last] if *before > 0.0 => (last - before) / before * 100.0,
         _ => 0.0,
     };
-    let topped_up = credits && matches!(trend, [.., before, last] if *before <= 0.0 && *last > 0.0);
+    let topped_up = on_credits(account) && matches!(trend, [.., before, last] if *before <= 0.0 && *last > 0.0);
+    let activity = matches!(account.primary(), Some(Metric::Activity { .. }));
     let takeaway = if topped_up {
         // From zero there is no percentage to give (#150).
         "Topped up since yesterday".to_owned()
+    } else if let (true, [.., before, last]) = (activity, trend) {
+        // An activity count changes by a number of things, not a share (#103).
+        let delta = (last - before).round();
+        if delta == 0.0 {
+            "Flat since yesterday".to_owned()
+        } else {
+            format!(
+                "{} {} since yesterday",
+                if delta > 0.0 { "Up" } else { "Down" },
+                codexbar_core::format_credits(delta.abs())
+            )
+        }
     } else if change.abs() < 1.0 {
         "Flat since yesterday".to_owned()
     } else {
@@ -427,10 +447,9 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
             change.abs()
         )
     };
-    let caption = if credits {
-        "Credits left at the end of each day"
-    } else {
-        "Share of the tightest limit"
+    let caption = match counted {
+        Some(name) => format!("{name} at the end of each day"),
+        None => "Share of the tightest limit".to_owned(),
     };
     Card::new("Usage by day", "Last 7 days", chart)
         .takeaway(takeaway)
@@ -440,6 +459,16 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
 /// True when the account's headline is its credits (#150), so its trend is a count of credits left.
 fn on_credits(account: &AccountSnapshot) -> bool {
     matches!(account.primary(), Some(Metric::Credits { .. }))
+}
+
+/// What the trend counts when the headline is a count rather than a fraction: credits left (#150), or an activity
+/// count such as completed reviews (#103).
+fn counted_name(account: &AccountSnapshot) -> Option<String> {
+    match account.primary()? {
+        Metric::Credits { .. } => Some("Credits left".to_owned()),
+        Metric::Activity { label, .. } => Some(label.clone()),
+        _ => None,
+    }
 }
 
 /// A trend axis value: a credit count, or a percentage.

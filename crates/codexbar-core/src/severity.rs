@@ -120,7 +120,8 @@ pub fn assess(metric: &Metric, now: DateTime<Utc>) -> Assessment {
     }
     // Credits have no severity threshold (#150): no limit or reset to project against. Their spend from the
     // remembered start only orders accounts.
-    if let Metric::Credits { .. } = metric {
+    // Activity counts (#103) have no limit at all.
+    if let Metric::Credits { .. } | Metric::Activity { .. } = metric {
         return Assessment {
             severity: Severity::Normal,
             pressure: metric.progress().unwrap_or_default(),

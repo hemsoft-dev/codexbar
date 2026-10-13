@@ -206,6 +206,12 @@ impl SettingsHub {
         let Some(spec) = &info.secret else {
             return (None, SecretSource::Missing);
         };
+        if spec.saved_first
+            && let Ok(Some(saved)) = codexbar_store::credentials::read_long(self.credentials.as_ref(), &account.id)
+            && !saved.trim().is_empty()
+        {
+            return (Some(saved), SecretSource::CredentialManager);
+        }
         let first = self.settings.accounts_for(info.id).next().map(|a| a.id.as_str());
         let is_first = first.is_none_or(|id| id == account.id);
         let legacy = is_first.then(|| self.settings.api_key(info.id)).flatten();

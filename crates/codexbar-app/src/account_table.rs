@@ -207,6 +207,16 @@ impl TableDelegate for AccountTable {
             Col::Progress => {
                 // Credits draw their spend from the remembered start, and nothing without one (#150).
                 let value = match primary {
+                    // An activity count has no limit to fill a bar against (#103).
+                    Some(Metric::Activity { .. }) => {
+                        return div()
+                            .id(ElementId::Name(format!("progress-cell-{}", row.id().as_str()).into()))
+                            .test_support()
+                            .aria_label("No bar")
+                            .text_color(muted)
+                            .child("—")
+                            .into_any_element();
+                    }
                     Some(metric @ Metric::Credits { .. }) => match metric.progress() {
                         Some(progress) => progress,
                         None => {
@@ -359,6 +369,8 @@ fn limit_label(metric: &Metric) -> String {
         }
         Metric::Credits { start: Some(start), .. } => format!("{} credits", codexbar_core::format_credits(*start)),
         Metric::Credits { label, .. } => label.clone(),
+        // A count with no limit (#103): the column names what is counted.
+        Metric::Activity { label, .. } => label.clone(),
     }
 }
 
