@@ -698,6 +698,11 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             record.external_id = None;
         }
     }
+    // Gemini Apps only signs in through the temporary browser (#106); another method would leave the account with no
+    // way to sign in.
+    if info.id == names::GEMINI {
+        record.method = AuthMethod::BrowserSession;
+    }
     // An OpenCode account on OAuth keeps the workspace its sign-in set (#102).
     let opencode_oauth = info.id == names::OPENCODE_GO && method == AuthMethod::OAuth;
     if info.id == names::OPENCODE_GO && !opencode_oauth {

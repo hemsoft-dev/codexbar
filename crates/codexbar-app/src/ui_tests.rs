@@ -5095,6 +5095,55 @@ fn a_gemini_sign_in_that_fails_says_so_and_keeps_nothing(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn signing_a_gemini_account_in_again_asks_for_the_same_google_account(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let settings = TempSettings::new("gemini-sign-in-again", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    *fake.0.outcome.lock().unwrap() = Some(Err("The sign-in took too long. Try again.".into()));
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gm-1");
+    assert!(
+        !exists(cx, handle, "gemini-sign-in-same-account"),
+        "a first sign-in has nothing to match"
+    );
+    cx.update_window(handle, |_, window, cx| window.close_dialog(cx))
+        .unwrap();
+    cx.run_until_parked();
+    let earlier = codexbar_providers::gemini_apps::AppsSession {
+        psid: "g.earlier".into(),
+        psidts: None,
+    };
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(
+            SettingsHub::global(cx).credentials().as_ref(),
+            "gm-1:gemini-apps",
+            &earlier.to_secret(),
+        )
+    })
+    .unwrap();
+    click(cx, handle, "sign-in-gm-1");
+    assert!(exists(cx, handle, "gemini-sign-in-same-account"));
+}
+
+#[gpui_kit::test]
+fn a_gemini_account_always_signs_in_through_the_browser(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "gemini-method",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gm-1", "providerId": "Gemini", "displayLabel": "Personal", "enabled": true,
+              "authenticationMethod": "Automatic" } ] }"#,
+    );
+    let handle = open_gemini_accounts(cx, &settings, &FakeGemini::default());
+    click(cx, handle, "edit-gm-1");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].method,
+        codexbar_store::settings::AuthMethod::BrowserSession,
+        "no other method can sign Gemini Apps in"
+    );
+}
+
+#[gpui_kit::test]
 fn gemini_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
     let settings = TempSettings::new("gemini-off", "{}");
     let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);

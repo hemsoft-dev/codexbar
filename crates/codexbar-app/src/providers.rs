@@ -85,13 +85,20 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     // Gemini (#106): each account with the Gemini Apps session CodexBar keeps for it, under its own id. Redirects are
     // never followed, so the session goes nowhere but Gemini.
     for account in enabled_accounts(hub, names::GEMINI) {
-        let session = crate::gemini_sign_in::apps_session(hub, &account).ok().flatten();
-        providers.push(Arc::new(GeminiProvider::new(
+        let session = crate::gemini_sign_in::apps_session(hub, &account);
+        let provider = GeminiProvider::new(
             UreqClient::without_redirects(),
-            session,
+            session.as_ref().ok().cloned().flatten(),
             account.id.clone(),
             account.label.clone(),
-        )));
+        );
+        // A session Credential Manager couldn't read is reported, not taken for signed out.
+        let provider = if session.is_err() {
+            provider.with_unreadable_session()
+        } else {
+            provider
+        };
+        providers.push(Arc::new(provider));
     }
 
     // GitHub Billing (#104): each account with the token CodexBar keeps for it, reporting under its own id.

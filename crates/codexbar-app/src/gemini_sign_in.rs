@@ -27,6 +27,22 @@ use crate::settings_hub::SettingsHub;
 /// How long the browser waits for a sign-in.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const USAGE_PAGE: &str = "https://gemini.google.com/usage";
+/// Said when an account that was signed in before signs in again.
+const SAME_ACCOUNT: &str = "Sign in with the same Google account as before: CodexBar can't tell Google accounts apart \
+                            here, and another account's usage would continue this one's history. Add another Gemini \
+                            account for a different Google account.";
+/// The first and longest wait before a session that met a passing failure is tried again.
+const RETRY_FIRST: Duration = Duration::from_secs(5);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
+/// Whether `candidate` may be tried now: a new session always, one tried before only once its retry time has come, and
+/// one Gemini rejected (no retry time) never.
+fn may_try(tried: Option<&(AppsSession, Option<Instant>)>, candidate: &AppsSession, now: Instant) -> bool {
+    match tried {
+        Some((session, retry_at)) if session == candidate => retry_at.is_some_and(|at| now >= at),
+        _ => true,
+    }
+}
 
 /// True for a Gemini account whose Gemini Apps connection CodexBar signs in.
 pub fn is_managed(record: &AccountRecord) -> bool {
@@ -84,8 +100,10 @@ impl SignInService for Browser {
         waiting();
         let http = UreqClient::without_redirects();
         let deadline = Instant::now() + SIGN_IN_TIMEOUT;
-        // A session that didn't read usage isn't tried again until its cookies change.
-        let mut tried: Option<AppsSession> = None;
+        // A session Gemini rejected isn't tried again until its cookies change. One that met a network or server
+        // failure, or read only one limit, is tried again after a growing wait.
+        let mut tried: Option<(AppsSession, Option<Instant>)> = None;
+        let mut wait = RETRY_FIRST;
         loop {
             if cancel.load(Ordering::SeqCst) {
                 return Err("cancelled".into());
@@ -101,11 +119,21 @@ impl SignInService for Browser {
                 Err(gemini_apps::CookieProblem::Conflicting) => {
                     return Err("The browser holds two different Google sessions. Try again.".into());
                 }
-                Ok(candidate) if tried.as_ref() != Some(&candidate) => {
+                Ok(candidate) if may_try(tried.as_ref(), &candidate, Instant::now()) => {
+                    if tried.as_ref().is_none_or(|(session, _)| *session != candidate) {
+                        wait = RETRY_FIRST;
+                    }
                     // Kept in memory only, until both limits read with it.
                     match gemini_apps::fetch(&http, &candidate, chrono::Utc::now()) {
                         Ok(usage) if usage.five_hour.is_some() && usage.weekly.is_some() => return Ok(candidate),
-                        _ => tried = Some(candidate),
+                        Err(
+                            codexbar_providers::ProviderError::Expired { .. }
+                            | codexbar_providers::ProviderError::NotSignedIn { .. },
+                        ) => tried = Some((candidate, None)),
+                        _ => {
+                            tried = Some((candidate, Some(Instant::now() + wait)));
+                            wait = (wait * 2).min(RETRY_MAX);
+                        }
                     }
                 }
                 _ => {}
@@ -158,6 +186,9 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
     let cancel = Arc::new(AtomicBool::new(false));
     let guard = Rc::new(CancelOnDrop(cancel.clone()));
     let label = record.label.clone();
+    // Gemini's session cookies say nothing CodexBar can check about whose they are, so signing an account in again
+    // asks for the same Google account: another one's usage would continue this account's history.
+    let signed_in_before = matches!(apps_session(hub, &record), Ok(Some(_)) | Err(_));
     let shown = stage.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let _keep = &guard;
@@ -190,6 +221,17 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
                          keeps only two Google session cookies, which can reach more of your Google account; they go \
                          only to gemini.google.com.",
                     ))
+                    .when(signed_in_before, |this| {
+                        this.child(
+                            div()
+                                .id("gemini-sign-in-same-account")
+                                .test_support()
+                                .aria_label(SAME_ACCOUNT)
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SAME_ACCOUNT),
+                        )
+                    })
                     .when_some(
                         match &stage {
                             Stage::Failed(error) => Some(error.clone()),
@@ -228,6 +270,9 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
             *stage.borrow_mut() = Stage::Waiting;
             let _ = cx.update(|window, _| window.refresh());
             let result = task.await;
+            // The browser deletes its profile as it closes; one a lingering process kept locked is deleted again here,
+            // and a failure is shown rather than left silently on disk.
+            let _ = cx.update(|_, cx| clean_up(cx));
             if cancel.load(Ordering::SeqCst) {
                 return;
             }
@@ -294,5 +339,33 @@ pub fn describe(hub: &SettingsHub, record: &AccountRecord) -> String {
         Err(_) => "Its sign-in couldn't be read from Windows Credential Manager".to_owned(),
         Ok(Some(_)) => "Gemini Apps signed in".to_owned(),
         Ok(None) => "Gemini Apps not signed in".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(psid: &str) -> AppsSession {
+        AppsSession {
+            psid: psid.to_owned(),
+            psidts: None,
+        }
+    }
+
+    #[test]
+    fn a_rejected_session_waits_for_new_cookies_and_a_passing_failure_is_retried() {
+        let now = Instant::now();
+        assert!(may_try(None, &session("a"), now), "a new session is tried");
+        let rejected = (session("a"), None);
+        assert!(!may_try(
+            Some(&rejected),
+            &session("a"),
+            now + Duration::from_secs(3600)
+        ));
+        assert!(may_try(Some(&rejected), &session("b"), now), "new cookies are tried");
+        let failed = (session("a"), Some(now + RETRY_FIRST));
+        assert!(!may_try(Some(&failed), &session("a"), now));
+        assert!(may_try(Some(&failed), &session("a"), now + RETRY_FIRST));
     }
 }

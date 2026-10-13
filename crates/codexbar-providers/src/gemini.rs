@@ -14,6 +14,7 @@ pub struct GeminiProvider<H: HttpClient> {
     apps: Option<AppsSession>,
     account: String,
     label: String,
+    unreadable: bool,
 }
 
 impl<H: HttpClient> GeminiProvider<H> {
@@ -24,10 +25,23 @@ impl<H: HttpClient> GeminiProvider<H> {
             apps,
             account: account.into(),
             label: label.into(),
+            unreadable: false,
         }
     }
 
+    /// The account's saved session couldn't be read: reported as such, not taken for signed out, so nobody signs in
+    /// again over a session that is still there.
+    pub fn with_unreadable_session(mut self) -> Self {
+        self.unreadable = true;
+        self
+    }
+
     fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
+        if self.unreadable {
+            return Err(ProviderError::Unexpected {
+                detail: "its saved Gemini Apps session couldn't be read from Windows Credential Manager",
+            });
+        }
         let session = self
             .apps
             .as_ref()
@@ -101,6 +115,18 @@ mod tests {
         assert!(matches!(
             &outcome[0],
             AccountOutcome::Failed { account, error: ProviderError::NotSignedIn { .. }, .. } if account.as_str() == "gm-1"
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_session_is_reported_not_taken_for_signed_out() {
+        let provider = GeminiProvider::new(Offline, None, "gm-1", "Personal").with_unreadable_session();
+        let outcome = provider
+            .fetch_outcomes("2026-10-12T00:00:00Z".parse().unwrap())
+            .unwrap();
+        assert!(matches!(
+            &outcome[0],
+            AccountOutcome::Failed { error: ProviderError::Unexpected { detail }, .. } if detail.contains("couldn't be read")
         ));
     }
 }

@@ -25,7 +25,9 @@ program, so the sign-in uses a website session, as in the iOS app:
    `__Secure-1PSID` and the optional `__Secure-1PSIDTS` count. Host-only,
    narrower-path, insecure and other cookies are ignored; two different values
    for one name fail. With them, CodexBar reads both Gemini Apps limits; only a
-   session that reads both is kept.
+   session that reads both is kept. A session Gemini rejects waits for new
+   cookies; a network or server failure, or a single limit, is tried again
+   after a wait that grows from five seconds to a minute.
 5. The two values are saved in Windows Credential Manager under the account
    (`CodexBar:account:<id>:gemini-apps`), replacing any earlier ones in one
    write. The browser is closed and its profile deleted. Cancel, a closed window
@@ -33,6 +35,14 @@ program, so the sign-in uses a website session, as in the iOS app:
    an interrupted sign-in left behind are deleted at the next start.
 
 Sign out deletes CodexBar's copy. It doesn't sign you out of Google.
+
+Gemini's session cookies say nothing CodexBar can check about whose they are.
+Signing an account in again asks for the same Google account, since another
+account's usage would continue this one's history; add another Gemini account
+for a different Google account. Gemini accounts always use this browser
+sign-in, whatever method was chosen. A temporary profile the browser kept
+locked is deleted again when the sign-in ends, and a failure to delete it is
+shown in Settings.
 
 ## Reading usage
 
@@ -42,7 +52,9 @@ CodexBar reads `gemini.google.com/usage` for its page tokens (`SNlM0e`, `cfb2h`,
 `[limit, fractionUsed, period, [[resetSeconds, …]]]`; period 1 is the five-hour
 limit and 2 the weekly one. A limit Gemini doesn't return stays missing and
 says so, never zero. A redirect, a signed-out page or Gemini's rejection (code 7)
-asks for a new sign-in. Redirects are never followed, so the cookies go nowhere
+asks for a new sign-in. A rate limit waits as long as Google's `Retry-After`
+asks, up to an hour. A saved session Credential Manager can't read is reported
+as such, not as signed out. Redirects are never followed, so the cookies go nowhere
 but `gemini.google.com`.
 
 ## Security notes and limits

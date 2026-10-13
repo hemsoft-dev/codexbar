@@ -308,9 +308,13 @@ fn request_id(now: DateTime<Utc>) -> String {
     (100_000 + now.timestamp_millis().rem_euclid(800_000)).to_string()
 }
 
-fn status_error(status: u16) -> ProviderError {
-    match status {
+fn status_error(response: &crate::HttpResponse, now: DateTime<Utc>) -> ProviderError {
+    match response.status {
         300..=399 | 401 | 403 => ProviderError::Expired { hint: SIGN_IN_HINT },
+        // Google's own wait, when it gives one; a minute otherwise.
+        429 => ProviderError::RateLimited {
+            retry_at: now + Duration::seconds(response.retry_after_secs.map_or(60, |s| s.min(3600) as i64)),
+        },
         status => ProviderError::Http { status },
     }
 }
@@ -326,7 +330,7 @@ pub fn fetch<H: HttpClient>(http: &H, session: &AppsSession, now: DateTime<Utc>)
         ],
     )?;
     if page.status != 200 {
-        return Err(status_error(page.status));
+        return Err(status_error(&page, now));
     }
     // Signed out, Gemini serves a page without the tokens.
     let tokens = parse_bootstrap(&page.body).ok_or(ProviderError::Expired { hint: SIGN_IN_HINT })?;
@@ -350,7 +354,7 @@ pub fn fetch<H: HttpClient>(http: &H, session: &AppsSession, now: DateTime<Utc>)
         &[("f.req", &request), ("at", &tokens.at)],
     )?;
     if response.status != 200 {
-        return Err(status_error(response.status));
+        return Err(status_error(&response, now));
     }
     match parse_usage(&response.body) {
         AppsResponse::Usage(usage) => Ok(usage),
@@ -612,6 +616,30 @@ mod tests {
                 fetch(&gemini, &session(), now()),
                 Err(ProviderError::Expired { .. })
             ));
+        }
+    }
+
+    #[test]
+    fn a_rate_limit_waits_as_long_as_google_asks() {
+        let limited = |retry_after: Option<u64>| {
+            let mut response = HttpResponse::new(429, "");
+            response.retry_after_secs = retry_after;
+            response
+        };
+        for (page, rpc, wait) in [
+            (limited(Some(120)), None, 120),
+            (HttpResponse::new(200, PAGE), Some(limited(None)), 60),
+            (limited(Some(86_400)), None, 3600),
+        ] {
+            let gemini = Gemini::default();
+            *gemini.page.lock().unwrap() = Some(page);
+            *gemini.rpc.lock().unwrap() = rpc;
+            assert_eq!(
+                fetch(&gemini, &session(), now()).unwrap_err(),
+                ProviderError::RateLimited {
+                    retry_at: now() + Duration::seconds(wait)
+                }
+            );
         }
     }
 }
