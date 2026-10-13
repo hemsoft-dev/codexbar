@@ -9,5 +9,6 @@
       "Bash(curl *)",
       "Bash(grep -oE \"\\(rolling|weekly|monthly\\)Usage[^}]{0,120}\")"
     ]
-  }
+  },
+  "disableAllHooks": true
 }
