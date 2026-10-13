@@ -422,8 +422,13 @@ pub enum GoStatus {
 }
 
 /// A microcent amount: the Console sends whole numbers as strings.
+/// A whole number of microcents, sent as a string or a JSON integer.
 fn microcents(value: Option<&Value>) -> Option<i128> {
-    let text = value?.as_str()?;
+    let value = value?;
+    if let Some(whole) = value.as_i64() {
+        return Some(whole.into());
+    }
+    let text = value.as_str()?;
     let digits = text.strip_prefix('-').unwrap_or(text);
     if text.len() > 38 || digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
         return None;
@@ -444,12 +449,13 @@ pub fn parse_go_status(body: &str, user: &str, now: DateTime<Utc>) -> Result<GoS
     if value.is_null() {
         return Ok(GoStatus::NotSubscribed);
     }
-    let subscriber = value
-        .get("subscriberUserId")
-        .and_then(Value::as_str)
-        .ok_or(UnknownShape)?;
-    if subscriber != user {
-        return Ok(GoStatus::OtherMember);
+    // The device token is bound to its workspace, and not every response names the subscriber. When one is named and
+    // it isn't this user, Go is another member's and isn't shown.
+    match value.get("subscriberUserId") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(subscriber)) if subscriber == user => {}
+        Some(Value::String(_)) => return Ok(GoStatus::OtherMember),
+        Some(_) => return Err(UnknownShape),
     }
     let access = value.get("access").ok_or(UnknownShape)?;
     if access.is_null() {
@@ -595,11 +601,22 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
         }
         match renew(&self.http, &latest, now) {
             Renewal::Renewed(renewed) => {
-                if self.saved().ok().as_ref() != Some(&saved) {
-                    return Err(ProviderError::NotSignedIn { hint: SIGN_IN_HINT });
-                }
                 let mut unsaved = UNSAVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 unsaved.retain(|(account, _, _)| *account != self.account);
+                match self.slot.load() {
+                    // Removed or replaced meanwhile: the renewal is dropped, never written over it.
+                    Ok(current)
+                        if current.as_deref().and_then(ConsoleCredential::from_secret) != Some(saved.clone()) =>
+                    {
+                        return Err(ProviderError::NotSignedIn { hint: SIGN_IN_HINT });
+                    }
+                    Ok(_) => {}
+                    // Unreadable: the old refresh token is spent, so the renewal is kept until it can be checked.
+                    Err(SlotUnavailable) => {
+                        unsaved.push((self.account.clone(), saved, renewed.clone()));
+                        return Ok((renewed, true));
+                    }
+                }
                 if self.slot.save(&renewed.to_secret()).is_err() {
                     unsaved.push((self.account.clone(), saved, renewed.clone()));
                     return Ok((renewed, true));
@@ -1052,8 +1069,16 @@ mod tests {
             parse_go_status(r#"{"subscriberUserId":"usr_1","access":{"meters":{}}}"#, "usr_1", now()),
             Err(UnknownShape)
         );
+        // Whole numbers may come as JSON integers; fractions and booleans may not.
         let numeric = GO.replace(r#""usedMicroCents":"50""#, r#""usedMicroCents":50"#);
-        assert_eq!(parse_go_status(&numeric, "usr_1", now()), Err(UnknownShape));
+        assert!(matches!(parse_go_status(&numeric, "usr_1", now()), Ok(GoStatus::Subscribed(m)) if m.len() == 3));
+        let fraction = GO.replace(r#""usedMicroCents":"50""#, r#""usedMicroCents":50.5"#);
+        assert_eq!(parse_go_status(&fraction, "usr_1", now()), Err(UnknownShape));
+        // Not every response names the subscriber; one that does must name this user.
+        let unnamed = GO.replace(r#""subscriberUserId":"usr_1","#, "");
+        assert!(matches!(parse_go_status(&unnamed, "usr_1", now()), Ok(GoStatus::Subscribed(m)) if m.len() == 3));
+        let odd = GO.replace(r#""subscriberUserId":"usr_1""#, r#""subscriberUserId":7"#);
+        assert_eq!(parse_go_status(&odd, "usr_1", now()), Err(UnknownShape));
         let zero_limit = GO.replace(
             r#""usedMicroCents":"50","limitMicroCents":"100""#,
             r#""usedMicroCents":"50","limitMicroCents":"0""#,
@@ -1073,7 +1098,11 @@ mod tests {
         );
         assert_eq!(parse_balance(r#"{"balanceMicroCents":"NaN"}"#), None);
         assert_eq!(parse_balance(r#"{"balanceMicroCents":true}"#), None);
-        assert_eq!(parse_balance(r#"{"balanceMicroCents":2434000000}"#), None);
+        assert_eq!(
+            parse_balance(r#"{"balanceMicroCents":2434000000}"#),
+            Some(Money::from_cents(2434))
+        );
+        assert_eq!(parse_balance(r#"{"balanceMicroCents":24.5}"#), None);
     }
 
     #[derive(Clone, Default)]
@@ -1362,5 +1391,46 @@ mod tests {
         assert_eq!(parse_go_status(&without_five, "usr_1", now()), Err(UnknownShape));
         let broken_week = GO.replace(r#""week":{"#, r#""week":"x","unused":{"#);
         assert_eq!(parse_go_status(&broken_week, "usr_1", now()), Err(UnknownShape));
+    }
+
+    /// A slot that reads once, then can't be read: Credential Manager failing mid-renewal.
+    struct UnreadableAfterFirst(Slot, AtomicUsize);
+
+    impl CredentialSlot for UnreadableAfterFirst {
+        fn load(&self) -> Result<Option<String>, SlotUnavailable> {
+            if self.1.fetch_add(1, Ordering::SeqCst) >= 1 {
+                return Err(SlotUnavailable);
+            }
+            self.0.load()
+        }
+
+        fn save(&self, secret: &str) -> Result<(), SlotUnavailable> {
+            self.0.save(secret)
+        }
+    }
+
+    #[test]
+    fn a_renewal_is_kept_when_the_saved_sign_in_cant_be_read_back() {
+        let renewed = TOKEN.replace("at-1", "at-9").replace("rt-1", "rt-9");
+        let console = Console::default()
+            .on("POST", "auth/device/token", 200, &renewed)
+            .on("GET", "api/go/status", 200, GO)
+            .on("GET", "api/billing/status", 200, BALANCE);
+        let slot = Slot::holding(&credential(now() + Duration::seconds(30)));
+        let provider = OpenCodeConsoleProvider::new(
+            console.clone(),
+            Box::new(UnreadableAfterFirst(slot.clone(), AtomicUsize::new(0))),
+            "oc-unreadable",
+            "Team",
+        );
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.messages()[0], UNSAVED_MESSAGE);
+        assert_eq!(console.header(1, "Authorization").as_deref(), Some("Bearer at-9"));
+        let kept = UNSAVED
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(id, _, r)| id == "oc-unreadable" && r.refresh_token == "rt-9");
+        assert!(kept, "the spent refresh token's replacement is kept");
     }
 }

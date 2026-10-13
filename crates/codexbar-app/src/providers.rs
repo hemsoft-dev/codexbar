@@ -369,7 +369,12 @@ fn opencode(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
             record.label.clone(),
         )));
     }
-    let go = go.into_iter().next();
+    // Adding the first OAuth account doesn't drop a cookie setup that ran as the implicit account (environment variables,
+    // or a cookie kept under it): with no cookie record, it still stands in, and runs below only when it is set up.
+    let go = go.into_iter().next().or_else(|| {
+        (!console.is_empty() && hub.settings().is_enabled(names::OPENCODE_GO))
+            .then(|| SettingsHub::implicit_account(names::OPENCODE_GO))
+    });
     let zen = enabled_accounts(hub, names::OPENCODE_ZEN).into_iter().next();
     if go.is_none() && zen.is_none() {
         return adapters;

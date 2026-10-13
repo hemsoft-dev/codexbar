@@ -4535,3 +4535,52 @@ fn an_opencode_account_leaving_oauth_keeps_the_cookie_it_was_given(cx: &mut Test
         "the new cookie is kept, not deleted with the old sign-in"
     );
 }
+
+#[gpui_kit::test]
+fn a_cookie_account_for_a_workspace_an_oauth_account_tracks_is_refused(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-cookie-for-oauth-workspace",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth", "workspaceId": "wrk_01ABC", "externalAccountId": "usr_1" } ] }"#,
+    );
+    let handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    click(cx, handle, "add-OpenCodeGo");
+    choose_browser_session(cx, handle);
+    // The cookie, then the workspace.
+    press(cx, handle, "tab");
+    press(cx, handle, "tab");
+    type_text(cx, handle, "wrk_01ABC");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("Workspace wrk_01ABC is already added as “Team”.")
+    );
+    assert_eq!(saved_settings(&settings).accounts().len(), 1);
+}
+
+#[gpui_kit::test]
+fn an_implicit_cookie_setup_keeps_running_beside_a_first_oauth_account(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-implicit-cookie",
+        r#"{ "accountConfigurationVersion": 1, "openCodeGoWorkspaceId": "wrk_01OLD",
+            "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let _handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    let implicit = codexbar_store::settings::legacy_id(codexbar_store::settings::names::OPENCODE_GO, "");
+    cx.update(|cx| {
+        SettingsHub::global(cx)
+            .credentials()
+            .write(&implicit, "Fe26.2**old-cookie")
+    })
+    .unwrap();
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let ids: Vec<Option<&str>> = adapters
+        .iter()
+        .filter(|a| a.name() == "OpenCode Go + Zen")
+        .map(|a| a.account_id())
+        .collect();
+    assert_eq!(ids, [Some("oc-1"), Some("opencode")], "the cookie setup still runs");
+}

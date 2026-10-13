@@ -660,6 +660,19 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             window.refresh();
             return false;
         }
+        // A workspace an OAuth account already tracks would show twice.
+        if let Some(workspace) = record.workspace_id.clone()
+            && let Some(other) = SettingsHub::global(cx).settings().accounts().iter().find(|other| {
+                other.id != record.id
+                    && other.provider.eq_ignore_ascii_case(names::OPENCODE_GO)
+                    && other.workspace_id.as_deref() == Some(workspace.as_str())
+            })
+        {
+            *form.error.borrow_mut() =
+                Some(format!("Workspace {workspace} is already added as “{}”.", other.label).into());
+            window.refresh();
+            return false;
+        }
     }
     // An OpenCode account leaving OAuth with a new cookie: its saved sign-in, which may span several credential
     // parts, is replaced by the cookie, so nothing is left to forget after saving.
@@ -673,8 +686,8 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     if info.secret.is_some() && !secret.is_empty() && !opencode_oauth {
         let store = SettingsHub::global(cx).credentials();
         let written = if replaces_opencode_sign_in {
-            codexbar_store::credentials::delete_long(store.as_ref(), &record.id)
-                .and_then(|()| store.write(&record.id, &secret))
+            // One write that leaves the old sign-in readable until the cookie is in place.
+            codexbar_store::credentials::write_long(store.as_ref(), &record.id, &secret)
         } else {
             store.write(&record.id, &secret)
         };
