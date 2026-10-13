@@ -17,6 +17,7 @@ mod http;
 mod jwt;
 pub mod oauth;
 pub mod opencode;
+pub mod opencode_console;
 mod pace;
 
 pub use command::{CommandError, CommandOutput, CommandRunner, SystemCommandRunner};

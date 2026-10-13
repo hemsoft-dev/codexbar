@@ -363,7 +363,7 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
     let provider_ix = PROVIDERS.iter().position(|info| info.id == provider).unwrap_or(0);
     let method = existing
         .as_ref()
-        .map_or(catalog::info(provider).default_method, |r| r.method);
+        .map_or(catalog::info(provider).setup_method, |r| r.method);
     let method_ix = AuthMethod::ALL.iter().position(|m| *m == method).unwrap_or(0);
     let form = Rc::new(AccountForm {
         providers: cx.new(|cx| {
@@ -498,7 +498,8 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                             .accessibility_label("Sign-in method")
                             .into_any_element(),
                     ))
-                    .when_some(info.secret.as_ref(), |this, spec| {
+                    // An OpenCode account on OAuth gets its workspace from the sign-in and needs no cookie.
+                    .when_some(info.secret.as_ref().filter(|_| !(oauth && info.id == names::OPENCODE_GO)), |this, spec| {
                         this.child(field(
                             spec.label,
                             Input::new(&form.secret).mask_toggle().into_any_element(),
@@ -548,8 +549,15 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                              month and this account's share. Leave blank to skip.",
                         ))
                     })
-                    .when(info.id == names::OPENCODE_GO, |this| {
+                    .when(info.id == names::OPENCODE_GO && !oauth, |this| {
                         this.child(field("Workspace id", Input::new(&form.workspace).into_any_element()))
+                    })
+                    .when(info.id == names::OPENCODE_GO && oauth, |this| {
+                        this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            "OAuth: after adding, CodexBar opens OpenCode's approval page in your browser. Approve \
+                             CodexBar there and pick the workspace; nothing needs copying. Signing out only removes \
+                             CodexBar's copy of the sign-in.",
+                        ))
                     })
                     .when_some(error, |this, error| {
                         this.child(
@@ -635,14 +643,61 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         record.copilot_organization = (!organization.is_empty()).then_some(organization);
         record.copilot_pool_total = pool_total;
     }
-    if info.id == names::OPENCODE_GO {
+    // An OpenCode account on OAuth keeps the workspace its sign-in set (#102).
+    let opencode_oauth = info.id == names::OPENCODE_GO && method == AuthMethod::OAuth;
+    if info.id == names::OPENCODE_GO && !opencode_oauth {
         record.workspace_id = (!workspace.is_empty()).then_some(workspace);
+        // Only one OpenCode Go account reads a dashboard cookie; more workspaces are added as OAuth accounts.
+        let other_cookie = SettingsHub::global(cx).settings().accounts().iter().any(|other| {
+            other.id != record.id
+                && other.provider.eq_ignore_ascii_case(names::OPENCODE_GO)
+                && !crate::opencode_sign_in::is_managed(other)
+        });
+        if other_cookie {
+            *form.error.borrow_mut() = Some(
+                "Only one OpenCode Go account can use a dashboard cookie. Use OAuth to add another workspace.".into(),
+            );
+            window.refresh();
+            return false;
+        }
+        // A workspace an OAuth account already tracks would show twice.
+        if let Some(workspace) = record.workspace_id.clone()
+            && let Some(other) = SettingsHub::global(cx).settings().accounts().iter().find(|other| {
+                other.id != record.id
+                    && other.provider.eq_ignore_ascii_case(names::OPENCODE_GO)
+                    && other.workspace_id.as_deref() == Some(workspace.as_str())
+            })
+        {
+            *form.error.borrow_mut() =
+                Some(format!("Workspace {workspace} is already added as “{}”.", other.label).into());
+            window.refresh();
+            return false;
+        }
     }
+    // An OpenCode account leaving OAuth with a new cookie: its saved sign-in, which may span several credential
+    // parts, is replaced by the cookie, so nothing is left to forget after saving.
+    let replaces_opencode_sign_in = info.id == names::OPENCODE_GO
+        && !opencode_oauth
+        && !secret.is_empty()
+        && previous.as_ref().is_some_and(crate::opencode_sign_in::is_managed);
 
-    // The secret is written first: if Credential Manager fails, the account isn't saved without its key.
-    if info.secret.is_some() && !secret.is_empty() {
+    // The secret is written first: if Credential Manager fails, the account isn't saved without its key. An OpenCode
+    // account on OAuth keeps its sign-in there instead, so no cookie is written over it.
+    // The sign-in a cookie replaces, put back if the settings can't be saved after it.
+    let mut replaced_sign_in = None;
+    if info.secret.is_some() && !secret.is_empty() && !opencode_oauth {
         let store = SettingsHub::global(cx).credentials();
-        if let Err(err) = store.write(&record.id, &secret) {
+        let written = if replaces_opencode_sign_in {
+            // One write that leaves the old sign-in readable until the cookie is in place, with no renewal writing
+            // at the same time.
+            codexbar_providers::opencode_console::exclusive(|| {
+                replaced_sign_in = codexbar_store::credentials::read_long(store.as_ref(), &record.id)?;
+                codexbar_store::credentials::write_long(store.as_ref(), &record.id, &secret)
+            })
+        } else {
+            store.write(&record.id, &secret)
+        };
+        if let Err(err) = written {
             *form.error.borrow_mut() = Some(err.to_string().into());
             window.refresh();
             return false;
@@ -661,6 +716,7 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let left = previous.as_ref().and_then(|old| {
         Managed::of(old)
             .filter(|old_kind| Some(*old_kind) != kind)
+            .filter(|_| !replaces_opencode_sign_in)
             .map(|old_kind| (old_kind, old.clone()))
     });
     let record_id = record.id.clone();
@@ -695,6 +751,13 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             true
         }
         Err(err) => {
+            // The account is still on OAuth, so it gets its sign-in back.
+            if let Some(previous) = replaced_sign_in {
+                let store = SettingsHub::global(cx).credentials();
+                let _ = codexbar_providers::opencode_console::exclusive(|| {
+                    codexbar_store::credentials::write_long(store.as_ref(), &record_id, &previous)
+                });
+            }
             *form.error.borrow_mut() = Some(err.to_string().into());
             window.refresh();
             false
@@ -773,7 +836,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     window.open_alert_dialog(cx, |alert, _, _| {
         alert
             .title("Reset all accounts?")
-            .description("Every account and its saved keys are removed. OpenRouter and Moonshot accounts, and ChatGPT, Copilot, Claude and Cursor accounts CodexBar signed in, also lose their usage history; providers that fall back to their default sign-in, including Copilot, keep theirs. This can't be undone.")
+            .description("Every account and its saved keys are removed. OpenRouter and Moonshot accounts, and ChatGPT, Copilot, Claude, Cursor and OpenCode accounts CodexBar signed in, also lose their usage history; providers that fall back to their default sign-in, including Copilot, keep theirs. This can't be undone.")
             .button_props(DialogButtonProps::default().ok_text("Reset accounts").ok_variant(ButtonVariant::Danger).show_cancel(true))
             .on_ok(|_, _, cx| {
                 // Every account's key, and each key-based provider's implicit one (#74).

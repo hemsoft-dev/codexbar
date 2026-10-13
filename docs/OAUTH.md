@@ -89,6 +89,37 @@ and keeps writing its own credential file; CodexBar only reads it.
   sign-in. Sign out runs `cursor-agent logout`. The Cursor app's own sign-in
   (Automatic) is the fallback.
 
+- **OpenCode (#102).** OpenCode has no CLI that can sign in for another
+  program, but its Console offers a device approval
+  ([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)) that
+  [OpenCode documents](https://dev.opencode.ai/v2/docs/console/api#device-flow)
+  for other CLIs to use with their own `client_id`. An OpenCode Go account
+  with the OAuth method asks `https://opencode.ai/console/auth/device/code`
+  for an approval with CodexBar's own public client label `codexbar-windows`
+  (never the iOS app's) and opens the Console's approval page in the default
+  browser. There the user signs in to OpenCode, approves CodexBar and picks the
+  workspace; the dialog shows the code the page should show. CodexBar accepts
+  only the exact `https://opencode.ai/console/device` page, polls at the
+  interval the Console sets (longer after `slow_down`), and stops at expiry,
+  denial or Cancel. Requests are form-encoded, as documented. The token must
+  name a workspace, and
+  `/console/auth/session` must name the user, before anything is saved. The
+  sign-in (tokens, expiry, workspace and user) is kept in Credential Manager
+  under the account, and the account is bound to that workspace and user:
+  signing it in again as someone else is refused, and another workspace is
+  another account. Tokens are renewed with the refresh grant a minute before
+  they expire, one renewal at a time, and a renewal is saved only over the
+  sign-in it renewed, so a removed or replaced sign-in never comes back. A
+  refresh token works only once, so a renewal Credential Manager refuses to
+  save is kept in memory, used, and saved again at the next refresh, and the
+  account says so meanwhile. Go and
+  Zen are read from `/console/api/go/status` and `/console/api/billing/status`
+  with the workspace in `x-org-id`; redirects are never followed. Sign out
+  deletes CodexBar's copy; it doesn't revoke the approval at OpenCode. These are
+  OpenCode's first-party Console endpoints, not a published API, so a changed
+  shape fails visibly. The dashboard-cookie method (Browser session) still
+  works for existing setups.
+
 ## Approved client registrations
 
 A provider can use this path only once a human has confirmed its client

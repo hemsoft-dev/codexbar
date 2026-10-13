@@ -21,7 +21,7 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | Cursor | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` | The Cursor sign-in (`auth.json`) |
 | OpenRouter | `https://openrouter.ai/api/v1/credits` | Your API key |
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
-| OpenCode Go / Zen | `https://opencode.ai/workspace/…` | Your dashboard auth cookie |
+| OpenCode Go / Zen | OAuth accounts: `https://opencode.ai/console/api/go/status` and `…/console/api/billing/status`; cookie accounts: `https://opencode.ai/workspace/…` | The account's OpenCode sign-in (OAuth), or your dashboard auth cookie |
 
 For the GitHub CLI's Copilot accounts, CodexBar also runs `gh auth status` on
 each refresh to list them; the GitHub CLI checks each account with GitHub while
@@ -30,7 +30,9 @@ it does.
 Signing an account in from Settings runs the provider's own CLI (Codex CLI,
 GitHub CLI, Claude Code or the Cursor CLI), which talks to that provider's
 sign-in service. CodexBar opens the provider's sign-in page in your default
-browser. See [OAUTH.md](OAUTH.md) for how each sign-in works.
+browser. OpenCode has no such CLI step: CodexBar asks the OpenCode Console
+(`https://opencode.ai/console/auth/…`) for an approval code, opens its approval
+page, and confirms the approved user and workspace with the Console. See [OAUTH.md](OAUTH.md) for how each sign-in works.
 
 ## Secrets
 

@@ -12,7 +12,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 | **Claude** | Claude Code login (`~/.claude/.credentials.json`), or a separate sign-in per account through Claude Code | Session + weekly limits, extra-usage spend |
 | **Copilot** | GitHub CLI (`gh auth`), or browser sign-in per account through the GitHub CLI | Usage limits per account; organization AI credits for Enterprise seats |
 | **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`), or browser sign-in per account through the Cursor CLI | Plan usage and spend |
-| **OpenCode Go / Zen** | Dashboard cookie + workspace ID | Usage and balance |
+| **OpenCode Go / Zen** | Browser approval on OpenCode's own page, or a dashboard cookie + workspace ID | Go limits and Zen balance |
 | **OpenRouter** | API Key | Credits, usage across models |
 | **Moonshot (Kimi)** | API Key | Remaining API credit balance |
 
@@ -54,7 +54,7 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 4. **Cursor**: Sign in to the Cursor app. For more accounts, install the Cursor CLI (`cursor-agent`) and add a Cursor account with the OAuth sign-in method in Settings > Accounts
 5. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings, or set `OPENROUTER_API_KEY`
 6. **Moonshot (Kimi)**: Get an API key from [platform.kimi.ai](https://platform.kimi.ai/) and add it in Settings, or set `MOONSHOT_API_KEY`
-7. **OpenCode Go / Zen**: Sign in at [opencode.ai](https://opencode.ai), then add an OpenCode Go account in Settings with the dashboard auth cookie and your workspace id (`wrk_…`), or set `OPENCODE_GO_AUTH_COOKIE` and `OPENCODE_GO_WORKSPACE_ID`. OpenCode Zen uses the same cookie unless you give it its own (`OPENCODE_ZEN_AUTH_COOKIE`)
+7. **OpenCode Go / Zen**: Add an OpenCode Go account in Settings > Accounts (OAuth, the default); CodexBar opens OpenCode's approval page, where you approve it and pick the workspace. Add one account per workspace. The older setup still works: an account with the Browser session method, the dashboard auth cookie and your workspace id (`wrk_…`), or `OPENCODE_GO_AUTH_COOKIE` and `OPENCODE_GO_WORKSPACE_ID`. OpenCode Zen uses the same cookie unless you give it its own (`OPENCODE_ZEN_AUTH_COOKIE`)
 
 How each sign-in works, and what CodexBar stores and sends, is in [docs/OAUTH.md](docs/OAUTH.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
 

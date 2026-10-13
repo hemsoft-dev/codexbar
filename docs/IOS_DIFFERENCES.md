@@ -25,7 +25,9 @@ the organization's AI credits and each user's share, configured per account.
 - **Windows** uses no borrowed client IDs. Extra accounts are signed in through
   each provider's own CLI, each in a folder of its own: the Codex CLI's
   app-server, the GitHub CLI's device sign-in, a Claude Code window, and the
-  Cursor CLI. The CLIs' own sign-ins (`~/.codex`, `~/.claude`, `gh`, the Cursor
+  Cursor CLI. OpenCode uses the Console's device approval with CodexBar for
+  Windows' own client label; Windows opens the default browser, so there is no
+  separate private-browser choice. The CLIs' own sign-ins (`~/.codex`, `~/.claude`, `gh`, the Cursor
   app) are the fallback. See [OAUTH.md](OAUTH.md).
 - Secrets live in the iOS Keychain on iOS and in Windows Credential Manager on
   Windows. CLI sign-ins stay in the files those CLIs write.

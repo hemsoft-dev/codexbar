@@ -30,6 +30,26 @@ pub trait HttpClient: Send + Sync {
         let _ = (url, headers, body);
         Err(ProviderError::Network)
     }
+
+    /// POSTs `fields` as an `application/x-www-form-urlencoded` body, as OAuth token endpoints expect (#102).
+    fn post_form(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        fields: &[(&str, &str)],
+    ) -> Result<HttpResponse, ProviderError> {
+        let _ = (url, headers, fields);
+        Err(ProviderError::Network)
+    }
+}
+
+/// The form-encoded body for `fields`.
+pub fn form_body(fields: &[(&str, &str)]) -> String {
+    let mut body = form_urlencoded::Serializer::new(String::new());
+    for (name, value) in fields {
+        body.append_pair(name, value);
+    }
+    body.finish()
 }
 
 /// Blocking HTTPS client with a short timeout. Non-2xx statuses are returned, not raised.
@@ -80,6 +100,23 @@ impl HttpClient for UreqClient {
             request = request.header(*name, *value);
         }
         let response = request.send(body).map_err(|_| ProviderError::Network)?;
+        read_response(response)
+    }
+
+    fn post_form(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        fields: &[(&str, &str)],
+    ) -> Result<HttpResponse, ProviderError> {
+        let mut request = self
+            .agent
+            .post(url)
+            .header("Content-Type", "application/x-www-form-urlencoded");
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = request.send(form_body(fields)).map_err(|_| ProviderError::Network)?;
         read_response(response)
     }
 }

@@ -10,6 +10,7 @@ use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
 use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
 use codexbar_providers::cursor::{self, CursorProvider};
 use codexbar_providers::opencode::OpenCodeProvider;
+use codexbar_providers::opencode_console::OpenCodeConsoleProvider;
 use codexbar_providers::{SystemCommandRunner, UreqClient, UsageProvider};
 use codexbar_store::settings::{AccountRecord, names};
 
@@ -58,9 +59,7 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         providers.push(Arc::new(provider));
     }
 
-    if let Some(opencode) = opencode(hub) {
-        providers.push(opencode);
-    }
+    providers.extend(opencode(hub));
 
     let moonshot = enabled_accounts(hub, names::MOONSHOT);
     let multiple = moonshot.len() > 1;
@@ -205,11 +204,32 @@ fn cursor_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     adapters
 }
 
+/// The workspace the implicit OpenCode Go cookie setup tracks (from before accounts, or environment variables), when it
+/// is in use: OpenCode Go is on, no cookie record exists (enabled or not), and the setup has a workspace and a cookie.
+pub fn implicit_opencode_workspace(hub: &SettingsHub) -> Option<String> {
+    let settings = hub.settings();
+    let cookie_record = settings
+        .accounts_for(names::OPENCODE_GO)
+        .any(|record| !crate::opencode_sign_in::is_managed(record));
+    if cookie_record || !settings.is_enabled(names::OPENCODE_GO) {
+        return None;
+    }
+    let workspace = std::env::var("OPENCODE_GO_WORKSPACE_ID")
+        .ok()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .or_else(|| settings.opencode_workspace_id())?;
+    hub.secret_for(&SettingsHub::implicit_account(names::OPENCODE_GO))
+        .0
+        .map(|_| workspace)
+}
+
 /// The dashboard account each configured record owns (#85), by record id: OpenRouter and Moonshot records report under
-/// their own id, a Copilot record for one username under that user's id, and a Codex account CodexBar signed in
-/// under the ChatGPT identity it holds (#78). Removing such a record removes that dashboard account. Codex on the
-/// Codex CLI's sign-in, Claude, Cursor, OpenCode, and Copilot without a username keep showing through the provider's
-/// own sign-in after their record is removed, so they own nothing here.
+/// their own id, a Copilot record for one username under that user's id, a Codex account CodexBar signed in under
+/// the ChatGPT identity it holds (#78), and an OpenCode account on the Console under its own id (#102). Removing such
+/// a record removes that dashboard account. Codex on the Codex CLI's sign-in, Claude, Cursor, OpenCode on a cookie,
+/// and Copilot without a username keep showing through the provider's own sign-in after their record is removed, so
+/// they own nothing here.
 pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
     // A Copilot organization card (#79) is owned while an enabled record has its org billing set, under a key of
     // its own beside the record's user, so removing the last such record forgets the card.
@@ -242,6 +262,8 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,
+                // An OpenCode account on the Console reports under its own id (#102).
+                names::OPENCODE_GO if crate::opencode_sign_in::is_managed(record) => record.id.clone(),
                 names::COPILOT => {
                     let user = record.external_id.as_deref()?.trim();
                     (!user.is_empty()).then(|| codexbar_providers::copilot::account_id(user).as_str().to_owned())?
@@ -345,12 +367,38 @@ fn copilot(hub: &SettingsHub) -> Option<Arc<dyn UsageProvider>> {
     Some(Arc::new(provider))
 }
 
-/// Go and Zen share one dashboard account; either half can be switched off. Zen falls back to Go's cookie.
-fn opencode(hub: &SettingsHub) -> Option<Arc<dyn UsageProvider>> {
-    let go = enabled_accounts(hub, names::OPENCODE_GO).into_iter().next();
+/// OpenCode accounts signed in through the Console (#102) each report their own workspace's Go limits and Zen balance.
+/// The older dashboard-cookie setup is one more account where Go and Zen share one dashboard row; either half can be
+/// switched off, and Zen falls back to Go's cookie. Once Console accounts exist, the cookie account runs only when it
+/// is actually set up, so it doesn't add a "not signed in" row beside them.
+fn opencode(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
+    let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    let (console, go): (Vec<AccountRecord>, Vec<AccountRecord>) = enabled_accounts(hub, names::OPENCODE_GO)
+        .into_iter()
+        .partition(crate::opencode_sign_in::is_managed);
+    for record in &console {
+        let slot = crate::opencode_sign_in::Slot {
+            store: hub.credentials(),
+            account: record.id.clone(),
+        };
+        adapters.push(Arc::new(OpenCodeConsoleProvider::new(
+            // Redirects are never followed: every exchange must stay on the Console.
+            UreqClient::without_redirects(),
+            Box::new(slot),
+            record.id.clone(),
+            record.label.clone(),
+        )));
+    }
+    // Adding the first OAuth account doesn't drop a cookie setup that ran as the implicit account (environment variables,
+    // or a cookie kept under it): with no cookie record at all, it still stands in when it is set up. A cookie record
+    // switched off is never stood in for.
+    let go = go.into_iter().next().or_else(|| {
+        (!console.is_empty() && implicit_opencode_workspace(hub).is_some())
+            .then(|| SettingsHub::implicit_account(names::OPENCODE_GO))
+    });
     let zen = enabled_accounts(hub, names::OPENCODE_ZEN).into_iter().next();
     if go.is_none() && zen.is_none() {
-        return None;
+        return adapters;
     }
     let env = |name: &str| {
         std::env::var(name)
@@ -366,10 +414,15 @@ fn opencode(hub: &SettingsHub) -> Option<Arc<dyn UsageProvider>> {
         .as_ref()
         .and_then(|account| hub.secret_for(account).0)
         .or_else(|| go_cookie.clone());
-    Some(Arc::new(OpenCodeProvider::new(
+    let zen_cookie = zen.is_some().then_some(zen_cookie).flatten();
+    if !console.is_empty() && (workspace.is_none() || (go_cookie.is_none() && zen_cookie.is_none())) {
+        return adapters;
+    }
+    adapters.push(Arc::new(OpenCodeProvider::new(
         UreqClient::without_redirects(),
         workspace,
         go_cookie,
-        zen.is_some().then_some(zen_cookie).flatten(),
-    )))
+        zen_cookie,
+    )));
+    adapters
 }

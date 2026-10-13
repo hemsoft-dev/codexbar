@@ -1,12 +1,12 @@
-//! Accounts CodexBar signs in itself through a provider's own CLI: ChatGPT through the Codex CLI (#78), Copilot
-//! through the GitHub CLI (#79) and Claude through Claude Code (#80). Settings uses this one place to sign them in
-//! and out, describe them and clean up after them.
+//! Accounts CodexBar signs in itself: ChatGPT through the Codex CLI (#78), Copilot through the GitHub CLI (#79),
+//! Claude through Claude Code (#80), Cursor through its CLI (#81) and OpenCode through the Console's device approval
+//! (#102). Settings uses this one place to sign them in and out, describe them and clean up after them.
 
 use codexbar_store::settings::AccountRecord;
 use gpui_kit::{App, Window};
 
 use crate::settings_hub::SettingsHub;
-use crate::{claude_sign_in, codex_sign_in, cursor_sign_in, github_sign_in};
+use crate::{claude_sign_in, codex_sign_in, cursor_sign_in, github_sign_in, opencode_sign_in};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Managed {
@@ -14,6 +14,7 @@ pub enum Managed {
     GitHub,
     Claude,
     Cursor,
+    OpenCode,
 }
 
 impl Managed {
@@ -27,6 +28,8 @@ impl Managed {
             Some(Self::Claude)
         } else if cursor_sign_in::is_managed(record) {
             Some(Self::Cursor)
+        } else if opencode_sign_in::is_managed(record) {
+            Some(Self::OpenCode)
         } else {
             None
         }
@@ -38,6 +41,7 @@ impl Managed {
             Self::GitHub => github_sign_in::sign_in(record_id, window, cx),
             Self::Claude => claude_sign_in::sign_in(record_id, window, cx),
             Self::Cursor => cursor_sign_in::sign_in(record_id, window, cx),
+            Self::OpenCode => opencode_sign_in::sign_in(record_id, window, cx),
         }
     }
 
@@ -47,6 +51,7 @@ impl Managed {
             Self::GitHub => github_sign_in::sign_out(record_id, cx),
             Self::Claude => claude_sign_in::sign_out(record_id, window, cx),
             Self::Cursor => cursor_sign_in::sign_out(record_id, window, cx),
+            Self::OpenCode => opencode_sign_in::sign_out(record_id, cx),
         }
     }
 
@@ -57,6 +62,7 @@ impl Managed {
             Self::GitHub => github_sign_in::describe(hub, record),
             Self::Claude => claude_sign_in::describe(hub.dir(), record),
             Self::Cursor => cursor_sign_in::describe(hub.dir(), record),
+            Self::OpenCode => opencode_sign_in::describe(hub, record),
         }
     }
 
@@ -66,16 +72,18 @@ impl Managed {
             Self::GitHub => matches!(github_sign_in::token(hub, record), Ok(Some(_))),
             Self::Claude => claude_sign_in::credentials_path(hub.dir(), record).exists(),
             Self::Cursor => cursor_sign_in::auth_path(hub.dir(), record).exists(),
+            Self::OpenCode => matches!(opencode_sign_in::credential(hub, record), Ok(Some(_))),
         }
     }
 
     /// Cleans up after an account that was removed or left this sign-in: signs it out and deletes what CodexBar kept
-    /// for it (a CLI folder, or the GitHub token). Failures are shown in Settings.
+    /// for it (a CLI folder, or the GitHub or OpenCode sign-in). Failures are shown in Settings.
     pub fn forget(self, record: AccountRecord, cx: &mut App) {
         match self {
             Self::Codex => codex_sign_in::forget(record, cx),
             Self::Claude => claude_sign_in::forget(record, cx),
             Self::Cursor => cursor_sign_in::forget(record, cx),
+            Self::OpenCode => opencode_sign_in::forget(record, cx),
             Self::GitHub => {
                 if let Err(err) =
                     codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record.id)

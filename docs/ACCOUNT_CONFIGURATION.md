@@ -17,14 +17,14 @@ account in again with another identity replaces it without asking (see
 | `displayLabel` | The account's name |
 | `enabled` | Whether it is fetched and shown |
 | `authenticationMethod` | `Automatic`, `ApiKey`, `CommandLine`, `OAuth` or `BrowserSession` (see below) |
-| `externalAccountId` | A Copilot account's GitHub username; for an account CodexBar signed in, the identity it holds |
-| `workspaceId` | The OpenCode Go workspace (`wrk_…`) |
+| `externalAccountId` | A Copilot account's GitHub username; for an account CodexBar signed in, the identity it holds (an OpenCode user id) |
+| `workspaceId` | The OpenCode workspace (`wrk_…`): typed in for a cookie account, set by the sign-in for an OAuth one |
 | `legacyCardKey` | Kept from older CodexBar versions for ordering |
 | `copilotEnterprise`, `copilotOrganization`, `copilotPoolTotal` | Copilot org billing for an Enterprise seat; written only when set |
 
-None of these are secrets. Pasted keys and cookies, and the GitHub tokens of
-Copilot accounts CodexBar signs in, are kept in Windows Credential Manager under
-`CodexBar:account:<id>`. Codex, Claude and Cursor accounts CodexBar signs in keep
+None of these are secrets. Pasted keys and cookies, the GitHub tokens of
+Copilot accounts CodexBar signs in, and the sign-ins of OpenCode accounts on
+OAuth are kept in Windows Credential Manager under `CodexBar:account:<id>`. Codex, Claude and Cursor accounts CodexBar signs in keep
 their tokens in the files those CLIs write, in the account's own folder under
 the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.md).
 
@@ -37,11 +37,12 @@ the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.m
 | Copilot | Automatic or Command line (the GitHub CLI's accounts; a username limits it to one) | OAuth: the GitHub CLI's device sign-in, token kept by CodexBar |
 | Cursor | Automatic (the Cursor app) | OAuth: its own folder, through the Cursor CLI |
 | OpenRouter, Moonshot | API key (or the environment variable) | |
-| OpenCode Go / Zen | Browser session (the dashboard cookie) | |
+| OpenCode Go / Zen | Browser session (a copied dashboard cookie) | OAuth (OpenCode Go): OpenCode's device approval in the browser, sign-in kept by CodexBar |
 
 Accounts CodexBar signs in show **Sign in…**, **Sign in again…** and **Sign out**
 in Settings. [OAUTH.md](OAUTH.md) explains each one. Several accounts can be added
-for every provider except OpenCode. Adding the first account CodexBar signs in
+for every provider except OpenCode Zen; OpenCode Go takes one OAuth account per
+workspace. Adding the first account CodexBar signs in
 for Codex, Claude or Cursor keeps the provider's own sign-in as an account of its
 own, so it doesn't disappear.
 
