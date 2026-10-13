@@ -26,6 +26,8 @@ use crate::settings_hub::SettingsHub;
 
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const PENDING: &str = ".signing-in";
+/// The suffix of an account's earlier home while a new sign-in replaces it.
+const PREVIOUS: &str = ".previous";
 
 /// True for a Grok account CodexBar signs in, rather than one on the Grok CLI's own sign-in.
 pub fn is_managed(record: &AccountRecord) -> bool {
@@ -61,7 +63,17 @@ pub fn clean_up(cx: &mut App) {
         return;
     };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().ends_with(PENDING)
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // A sign-in interrupted while replacing a home: the earlier home goes back if the new one never arrived.
+        if let Some(account) = name.strip_suffix(PREVIOUS) {
+            let target = parent.join(account);
+            if !target.exists() && std::fs::rename(entry.path(), &target).is_ok() {
+                continue;
+            }
+            let _ = std::fs::remove_dir_all(entry.path());
+            continue;
+        }
+        if name.ends_with(PENDING)
             && let Err(err) = std::fs::remove_dir_all(entry.path())
         {
             SettingsHub::set_error(
@@ -267,9 +279,25 @@ fn remember(record_id: &str, temporary: &Path, subject: &str, cx: &mut App) -> R
     {
         return Err(format!("That xAI account is already added as “{}”.", other.label));
     }
+    // The account's current home is set aside, not deleted, until the new one is in place and the account is saved; a
+    // failure at either step puts it back, so a failed sign-in changes nothing.
     let target = home(hub.dir(), &record);
-    let _ = std::fs::remove_dir_all(&target);
-    std::fs::rename(temporary, &target).map_err(|err| format!("The sign-in couldn't be kept: {err}"))?;
+    let previous = backup_of(&target);
+    let _ = std::fs::remove_dir_all(&previous);
+    let had_home = target.exists();
+    if had_home {
+        std::fs::rename(&target, &previous).map_err(|err| format!("The sign-in couldn't be kept: {err}"))?;
+    }
+    let restore = |target: &Path| {
+        let _ = std::fs::remove_dir_all(target);
+        if had_home {
+            let _ = std::fs::rename(&previous, target);
+        }
+    };
+    if let Err(err) = std::fs::rename(temporary, &target) {
+        restore(&target);
+        return Err(format!("The sign-in couldn't be kept: {err}"));
+    }
     let result = SettingsHub::update(cx, |settings| {
         settings.upsert(AccountRecord {
             external_id: Some(subject.to_owned()),
@@ -277,12 +305,20 @@ fn remember(record_id: &str, temporary: &Path, subject: &str, cx: &mut App) -> R
         })
     });
     if let Err(err) = result {
-        // Not bound to a subject, the sign-in isn't kept either.
-        let _ = std::fs::remove_dir_all(&target);
+        // Not bound to a subject, the sign-in isn't kept either; the account keeps its earlier one.
+        restore(&target);
         return Err(format!("The sign-in couldn't be saved: {err}"));
     }
+    let _ = std::fs::remove_dir_all(&previous);
     SettingsHub::request_refresh(cx);
     Ok(())
+}
+
+/// Where an account's home waits while a new sign-in replaces it.
+fn backup_of(target: &Path) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_owned();
+    name.push(PREVIOUS);
+    target.with_file_name(name)
 }
 
 /// Signs a Grok account out here: its CLI home is deleted. xAI isn't signed out.

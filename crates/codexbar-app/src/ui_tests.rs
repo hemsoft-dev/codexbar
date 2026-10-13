@@ -5307,6 +5307,65 @@ fn a_grok_account_signs_in_through_the_cli_in_its_own_home(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
+fn a_grok_sign_in_that_cant_be_saved_keeps_the_earlier_home(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "grok-resign-fails",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gk-1", "providerId": "Grok", "displayLabel": "Me", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "sub-1" } ] }"#,
+    );
+    let home = settings.0.join("grok").join(crate::codex_sign_in::folder_name("gk-1"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("auth.json"), "earlier").unwrap();
+    let fake = FakeGrok::default();
+    *fake.0.signs_in_as.lock().unwrap() = Some("sub-1".into());
+    let handle = open_grok_accounts(cx, &settings, &fake);
+    let file = settings.0.join("settings.json");
+    let writable = std::fs::metadata(&file).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&file, read_only).unwrap();
+    click(cx, handle, "sign-in-gk-1");
+    std::fs::set_permissions(&file, writable).unwrap();
+    assert!(
+        label_of(cx, "grok-sign-in-error").is_some_and(|e| e.starts_with("The sign-in couldn't be saved")),
+        "the save failed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        "earlier",
+        "the account keeps its earlier sign-in"
+    );
+    assert_eq!(
+        std::fs::read_dir(settings.0.join("grok")).unwrap().count(),
+        1,
+        "no backup or temporary home is left"
+    );
+}
+
+#[gpui_kit::test]
+fn an_interrupted_grok_sign_in_gets_its_earlier_home_back_at_start(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("grok-interrupted", GROK_ACCOUNT);
+    let grok = settings.0.join("grok");
+    let name = crate::codex_sign_in::folder_name("gk-1");
+    std::fs::create_dir_all(grok.join(format!("{name}.previous"))).unwrap();
+    std::fs::write(grok.join(format!("{name}.previous")).join("auth.json"), "earlier").unwrap();
+    std::fs::create_dir_all(grok.join("other.previous")).unwrap();
+    std::fs::create_dir_all(grok.join("other")).unwrap();
+    let _handle = open_grok_accounts(cx, &settings, &FakeGrok::default());
+    cx.update(crate::grok_sign_in::clean_up);
+    assert_eq!(
+        std::fs::read_to_string(grok.join(&name).join("auth.json")).unwrap(),
+        "earlier",
+        "the home that was set aside is back"
+    );
+    assert!(
+        !grok.join("other.previous").exists(),
+        "a backup whose home arrived is deleted"
+    );
+}
+
+#[gpui_kit::test]
 fn signing_a_grok_account_in_as_someone_else_keeps_nothing(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
         "grok-rebind",

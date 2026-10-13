@@ -261,7 +261,11 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
                 .iter()
                 .filter_map(|p| {
                     let name = p.get("product").and_then(Value::as_str)?;
-                    let share = p.get("percent").and_then(Value::as_f64)?;
+                    // The Grok CLI's own billing fixture names it `usagePercent`; `percent` is read as well.
+                    let share = p
+                        .get("usagePercent")
+                        .or_else(|| p.get("percent"))
+                        .and_then(Value::as_f64)?;
                     Some(format!("{name} {share:.0}%"))
                 })
                 .collect();
@@ -358,7 +362,8 @@ impl<H: HttpClient> GrokProvider<H> {
             auth = self.auth()?;
         }
         let mut billing = self.get(BILLING, &auth)?;
-        if billing.status == 401 && may_renew(&self.home) {
+        // A refused token, 401 or 403, is renewed once through the CLI before it counts as expired.
+        if matches!(billing.status, 401 | 403) && may_renew(&self.home) {
             self.cli.renew(&self.home);
             auth = self.auth()?;
             billing = self.get(BILLING, &auth)?;
@@ -490,7 +495,7 @@ mod tests {
             (None, ""),
             (
                 Some("SuperGrok"),
-                r#","productUsage":[{"product":"Chat","percent":20}]"#,
+                r#","productUsage":[{"product":"PRODUCT_GROK_BUILD","usagePercent":61.2},{"product":"Chat","percent":20}]"#,
             ),
         ] {
             let usage = parse_billing(&billing(extra), plan, now()).unwrap();
@@ -641,6 +646,47 @@ mod tests {
         assert_eq!(account.display_name(), "Grok · Me");
         assert_eq!(account.metrics()[0].used_fraction(), Some(0.1));
         assert_eq!(renewer.1.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_403_is_renewed_once_like_a_401() {
+        let home = Home::with("renew-403", AUTH);
+        let proxy = Proxy(
+            Mutex::new(vec![
+                HttpResponse::new(403, "{}"),
+                HttpResponse::new(200, billing(r#","creditUsagePercent":10"#)),
+                HttpResponse::new(200, r#"{"subscription_tier_display":"SuperGrok"}"#),
+            ]),
+            Mutex::new(Vec::new()),
+        );
+        let renewer = Arc::new(Renewer(home.0.clone(), AtomicUsize::new(0)));
+        let provider = GrokProvider::new(
+            proxy,
+            renewer.clone(),
+            home.0.clone(),
+            Some("sub-1".into()),
+            "gk-1",
+            "Me",
+        );
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.metrics()[0].used_fraction(), Some(0.1));
+        assert_eq!(renewer.1.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn product_shares_read_the_clis_usage_percent() {
+        let body = billing(
+            r#","creditUsagePercent":30,"productUsage":[{"product":"PRODUCT_GROK_BUILD","usagePercent":61.2},
+                {"product":"Chat","percent":20},{"product":"Broken"}]"#,
+        );
+        let usage = parse_billing(&body, Some("SuperGrok"), now()).unwrap();
+        assert!(
+            usage
+                .messages
+                .contains(&"By product: PRODUCT_GROK_BUILD 61%, Chat 20%.".to_owned()),
+            "{:?}",
+            usage.messages
+        );
     }
 
     #[test]
