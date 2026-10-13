@@ -17,6 +17,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 | **Moonshot (Kimi)** | API Key | Remaining API credit balance |
 | **Greptile** | Organization API key | Completed code reviews (activity, not credits) |
 | **GitHub Billing** | Browser sign-in through the GitHub CLI | This month's spend across GitHub products, for you or an organization |
+| **Gemini** (experimental) | Google sign-in in a temporary Edge or Chrome window | Gemini Apps five-hour and weekly limits |
 
 ## Features
 
@@ -59,6 +60,7 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 7. **OpenCode Go / Zen**: Add an OpenCode Go account in Settings > Accounts (OAuth, the default); CodexBar opens OpenCode's approval page, where you approve it and pick the workspace. Add one account per workspace. The older setup still works: an account with the Browser session method, the dashboard auth cookie and your workspace id (`wrk_…`), or `OPENCODE_GO_AUTH_COOKIE` and `OPENCODE_GO_WORKSPACE_ID`. OpenCode Zen uses the same cookie unless you give it its own (`OPENCODE_ZEN_AUTH_COOKIE`)
 8. **Greptile**: Create an organization API key in Greptile and add a Greptile account with it in Settings, or set `GREPTILE_API_KEY`. CodexBar counts the organization's completed code reviews; see [docs/GREPTILE.md](docs/GREPTILE.md)
 9. **GitHub Billing**: Add a GitHub Billing account in Settings > Accounts, with an organization name or blank for your own billing. CodexBar signs it in with your browser through the GitHub CLI; see [docs/GITHUB_BILLING.md](docs/GITHUB_BILLING.md)
+10. **Gemini** (experimental): Add a Gemini account in Settings > Accounts. CodexBar opens Gemini in a temporary Edge or Chrome window where you sign in to Google; see [docs/GEMINI.md](docs/GEMINI.md)
 
 How each sign-in works, and what CodexBar stores and sends, is in [docs/OAUTH.md](docs/OAUTH.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
 

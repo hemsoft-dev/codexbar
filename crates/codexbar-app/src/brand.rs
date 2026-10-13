@@ -32,6 +32,7 @@ pub fn brand(provider: Provider) -> Brand {
         Provider::Moonshot => 0x1D4ED8,
         Provider::Greptile => 0x44A775,
         Provider::GitHubBilling => 0x1F2328,
+        Provider::Gemini => 0x3186FF,
     };
     Brand {
         accent,
@@ -52,6 +53,7 @@ pub fn from_settings_name(name: &str) -> Option<Provider> {
         names::MOONSHOT => Provider::Moonshot,
         names::GREPTILE => Provider::Greptile,
         names::GITHUB_BILLING => Provider::GitHubBilling,
+        names::GEMINI => Provider::Gemini,
         _ => return None,
     })
 }

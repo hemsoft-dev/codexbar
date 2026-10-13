@@ -1064,6 +1064,9 @@ fn open_live_dyn(
         if cx.try_global::<crate::opencode_sign_in::Service>().is_none() {
             crate::opencode_sign_in::init_with(cx, Arc::new(opencode_fixture::FakeOpenCode::default()));
         }
+        if cx.try_global::<crate::gemini_sign_in::Service>().is_none() {
+            crate::gemini_sign_in::init_with(cx, Arc::new(gemini_fixture::FakeGemini::default()));
+        }
     });
     let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
     let mut dashboard = None;
@@ -4981,6 +4984,122 @@ fn the_same_user_signing_in_again_keeps_the_account(cx: &mut TestAppContext) {
     click(cx, handle, "sign-in-gb-1");
     assert_eq!(saved_settings(&settings).accounts()[0].id, "gb-1");
     assert!(stored_token(cx, "gb-1").as_deref() == Some("gho_token_for_octocat"));
+}
+
+// Gemini Apps (#106): a temporary browser sign-in, faked so tests never start a browser or reach Google.
+
+mod gemini_fixture {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    use codexbar_providers::gemini_apps::AppsSession;
+
+    use crate::gemini_sign_in::SignInService;
+
+    #[derive(Default)]
+    pub struct State {
+        pub outcome: Mutex<Option<Result<AppsSession, String>>>,
+        pub parents: Mutex<Vec<PathBuf>>,
+    }
+
+    #[derive(Default, Clone)]
+    pub struct FakeGemini(pub Arc<State>);
+
+    impl SignInService for FakeGemini {
+        fn sign_in(&self, parent: &Path, _: &AtomicBool, _: &dyn Fn()) -> Result<AppsSession, String> {
+            self.0.parents.lock().unwrap().push(parent.to_owned());
+            self.0
+                .outcome
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| Err("cancelled".into()))
+        }
+    }
+}
+
+use gemini_fixture::FakeGemini;
+
+const GEMINI_ACCOUNT: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
+    { "id": "gm-1", "providerId": "Gemini", "displayLabel": "Personal", "enabled": true,
+      "authenticationMethod": "BrowserSession" } ] }"#;
+
+fn open_gemini_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: &FakeGemini) -> AnyWindowHandle {
+    let fake = fake.clone();
+    cx.update(|cx| crate::gemini_sign_in::init_with(cx, Arc::new(fake)));
+    let handle = open_settings_page(cx, settings, MemoryCredentialStore::default(), 1);
+    // Gemini is the eleventh group; Settings renders only groups in view, so scroll it in.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-1-10", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    handle
+}
+
+fn gemini_session(cx: &mut TestAppContext, key: &str) -> Option<codexbar_providers::gemini_apps::AppsSession> {
+    cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), key))
+        .ok()
+        .flatten()
+        .and_then(|secret| codexbar_providers::gemini_apps::AppsSession::from_secret(&secret))
+}
+
+#[gpui_kit::test]
+fn a_gemini_account_signs_in_through_a_temporary_browser_and_keeps_only_the_session(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("gemini-sign-in", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    *fake.0.outcome.lock().unwrap() = Some(Ok(codexbar_providers::gemini_apps::AppsSession {
+        psid: "g.session".into(),
+        psidts: Some("ts".into()),
+    }));
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    assert_eq!(
+        label_of(cx, "account-detail-gm-1").as_deref(),
+        Some("Browser session · Gemini Apps not signed in")
+    );
+    click(cx, handle, "sign-in-gm-1");
+    // The temporary profile goes in CodexBar's settings folder, never another browser's.
+    assert_eq!(*fake.0.parents.lock().unwrap(), [settings.0.join("gemini")]);
+    assert!(
+        !exists(cx, handle, "gemini-sign-in-status"),
+        "the dialog closes once signed in"
+    );
+    assert!(gemini_session(cx, "gm-1:gemini-apps").is_some_and(|s| s.psid == "g.session"));
+    assert_eq!(
+        label_of(cx, "account-detail-gm-1").as_deref(),
+        Some("Browser session · Gemini Apps signed in")
+    );
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let gemini: Vec<_> = adapters.iter().filter(|a| a.name() == "Gemini").collect();
+    assert_eq!(gemini.len(), 1);
+    assert_eq!(gemini[0].account_id(), Some("gm-1"));
+
+    click(cx, handle, "sign-out-gm-1");
+    assert!(gemini_session(cx, "gm-1:gemini-apps").is_none());
+    assert_eq!(saved_settings(&settings).accounts().len(), 1, "the account stays");
+}
+
+#[gpui_kit::test]
+fn a_gemini_sign_in_that_fails_says_so_and_keeps_nothing(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("gemini-sign-in-fails", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    *fake.0.outcome.lock().unwrap() = Some(Err("The sign-in window was closed before Gemini could be read.".into()));
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gm-1");
+    assert_eq!(
+        label_of(cx, "gemini-sign-in-error").as_deref(),
+        Some("The sign-in window was closed before Gemini could be read.")
+    );
+    assert!(gemini_session(cx, "gm-1:gemini-apps").is_none());
+}
+
+#[gpui_kit::test]
+fn gemini_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("gemini-off", "{}");
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    assert!(adapters.iter().all(|a| a.name() != "Gemini"));
 }
 
 #[gpui_kit::test]

@@ -6,7 +6,7 @@ use codexbar_store::settings::AccountRecord;
 use gpui_kit::{App, Window};
 
 use crate::settings_hub::SettingsHub;
-use crate::{claude_sign_in, codex_sign_in, cursor_sign_in, github_sign_in, opencode_sign_in};
+use crate::{claude_sign_in, codex_sign_in, cursor_sign_in, gemini_sign_in, github_sign_in, opencode_sign_in};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Managed {
@@ -15,6 +15,7 @@ pub enum Managed {
     Claude,
     Cursor,
     OpenCode,
+    Gemini,
 }
 
 impl Managed {
@@ -30,6 +31,8 @@ impl Managed {
             Some(Self::Cursor)
         } else if opencode_sign_in::is_managed(record) {
             Some(Self::OpenCode)
+        } else if gemini_sign_in::is_managed(record) {
+            Some(Self::Gemini)
         } else {
             None
         }
@@ -42,6 +45,7 @@ impl Managed {
             Self::Claude => claude_sign_in::sign_in(record_id, window, cx),
             Self::Cursor => cursor_sign_in::sign_in(record_id, window, cx),
             Self::OpenCode => opencode_sign_in::sign_in(record_id, window, cx),
+            Self::Gemini => gemini_sign_in::sign_in(record_id, window, cx),
         }
     }
 
@@ -52,6 +56,7 @@ impl Managed {
             Self::Claude => claude_sign_in::sign_out(record_id, window, cx),
             Self::Cursor => cursor_sign_in::sign_out(record_id, window, cx),
             Self::OpenCode => opencode_sign_in::sign_out(record_id, cx),
+            Self::Gemini => gemini_sign_in::sign_out(record_id, cx),
         }
     }
 
@@ -63,6 +68,7 @@ impl Managed {
             Self::Claude => claude_sign_in::describe(hub.dir(), record),
             Self::Cursor => cursor_sign_in::describe(hub.dir(), record),
             Self::OpenCode => opencode_sign_in::describe(hub, record),
+            Self::Gemini => gemini_sign_in::describe(hub, record),
         }
     }
 
@@ -73,6 +79,7 @@ impl Managed {
             Self::Claude => claude_sign_in::credentials_path(hub.dir(), record).exists(),
             Self::Cursor => cursor_sign_in::auth_path(hub.dir(), record).exists(),
             Self::OpenCode => matches!(opencode_sign_in::credential(hub, record), Ok(Some(_))),
+            Self::Gemini => matches!(gemini_sign_in::apps_session(hub, record), Ok(Some(_))),
         }
     }
 
@@ -84,6 +91,7 @@ impl Managed {
             Self::Claude => claude_sign_in::forget(record, cx),
             Self::Cursor => cursor_sign_in::forget(record, cx),
             Self::OpenCode => opencode_sign_in::forget(record, cx),
+            Self::Gemini => gemini_sign_in::forget(record, cx),
             Self::GitHub => {
                 if let Err(err) =
                     codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record.id)

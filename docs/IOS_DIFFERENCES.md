@@ -12,7 +12,8 @@ differences that remain, and why.
 | GitHub Billing: monthly spend per owner | Yes | Yes | Windows signs in through the GitHub CLI ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
 | GitHub Billing: included allowances and budgets | Yes | Yes | Windows also counts billable usage past an allowance without repository visibility ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
 | Grok | Yes | No | [#108](https://github.com/hemsoft-dev/codexbar/issues/108) |
-| Google Gemini | Yes | No | [#106](https://github.com/hemsoft-dev/codexbar/issues/106), [#107](https://github.com/hemsoft-dev/codexbar/issues/107) |
+| Google Gemini: Gemini Apps limits | Yes | Yes, experimental | Windows signs in through a temporary Edge or Chrome profile instead of a web view ([GEMINI.md](GEMINI.md)) |
+| Google Gemini: coding quotas | Yes | No | [#107](https://github.com/hemsoft-dev/codexbar/issues/107) |
 
 Copilot organization billing on Windows covers Copilot Enterprise seats:
 the organization's AI credits and each user's share, configured per account.

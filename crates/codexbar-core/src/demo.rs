@@ -278,6 +278,30 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         .with_trend(vec![
             2.1, 3.4, 4.0, 5.2, 7.9, 9.0, 10.4, 12.2, 14.8, 16.0, 18.3, 20.1, 22.4, 23.89,
         ]),
+        // #106: consumer Gemini Apps limits, with Gemini's own resets.
+        AccountSnapshot::new(
+            AccountId::new("gemini"),
+            Provider::Gemini,
+            vec![
+                Metric::Window {
+                    label: "Gemini Apps five-hour".into(),
+                    used: 0.18,
+                    resets_at: now + Duration::minutes(150),
+                    pace: None,
+                },
+                Metric::Window {
+                    label: "Gemini Apps weekly".into(),
+                    used: 0.41,
+                    resets_at: thursday_nine,
+                    pace: None,
+                },
+            ],
+            fetched,
+        )
+        .with_label("Personal")
+        .with_trend(vec![
+            0.05, 0.1, 0.08, 0.15, 0.2, 0.12, 0.18, 0.25, 0.22, 0.3, 0.28, 0.35, 0.38, 0.41,
+        ]),
     ]
 }
 
@@ -363,6 +387,7 @@ mod tests {
                 "Cursor",
                 "OpenRouter",
                 "ChatGPT · Codex (team)",
+                "Gemini · Personal",
                 "GitHub Billing · HemSoft",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
