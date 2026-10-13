@@ -44,6 +44,16 @@ and keeps writing its own credential file; CodexBar only reads it.
   the import and fallback path. The app-server process tree runs in a Windows
   job that ends with each session.
 
+- **GitHub Billing (#104).** A GitHub Billing account signs in the same way
+  as a Copilot account, with its own token kept under its own account, so it
+  never reads, widens or replaces a Copilot token. It asks for GitHub's `user`
+  scope when it follows the signed-in user's own billing, which GitHub requires
+  for that endpoint; an organization's billing accepts the GitHub CLI's `repo`,
+  so it asks for nothing more. Before the token is kept, CodexBar reads the
+  signed-in profile and the chosen owner's billing summary for this month; a
+  token that can't is not saved. Changing the account's organization deletes the
+  token and signs it in again.
+
 - **GitHub Copilot (#79).** An account with the OAuth sign-in method is signed
   in by the GitHub CLI's own device sign-in (`gh auth login --web
   --insecure-storage`), run in a private, temporary config folder inside the

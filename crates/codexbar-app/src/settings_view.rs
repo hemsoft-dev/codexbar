@@ -353,6 +353,8 @@ struct AccountForm {
     enterprise: Entity<InputState>,
     organization: Entity<InputState>,
     pool_total: Entity<InputState>,
+    /// GitHub Billing (#104): the organization to follow, blank for the signed-in user's own billing.
+    billing_org: Entity<InputState>,
     error: Rc<RefCell<Option<SharedString>>>,
 }
 
@@ -442,6 +444,16 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                         .as_ref()
                         .and_then(|r| r.copilot_pool_total)
                         .map(|total| total.to_string())
+                        .unwrap_or_default(),
+                )
+        }),
+        billing_org: cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Blank for your own billing")
+                .default_value(
+                    existing
+                        .as_ref()
+                        .and_then(|r| r.billing_organization.clone())
                         .unwrap_or_default(),
                 )
         }),
@@ -535,6 +547,14 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                     .when(info.id == names::COPILOT && !oauth, |this| {
                         this.child(field("GitHub username", Input::new(&form.username).into_any_element()))
                     })
+                    .when(info.id == names::GITHUB_BILLING, |this| {
+                        this.child(field("Organization", Input::new(&form.billing_org).into_any_element()))
+                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                                "After adding, CodexBar signs this account in with your browser through the GitHub \
+                                 CLI, apart from Copilot. Your own billing needs GitHub's user permission; an \
+                                 organization's needs you to be an owner or billing manager there.",
+                            ))
+                    })
                     .when(info.id == names::COPILOT, |this| {
                         this.when(oauth, |this| {
                             this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
@@ -612,6 +632,15 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let workspace = form.workspace.read(cx).value().trim().to_owned();
     let enterprise = form.enterprise.read(cx).value().trim().to_owned();
     let organization = form.organization.read(cx).value().trim().to_owned();
+    let billing_org = form.billing_org.read(cx).value().trim().to_owned();
+    if info.id == names::GITHUB_BILLING
+        && !billing_org.is_empty()
+        && !codexbar_providers::github_billing::valid_login(&billing_org)
+    {
+        *form.error.borrow_mut() = Some("That isn't a GitHub organization name.".into());
+        window.refresh();
+        return false;
+    }
     let pool_total = form.pool_total.read(cx).value().trim().replace([',', '_'], "");
     let pool_total = match pool_total.as_str() {
         "" => None,
@@ -646,6 +675,30 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         record.copilot_enterprise = (!enterprise.is_empty()).then_some(enterprise);
         record.copilot_organization = (!organization.is_empty()).then_some(organization);
         record.copilot_pool_total = pool_total;
+    }
+    // A billing account only signs in through the GitHub CLI (#104). Following another owner needs a new sign-in, which
+    // checks access to that owner's billing, so the old token goes.
+    let mut billing_owner_changed = false;
+    if info.id == names::GITHUB_BILLING {
+        record.method = AuthMethod::OAuth;
+        let organization = (!billing_org.is_empty()).then_some(billing_org);
+        billing_owner_changed = previous.is_some()
+            && !record
+                .billing_organization
+                .as_deref()
+                .unwrap_or_default()
+                .eq_ignore_ascii_case(organization.as_deref().unwrap_or_default());
+        record.billing_organization = organization;
+        if billing_owner_changed {
+            if let Err(err) =
+                codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record.id)
+            {
+                *form.error.borrow_mut() = Some(format!("The old sign-in couldn't be deleted: {err}").into());
+                window.refresh();
+                return false;
+            }
+            record.external_id = None;
+        }
     }
     // An OpenCode account on OAuth keeps the workspace its sign-in set (#102).
     let opencode_oauth = info.id == names::OPENCODE_GO && method == AuthMethod::OAuth;
@@ -710,12 +763,13 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     use crate::managed::Managed;
     let kind = Managed::of(&record);
     // A new account on a CodexBar sign-in, or one switched to it, is signed in right after saving.
-    let sign_in_now = kind.is_some()
-        && !SettingsHub::global(cx)
-            .settings()
-            .accounts()
-            .iter()
-            .any(|existing| existing.id == record.id && Managed::of(existing) == kind);
+    let sign_in_now = billing_owner_changed
+        || kind.is_some()
+            && !SettingsHub::global(cx)
+                .settings()
+                .accounts()
+                .iter()
+                .any(|existing| existing.id == record.id && Managed::of(existing) == kind);
     // An account leaving a CodexBar sign-in (OAuth to Automatic, say) is signed out and what CodexBar kept is deleted.
     let left = previous.as_ref().and_then(|old| {
         Managed::of(old)

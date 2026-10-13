@@ -43,9 +43,10 @@ pub mod names {
     pub const MOONSHOT: &str = "Moonshot";
     /// Rust-only providers (#103 onward) follow the WPF ones; the retired WPF app never reads them.
     pub const GREPTILE: &str = "Greptile";
+    pub const GITHUB_BILLING: &str = "GitHubBilling";
 
     /// Every provider: the WPF enum's order, then the Rust-only ones.
-    pub const ALL: [&str; 9] = [
+    pub const ALL: [&str; 10] = [
         OPENROUTER,
         COPILOT,
         CLAUDE,
@@ -55,6 +56,7 @@ pub mod names {
         OPENCODE_ZEN,
         MOONSHOT,
         GREPTILE,
+        GITHUB_BILLING,
     ];
 }
 
@@ -121,6 +123,8 @@ pub struct AccountRecord {
     pub copilot_enterprise: Option<String>,
     pub copilot_organization: Option<String>,
     pub copilot_pool_total: Option<u64>,
+    /// GitHub Billing (#104): the organization whose billing the account follows; `None` follows the signed-in user.
+    pub billing_organization: Option<String>,
 }
 
 impl AccountRecord {
@@ -138,6 +142,7 @@ impl AccountRecord {
             copilot_enterprise: None,
             copilot_organization: None,
             copilot_pool_total: None,
+            billing_organization: None,
         }
     }
 
@@ -160,6 +165,9 @@ impl AccountRecord {
         }
         if let Some(total) = self.copilot_pool_total {
             map.insert("copilotPoolTotal".into(), json!(total));
+        }
+        if let Some(organization) = &self.billing_organization {
+            map.insert("githubBillingOrganization".into(), json!(organization));
         }
         Value::Object(map)
     }
@@ -193,6 +201,7 @@ impl AccountRecord {
                 .get("copilotPoolTotal")
                 .and_then(Value::as_u64)
                 .filter(|total| *total > 0),
+            billing_organization: text("githubBillingOrganization").map(str::to_owned),
         })
     }
 }
@@ -345,7 +354,9 @@ impl Settings {
         match provider_entry(&self.doc, provider) {
             Some(Value::Object(entry)) => entry.get("enabled").and_then(Value::as_bool).unwrap_or(true),
             Some(_) => true,
-            None if provider == names::GREPTILE => self.accounts_for(provider).next().is_some(),
+            None if matches!(provider, names::GREPTILE | names::GITHUB_BILLING) => {
+                self.accounts_for(provider).next().is_some()
+            }
             None => provider != names::MOONSHOT,
         }
     }
@@ -623,6 +634,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_enterprise: None,
             copilot_organization: None,
             copilot_pool_total: None,
+            billing_organization: None,
         });
     }
 
@@ -669,6 +681,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_enterprise: None,
             copilot_organization: None,
             copilot_pool_total: None,
+            billing_organization: None,
         });
     }
     if known.is_empty() && copilot_entry.is_some() {
@@ -684,6 +697,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_enterprise: None,
             copilot_organization: None,
             copilot_pool_total: None,
+            billing_organization: None,
         });
     }
     accounts

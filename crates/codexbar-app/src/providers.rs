@@ -9,6 +9,7 @@ use codexbar_providers::claude::{self, ClaudeCliRenewer, ClaudeProvider};
 use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
 use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
 use codexbar_providers::cursor::{self, CursorProvider};
+use codexbar_providers::github_billing::GitHubBillingProvider;
 use codexbar_providers::greptile::GreptileProvider;
 use codexbar_providers::opencode::OpenCodeProvider;
 use codexbar_providers::opencode_console::OpenCodeConsoleProvider;
@@ -78,6 +79,18 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
             provider
         };
         providers.push(Arc::new(provider));
+    }
+
+    // GitHub Billing (#104): each account with the token CodexBar keeps for it, reporting under its own id.
+    for account in enabled_accounts(hub, names::GITHUB_BILLING) {
+        let token = crate::github_sign_in::token(hub, &account).ok().flatten();
+        providers.push(Arc::new(GitHubBillingProvider::new(
+            UreqClient::new(),
+            token,
+            crate::github_sign_in::billing_owner(&account),
+            account.id.clone(),
+            account.label.clone(),
+        )));
     }
 
     // Greptile (#103) is new: every account reports under its own id from the start, with no legacy id to keep. With no
@@ -276,7 +289,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
         .iter()
         .filter_map(|record| {
             let owned = match record.provider.as_str() {
-                names::OPENROUTER | names::MOONSHOT | names::GREPTILE => record.id.clone(),
+                names::OPENROUTER | names::MOONSHOT | names::GREPTILE | names::GITHUB_BILLING => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,
