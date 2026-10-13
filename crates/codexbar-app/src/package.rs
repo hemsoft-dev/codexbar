@@ -30,25 +30,23 @@ impl Installed {
     }
 }
 
-/// Joins the Windows Runtime's multithreaded apartment for the calls on this thread, which may be a background
-/// worker that never did, and leaves it again when dropped.
-struct Apartment(bool);
+/// Keeps the Windows Runtime's multithreaded apartment alive for the rest of the process, so the calls here work on any
+/// thread, including a background worker that never joined an apartment (it is an implicit member).
+///
+/// The apartment must never end while the process runs: the `windows` crate caches activation factories for the whole
+/// process, and once the last thread left the apartment (by uninitializing, or by exiting) a cached factory pointed
+/// into the torn-down apartment, so the next call crashed the process with an access violation (#157).
+struct Apartment;
 
 impl Apartment {
     fn enter() -> Self {
-        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
-        // SAFETY: balanced by `RoUninitialize` in `drop` when it succeeded (including "already initialized");
-        // a thread in another apartment keeps it and is left alone.
-        Self(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok())
-    }
-}
-
-impl Drop for Apartment {
-    fn drop(&mut self) {
-        if self.0 {
-            // SAFETY: pairs with the successful `RoInitialize` in `enter` on this thread.
-            unsafe { windows::Win32::System::WinRT::RoUninitialize() }
-        }
+        static KEPT: std::sync::Once = std::sync::Once::new();
+        KEPT.call_once(|| {
+            // SAFETY: the usage cookie is deliberately never passed to `CoDecrementMTAUsage`, so the apartment lasts
+            // until the process exits. Should it fail, calls here fail as Windows errors, as before.
+            let _ = unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() };
+        });
+        Self
     }
 }
 
@@ -582,5 +580,20 @@ mod tests {
     fn unpackaged_checks_and_installs_fail_without_panicking() {
         assert!(matches!(check(), UpdateState::Failed(_)));
         assert!(install().is_err());
+    }
+
+    #[test]
+    fn calls_on_threads_that_come_and_go_never_crash() {
+        // Each thread ends before the next starts, as background workers do; the cached activation factories must
+        // stay usable (#157).
+        for _ in 0..3 {
+            std::thread::spawn(|| {
+                assert_eq!(startup(), None);
+                assert!(matches!(check(), UpdateState::Failed(_)));
+                assert!(install().is_err());
+            })
+            .join()
+            .unwrap();
+        }
     }
 }
