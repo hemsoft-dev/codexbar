@@ -16,6 +16,7 @@ pub enum Provider {
     OpenCode,
     Moonshot,
     Greptile,
+    GitHubBilling,
 }
 
 impl Provider {
@@ -30,10 +31,11 @@ impl Provider {
             Self::OpenCode => "OpenCode Go + Zen",
             Self::Moonshot => "Moonshot (Kimi)",
             Self::Greptile => "Greptile",
+            Self::GitHubBilling => "GitHub Billing",
         }
     }
 
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Codex,
         Self::Claude,
         Self::Copilot,
@@ -42,6 +44,7 @@ impl Provider {
         Self::OpenCode,
         Self::Moonshot,
         Self::Greptile,
+        Self::GitHubBilling,
     ];
 
     /// A stable key for storage; unlike the display name it never changes with wording.
@@ -55,6 +58,7 @@ impl Provider {
             Self::OpenCode => "opencode",
             Self::Moonshot => "moonshot",
             Self::Greptile => "greptile",
+            Self::GitHubBilling => "github-billing",
         }
     }
 

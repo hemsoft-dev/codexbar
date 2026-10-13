@@ -28,7 +28,7 @@ pub struct ProviderInfo {
     pub multi_account: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 9] = [
+pub const PROVIDERS: [ProviderInfo; 10] = [
     ProviderInfo {
         id: names::CODEX,
         display: "ChatGPT · Codex",
@@ -137,6 +137,17 @@ pub const PROVIDERS: [ProviderInfo; 9] = [
         }),
         default_method: AuthMethod::ApiKey,
         setup_method: AuthMethod::ApiKey,
+        multi_account: true,
+    },
+    ProviderInfo {
+        id: names::GITHUB_BILLING,
+        display: "GitHub Billing",
+        sign_in: "Signs in with your browser through the GitHub CLI, apart from Copilot and the GitHub CLI's own \
+                  accounts, and shows this month's spend across GitHub products for you or an organization you can \
+                  read billing for.",
+        secret: None,
+        default_method: AuthMethod::OAuth,
+        setup_method: AuthMethod::OAuth,
         multi_account: true,
     },
 ];

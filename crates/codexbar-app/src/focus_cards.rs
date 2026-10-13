@@ -10,6 +10,7 @@ use gpui_kit::{
     linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
 };
 
+use crate::history_view::ValueKind;
 use crate::status::severity_color;
 
 /// One card. Built fresh each frame; the charts own their own hover state by id.
@@ -245,10 +246,9 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .enumerate()
             .map(|(ix, value)| (SharedString::from(day_label(account.trend().len(), ix)), *value))
             .collect();
-        // A credits headline trends as the count left (#150), an activity headline as its count (#103); neither
-        // is a fraction.
+        // The trend is in the headline's own unit: a fraction, credits left (#150), a count (#103) or money (#104).
+        let kind = trend_kind(account);
         let counted = counted_name(account);
-        let credits = counted.is_some();
         let high = account.trend().iter().copied().fold(0.0, f64::max);
         let chart = AreaChart::new(points)
             .id("focus-trend")
@@ -257,9 +257,9 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .stroke(current_color)
             .fill(area_fill(current_color))
             .name(counted.clone().unwrap_or_else(|| "Pressure".into()))
-            .y_domain(0.0, if credits { (high * 1.15).max(1.0) } else { 1.0 })
+            .y_domain(0.0, if counted.is_some() { (high * 1.15).max(1.0) } else { 1.0 })
             .tick_margin(3)
-            .y_tick_format(move |value| trend_value(credits, value));
+            .y_tick_format(move |value| kind.value(value));
         let title = counted.unwrap_or_else(|| "Daily pressure".into());
         Card::new(title, "Last 14 days", chart)
     };
@@ -408,34 +408,34 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .skip(trend.len().saturating_sub(7))
         .map(|(ix, value)| (SharedString::from(day_label(trend.len(), ix)), *value))
         .collect();
+    let kind = trend_kind(account);
     let counted = counted_name(account);
-    let credits = counted.is_some();
     let chart = BarChart::new(bars)
         .id("focus-days")
         .band(|(label, _)| label.clone())
         .value(|(_, value)| *value)
         .fill(bar_fill)
-        .value_tick_format(move |value| trend_value(credits, value))
+        .value_tick_format(move |value| kind.value(value))
         .name(counted.clone().unwrap_or_else(|| "Pressure".into()));
     let change = match trend {
         [.., before, last] if *before > 0.0 => (last - before) / before * 100.0,
         _ => 0.0,
     };
     let topped_up = on_credits(account) && matches!(trend, [.., before, last] if *before <= 0.0 && *last > 0.0);
-    let activity = matches!(account.primary(), Some(Metric::Activity { .. }));
+    // A count (#103) or money (#104) changes by an amount, not a share.
+    let by_amount = matches!(kind, ValueKind::Count | ValueKind::Money(_));
     let takeaway = if topped_up {
         // From zero there is no percentage to give (#150).
         "Topped up since yesterday".to_owned()
-    } else if let (true, [.., before, last]) = (activity, trend) {
-        // An activity count changes by a number of things, not a share (#103).
-        let delta = (last - before).round();
-        if delta == 0.0 {
+    } else if let (true, [.., before, last]) = (by_amount, trend) {
+        let delta = last - before;
+        if kind.change(delta) == "no change" {
             "Flat since yesterday".to_owned()
         } else {
             format!(
                 "{} {} since yesterday",
                 if delta > 0.0 { "Up" } else { "Down" },
-                codexbar_core::format_credits(delta.abs())
+                kind.value(delta.abs())
             )
         }
     } else if change.abs() < 1.0 {
@@ -461,23 +461,21 @@ fn on_credits(account: &AccountSnapshot) -> bool {
     matches!(account.primary(), Some(Metric::Credits { .. }))
 }
 
-/// What the trend counts when the headline is a count rather than a fraction: credits left (#150), or an activity
-/// count such as completed reviews (#103).
+/// What the trend holds when the headline isn't a fraction: credits left (#150), an activity count such as completed
+/// reviews (#103), or money left or spent (#104).
 fn counted_name(account: &AccountSnapshot) -> Option<String> {
     match account.primary()? {
         Metric::Credits { .. } => Some("Credits left".to_owned()),
-        Metric::Activity { label, .. } => Some(label.clone()),
+        Metric::Activity { label, .. } | Metric::Spend { label, .. } | Metric::Balance { label, .. } => {
+            Some(label.clone())
+        }
         _ => None,
     }
 }
 
-/// A trend axis value: a credit count, or a percentage.
-fn trend_value(credits: bool, value: f64) -> String {
-    if credits {
-        codexbar_core::format_credits(value.round())
-    } else {
-        format!("{:.0}%", value * 100.0)
-    }
+/// The unit the trend is in, as History stores it: a fraction of a limit, money, credits or a count.
+fn trend_kind(account: &AccountSnapshot) -> ValueKind {
+    account.primary().map_or(ValueKind::Percent, ValueKind::of)
 }
 
 /// How much of a window's pool is left, in words.
@@ -681,5 +679,30 @@ mod tests {
             "On pace for about 70% by the reset"
         );
         assert!(pace_takeaway(&window(0.4, 0.1), now()).starts_with("Hits the included usage limit in ~"));
+    }
+
+    #[test]
+    fn a_trend_is_charted_in_its_headlines_own_unit() {
+        use codexbar_core::{AccountId, Currency, Money, Provider};
+        let account =
+            |metric: Metric| AccountSnapshot::new(AccountId::new("a"), Provider::GitHubBilling, vec![metric], now());
+        let spend = account(Metric::Spend {
+            label: "Net spend".into(),
+            spent: Money::from_cents(2389),
+            limit: None,
+            resets_at: None,
+            pace: None,
+        });
+        assert_eq!(trend_kind(&spend), ValueKind::Money(Currency::Usd));
+        assert_eq!(counted_name(&spend).as_deref(), Some("Net spend"));
+        assert_eq!(trend_kind(&spend).value(23.89), "$23.89");
+        let reviews = account(Metric::Activity {
+            label: "Completed reviews".into(),
+            count: 3,
+        });
+        assert_eq!(trend_kind(&reviews), ValueKind::Count);
+        let window = account(window(0.4, 0.1));
+        assert_eq!(trend_kind(&window), ValueKind::Percent);
+        assert_eq!(counted_name(&window), None, "a fraction keeps the pressure chart");
     }
 }

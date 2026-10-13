@@ -9,7 +9,8 @@ differences that remain, and why.
 | Provider | iOS | Windows | Why |
 | --- | --- | --- | --- |
 | ChatGPT / Codex, Claude, Copilot, Cursor, OpenRouter, OpenCode Go + Zen, Moonshot, Greptile | Yes | Yes | |
-| GitHub Billing (separate accounts) | Yes | No | [#104](https://github.com/hemsoft-dev/codexbar/issues/104), [#105](https://github.com/hemsoft-dev/codexbar/issues/105) await provider decisions |
+| GitHub Billing: monthly spend per owner | Yes | Yes | Windows signs in through the GitHub CLI ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
+| GitHub Billing: included allowances and budgets | Yes | No | [#105](https://github.com/hemsoft-dev/codexbar/issues/105) |
 | Grok | Yes | No | [#108](https://github.com/hemsoft-dev/codexbar/issues/108) |
 | Google Gemini | Yes | No | [#106](https://github.com/hemsoft-dev/codexbar/issues/106), [#107](https://github.com/hemsoft-dev/codexbar/issues/107) |
 

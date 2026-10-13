@@ -168,6 +168,7 @@ impl SettingsHub {
             copilot_enterprise: None,
             copilot_organization: None,
             copilot_pool_total: None,
+            billing_organization: None,
         }
     }
 

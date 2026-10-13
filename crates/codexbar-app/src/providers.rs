@@ -9,6 +9,7 @@ use codexbar_providers::claude::{self, ClaudeCliRenewer, ClaudeProvider};
 use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
 use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
 use codexbar_providers::cursor::{self, CursorProvider};
+use codexbar_providers::github_billing::GitHubBillingProvider;
 use codexbar_providers::greptile::GreptileProvider;
 use codexbar_providers::opencode::OpenCodeProvider;
 use codexbar_providers::opencode_console::OpenCodeConsoleProvider;
@@ -74,6 +75,25 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
             provider.with_account(account.id.clone(), account.label.clone())
         } else if configured {
             provider.with_id(account.id.clone())
+        } else {
+            provider
+        };
+        providers.push(Arc::new(provider));
+    }
+
+    // GitHub Billing (#104): each account with the token CodexBar keeps for it, reporting under its own id.
+    for account in enabled_accounts(hub, names::GITHUB_BILLING) {
+        let token = crate::github_sign_in::token(hub, &account);
+        let provider = GitHubBillingProvider::new(
+            UreqClient::new(),
+            token.as_ref().ok().cloned().flatten(),
+            crate::github_sign_in::billing_owner(&account),
+            account.id.clone(),
+            account.label.clone(),
+        );
+        // A token Credential Manager couldn't read is reported, not taken for signed out.
+        let provider = if token.is_err() {
+            provider.with_unreadable_token()
         } else {
             provider
         };
@@ -276,7 +296,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
         .iter()
         .filter_map(|record| {
             let owned = match record.provider.as_str() {
-                names::OPENROUTER | names::MOONSHOT | names::GREPTILE => record.id.clone(),
+                names::OPENROUTER | names::MOONSHOT | names::GREPTILE | names::GITHUB_BILLING => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,

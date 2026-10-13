@@ -2,6 +2,10 @@
 //! folder (`gh_login`), so the user's `gh` accounts and keyring are left alone; CodexBar keeps the resulting token in
 //! Windows Credential Manager under the account. GitHub CLI tokens don't expire; signing out deletes CodexBar's copy.
 //! Accounts using the GitHub CLI's own sign-in (Automatic or Command line) are the import and fallback path.
+//!
+//! GitHub Billing accounts (#104) sign in the same way, with their own token kept under their own account, so a billing
+//! sign-in never reads, widens or replaces a Copilot one. Before it is saved, the token must read the chosen owner's
+//! billing: the signed-in user's own, which needs GitHub's `user` scope, or an organization's.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -27,9 +31,37 @@ use crate::settings_hub::SettingsHub;
 /// How long the device code stays good on GitHub's side, roughly; the sign-in is given up after it.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// True for a Copilot account CodexBar signs in, rather than one using the GitHub CLI's own sign-in.
+/// True for a Copilot account CodexBar signs in, rather than one using the GitHub CLI's own sign-in, and for every
+/// GitHub Billing account (#104), which only signs in this way.
 pub fn is_managed(record: &AccountRecord) -> bool {
-    record.provider.eq_ignore_ascii_case(names::COPILOT) && record.method == AuthMethod::OAuth
+    (record.provider.eq_ignore_ascii_case(names::COPILOT) && record.method == AuthMethod::OAuth) || is_billing(record)
+}
+
+/// True for a GitHub Billing account (#104).
+pub fn is_billing(record: &AccountRecord) -> bool {
+    record.provider.eq_ignore_ascii_case(names::GITHUB_BILLING)
+}
+
+/// The organization a billing account follows; `None` follows the signed-in user.
+pub fn billing_organization(record: &AccountRecord) -> Option<&str> {
+    record
+        .billing_organization
+        .as_deref()
+        .map(str::trim)
+        .filter(|org| !org.is_empty())
+}
+
+/// The owner whose billing a billing account reads, once known: its organization, or the user it signed in as.
+pub fn billing_owner(record: &AccountRecord) -> Option<codexbar_providers::github_billing::Owner> {
+    use codexbar_providers::github_billing::Owner;
+    match billing_organization(record) {
+        Some(org) => Some(Owner::Organization(org.to_owned())),
+        None => record
+            .external_id
+            .as_deref()
+            .filter(|user| !user.trim().is_empty())
+            .map(|user| Owner::Personal(user.to_owned())),
+    }
 }
 
 /// The token CodexBar keeps for a managed account: `Ok(None)` when it isn't signed in, an error when Credential
@@ -47,8 +79,15 @@ pub fn token(
 /// The scope enterprise billing needs beyond the GitHub CLI's own, asked for when the account has org billing set.
 const BILLING_SCOPE: &str = "manage_billing:enterprise";
 
-/// The extra scopes a sign-in for `record` asks for.
+/// The extra scopes a sign-in for `record` asks for. A user's own billing needs `user`; an organization's is read with
+/// the GitHub CLI's `repo`, so it asks for nothing more.
 fn scopes(record: &AccountRecord) -> Vec<&'static str> {
+    if is_billing(record) {
+        return match billing_organization(record) {
+            Some(_) => Vec::new(),
+            None => vec![codexbar_providers::github_billing::PERSONAL_SCOPE],
+        };
+    }
     let set = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());
     if set(&record.copilot_enterprise) && set(&record.copilot_organization) {
         vec![BILLING_SCOPE]
@@ -78,6 +117,10 @@ pub trait SignInService: Send + Sync {
         scopes: &[&str],
         cancel: &AtomicBool,
     ) -> Result<Box<dyn PendingSignIn>, GhLoginError>;
+
+    /// For a billing account (#104): checks that `token` reads `organization`'s billing, or its own user's when `None`,
+    /// and returns that user's login. The message on failure is shown as is.
+    fn verify_billing(&self, token: &str, organization: Option<&str>) -> Result<String, String>;
 }
 
 /// A sign-in waiting for the user to enter the code on GitHub.
@@ -112,6 +155,16 @@ impl SignInService for GitHubCli {
         // A browser that doesn't open isn't fatal: the dialog has the page and the code.
         let _ = SystemBrowser.open(&login.device().url);
         Ok(Box::new(login))
+    }
+
+    fn verify_billing(&self, token: &str, organization: Option<&str>) -> Result<String, String> {
+        codexbar_providers::github_billing::verify(
+            &codexbar_providers::UreqClient::new(),
+            token,
+            organization,
+            chrono::Utc::now(),
+        )
+        .map_err(|err| err.to_string())
     }
 }
 
@@ -154,6 +207,7 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
     }
     let parent = hub.dir().to_owned();
     let scopes = scopes(&record);
+    let billing = is_billing(&record).then(|| billing_organization(&record).map(str::to_owned));
     let stage = Rc::new(RefCell::new(Stage::Starting));
     let cancel = Arc::new(AtomicBool::new(false));
     let guard = Rc::new(CancelOnDrop(cancel.clone()));
@@ -283,6 +337,34 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
             if cancel.load(Ordering::SeqCst) {
                 return;
             }
+            // A billing sign-in must read the chosen owner's billing before it is kept (#104).
+            let result = match (result, billing) {
+                (Ok(account), Some(organization)) => {
+                    let service = cx.update(|_, cx| cx.global::<Service>().0.clone());
+                    let Ok(service) = service else {
+                        return;
+                    };
+                    let token = account.token.clone();
+                    let verified = cx
+                        .background_spawn(async move { service.verify_billing(&token, organization.as_deref()) })
+                        .await;
+                    if cancel.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    match verified {
+                        Ok(login) => Ok(GhAccount {
+                            username: login,
+                            token: account.token,
+                        }),
+                        Err(message) => {
+                            *stage.borrow_mut() = Stage::Failed(message.into());
+                            let _ = cx.update(|window, _| window.refresh());
+                            return;
+                        }
+                    }
+                }
+                (result, _) => result,
+            };
             let _ = cx.update(|window, cx| match result {
                 Ok(account) => match remember(&record_id, &account, cx) {
                     Ok(()) => window.close_dialog(cx),
@@ -308,7 +390,28 @@ fn remember(record_id: &str, account: &GhAccount, cx: &mut App) -> Result<(), Sh
     let Some(record) = hub.settings().accounts().iter().find(|a| a.id == record_id).cloned() else {
         return Err("The account was removed during the sign-in.".into());
     };
-    if let Some(other) = hub.settings().accounts().iter().find(|other| {
+    // An account following a user's own billing that signs in under another login (another user, or the same one after
+    // a username change, which GitHub's login alone can't tell apart) becomes a new account under a new id. The old
+    // login's spend history is deleted with the old id rather than shown as this login's, and signing in again always
+    // recovers the account.
+    let new_id = (is_billing(&record)
+        && billing_organization(&record).is_none()
+        && record
+            .external_id
+            .as_deref()
+            .is_some_and(|user| !user.eq_ignore_ascii_case(&account.username)))
+    .then(|| AccountRecord::new(&record.provider, &record.label, record.method).id);
+    if is_billing(&record) {
+        // One billing account per owner: the organization, or the user's own billing.
+        let owner = billing_organization(&record).unwrap_or(&account.username).to_owned();
+        if let Some(other) = hub.settings().accounts().iter().find(|other| {
+            other.id != record.id
+                && is_billing(other)
+                && billing_owner(other).is_some_and(|o| o.login().eq_ignore_ascii_case(&owner))
+        }) {
+            return Err(format!("{owner}'s billing is already added as “{}”.", other.label).into());
+        }
+    } else if let Some(other) = hub.settings().accounts().iter().find(|other| {
         other.id != record.id
             && other.provider.eq_ignore_ascii_case(names::COPILOT)
             && other
@@ -319,17 +422,35 @@ fn remember(record_id: &str, account: &GhAccount, cx: &mut App) -> Result<(), Sh
         return Err(format!("{} is already added as “{}”.", account.username, other.label).into());
     }
     let store = hub.credentials();
-    let previous = codexbar_store::credentials::read_long(store.as_ref(), &record.id)
-        .map_err(|err| SharedString::from(format!("The saved token couldn't be read: {err}")))?;
-    codexbar_store::credentials::write_long(store.as_ref(), &record.id, &account.token)
+    let old_id = record.id.clone();
+    let id = new_id.clone().unwrap_or_else(|| old_id.clone());
+    let previous = match new_id {
+        Some(_) => None,
+        None => codexbar_store::credentials::read_long(store.as_ref(), &id)
+            .map_err(|err| SharedString::from(format!("The saved token couldn't be read: {err}")))?,
+    };
+    codexbar_store::credentials::write_long(store.as_ref(), &id, &account.token)
         .map_err(|err| SharedString::from(format!("The token couldn't be saved: {err}")))?;
-    let id = record.id.clone();
     let result = SettingsHub::update(cx, |settings| {
+        if new_id.is_some() {
+            settings.remove(&old_id);
+        }
         settings.upsert(AccountRecord {
+            id: id.clone(),
             external_id: Some(account.username.clone()),
             ..record
         })
     });
+    if result.is_ok()
+        && new_id.is_some()
+        && let Err(err) =
+            codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &old_id)
+    {
+        SettingsHub::set_error(
+            cx,
+            Some(format!("The previous login's sign-in couldn't be deleted: {err}").into()),
+        );
+    }
     if let Err(err) = result {
         // The account still names the previous user, so it keeps the previous user's token: a token without its
         // username would credit one user's usage to another.
@@ -359,8 +480,17 @@ pub fn sign_out(record_id: &str, cx: &mut App) {
     SettingsHub::request_refresh(cx);
 }
 
-/// Who the account row says the account is signed in as.
+/// Who the account row says the account is signed in as, and for a billing account whose billing it reads.
 pub fn describe(hub: &SettingsHub, record: &AccountRecord) -> String {
+    let signed_in = describe_user(hub, record);
+    match (is_billing(record), billing_organization(record)) {
+        (true, Some(org)) => format!("{org} (organization) · {signed_in}"),
+        (true, None) => format!("Own billing · {signed_in}"),
+        (false, _) => signed_in,
+    }
+}
+
+fn describe_user(hub: &SettingsHub, record: &AccountRecord) -> String {
     match (&record.external_id, token(hub, record)) {
         (_, Err(_)) => "Its token couldn't be read from Windows Credential Manager".to_owned(),
         (Some(user), Ok(Some(_))) => user.clone(),

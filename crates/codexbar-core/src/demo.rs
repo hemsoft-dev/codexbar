@@ -117,8 +117,9 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             }],
             fetched,
         )
+        // Balances trend in dollars, as History stores them.
         .with_trend(vec![
-            0.12, 0.1, 0.11, 0.09, 0.1, 0.12, 0.11, 0.09, 0.1, 0.08, 0.1, 0.11, 0.09, 0.1,
+            58.72, 55.6, 52.48, 49.41, 46.3, 43.22, 40.1, 37.02, 33.9, 30.81, 27.7, 24.62, 21.5, 18.42,
         ]),
         AccountSnapshot::new(
             AccountId::new("opencode"),
@@ -205,7 +206,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             fetched,
         )
         .with_trend(vec![
-            0.05, 0.05, 0.04, 0.05, 0.05, 0.05, 0.04, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05,
+            8.6, 8.6, 8.47, 8.47, 8.35, 8.35, 8.21, 8.21, 8.1, 8.1, 7.98, 7.98, 7.85, 7.85,
         ]),
         // #103: a count with no limit, so its trend is the count too.
         AccountSnapshot::new(
@@ -221,6 +222,44 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         .with_message("Also 2 pending.")
         .with_trend(vec![
             12.0, 14.0, 15.0, 15.0, 18.0, 21.0, 22.0, 24.0, 27.0, 29.0, 30.0, 33.0, 35.0, 37.0,
+        ]),
+        // #104: spend with no limit, so nothing is projected against one.
+        AccountSnapshot::new(
+            AccountId::new("github-billing"),
+            Provider::GitHubBilling,
+            vec![
+                Metric::Spend {
+                    label: "Net spend".into(),
+                    spent: Money::from_cents(2389),
+                    limit: None,
+                    resets_at: Some(next_month),
+                    pace: None,
+                },
+                Metric::Spend {
+                    label: "Gross charges".into(),
+                    spent: Money::from_cents(60552),
+                    limit: None,
+                    resets_at: Some(next_month),
+                    pace: None,
+                },
+                Metric::Spend {
+                    label: "Discounts".into(),
+                    spent: Money::from_cents(58163),
+                    limit: None,
+                    resets_at: Some(next_month),
+                    pace: None,
+                },
+            ],
+            fetched,
+        )
+        .with_label("HemSoft")
+        .with_message("At this pace, about $61.72 net by the end of the month.")
+        .with_message(
+            "Actions: $23.89 net of $600.72 gross, $576.83 discounts. actions_linux 16,596 minutes at \
+             $0.006/minute; actions_macos 8,083 minutes at $0.062/minute.",
+        )
+        .with_trend(vec![
+            2.1, 3.4, 4.0, 5.2, 7.9, 9.0, 10.4, 12.2, 14.8, 16.0, 18.3, 20.1, 22.4, 23.89,
         ]),
     ]
 }
@@ -309,6 +348,7 @@ mod tests {
                 "ChatGPT · Codex (team)",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
+                "GitHub Billing · HemSoft",
                 "Greptile · HemSoft",
                 "Moonshot (Kimi)",
             ]
