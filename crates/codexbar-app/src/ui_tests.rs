@@ -4584,3 +4584,83 @@ fn an_implicit_cookie_setup_keeps_running_beside_a_first_oauth_account(cx: &mut 
         .collect();
     assert_eq!(ids, [Some("oc-1"), Some("opencode")], "the cookie setup still runs");
 }
+
+fn keep_implicit_cookie(cx: &mut TestAppContext) {
+    let implicit = codexbar_store::settings::legacy_id(codexbar_store::settings::names::OPENCODE_GO, "");
+    cx.update(|cx| {
+        SettingsHub::global(cx)
+            .credentials()
+            .write(&implicit, "Fe26.2**old-cookie")
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_switched_off_cookie_account_is_not_stood_in_for(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-disabled-cookie",
+        r#"{ "accountConfigurationVersion": 1, "openCodeGoWorkspaceId": "wrk_01OLD", "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "go-1", "providerId": "OpenCodeGo", "displayLabel": "Old", "enabled": false,
+              "authenticationMethod": "BrowserSession", "workspaceId": "wrk_01OLD" } ] }"#,
+    );
+    let _handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    keep_implicit_cookie(cx);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let ids: Vec<Option<&str>> = adapters
+        .iter()
+        .filter(|a| a.name() == "OpenCode Go + Zen")
+        .map(|a| a.account_id())
+        .collect();
+    assert_eq!(ids, [Some("oc-1")]);
+}
+
+#[gpui_kit::test]
+fn the_implicit_cookie_workspace_is_not_added_again_through_oauth(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-implicit-duplicate",
+        r#"{ "accountConfigurationVersion": 1, "openCodeGoWorkspaceId": "wrk_01ABC", "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let fake = FakeOpenCode::new(opencode_fixture::Outcome::SignsIn("wrk_01ABC", "usr_1"));
+    let handle = open_opencode_accounts(cx, &settings, &fake);
+    keep_implicit_cookie(cx);
+    click(cx, handle, "sign-in-oc-1");
+    assert_eq!(
+        label_of(cx, "opencode-sign-in-error").as_deref(),
+        Some("Workspace wrk_01ABC is already shown through the dashboard-cookie setup.")
+    );
+    assert!(saved_console_sign_in(cx, "oc-1").is_none());
+}
+
+#[gpui_kit::test]
+fn a_cookie_that_cant_be_saved_with_the_account_gives_the_sign_in_back(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-cookie-rollback",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth", "workspaceId": "wrk_01ABC", "externalAccountId": "usr_1" } ] }"#,
+    );
+    let handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    let sign_in = opencode_fixture::credential("wrk_01ABC", "usr_1").to_secret();
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(SettingsHub::global(cx).credentials().as_ref(), "oc-1", &sign_in)
+    })
+    .unwrap();
+    click(cx, handle, "edit-oc-1");
+    choose_browser_session(cx, handle);
+    press(cx, handle, "tab");
+    type_text(cx, handle, "Fe26.2**new-cookie");
+    let file = settings.0.join("settings.json");
+    let writable = std::fs::metadata(&file).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&file, read_only).unwrap();
+    click(cx, handle, "account-save");
+    std::fs::set_permissions(&file, writable).unwrap();
+    assert!(label_of(cx, "account-error").is_some(), "the save failed");
+    let saved = saved_console_sign_in(cx, "oc-1").expect("the OAuth account keeps its sign-in");
+    assert_eq!(saved.workspace_id, "wrk_01ABC");
+}

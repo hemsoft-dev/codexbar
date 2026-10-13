@@ -204,6 +204,26 @@ fn cursor_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     adapters
 }
 
+/// The workspace the implicit OpenCode Go cookie setup tracks (from before accounts, or environment variables), when it
+/// is in use: OpenCode Go is on, no cookie record exists (enabled or not), and the setup has a workspace and a cookie.
+pub fn implicit_opencode_workspace(hub: &SettingsHub) -> Option<String> {
+    let settings = hub.settings();
+    let cookie_record = settings
+        .accounts_for(names::OPENCODE_GO)
+        .any(|record| !crate::opencode_sign_in::is_managed(record));
+    if cookie_record || !settings.is_enabled(names::OPENCODE_GO) {
+        return None;
+    }
+    let workspace = std::env::var("OPENCODE_GO_WORKSPACE_ID")
+        .ok()
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty())
+        .or_else(|| settings.opencode_workspace_id())?;
+    hub.secret_for(&SettingsHub::implicit_account(names::OPENCODE_GO))
+        .0
+        .map(|_| workspace)
+}
+
 /// The dashboard account each configured record owns (#85), by record id: OpenRouter and Moonshot records report under
 /// their own id, a Copilot record for one username under that user's id, a Codex account CodexBar signed in under
 /// the ChatGPT identity it holds (#78), and an OpenCode account on the Console under its own id (#102). Removing such
@@ -370,9 +390,10 @@ fn opencode(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         )));
     }
     // Adding the first OAuth account doesn't drop a cookie setup that ran as the implicit account (environment variables,
-    // or a cookie kept under it): with no cookie record, it still stands in, and runs below only when it is set up.
+    // or a cookie kept under it): with no cookie record at all, it still stands in when it is set up. A cookie record
+    // switched off is never stood in for.
     let go = go.into_iter().next().or_else(|| {
-        (!console.is_empty() && hub.settings().is_enabled(names::OPENCODE_GO))
+        (!console.is_empty() && implicit_opencode_workspace(hub).is_some())
             .then(|| SettingsHub::implicit_account(names::OPENCODE_GO))
     });
     let zen = enabled_accounts(hub, names::OPENCODE_ZEN).into_iter().next();

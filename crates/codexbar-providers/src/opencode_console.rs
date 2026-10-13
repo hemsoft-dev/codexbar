@@ -26,6 +26,8 @@ const SIGN_IN_HINT: &str = "Sign in to OpenCode in CodexBar settings.";
 const RENEW_MARGIN: Duration = Duration::seconds(60);
 /// The Console counts money in microcents: 100,000,000 to the dollar.
 const MICROCENTS_PER_CENT: i128 = 1_000_000;
+/// The longest token lifetime accepted: a changed or broken `expires_in` fails as a shape, never overflows a date.
+const MAX_TOKEN_SECONDS: f64 = 366.0 * 24.0 * 3600.0;
 /// How much longer to wait between polls after the Console says to slow down (RFC 8628 section 3.5).
 const SLOW_DOWN: StdDuration = StdDuration::from_secs(5);
 
@@ -301,7 +303,7 @@ fn grant(body: &str) -> Option<Grant> {
     let expires_in = value
         .get("expires_in")
         .and_then(Value::as_f64)
-        .filter(|s| s.is_finite() && *s > 0.0)?;
+        .filter(|s| s.is_finite() && *s > 0.0 && *s <= MAX_TOKEN_SECONDS)?;
     let workspace_id = match value.get("org_id") {
         None | Some(Value::Null) => None,
         Some(Value::String(id)) => Some(id.clone()),
@@ -355,7 +357,9 @@ fn verify(http: &impl HttpClient, body: &str, issued_at: DateTime<Utc>) -> Resul
     Ok(ConsoleCredential {
         access_token: grant.access_token,
         refresh_token: grant.refresh_token,
-        expires_at: issued_at + Duration::seconds(grant.expires_in),
+        expires_at: issued_at
+            .checked_add_signed(Duration::seconds(grant.expires_in))
+            .ok_or(SignInError::Unverified)?,
         workspace_id: workspace,
         user_id: user.to_owned(),
     })
@@ -393,13 +397,16 @@ pub fn renew(http: &impl HttpClient, credential: &ConsoleCredential, now: DateTi
                     .as_deref()
                     .is_none_or(|w| w == credential.workspace_id) =>
             {
-                Renewal::Renewed(ConsoleCredential {
-                    access_token: grant.access_token,
-                    refresh_token: grant.refresh_token,
-                    expires_at: now + Duration::seconds(grant.expires_in),
-                    workspace_id: credential.workspace_id.clone(),
-                    user_id: credential.user_id.clone(),
-                })
+                match now.checked_add_signed(Duration::seconds(grant.expires_in)) {
+                    Some(expires_at) => Renewal::Renewed(ConsoleCredential {
+                        access_token: grant.access_token,
+                        refresh_token: grant.refresh_token,
+                        expires_at,
+                        workspace_id: credential.workspace_id.clone(),
+                        user_id: credential.user_id.clone(),
+                    }),
+                    None => Renewal::Rejected,
+                }
             }
             _ => Renewal::Rejected,
         },
@@ -415,7 +422,8 @@ pub struct UnknownShape;
 /// Go in a workspace: its windows, or why there are none.
 #[derive(Debug, PartialEq)]
 pub enum GoStatus {
-    Subscribed(Vec<Metric>),
+    /// The windows with a reset time, and a note for each one OpenCode gave without one.
+    Subscribed(Vec<Metric>, Vec<String>),
     NotSubscribed,
     /// Go in this workspace is another member's subscription; their usage isn't shown.
     OtherMember,
@@ -469,6 +477,7 @@ pub fn parse_go_status(body: &str, user: &str, now: DateTime<Utc>) -> Result<GoS
         ("month", "Monthly", Duration::days(30)),
     ];
     let mut metrics = Vec::new();
+    let mut notes = Vec::new();
     for (key, label, length) in windows {
         let meter = match meters.get(key) {
             Some(meter) if meter.is_object() => meter,
@@ -488,16 +497,19 @@ pub fn parse_go_status(body: &str, user: &str, now: DateTime<Utc>) -> Result<GoS
             (meter.get("startsAt"), meter.get("resetsAt"))
         };
         let Some(resets_at) = instant(raw_reset) else {
-            // A 5-hour window that hasn't started has no reset yet; none is invented. Any other missing reset is a
-            // shape CodexBar doesn't know.
+            // No reset time is invented. A 5-hour window that hasn't started has none yet; any other window without
+            // one keeps its usage as a note, and the other windows stay.
             let idle = key == "fiveHour"
                 && meter.get("resetsAt").is_some_and(Value::is_null)
                 && meter.get("startsAt").is_some_and(Value::is_null)
                 && used == 0;
-            if idle {
-                continue;
+            if !idle {
+                notes.push(format!(
+                    "{label}: {:.0}% used; OpenCode gave no reset time.",
+                    used as f64 / limit as f64 * 100.0
+                ));
             }
-            return Err(UnknownShape);
+            continue;
         };
         let used = used as f64 / limit as f64;
         let start = instant(raw_start).unwrap_or(resets_at - length);
@@ -508,14 +520,18 @@ pub fn parse_go_status(body: &str, user: &str, now: DateTime<Utc>) -> Result<GoS
             pace: elapsed_pace(used, start, resets_at, now),
         });
     }
-    Ok(GoStatus::Subscribed(metrics))
+    Ok(GoStatus::Subscribed(metrics, notes))
 }
 
 /// Parses `/api/billing/status`: the Zen balance, which can be negative.
 pub fn parse_balance(body: &str) -> Option<Money> {
     let value: Value = serde_json::from_str(body).ok()?;
     let micro = microcents(value.get("balanceMicroCents"))?;
-    i64::try_from(micro / MICROCENTS_PER_CENT).ok().map(Money::from_cents)
+    // To the nearest cent, halves away from zero.
+    let half = MICROCENTS_PER_CENT / 2 * micro.signum();
+    i64::try_from((micro + half) / MICROCENTS_PER_CENT)
+        .ok()
+        .map(Money::from_cents)
 }
 
 /// The saved sign-in couldn't be read or written.
@@ -532,6 +548,17 @@ pub trait CredentialSlot: Send + Sync {
 /// Renewals are rare; one at a time across the app, so two refreshes never spend the same refresh token. Process-wide,
 /// because the dashboard builds its providers anew for every refresh.
 static RENEWALS: Mutex<()> = Mutex::new(());
+
+/// Every change to a saved Console sign-in: a renewal's last check and write, and the app's sign-in, sign-out and
+/// removal. Held only around those, never across a network call, so a sign-out can't slip between a renewal's check
+/// and its write and be undone by it.
+static SLOT_WRITES: Mutex<()> = Mutex::new(());
+
+/// Runs `change` to a saved Console sign-in with no renewal writing at the same time.
+pub fn exclusive<T>(change: impl FnOnce() -> T) -> T {
+    let _writes = SLOT_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    change()
+}
 
 /// Renewals Credential Manager refused to save, by account, with the sign-in each one replaced. A refresh token works
 /// once and reusing one ends the session, so an unsaved renewal must not be lost: it is used and saved again on the
@@ -581,6 +608,14 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
         if replaced != *saved {
             return None;
         }
+        let _writes = SLOT_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Checked again with writes held: a sign-out since `saved` was read drops the renewal.
+        match self.slot.load() {
+            Ok(current) if current.as_deref().and_then(ConsoleCredential::from_secret).as_ref() != Some(&replaced) => {
+                return None;
+            }
+            _ => {}
+        }
         if self.slot.save(&renewed.to_secret()).is_ok() {
             return Some((renewed, false));
         }
@@ -603,6 +638,8 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
             Renewal::Renewed(renewed) => {
                 let mut unsaved = UNSAVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 unsaved.retain(|(account, _, _)| *account != self.account);
+                // The check and the write happen with writes held, so nothing changes the sign-in between them.
+                let _writes = SLOT_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 match self.slot.load() {
                     // Removed or replaced meanwhile: the renewal is dropped, never written over it.
                     Ok(current)
@@ -668,7 +705,10 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
         }
         let mut errors = Vec::new();
         match go {
-            Ok(GoStatus::Subscribed(windows)) => metrics.extend(windows),
+            Ok(GoStatus::Subscribed(windows, notes)) => {
+                metrics.extend(windows);
+                messages.extend(notes);
+            }
             Ok(GoStatus::NotSubscribed) => messages.push("OpenCode Go isn't subscribed in this workspace.".to_owned()),
             Ok(GoStatus::OtherMember) => {
                 messages.push("OpenCode Go in this workspace is another member's subscription.".to_owned());
@@ -1030,7 +1070,7 @@ mod tests {
 
     #[test]
     fn go_windows_keep_their_labels_and_the_servers_resets() {
-        let GoStatus::Subscribed(metrics) = parse_go_status(GO, "usr_1", now()).unwrap() else {
+        let GoStatus::Subscribed(metrics, _) = parse_go_status(GO, "usr_1", now()).unwrap() else {
             panic!("subscribed");
         };
         let labels: Vec<&str> = metrics.iter().map(Metric::label).collect();
@@ -1047,14 +1087,40 @@ mod tests {
             r#""usedMicroCents":"25","limitMicroCents":"100","startsAt":"2026-09-22T08:00:00Z","resetsAt":"2026-09-22T13:00:00Z""#,
             r#""usedMicroCents":"0","limitMicroCents":"100","startsAt":null,"resetsAt":null"#,
         );
-        let GoStatus::Subscribed(metrics) = parse_go_status(&idle, "usr_1", now()).unwrap() else {
+        let GoStatus::Subscribed(metrics, _) = parse_go_status(&idle, "usr_1", now()).unwrap() else {
             panic!("subscribed");
         };
         let labels: Vec<&str> = metrics.iter().map(Metric::label).collect();
         assert_eq!(labels, ["Weekly", "Monthly"]);
-        // A used window without a reset is a shape CodexBar doesn't know.
+        // A used window without a reset keeps its usage as a note, and the other windows stay.
         let used = idle.replace(r#""usedMicroCents":"0""#, r#""usedMicroCents":"5""#);
-        assert_eq!(parse_go_status(&used, "usr_1", now()), Err(UnknownShape));
+        let GoStatus::Subscribed(metrics, notes) = parse_go_status(&used, "usr_1", now()).unwrap() else {
+            panic!("subscribed");
+        };
+        assert_eq!(metrics.len(), 2);
+        assert_eq!(notes, ["5-hour window: 5% used; OpenCode gave no reset time."]);
+    }
+
+    #[test]
+    fn balances_round_to_the_nearest_cent_and_lifetimes_are_bounded() {
+        assert_eq!(
+            parse_balance(r#"{"balanceMicroCents":"2786781005"}"#),
+            Some(Money::from_cents(2787))
+        );
+        assert_eq!(
+            parse_balance(r#"{"balanceMicroCents":"-2786781005"}"#),
+            Some(Money::from_cents(-2787))
+        );
+        assert_eq!(
+            parse_balance(r#"{"balanceMicroCents":"2786481005"}"#),
+            Some(Money::from_cents(2786))
+        );
+        let forever = TOKEN.replace(r#""expires_in":3600"#, r#""expires_in":1e300"#);
+        let console = Console::default().on("POST", "auth/device/token", 200, &forever);
+        let result = wait_for_approval(&console, &challenge(), &AtomicBool::new(false), &now, &no_sleep);
+        assert_eq!(result.unwrap_err(), SignInError::Unverified);
+        let console = Console::default().on("POST", "auth/device/token", 200, &forever);
+        assert!(matches!(renew(&console, &credential(now()), now()), Renewal::Rejected));
     }
 
     #[test]
@@ -1071,12 +1137,12 @@ mod tests {
         );
         // Whole numbers may come as JSON integers; fractions and booleans may not.
         let numeric = GO.replace(r#""usedMicroCents":"50""#, r#""usedMicroCents":50"#);
-        assert!(matches!(parse_go_status(&numeric, "usr_1", now()), Ok(GoStatus::Subscribed(m)) if m.len() == 3));
+        assert!(matches!(parse_go_status(&numeric, "usr_1", now()), Ok(GoStatus::Subscribed(m, _)) if m.len() == 3));
         let fraction = GO.replace(r#""usedMicroCents":"50""#, r#""usedMicroCents":50.5"#);
         assert_eq!(parse_go_status(&fraction, "usr_1", now()), Err(UnknownShape));
         // Not every response names the subscriber; one that does must name this user.
         let unnamed = GO.replace(r#""subscriberUserId":"usr_1","#, "");
-        assert!(matches!(parse_go_status(&unnamed, "usr_1", now()), Ok(GoStatus::Subscribed(m)) if m.len() == 3));
+        assert!(matches!(parse_go_status(&unnamed, "usr_1", now()), Ok(GoStatus::Subscribed(m, _)) if m.len() == 3));
         let odd = GO.replace(r#""subscriberUserId":"usr_1""#, r#""subscriberUserId":7"#);
         assert_eq!(parse_go_status(&odd, "usr_1", now()), Err(UnknownShape));
         let zero_limit = GO.replace(
@@ -1376,7 +1442,7 @@ mod tests {
             "",
         );
         assert_ne!(without_week, GO);
-        let GoStatus::Subscribed(metrics) = parse_go_status(&without_week, "usr_1", now()).unwrap() else {
+        let GoStatus::Subscribed(metrics, _) = parse_go_status(&without_week, "usr_1", now()).unwrap() else {
             panic!("subscribed");
         };
         let labels: Vec<&str> = metrics.iter().map(Metric::label).collect();
@@ -1385,7 +1451,7 @@ mod tests {
             r#""month":{"usedMicroCents":"75","limitMicroCents":"100"}"#,
             r#""month":null"#,
         );
-        assert!(matches!(parse_go_status(&null_month, "usr_1", now()), Ok(GoStatus::Subscribed(m)) if m.len() == 2));
+        assert!(matches!(parse_go_status(&null_month, "usr_1", now()), Ok(GoStatus::Subscribed(m, _)) if m.len() == 2));
         // The 5-hour meter is required, and a weekly one that is there must be well-formed.
         let without_five = GO.replace(r#""fiveHour":"#, r#""other":"#);
         assert_eq!(parse_go_status(&without_five, "usr_1", now()), Err(UnknownShape));

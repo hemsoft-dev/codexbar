@@ -683,11 +683,17 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
 
     // The secret is written first: if Credential Manager fails, the account isn't saved without its key. An OpenCode
     // account on OAuth keeps its sign-in there instead, so no cookie is written over it.
+    // The sign-in a cookie replaces, put back if the settings can't be saved after it.
+    let mut replaced_sign_in = None;
     if info.secret.is_some() && !secret.is_empty() && !opencode_oauth {
         let store = SettingsHub::global(cx).credentials();
         let written = if replaces_opencode_sign_in {
-            // One write that leaves the old sign-in readable until the cookie is in place.
-            codexbar_store::credentials::write_long(store.as_ref(), &record.id, &secret)
+            // One write that leaves the old sign-in readable until the cookie is in place, with no renewal writing
+            // at the same time.
+            codexbar_providers::opencode_console::exclusive(|| {
+                replaced_sign_in = codexbar_store::credentials::read_long(store.as_ref(), &record.id)?;
+                codexbar_store::credentials::write_long(store.as_ref(), &record.id, &secret)
+            })
         } else {
             store.write(&record.id, &secret)
         };
@@ -745,6 +751,13 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             true
         }
         Err(err) => {
+            // The account is still on OAuth, so it gets its sign-in back.
+            if let Some(previous) = replaced_sign_in {
+                let store = SettingsHub::global(cx).credentials();
+                let _ = codexbar_providers::opencode_console::exclusive(|| {
+                    codexbar_store::credentials::write_long(store.as_ref(), &record_id, &previous)
+                });
+            }
             *form.error.borrow_mut() = Some(err.to_string().into());
             window.refresh();
             false

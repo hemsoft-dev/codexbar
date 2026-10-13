@@ -332,11 +332,23 @@ fn remember(record_id: &str, credential: &ConsoleCredential, cx: &mut App) -> Re
         )
         .into());
     }
+    // The cookie setup from before accounts (or environment variables) has no record but still shows its workspace.
+    if crate::providers::implicit_opencode_workspace(hub).as_deref() == Some(credential.workspace_id.as_str()) {
+        return Err(format!(
+            "Workspace {} is already shown through the dashboard-cookie setup.",
+            credential.workspace_id
+        )
+        .into());
+    }
     let store = hub.credentials();
-    let previous = codexbar_store::credentials::read_long(store.as_ref(), &record.id)
-        .map_err(|err| SharedString::from(format!("The saved sign-in couldn't be read: {err}")))?;
-    codexbar_store::credentials::write_long(store.as_ref(), &record.id, &credential.to_secret())
-        .map_err(|err| SharedString::from(format!("The sign-in couldn't be saved: {err}")))?;
+    // No renewal writes the account's sign-in while it is replaced here.
+    let previous = codexbar_providers::opencode_console::exclusive(|| {
+        let previous = codexbar_store::credentials::read_long(store.as_ref(), &record.id)
+            .map_err(|err| SharedString::from(format!("The saved sign-in couldn't be read: {err}")))?;
+        codexbar_store::credentials::write_long(store.as_ref(), &record.id, &credential.to_secret())
+            .map_err(|err| SharedString::from(format!("The sign-in couldn't be saved: {err}")))?;
+        Ok::<_, SharedString>(previous)
+    })?;
     let id = record.id.clone();
     let result = SettingsHub::update(cx, |settings| {
         settings.upsert(AccountRecord {
@@ -346,10 +358,10 @@ fn remember(record_id: &str, credential: &ConsoleCredential, cx: &mut App) -> Re
         })
     });
     if let Err(err) = result {
-        let _ = match previous {
+        let _ = codexbar_providers::opencode_console::exclusive(|| match previous {
             Some(previous) => codexbar_store::credentials::write_long(store.as_ref(), &id, &previous),
             None => codexbar_store::credentials::delete_long(store.as_ref(), &id),
-        };
+        });
         return Err(format!("The sign-in couldn't be saved: {err}").into());
     }
     SettingsHub::request_refresh(cx);
@@ -366,7 +378,12 @@ pub fn sign_out(record_id: &str, cx: &mut App) {
     if !is_managed(&record) {
         return;
     }
-    if let Err(err) = codexbar_store::credentials::delete_long(hub.credentials().as_ref(), &record.id) {
+    let store = hub.credentials();
+    // Never between a renewal's check and its write, which would bring the sign-in back.
+    let deleted = codexbar_providers::opencode_console::exclusive(|| {
+        codexbar_store::credentials::delete_long(store.as_ref(), &record.id)
+    });
+    if let Err(err) = deleted {
         SettingsHub::set_error(cx, Some(format!("Couldn't sign out: {err}").into()));
         return;
     }
@@ -375,9 +392,10 @@ pub fn sign_out(record_id: &str, cx: &mut App) {
 
 /// Deletes what CodexBar kept for an account that was removed or left this sign-in.
 pub fn forget(record: AccountRecord, cx: &mut App) {
-    if let Err(err) =
-        codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record.id)
-    {
+    let store = SettingsHub::global(cx).credentials();
+    if let Err(err) = codexbar_providers::opencode_console::exclusive(|| {
+        codexbar_store::credentials::delete_long(store.as_ref(), &record.id)
+    }) {
         SettingsHub::set_error(
             cx,
             Some(format!("The account's OpenCode sign-in couldn't be deleted: {err}").into()),
