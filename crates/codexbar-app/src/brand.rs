@@ -30,6 +30,7 @@ pub fn brand(provider: Provider) -> Brand {
         Provider::OpenRouter => 0x4F52D9,
         Provider::OpenCode => 0xB45309,
         Provider::Moonshot => 0x1D4ED8,
+        Provider::Greptile => 0x44A775,
     };
     Brand {
         accent,
@@ -48,6 +49,7 @@ pub fn from_settings_name(name: &str) -> Option<Provider> {
         names::OPENROUTER => Provider::OpenRouter,
         names::OPENCODE_GO | names::OPENCODE_ZEN => Provider::OpenCode,
         names::MOONSHOT => Provider::Moonshot,
+        names::GREPTILE => Provider::Greptile,
         _ => return None,
     })
 }

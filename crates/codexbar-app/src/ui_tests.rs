@@ -4664,3 +4664,48 @@ fn a_cookie_that_cant_be_saved_with_the_account_gives_the_sign_in_back(cx: &mut 
     let saved = saved_console_sign_in(cx, "oc-1").expect("the OAuth account keeps its sign-in");
     assert_eq!(saved.workspace_id, "wrk_01ABC");
 }
+
+// Greptile (#103): review activity is a count, never a bar or a percentage.
+
+#[gpui_kit::test]
+fn a_greptile_row_shows_completed_reviews_as_a_count(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("greptile-row", "{}");
+    let (handle, _) = open_dashboard(cx, &settings);
+    assert!(
+        label(cx, handle, "provider-badge-greptile").is_some(),
+        "the table shows the account"
+    );
+    assert_eq!(
+        label(cx, handle, "used-greptile").as_deref(),
+        Some("Completed reviews: 37")
+    );
+    assert_eq!(label(cx, handle, "progress-cell-greptile").as_deref(), Some("No bar"));
+    assert!(label(cx, handle, "severity-tag-greptile").is_none(), "no pill");
+}
+
+#[gpui_kit::test]
+fn a_greptile_account_reads_with_its_own_key_under_its_own_id(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "greptile-accounts",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": true,
+              "authenticationMethod": "ApiKey" },
+            { "id": "gr-2", "providerId": "Greptile", "displayLabel": "Side", "enabled": false,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let greptile: Vec<_> = adapters.iter().filter(|a| a.name() == "Greptile").collect();
+    assert_eq!(greptile.len(), 1, "only the enabled account");
+    assert_eq!(greptile[0].account_id(), Some("gr-1"));
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("gr-1").map(String::as_str), Some("gr-1"));
+}
+
+#[gpui_kit::test]
+fn greptile_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("greptile-off", "{}");
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    assert!(adapters.iter().all(|a| a.name() != "Greptile"));
+}

@@ -8,9 +8,8 @@ differences that remain, and why.
 
 | Provider | iOS | Windows | Why |
 | --- | --- | --- | --- |
-| ChatGPT / Codex, Claude, Copilot, Cursor, OpenRouter, OpenCode Go + Zen, Moonshot | Yes | Yes | |
+| ChatGPT / Codex, Claude, Copilot, Cursor, OpenRouter, OpenCode Go + Zen, Moonshot, Greptile | Yes | Yes | |
 | GitHub Billing (separate accounts) | Yes | No | [#104](https://github.com/hemsoft-dev/codexbar/issues/104), [#105](https://github.com/hemsoft-dev/codexbar/issues/105) await provider decisions |
-| Greptile | Yes | No | [#103](https://github.com/hemsoft-dev/codexbar/issues/103) |
 | Grok | Yes | No | [#108](https://github.com/hemsoft-dev/codexbar/issues/108) |
 | Google Gemini | Yes | No | [#106](https://github.com/hemsoft-dev/codexbar/issues/106), [#107](https://github.com/hemsoft-dev/codexbar/issues/107) |
 

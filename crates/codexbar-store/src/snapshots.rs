@@ -136,6 +136,8 @@ fn metric_to_json(metric: &Metric) -> Value {
             "kind": "balance", "label": label, "currency": remaining.currency().code(),
             "remainingCents": remaining.cents(), "burnPerDayCents": burn_per_day.map(Money::cents),
         }),
+        // A count of activity with no limit (#103). Older builds skip the kind.
+        Metric::Activity { label, count } => json!({ "kind": "activity", "label": label, "count": count }),
         // A count of credits, not money (#150); no balance means unlimited. Older builds skip the kind.
         Metric::Credits { label, balance, start } => json!({
             "kind": "credits", "label": label, "balance": balance, "unlimited": balance.is_none(), "start": start,
@@ -167,6 +169,10 @@ fn metric_from_json(value: &Value) -> Option<Metric> {
                 .get("burnPerDayCents")
                 .and_then(Value::as_i64)
                 .map(|minor| Money::new(minor, currency(value).unwrap_or_default())),
+        },
+        "activity" => Metric::Activity {
+            label,
+            count: value.get("count")?.as_u64()?,
         },
         "credits" => {
             let count = |key: &str| {
@@ -272,6 +278,23 @@ mod tests {
             .collect();
         save_snapshots(&dir.0, &accounts).unwrap();
         assert_eq!(load_snapshots(&dir.0), accounts);
+    }
+
+    #[test]
+    fn an_activity_count_round_trips() {
+        let dir = Dir::new("activity");
+        let account = AccountSnapshot::new(
+            AccountId::new("gr-1"),
+            Provider::Greptile,
+            vec![Metric::Activity {
+                label: "Completed reviews".into(),
+                count: 37,
+            }],
+            now(),
+        )
+        .with_label("HemSoft");
+        save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
+        assert_eq!(load_snapshots(&dir.0), vec![account]);
     }
 
     #[test]

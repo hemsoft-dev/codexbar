@@ -8,7 +8,7 @@ sign-in or key you gave it, and to nothing else.
 
 CodexBar sends requests only to providers that are on and have a sign-in or key
 to use. On a first start, before any account is set up, every provider except
-Moonshot is on: one already signed in on this PC (the Codex CLI, Claude Code, the
+Moonshot and Greptile is on: one already signed in on this PC (the Codex CLI, Claude Code, the
 Cursor app, the GitHub CLI) is fetched right away, and one without a sign-in or
 key makes no request. To stop one, add an account for it in Settings > Accounts
 (the provider's own sign-in, Automatic) and switch that account off.
@@ -21,6 +21,7 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | Cursor | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` | The Cursor sign-in (`auth.json`) |
 | OpenRouter | `https://openrouter.ai/api/v1/credits` | Your API key |
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
+| Greptile | `https://api.greptile.com/mcp` (only the read-only `list_code_reviews` tool) | Your organization API key |
 | OpenCode Go / Zen | OAuth accounts: `https://opencode.ai/console/api/go/status` and `…/console/api/billing/status`; cookie accounts: `https://opencode.ai/workspace/…` | The account's OpenCode sign-in (OAuth), or your dashboard auth cookie |
 
 For the GitHub CLI's Copilot accounts, CodexBar also runs `gh auth status` on

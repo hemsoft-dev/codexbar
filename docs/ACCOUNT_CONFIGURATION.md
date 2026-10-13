@@ -13,7 +13,7 @@ account in again with another identity replaces it without asking (see
 | Field | Meaning |
 | --- | --- |
 | `id` | Stable id (32 hex digits for accounts CodexBar creates) |
-| `providerId` | `Codex`, `Claude`, `Copilot`, `Cursor`, `OpenRouter`, `OpenCodeGo`, `OpenCodeZen` or `Moonshot` |
+| `providerId` | `Codex`, `Claude`, `Copilot`, `Cursor`, `OpenRouter`, `OpenCodeGo`, `OpenCodeZen`, `Moonshot` or `Greptile` |
 | `displayLabel` | The account's name |
 | `enabled` | Whether it is fetched and shown |
 | `authenticationMethod` | `Automatic`, `ApiKey`, `CommandLine`, `OAuth` or `BrowserSession` (see below) |
@@ -36,7 +36,7 @@ the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.m
 | Claude | OAuth or Automatic (`~/.claude`) | Browser session: its own Claude Code folder, through a Claude Code window |
 | Copilot | Automatic or Command line (the GitHub CLI's accounts; a username limits it to one) | OAuth: the GitHub CLI's device sign-in, token kept by CodexBar |
 | Cursor | Automatic (the Cursor app) | OAuth: its own folder, through the Cursor CLI |
-| OpenRouter, Moonshot | API key (or the environment variable) | |
+| OpenRouter, Moonshot, Greptile | API key (or the environment variable) | |
 | OpenCode Go / Zen | Browser session (a copied dashboard cookie) | OAuth (OpenCode Go): OpenCode's device approval in the browser, sign-in kept by CodexBar |
 
 Accounts CodexBar signs in show **Sign in…**, **Sign in again…** and **Sign out**

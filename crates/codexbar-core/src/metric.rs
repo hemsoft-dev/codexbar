@@ -229,6 +229,9 @@ pub enum Metric {
         remaining: Money,
         burn_per_day: Option<Money>,
     },
+    /// A count of activity with no limit, no reset and no balance (#103): Greptile's completed reviews. It is
+    /// never drawn as a bar or a percentage, and it raises no alert.
+    Activity { label: String, count: u64 },
     /// A prepaid pool counted in the provider's own credits, never money (#150): Codex's credits.
     Credits {
         label: String,
@@ -246,6 +249,7 @@ impl Metric {
             | Self::Quota { label, .. }
             | Self::Spend { label, .. }
             | Self::Balance { label, .. }
+            | Self::Activity { label, .. }
             | Self::Credits { label, .. } => label,
         }
     }
@@ -270,6 +274,7 @@ impl Metric {
         match self {
             Self::Balance { remaining, .. } => Some(remaining.major()),
             Self::Credits { balance, .. } => *balance,
+            Self::Activity { count, .. } => Some(*count as f64),
             Self::Spend { spent, .. } => Some(spent.major()),
             _ => self.used_fraction(),
         }
@@ -299,7 +304,11 @@ impl Metric {
             } if limit.cents() > 0 && limit.currency() == spent.currency() => {
                 Some((spent.cents() as f64 / limit.cents() as f64).clamp(0.0, 1.0))
             }
-            Self::Quota { .. } | Self::Spend { .. } | Self::Balance { .. } | Self::Credits { .. } => None,
+            Self::Quota { .. }
+            | Self::Spend { .. }
+            | Self::Balance { .. }
+            | Self::Activity { .. }
+            | Self::Credits { .. } => None,
         }
     }
 
@@ -334,7 +343,7 @@ impl Metric {
         match self {
             Self::Window { resets_at, .. } | Self::Quota { resets_at, .. } => Some(*resets_at),
             Self::Spend { resets_at, .. } => *resets_at,
-            Self::Balance { .. } | Self::Credits { .. } => None,
+            Self::Balance { .. } | Self::Activity { .. } | Self::Credits { .. } => None,
         }
     }
 
@@ -358,7 +367,7 @@ impl Metric {
     pub fn projected_at_reset(&self, now: DateTime<Utc>) -> Option<f64> {
         let pace = match self {
             Self::Window { pace, .. } | Self::Quota { pace, .. } | Self::Spend { pace, .. } => (*pace)?,
-            Self::Balance { .. } | Self::Credits { .. } => return None,
+            Self::Balance { .. } | Self::Activity { .. } | Self::Credits { .. } => return None,
         };
         let used = self.used_fraction()?;
         let left = self.resets_at()? - now;
@@ -404,6 +413,7 @@ impl Metric {
                 balance: Some(balance), ..
             } => format!("{} left", format_credits(*balance)),
             Self::Credits { balance: None, .. } => "Unlimited".to_owned(),
+            Self::Activity { count, .. } => group_thousands(*count),
         }
     }
 }
@@ -679,5 +689,30 @@ mod money_tests {
             pace: None,
         };
         assert_eq!((mixed.used_fraction(), mixed.headroom()), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    #[test]
+    fn an_activity_count_has_no_fraction_bar_reset_or_alert() {
+        let reviews = Metric::Activity {
+            label: "Completed reviews".into(),
+            count: 1_284,
+        };
+        assert_eq!(reviews.used_display(), "1,284");
+        assert_eq!(reviews.used_fraction(), None);
+        assert_eq!(reviews.progress(), None);
+        assert_eq!(reviews.resets_at(), None);
+        assert!(!reviews.is_exhausted());
+        assert_eq!(reviews.history_value(), Some(1_284.0));
+        assert_eq!(reviews.key(), "completed-reviews");
+        let now = "2026-10-12T12:00:00Z".parse().unwrap();
+        assert_eq!(reviews.projected_at_reset(now), None);
+        let assessment = crate::assess(&reviews, now);
+        assert_eq!(assessment.severity(), crate::Severity::Normal);
+        assert_eq!(assessment.label(), None, "no pill");
     }
 }

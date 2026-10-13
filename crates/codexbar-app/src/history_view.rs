@@ -34,6 +34,8 @@ pub enum ValueKind {
     Money(Currency),
     /// A count of credits (#150), never a percentage.
     Credits,
+    /// A count of activity with no limit (#103), such as completed reviews.
+    Count,
 }
 
 impl ValueKind {
@@ -43,6 +45,7 @@ impl ValueKind {
             Metric::Balance { remaining, .. } => Self::Money(remaining.currency()),
             Metric::Spend { spent, .. } => Self::Money(spent.currency()),
             Metric::Credits { .. } => Self::Credits,
+            Metric::Activity { .. } => Self::Count,
             _ => Self::Percent,
         }
     }
@@ -53,7 +56,7 @@ impl ValueKind {
             Self::Money(currency) if value < 0.0 => format!("\u{2212}{}", amount(currency, value)),
             Self::Money(currency) => amount(currency, value),
             Self::Credits if value < 0.0 => format!("\u{2212}{}", codexbar_core::format_credits(value.abs().round())),
-            Self::Credits => codexbar_core::format_credits(value.round()),
+            Self::Credits | Self::Count => codexbar_core::format_credits(value.round()),
         }
     }
 
@@ -65,8 +68,8 @@ impl ValueKind {
             Self::Percent => format!("{sign}{:.0} pts", (delta * 100.0).abs()),
             Self::Money(currency) if negligible(currency, delta) => "no change".into(),
             Self::Money(currency) => format!("{sign}{}", amount(currency, delta)),
-            Self::Credits if delta.abs() < 0.5 => "no change".into(),
-            Self::Credits => format!("{sign}{}", codexbar_core::format_credits(delta.abs().round())),
+            Self::Credits | Self::Count if delta.abs() < 0.5 => "no change".into(),
+            Self::Credits | Self::Count => format!("{sign}{}", codexbar_core::format_credits(delta.abs().round())),
         }
     }
 
@@ -78,7 +81,8 @@ impl ValueKind {
             Self::Percent => format!("{direction} {:.0} points", (delta * 100.0).abs()),
             Self::Money(currency) if negligible(currency, delta) => "unchanged".into(),
             Self::Money(currency) => format!("{direction} {}", amount(currency, delta)),
-            Self::Credits if delta.abs() < 0.5 => "unchanged".into(),
+            Self::Credits | Self::Count if delta.abs() < 0.5 => "unchanged".into(),
+            Self::Count => format!("{direction} {}", codexbar_core::format_credits(delta.abs().round())),
             Self::Credits => format!(
                 "{direction} {} credits",
                 codexbar_core::format_credits(delta.abs().round())
@@ -586,7 +590,7 @@ impl HistoryView {
                 ValueKind::Percent => (0.0, 1.0),
                 // Balances start at zero so a drop reads as a drop; a flat series still gets visible headroom.
                 // A negative (overdrawn) balance extends the axis below zero instead of being clipped.
-                ValueKind::Money(_) | ValueKind::Credits => {
+                ValueKind::Money(_) | ValueKind::Credits | ValueKind::Count => {
                     (summary.low.min(0.0) * 1.15, (summary.high * 1.15).max(1.0))
                 }
             };
@@ -768,6 +772,17 @@ mod tests {
         );
         assert_eq!(ValueKind::Credits.change(-1_700.0), "\u{2212}1,700");
         assert_eq!(ValueKind::Credits.change_words(2_000.0), "up 2,000 credits");
+        assert_eq!(ValueKind::Count.value(37.0), "37");
+        assert_eq!(ValueKind::Count.change(3.0), "+3");
+        assert_eq!(ValueKind::Count.change(0.2), "no change");
+        assert_eq!(ValueKind::Count.change_words(-2.0), "down 2");
+        assert_eq!(
+            ValueKind::of(&Metric::Activity {
+                label: "Completed reviews".into(),
+                count: 1
+            }),
+            ValueKind::Count
+        );
     }
 
     #[test]

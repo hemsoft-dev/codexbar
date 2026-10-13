@@ -9,6 +9,7 @@ use codexbar_providers::claude::{self, ClaudeCliRenewer, ClaudeProvider};
 use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
 use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
 use codexbar_providers::cursor::{self, CursorProvider};
+use codexbar_providers::greptile::GreptileProvider;
 use codexbar_providers::opencode::OpenCodeProvider;
 use codexbar_providers::opencode_console::OpenCodeConsoleProvider;
 use codexbar_providers::{SystemCommandRunner, UreqClient, UsageProvider};
@@ -77,6 +78,17 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
             provider
         };
         providers.push(Arc::new(provider));
+    }
+
+    // Greptile (#103) is new: every account reports under its own id from the start, with no legacy id to keep.
+    for account in enabled_accounts(hub, names::GREPTILE) {
+        let key = hub.secret_for(&account).0;
+        providers.push(Arc::new(GreptileProvider::new(
+            UreqClient::new(),
+            key,
+            account.id.clone(),
+            account.label.clone(),
+        )));
     }
     providers
 }
@@ -258,7 +270,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
         .iter()
         .filter_map(|record| {
             let owned = match record.provider.as_str() {
-                names::OPENROUTER | names::MOONSHOT => record.id.clone(),
+                names::OPENROUTER | names::MOONSHOT | names::GREPTILE => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,

@@ -24,7 +24,7 @@ pub struct ProviderInfo {
     pub multi_account: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 8] = [
+pub const PROVIDERS: [ProviderInfo; 9] = [
     ProviderInfo {
         id: names::CODEX,
         display: "ChatGPT · Codex",
@@ -112,6 +112,19 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
         secret: Some(SecretSpec {
             label: "API key",
             env: "MOONSHOT_API_KEY",
+        }),
+        default_method: AuthMethod::ApiKey,
+        setup_method: AuthMethod::ApiKey,
+        multi_account: true,
+    },
+    ProviderInfo {
+        id: names::GREPTILE,
+        display: "Greptile",
+        sign_in: "Needs a Greptile organization API key (app.greptile.com > Settings > API). Shows the organization's \
+                  completed code reviews, read with Greptile's read-only review listing; not remaining credits.",
+        secret: Some(SecretSpec {
+            label: "Organization API key",
+            env: "GREPTILE_API_KEY",
         }),
         default_method: AuthMethod::ApiKey,
         setup_method: AuthMethod::ApiKey,
