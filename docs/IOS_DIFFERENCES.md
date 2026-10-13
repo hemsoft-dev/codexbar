@@ -10,7 +10,7 @@ differences that remain, and why.
 | --- | --- | --- | --- |
 | ChatGPT / Codex, Claude, Copilot, Cursor, OpenRouter, OpenCode Go + Zen, Moonshot, Greptile | Yes | Yes | |
 | GitHub Billing: monthly spend per owner | Yes | Yes | Windows signs in through the GitHub CLI ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
-| GitHub Billing: included allowances and budgets | Yes | No | [#105](https://github.com/hemsoft-dev/codexbar/issues/105) |
+| GitHub Billing: included allowances and budgets | Yes | Yes | Windows also counts billable usage past an allowance without repository visibility ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
 | Grok | Yes | No | [#108](https://github.com/hemsoft-dev/codexbar/issues/108) |
 | Google Gemini | Yes | No | [#106](https://github.com/hemsoft-dev/codexbar/issues/106), [#107](https://github.com/hemsoft-dev/codexbar/issues/107) |
 

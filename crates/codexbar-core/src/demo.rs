@@ -249,11 +249,28 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     resets_at: Some(next_month),
                     pace: None,
                 },
+                // #105: included allowances, as a share of the plan's.
+                Metric::Window {
+                    label: "Actions minutes".into(),
+                    used: 0.41,
+                    resets_at: next_month,
+                    pace: None,
+                },
+                Metric::Window {
+                    label: "Git LFS storage".into(),
+                    used: 0.08,
+                    resets_at: next_month,
+                    pace: None,
+                },
             ],
             fetched,
         )
         .with_label("HemSoft")
         .with_message("At this pace, about $61.72 net by the end of the month.")
+        .with_message("Included with Pro:")
+        .with_message("Actions minutes: 1,234 minutes of 3,000 minutes included used (41%), 1,766 minutes left.")
+        .with_message("Git LFS storage: 0.83 GB of 10 GB included used (8%), 9.17 GB left.")
+        .with_message("Packages storage: not shown, GitHub doesn't say which package usage is free.")
         .with_message(
             "Actions: $23.89 net of $600.72 gross, $576.83 discounts. actions_linux 16,596 minutes at \
              $0.006/minute; actions_macos 8,083 minutes at $0.062/minute.",
@@ -346,9 +363,9 @@ mod tests {
                 "Cursor",
                 "OpenRouter",
                 "ChatGPT · Codex (team)",
+                "GitHub Billing · HemSoft",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
-                "GitHub Billing · HemSoft",
                 "Greptile · HemSoft",
                 "Moonshot (Kimi)",
             ]

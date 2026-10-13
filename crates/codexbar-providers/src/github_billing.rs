@@ -76,6 +76,9 @@ pub struct UsageLine {
     pub unit: Option<String>,
     pub price_per_unit: Option<f64>,
     pub gross_quantity: f64,
+    /// The discounted and billable parts of the gross quantity, when GitHub splits it.
+    pub discount_quantity: Option<f64>,
+    pub net_quantity: Option<f64>,
     pub gross: f64,
     pub discount: f64,
     pub net: f64,
@@ -141,6 +144,8 @@ pub fn parse_summary(body: &str, owner: &Owner) -> Result<Summary, UnknownShape>
             unit: text("unitType").map(str::to_owned),
             price_per_unit: number(item.get("pricePerUnit")).filter(|p| *p >= 0.0),
             gross_quantity: number(item.get("grossQuantity")).ok_or(UnknownShape)?,
+            discount_quantity: number(item.get("discountQuantity")),
+            net_quantity: number(item.get("netQuantity")),
             gross: number(item.get("grossAmount")).ok_or(UnknownShape)?,
             discount: number(item.get("discountAmount")).ok_or(UnknownShape)?,
             net: number(item.get("netAmount")).ok_or(UnknownShape)?,
@@ -320,14 +325,26 @@ fn get<H: HttpClient>(http: &H, path: &str, token: &str, now: DateTime<Utc>) -> 
 
 /// The signed-in user's login.
 pub fn signed_in_login<H: HttpClient>(http: &H, token: &str, now: DateTime<Utc>) -> Result<String, ProviderError> {
+    profile(http, token, now).map(|(login, _)| login)
+}
+
+/// The signed-in user's login and plan name (the plan needs the `user` scope; without it there is none).
+fn profile<H: HttpClient>(
+    http: &H,
+    token: &str,
+    now: DateTime<Utc>,
+) -> Result<(String, Option<String>), ProviderError> {
     let body = get(http, "/user", token, now)?;
-    serde_json::from_str::<Value>(&body)
-        .ok()
+    let value = serde_json::from_str::<Value>(&body).ok();
+    let login = value
+        .as_ref()
         .and_then(|v| v.get("login")?.as_str().map(str::to_owned))
         .filter(|login| valid_user_login(login))
         .ok_or(ProviderError::Unexpected {
             detail: "a GitHub profile without a login",
-        })
+        })?;
+    let plan = value.and_then(|v| v.pointer("/plan/name")?.as_str().map(str::to_owned));
+    Ok((login, plan))
 }
 
 /// The summary for `owner`'s current UTC billing month. A summary for any other month is refused.
@@ -411,13 +428,22 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
         let (Some(token), Some(owner)) = (&self.token, &self.owner) else {
             return Err(ProviderError::NotSignedIn { hint: SIGN_IN_HINT });
         };
-        if let Owner::Personal(user) = owner
-            && !signed_in_login(&self.http, token, now)?.eq_ignore_ascii_case(user)
-        {
-            return Err(ProviderError::Refused { reason: OTHER_USER });
-        }
+        let personal_plan = match owner {
+            Owner::Personal(user) => {
+                let (login, plan) = profile(&self.http, token, now)?;
+                if !login.eq_ignore_ascii_case(user) {
+                    return Err(ProviderError::Refused { reason: OTHER_USER });
+                }
+                plan
+            }
+            Owner::Organization(_) => None,
+        };
         let summary = current_summary(&self.http, token, owner, now)?;
-        let (metrics, messages) = usage(&summary, now);
+        let (mut metrics, mut messages) = usage(&summary, now);
+        // Included allowances and budgets (#105) add to what is shown; their failures never hide the spend.
+        let (more_metrics, more_messages) = self.allowances(token, owner, personal_plan, &summary, now);
+        metrics.extend(more_metrics);
+        messages.extend(more_messages);
         let mut account = AccountSnapshot::new(
             AccountId::new(self.account.clone()),
             Provider::GitHubBilling,
@@ -428,6 +454,126 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
             account = account.with_label(self.label.trim());
         }
         Ok(messages.into_iter().fold(account, AccountSnapshot::with_message))
+    }
+}
+
+impl<H: HttpClient> GitHubBillingProvider<H> {
+    /// Included allowances for the owner's plan and, for an organization, its budgets (#105).
+    fn allowances(
+        &self,
+        token: &str,
+        owner: &Owner,
+        personal_plan: Option<String>,
+        summary: &Summary,
+        now: DateTime<Utc>,
+    ) -> (Vec<Metric>, Vec<String>) {
+        use crate::github_allowances::{self as allowances, Scope};
+        let mut metrics = Vec::new();
+        let mut messages = Vec::new();
+        let (scope, base) = match owner {
+            Owner::Personal(user) => (Scope::Personal, format!("/users/{user}")),
+            Owner::Organization(org) => (Scope::Organization, format!("/organizations/{org}")),
+        };
+        let plan_name = match owner {
+            Owner::Personal(_) => personal_plan.ok_or_else(|| "GitHub didn't return this account's plan".to_owned()),
+            Owner::Organization(org) => get(&self.http, &format!("/orgs/{org}"), token, now)
+                .map_err(|err| err.to_string())
+                .and_then(|body| {
+                    serde_json::from_str::<Value>(&body)
+                        .ok()
+                        .and_then(|v| v.pointer("/plan/name")?.as_str().map(str::to_owned))
+                        .ok_or_else(|| "GitHub didn't return the organization's plan".to_owned())
+                }),
+        };
+        let query = format!("?year={}&month={}", now.year(), now.month());
+        let detail = get(&self.http, &format!("{base}/settings/billing/usage{query}"), token, now)
+            .map_err(|err| err.to_string())
+            .and_then(|body| {
+                allowances::parse_detail(&body)
+                    .map_err(|UnknownShape| "GitHub's billing detail came in an unknown shape".to_owned())
+            });
+        match (plan_name, &detail) {
+            (Err(reason), _) => messages.push(format!("Included allowances: not shown, {reason}.")),
+            (Ok(name), _) if allowances::plan(&name, scope).is_none() => messages.push(format!(
+                "Included allowances: not shown for the {name} plan, which GitHub's included-usage table doesn't list \
+                 here."
+            )),
+            (Ok(_), Err(reason)) => messages.push(format!("Included allowances: not shown, {reason}.")),
+            (Ok(name), Ok(detail)) => {
+                let plan = allowances::plan(&name, scope).unwrap_or_else(|| unreachable!("checked above"));
+                let visibility =
+                    self.visibility(token, owner.login(), &allowances::repositories_to_classify(detail), now);
+                let list = allowances::allowances(&plan, scope, owner.login(), summary, detail, &visibility);
+                if let (Some(start), Some(end)) = (allowances::month_start(summary), allowances::month_end(summary)) {
+                    let (shown, lines) = allowances::show(&list, start, end, now);
+                    metrics.extend(shown);
+                    messages.push(format!("Included with {}:", plan.label));
+                    messages.extend(lines);
+                }
+            }
+        }
+        if let Owner::Organization(org) = owner {
+            let budgets = get(
+                &self.http,
+                &format!("/organizations/{org}/settings/billing/budgets"),
+                token,
+                now,
+            )
+            .map_err(|err| err.to_string())
+            .and_then(|body| {
+                allowances::parse_budgets(&body).map_err(|UnknownShape| "they came in an unknown shape".to_owned())
+            });
+            match budgets {
+                Ok(budgets) => {
+                    let detail = detail.as_deref().unwrap_or_default();
+                    messages.extend(allowances::budget_lines(&budgets, org, summary, detail));
+                }
+                Err(reason) => messages.push(format!("Budgets couldn't be read: {reason}")),
+            }
+        }
+        (metrics, messages)
+    }
+
+    /// Which of `repositories` are private, read once and remembered for hours. Too many to look up, or one that can't
+    /// be read, stays unknown.
+    fn visibility(
+        &self,
+        token: &str,
+        owner: &str,
+        repositories: &[String],
+        now: DateTime<Utc>,
+    ) -> std::collections::HashMap<String, bool> {
+        use crate::github_allowances::{MAX_REPOSITORIES, remember, remembered};
+        let mut known = std::collections::HashMap::new();
+        if repositories.len() > MAX_REPOSITORIES {
+            return known;
+        }
+        for repo in repositories {
+            if !valid_login(owner) || repo.contains('/') || repo.is_empty() {
+                continue;
+            }
+            let private = remembered(owner, repo).or_else(|| {
+                let body = get(&self.http, &format!("/repos/{owner}/{repo}"), token, now).ok()?;
+                let value = serde_json::from_str::<Value>(&body).ok()?;
+                // A repository that has moved to another owner is answered by its new home, whose visibility says
+                // nothing about this owner's usage of it.
+                let moved = value
+                    .get("full_name")
+                    .and_then(Value::as_str)
+                    .and_then(|name| name.split_once('/'))
+                    .is_some_and(|(new_owner, _)| !new_owner.eq_ignore_ascii_case(owner));
+                if moved {
+                    return None;
+                }
+                let private = value.get("private")?.as_bool()?;
+                remember(owner, repo, private);
+                Some(private)
+            });
+            if let Some(private) = private {
+                known.insert(repo.clone(), private);
+            }
+        }
+        known
     }
 }
 
@@ -580,7 +726,10 @@ mod tests {
             !account.messages().iter().any(|m| m.starts_with("At this pace")),
             "nothing spent, nothing projected"
         );
-        assert_eq!(github.urls.lock().unwrap().len(), 1);
+        assert!(
+            github.urls.lock().unwrap().iter().all(|url| !url.ends_with("/user")),
+            "an organization needs no profile"
+        );
     }
 
     #[test]
@@ -758,6 +907,71 @@ mod tests {
         assert_eq!(
             verify(&github, "gho_billing", Some("acme"), now()).unwrap(),
             "octocat_acme"
+        );
+    }
+
+    #[test]
+    fn a_pro_account_shows_its_included_allowances_beside_the_spend() {
+        let detail = r#"{"usageItems":[
+            {"product":"actions","sku":"Actions Linux","quantity":1200,"unitType":"Minutes","pricePerUnit":0.006,
+             "grossAmount":7.2,"discountAmount":7.2,"netAmount":0,"repositoryName":"secret"},
+            {"product":"actions","sku":"Actions Linux","quantity":9000,"unitType":"Minutes","pricePerUnit":0.006,
+             "grossAmount":54,"discountAmount":54,"netAmount":0,"repositoryName":"open"}]}"#;
+        let github = GitHub::default()
+            .on("/user", 200, r#"{"login":"HemSoft","plan":{"name":"pro"}}"#)
+            .on("/users/HemSoft/settings/billing/usage/summary", 200, PERSONAL)
+            .on("/users/HemSoft/settings/billing/usage", 200, detail)
+            .on("/repos/HemSoft/secret", 200, r#"{"private":true}"#)
+            .on("/repos/HemSoft/open", 200, r#"{"private":false}"#);
+        let account = provider(&github, personal()).fetch(now()).unwrap().remove(0);
+        let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
+        assert_eq!(
+            labels[..4],
+            ["Net spend", "Gross charges", "Discounts", "Actions minutes"]
+        );
+        assert_eq!(account.metrics()[3].used_display(), "40%");
+        assert!(account.messages().contains(&"Included with Pro:".to_owned()));
+        assert!(account.messages().contains(
+            &"Actions minutes: 1,200 minutes of 3,000 minutes included used (40%), 1,800 minutes left.".to_owned()
+        ));
+        // Visibility is remembered: a second refresh doesn't ask for the repositories again.
+        let before = github.urls.lock().unwrap().len();
+        provider(&github, personal()).fetch(now()).unwrap();
+        let asked = github.urls.lock().unwrap()[before..]
+            .iter()
+            .filter(|url| url.contains("/repos/"))
+            .count();
+        assert_eq!(asked, 0);
+    }
+
+    #[test]
+    fn allowances_that_cant_be_read_never_hide_the_spend() {
+        let org = r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme","usageItems":[]}"#;
+        let github = GitHub::default()
+            .on("/organizations/acme/settings/billing/usage/summary", 200, org)
+            .on("/orgs/acme", 200, r#"{"plan":{"name":"enterprise"}}"#)
+            .on(
+                "/organizations/acme/settings/billing/usage",
+                200,
+                r#"{"usageItems":[]}"#,
+            )
+            .on("/organizations/acme/settings/billing/budgets", 403, "{}");
+        let account = provider(&github, Owner::Organization("acme".into()))
+            .fetch(now())
+            .unwrap()
+            .remove(0);
+        assert_eq!(account.metrics().len(), 3, "spend only");
+        assert!(
+            account
+                .messages()
+                .iter()
+                .any(|m| m.contains("not shown for the enterprise plan"))
+        );
+        assert!(
+            account
+                .messages()
+                .iter()
+                .any(|m| m.starts_with("Budgets couldn't be read"))
         );
     }
 }
