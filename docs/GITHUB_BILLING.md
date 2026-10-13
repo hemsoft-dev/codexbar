@@ -67,12 +67,19 @@ above the organization and aren't shown.
   [runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing).
   Larger and self-hosted runners don't use included minutes. An unknown runner
   or price leaves the allowance out.
-- **Actions storage** is the GB-hours of the month turned into GB held on
-  average.
+- **Actions storage** is the month's artifact GB-hours (`actions_storage`)
+  turned into GB held on average. Cache and custom image storage have
+  allowances of their own and don't count. Artifact storage shares its
+  allowance with Packages storage, so while Packages storage is in use it shows
+  only once something is billable.
 - **Packages storage and data transfer** show only a verified zero or billable
   usage: GitHub doesn't say which package usage is free.
 - **Git LFS storage and bandwidth**, and on personal plans **Codespaces compute**
-  (machine hours times each SKU's cores) and **Codespaces storage**.
+  (machine hours times each SKU's cores, from GitHub's `codespaces_compute_dN`
+  ids) and **Codespaces storage**.
+- GitHub shows an organization's plan only to its owners, so a billing
+  manager's sign-in shows the spend and budgets but says why the included
+  allowances are missing.
 
 GitHub bills a covered SKU only once its included usage is used up, so billable
 usage means the allowance is spent and the billable part is exactly what went
@@ -86,10 +93,13 @@ never hides the others or the spend.
 
 ## Organization budgets
 
-An organization's budgets are listed with how much of each this month's usage
-has spent, measured from the organization's own usage for organization and
-repository budgets, and whether it stops usage. Other scopes (cost centers,
-enterprises) list their amount and say their spending can't be measured here.
+An organization's budgets, every page of them, are listed with how much of each
+this month's usage has spent, and whether it stops usage and sends alerts.
+Organization and repository budgets are measured from the organization's own
+usage, by product or by SKU as the budget is set. A repository budget's spend is
+unknown, never zero, when the detail report can't be read. Other scopes (cost
+centers, enterprises) list their amount and say their spending can't be
+measured here.
 
 ## Not verified here
 

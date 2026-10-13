@@ -120,14 +120,19 @@ enum Runner {
     Unknown,
 }
 
-fn runner(sku: &str) -> Runner {
+/// A SKU as the summary's id and the detail report's display name both read it: "Actions Linux" and `actions_linux`
+/// are `actionslinux`. The detail report says "Actions macOS 3-core" for the summary's `actions_macos`.
+fn sku_key(sku: &str) -> String {
     let sku = normalized(sku);
-    // The detail report says "Actions macOS 3-core" for the summary's `actions_macos`.
-    let sku = if sku == "actionsmacos3core" {
+    if sku == "actionsmacos3core" {
         "actionsmacos".to_owned()
     } else {
         sku
-    };
+    }
+}
+
+fn runner(sku: &str) -> Runner {
+    let sku = sku_key(sku);
     if let Some((_, price)) = STANDARD_RUNNERS.iter().find(|(name, _)| *name == sku) {
         return Runner::Standard(*price);
     }
@@ -334,6 +339,14 @@ pub fn allowances(
             let priced = line.price_per_unit.is_none_or(|p| (p - price).abs() <= 1e-9);
             priced.then_some(line.net_quantity? * price / ALLOWANCE_MINUTE_PRICE)
         }
+        // Larger and self-hosted runners don't use included minutes; an unknown runner's billable minutes can't be
+        // told apart, so the billed total isn't verified.
+        Runner::Excluded => Some(0.0),
+        Runner::Unknown
+            if is_unit(line.unit.as_deref(), "minutes") && line.net_quantity.is_some_and(|net| net > 1e-9) =>
+        {
+            None
+        }
         _ => Some(0.0),
     });
 
@@ -389,13 +402,33 @@ pub fn allowances(
         },
     });
 
-    // Actions storage: GB-hours from private repositories, held on average over the month.
-    let billed_storage = billed("actions", "storage", &|line| {
-        is_unit(line.unit.as_deref(), "gigabytehours").then_some(line.net_quantity? / hours)
+    // Actions storage: artifact GB-hours from private repositories, held on average over the month. Cache and custom
+    // image storage have allowances of their own. Artifact storage shares its allowance with Packages storage, which
+    // can't be classified (see below), so Packages storage in use leaves it unverified until something is billable.
+    let artifact_storage = |sku: &str| normalized(sku) == "actionsstorage";
+    let billed_storage = summary
+        .lines
+        .iter()
+        .filter(|line| {
+            (normalized(&line.product) == "actions" && artifact_storage(&line.sku))
+                || (normalized(&line.product) == "packages" && normalized(&line.sku).contains("storage"))
+        })
+        .map(|line| is_unit(line.unit.as_deref(), "gigabytehours").then_some(line.net_quantity? / hours))
+        .sum::<Option<f64>>();
+    let packages_storage_used = summary.lines.iter().any(|line| {
+        normalized(&line.product) == "packages"
+            && normalized(&line.sku).contains("storage")
+            && line.gross_quantity > 0.0
     });
     let storage = || -> Result<f64, String> {
         if let Some(billed) = billed_storage.filter(|billed| *billed > 1e-9) {
             return Ok(plan.actions_storage_gb + billed);
+        }
+        if packages_storage_used {
+            return Err(
+                "it shares its allowance with Packages storage, and GitHub doesn't say which package usage is free"
+                    .to_owned(),
+            );
         }
         if foreign {
             return Err("GitHub's detail report names another organization".to_owned());
@@ -403,7 +436,7 @@ pub fn allowances(
         let mut gb_hours = 0.0;
         for line in detail
             .iter()
-            .filter(|line| normalized(&line.product) == "actions" && normalized(&line.sku).contains("storage"))
+            .filter(|line| normalized(&line.product) == "actions" && artifact_storage(&line.sku))
         {
             if normalized(&line.unit) != "gigabytehours" {
                 return Err(format!("{} is reported in a unit CodexBar doesn't know", line.sku));
@@ -515,9 +548,16 @@ pub fn allowances(
     out
 }
 
-/// The core count in a Codespaces compute SKU ("codespaces_compute_4_core", "Codespaces compute 4-core").
+/// The core count in a Codespaces compute SKU: GitHub's ids end in `_d<cores>` (`codespaces_compute_d4`), its display
+/// names say "Codespaces compute (4-core)".
 fn cores(sku: &str) -> Option<f64> {
-    let lower = sku.to_lowercase();
+    let lower = sku.trim().to_lowercase();
+    if let Some((_, suffix)) = lower.rsplit_once("_d")
+        && !suffix.is_empty()
+        && suffix.chars().all(|c| c.is_ascii_digit())
+    {
+        return suffix.parse::<f64>().ok().filter(|cores| *cores > 0.0);
+    }
     let at = lower.find("core")?;
     let digits: String = lower[..at]
         .chars()
@@ -589,23 +629,40 @@ pub fn show(
 pub struct Budget {
     pub scope: String,
     pub kind: String,
-    pub target: String,
+    /// The products (`ProductPricing`) or SKUs (`SkuPricing`) it caps; empty caps everything.
+    pub targets: Vec<String>,
     pub entity: String,
     pub amount: f64,
     pub stops_usage: bool,
+    /// Whether it sends alerts; `None` when GitHub didn't say.
+    pub alerts: Option<bool>,
 }
 
-/// Parses `/organizations/{org}/settings/billing/budgets`.
-pub fn parse_budgets(body: &str) -> Result<Vec<Budget>, UnknownShape> {
+/// One page of `/organizations/{org}/settings/billing/budgets`, and whether another follows.
+pub fn parse_budgets(body: &str) -> Result<(Vec<Budget>, bool), UnknownShape> {
     let value: Value = serde_json::from_str(body).map_err(|_| UnknownShape)?;
     let list = value.get("budgets").and_then(Value::as_array).ok_or(UnknownShape)?;
-    list.iter()
+    let more = value.get("has_next_page").and_then(Value::as_bool).unwrap_or(false);
+    let budgets = list
+        .iter()
         .map(|budget| {
             let text = |key: &str| budget.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+            // A single budget names its target in `budget_product_sku`; GitHub documents the list with an array,
+            // `budget_product_skus`, and returns either.
+            let targets = match budget.get("budget_product_skus") {
+                Some(Value::Array(skus)) => skus
+                    .iter()
+                    .map(|sku| sku.as_str().map(str::to_owned).ok_or(UnknownShape))
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => Some(text("budget_product_sku"))
+                    .filter(|t| !t.is_empty())
+                    .into_iter()
+                    .collect(),
+            };
             Ok(Budget {
                 scope: text("budget_scope"),
                 kind: text("budget_type"),
-                target: text("budget_product_sku"),
+                targets,
                 entity: text("budget_entity_name"),
                 amount: budget
                     .get("budget_amount")
@@ -616,52 +673,75 @@ pub fn parse_budgets(body: &str) -> Result<Vec<Budget>, UnknownShape> {
                     .get("prevent_further_usage")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                alerts: budget.pointer("/budget_alerting/will_alert").and_then(Value::as_bool),
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((budgets, more))
 }
 
-/// One line per budget: what it caps, how much of it this month's usage has spent, and whether it stops usage.
-/// Organization and repository budgets on a product are measured from the owner's own usage; other scopes (cost
-/// centers, enterprises) can't be, and say so.
-pub fn budget_lines(budgets: &[Budget], owner: &str, summary: &Summary, detail: &[DetailLine]) -> Vec<String> {
+/// One line per budget: what it caps, how much of it this month's usage has spent, and what it does at its limit.
+/// Organization and repository budgets on products or SKUs are measured from the owner's own usage; other scopes
+/// (cost centers, enterprises) can't be, and say so. `detail` is `None` when the detail report couldn't be read, which
+/// leaves repository budgets unmeasured rather than at zero.
+pub fn budget_lines(budgets: &[Budget], owner: &str, summary: &Summary, detail: Option<&[DetailLine]>) -> Vec<String> {
     let currency = summary.currency;
     budgets
         .iter()
         .map(|budget| {
-            let target = if budget.target.is_empty() {
+            let target = if budget.targets.is_empty() {
                 "all products".to_owned()
             } else {
-                budget.target.clone()
+                budget.targets.join(", ")
             };
-            let product = normalized(&budget.target);
-            let behaviour = if budget.stops_usage {
-                "stops usage at the limit"
-            } else {
-                "alerts only"
+            let by_sku = budget.kind.eq_ignore_ascii_case("SkuPricing");
+            let wanted: Vec<String> = budget
+                .targets
+                .iter()
+                .map(|t| if by_sku { sku_key(t) } else { normalized(t) })
+                .collect();
+            let covers = |product: &str, sku: &str| {
+                let key = if by_sku { sku_key(sku) } else { normalized(product) };
+                wanted.is_empty() || wanted.contains(&key)
             };
+            let behaviour = match (budget.stops_usage, budget.alerts) {
+                (true, Some(false)) => "stops usage at the limit, no alerts",
+                (true, _) => "stops usage at the limit",
+                (false, Some(true)) => "alerts only",
+                (false, Some(false)) => "neither stops usage nor alerts",
+                (false, None) => "doesn't stop usage",
+            };
+            // An organization-scoped budget from the organization's own list is that organization's, named or not.
+            let own_organization = budget.entity.is_empty() || budget.entity.eq_ignore_ascii_case(owner);
             let spent = match (budget.scope.as_str(), currency) {
                 (_, None) => None,
-                ("organization", Some(_)) if budget.entity.eq_ignore_ascii_case(owner) => Some(
+                ("organization", Some(_)) if own_organization => Some(
                     summary
                         .lines
                         .iter()
-                        .filter(|line| product.is_empty() || normalized(&line.product) == product)
+                        .filter(|line| covers(&line.product, &line.sku))
                         .map(|line| line.net)
                         .sum::<f64>(),
                 ),
-                ("repository", Some(_)) => {
+                ("repository", Some(_)) => detail.map(|detail| {
                     let repo = budget.entity.rsplit('/').next().unwrap_or(&budget.entity);
-                    Some(
-                        detail
-                            .iter()
-                            .filter(|line| line.repository.as_deref().is_some_and(|r| r.eq_ignore_ascii_case(repo)))
-                            .filter(|line| product.is_empty() || normalized(&line.product) == product)
-                            .map(|line| line.net)
-                            .sum::<f64>(),
-                    )
-                }
+                    detail
+                        .iter()
+                        .filter(|line| {
+                            line.repository
+                                .as_deref()
+                                .is_some_and(|r| r.rsplit('/').next().unwrap_or(r).eq_ignore_ascii_case(repo))
+                        })
+                        .filter(|line| covers(&line.product, &line.sku))
+                        .map(|line| line.net)
+                        .sum::<f64>()
+                }),
                 _ => None,
+            };
+            let entity = if budget.entity.is_empty() && budget.scope == "organization" {
+                owner
+            } else {
+                &budget.entity
             };
             let money = |dollars: f64| {
                 let currency = currency.unwrap_or_default();
@@ -669,16 +749,15 @@ pub fn budget_lines(budgets: &[Budget], owner: &str, summary: &Summary, detail: 
             };
             match spent {
                 Some(spent) => format!(
-                    "Budget for {target} ({} {}): {} of {} spent this month, {behaviour}.",
+                    "Budget for {target} ({} {entity}): {} of {} spent this month, {behaviour}.",
                     budget.scope,
-                    budget.entity,
                     money(spent),
                     money(budget.amount)
                 ),
                 None => format!(
-                    "Budget for {target} ({} {}): {}, {behaviour}; this account's usage can't show what it has spent.",
+                    "Budget for {target} ({} {entity}): {}, {behaviour}; this account's usage can't show what it has \
+                     spent.",
                     budget.scope,
-                    budget.entity,
                     money(budget.amount)
                 ),
             }
@@ -873,15 +952,21 @@ mod tests {
 
     #[test]
     fn codespaces_compute_uses_each_skus_cores_and_billable_usage_must_fit() {
+        // GitHub's ids and display names.
+        assert_eq!(cores("codespaces_compute_d2"), Some(2.0));
+        assert_eq!(cores("codespaces_compute_d32"), Some(32.0));
+        assert_eq!(cores("Codespaces compute (16-core)"), Some(16.0));
+        assert_eq!(cores("codespaces_compute_d"), None);
+        assert_eq!(cores("codespaces_storage"), None);
         let compute = summary(
-            r#"{"product":"Codespaces","sku":"codespaces_compute_4_core","grossQuantity":10,"discountQuantity":10,"netQuantity":0,
+            r#"{"product":"Codespaces","sku":"codespaces_compute_d4","grossQuantity":10,"discountQuantity":10,"netQuantity":0,
                "grossAmount":3.6,"discountAmount":3.6,"netAmount":0,"unitType":"Hours"}"#,
         );
         let all = allowances(&pro(), Scope::Personal, "HemSoft", &compute, &[], &HashMap::new());
         assert!(matches!(find(&all, "Codespaces compute"), Allowance::Verified { used, .. } if *used == 40.0));
         // Billed while the included core hours aren't used up: the evidence contradicts itself.
         let billed = summary(
-            r#"{"product":"Codespaces","sku":"codespaces_compute_4_core","grossQuantity":10,"discountQuantity":5,"netQuantity":5,
+            r#"{"product":"Codespaces","sku":"codespaces_compute_d4","grossQuantity":10,"discountQuantity":5,"netQuantity":5,
                "grossAmount":3.6,"discountAmount":1.8,"netAmount":1.8,"unitType":"Hours"}"#,
         );
         let all = allowances(&pro(), Scope::Personal, "HemSoft", &billed, &[], &HashMap::new());
@@ -949,32 +1034,137 @@ mod tests {
 
     #[test]
     fn budgets_are_measured_only_where_this_owners_usage_can_show_them() {
-        let budgets = parse_budgets(
+        // The list's shape as GitHub returned it for an organization on 2026-10-12, plus the documented array form.
+        let (budgets, more) = parse_budgets(
             r#"{"budgets":[
                 {"budget_type":"ProductPricing","budget_product_sku":"actions","budget_scope":"organization","budget_amount":10,
-                 "prevent_further_usage":true,"budget_entity_name":"acme"},
-                {"budget_type":"ProductPricing","budget_product_sku":"actions","budget_scope":"repository","budget_amount":5,
-                 "prevent_further_usage":false,"budget_entity_name":"acme/site"},
+                 "prevent_further_usage":true,"budget_entity_name":"acme","budget_alerting":{"will_alert":true}},
+                {"budget_type":"ProductPricing","budget_product_skus":["actions"],"budget_scope":"repository","budget_amount":5,
+                 "prevent_further_usage":false,"budget_entity_name":"acme/site","budget_alerting":{"will_alert":true}},
+                {"budget_type":"SkuPricing","budget_product_skus":["actions_macos"],"budget_scope":"organization",
+                 "budget_amount":3,"prevent_further_usage":false,"budget_alerting":{"will_alert":false}},
                 {"budget_type":"ProductPricing","budget_product_sku":"copilot","budget_scope":"cost_center","budget_amount":50,
-                 "prevent_further_usage":false,"budget_entity_name":"Platform"}]}"#,
+                 "prevent_further_usage":false,"budget_entity_name":"Platform"}],
+              "has_next_page":true,"total_count":4}"#,
         )
         .unwrap();
+        assert!(more, "another page follows");
         let summary = summary(
-            r#"{"product":"Actions","sku":"actions_linux","grossQuantity":1,"grossAmount":4.25,"discountAmount":0,"netAmount":4.25}"#,
+            r#"{"product":"Actions","sku":"actions_linux","grossQuantity":1,"grossAmount":4.25,"discountAmount":0,"netAmount":4.25},
+               {"product":"Actions","sku":"actions_macos","grossQuantity":1,"grossAmount":1.24,"discountAmount":0,"netAmount":1.24}"#,
         );
         let detail = detail(
             r#"{"product":"actions","sku":"Actions Linux","quantity":1,"unitType":"Minutes","pricePerUnit":0.006,"grossAmount":1.5,
                 "discountAmount":0,"netAmount":1.5,"repositoryName":"site","organizationName":"acme"}"#,
         );
         assert_eq!(
-            budget_lines(&budgets, "acme", &summary, &detail),
+            budget_lines(&budgets, "acme", &summary, Some(&detail)),
             [
-                "Budget for actions (organization acme): $4.25 of $10.00 spent this month, stops usage at the limit.",
+                "Budget for actions (organization acme): $5.49 of $10.00 spent this month, stops usage at the limit.",
                 "Budget for actions (repository acme/site): $1.50 of $5.00 spent this month, alerts only.",
-                "Budget for copilot (cost_center Platform): $50.00, alerts only; this account's usage can't show what it has spent.",
+                "Budget for actions_macos (organization acme): $1.24 of $3.00 spent this month, neither stops usage nor alerts.",
+                "Budget for copilot (cost_center Platform): $50.00, doesn't stop usage; this account's usage can't show what \
+                 it has spent.",
             ]
         );
         assert_eq!(summary.currency, Some(Currency::Usd));
+        // Without the detail report a repository budget's spend is unknown, never $0.00.
+        assert_eq!(
+            budget_lines(&budgets[1..2], "acme", &summary, None),
+            [
+                "Budget for actions (repository acme/site): $5.00, alerts only; this account's usage can't show what it has \
+              spent."
+            ]
+        );
+        assert!(parse_budgets(r#"{"budgets":[{"budget_product_skus":[1],"budget_amount":1}]}"#).is_err());
+    }
+
+    #[test]
+    fn cache_and_custom_image_storage_are_not_artifact_storage() {
+        // 744 GB-hours over October is 1 GB held on average; the cache and image storage have allowances of their own.
+        let storage = summary(
+            r#"{"product":"Actions","sku":"actions_storage","grossQuantity":744,"discountQuantity":744,"netQuantity":0,
+                "grossAmount":0.25,"discountAmount":0.25,"netAmount":0,"unitType":"gigabyte-hours"},
+               {"product":"Actions","sku":"actions_cache_storage","grossQuantity":5000,"discountQuantity":5000,"netQuantity":0,
+                "grossAmount":1,"discountAmount":1,"netAmount":0,"unitType":"gigabyte-hours"}"#,
+        );
+        let lines = r#"{"product":"actions","sku":"Actions storage","quantity":744,"unitType":"GigabyteHours",
+                "pricePerUnit":0.0003,"grossAmount":0.25,"discountAmount":0.25,"netAmount":0,"repositoryName":"site"},
+               {"product":"actions","sku":"Actions cache storage","quantity":5000,"unitType":"GigabyteHours",
+                "pricePerUnit":0.0003,"grossAmount":1,"discountAmount":1,"netAmount":0,"repositoryName":"site"},
+               {"product":"actions","sku":"Actions custom image storage","quantity":900,"unitType":"GigabyteHours",
+                "pricePerUnit":0.0003,"grossAmount":1,"discountAmount":1,"netAmount":0,"repositoryName":"site"}"#;
+        let all = allowances(
+            &pro(),
+            Scope::Personal,
+            "HemSoft",
+            &storage,
+            &detail(lines),
+            &HashMap::from([("site".to_owned(), true)]),
+        );
+        assert!(
+            all.iter().any(|a| matches!(a, Allowance::Verified { label: "Actions storage", used, .. } if (*used - 1.0).abs() < 1e-9)),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn artifact_storage_shares_its_allowance_with_packages() {
+        let shared = summary(
+            r#"{"product":"Actions","sku":"actions_storage","grossQuantity":744,"discountQuantity":744,"netQuantity":0,
+                "grossAmount":0.25,"discountAmount":0.25,"netAmount":0,"unitType":"gigabyte-hours"},
+               {"product":"Packages","sku":"packages_storage","grossQuantity":744,"discountQuantity":744,"netQuantity":0,
+                "grossAmount":0.25,"discountAmount":0.25,"netAmount":0,"unitType":"gigabyte-hours"}"#,
+        );
+        let lines = r#"{"product":"actions","sku":"Actions storage","quantity":744,"unitType":"GigabyteHours",
+                "pricePerUnit":0.0003,"grossAmount":0.25,"discountAmount":0.25,"netAmount":0,"repositoryName":"site"}"#;
+        let visibility = HashMap::from([("site".to_owned(), true)]);
+        let all = allowances(&pro(), Scope::Personal, "HemSoft", &shared, &detail(lines), &visibility);
+        assert!(
+            all.iter().any(
+                |a| matches!(a, Allowance::Unavailable { label: "Actions storage", reason }
+                if reason.contains("shares its allowance with Packages storage"))
+            ),
+            "{all:?}"
+        );
+        // Billable shared storage means the pool is spent, Packages or not.
+        let billed = summary(
+            r#"{"product":"Actions","sku":"actions_storage","grossQuantity":744,"discountQuantity":744,"netQuantity":0,
+                "grossAmount":0.25,"discountAmount":0.25,"netAmount":0,"unitType":"gigabyte-hours"},
+               {"product":"Packages","sku":"packages_storage","grossQuantity":1488,"discountQuantity":744,"netQuantity":744,
+                "grossAmount":0.5,"discountAmount":0.25,"netAmount":0.25,"unitType":"gigabyte-hours"}"#,
+        );
+        let all = allowances(&pro(), Scope::Personal, "HemSoft", &billed, &detail(lines), &visibility);
+        assert!(
+            all.iter().any(
+                |a| matches!(a, Allowance::Verified { label: "Actions storage", used, included, .. }
+                if (*used - (included + 1.0)).abs() < 1e-9)
+            ),
+            "{all:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_runners_billable_minutes_leave_the_billed_total_unverified() {
+        let mixed = summary(
+            r#"{"product":"Actions","sku":"actions_linux","grossQuantity":9000,"discountQuantity":8000,"netQuantity":1000,
+                "grossAmount":54,"discountAmount":48,"netAmount":6,"pricePerUnit":0.006,"unitType":"minutes"},
+               {"product":"Actions","sku":"actions_future_runner","grossQuantity":100,"discountQuantity":0,"netQuantity":100,
+                "grossAmount":1,"discountAmount":0,"netAmount":1,"pricePerUnit":0.01,"unitType":"minutes"}"#,
+        );
+        let lines = minutes("Actions future runner", 100.0, 0.01, "site");
+        let all = allowances(
+            &pro(),
+            Scope::Personal,
+            "HemSoft",
+            &mixed,
+            &detail(&lines),
+            &HashMap::new(),
+        );
+        assert!(
+            matches!(&all[0], Allowance::Unavailable { label: "Actions minutes", reason } if reason.contains("doesn't know")),
+            "{all:?}"
+        );
     }
 
     #[test]

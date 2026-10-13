@@ -482,7 +482,12 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
                     serde_json::from_str::<Value>(&body)
                         .ok()
                         .and_then(|v| v.pointer("/plan/name")?.as_str().map(str::to_owned))
-                        .ok_or_else(|| "GitHub didn't return the organization's plan".to_owned())
+                        // GitHub shows an organization's plan only to its owners, so a billing manager's sign-in
+                        // reads its spend and budgets but not which allowances it includes.
+                        .ok_or_else(|| {
+                            "GitHub shows the organization's plan only to its owners, and this sign-in isn't one"
+                                .to_owned()
+                        })
                 }),
         };
         let query = format!("?year={}&month={}", now.year(), now.month());
@@ -513,25 +518,41 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
             }
         }
         if let Owner::Organization(org) = owner {
-            let budgets = get(
-                &self.http,
-                &format!("/organizations/{org}/settings/billing/budgets"),
-                token,
-                now,
-            )
-            .map_err(|err| err.to_string())
-            .and_then(|body| {
-                allowances::parse_budgets(&body).map_err(|UnknownShape| "they came in an unknown shape".to_owned())
-            });
-            match budgets {
+            match self.budgets(token, org, now) {
                 Ok(budgets) => {
-                    let detail = detail.as_deref().unwrap_or_default();
-                    messages.extend(allowances::budget_lines(&budgets, org, summary, detail));
+                    messages.extend(allowances::budget_lines(&budgets, org, summary, detail.as_deref().ok()));
                 }
                 Err(reason) => messages.push(format!("Budgets couldn't be read: {reason}")),
             }
         }
         (metrics, messages)
+    }
+
+    /// Every page of an organization's budgets. A list longer than the pages read is an error, never a short list.
+    fn budgets(
+        &self,
+        token: &str,
+        org: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<crate::github_allowances::Budget>, String> {
+        const PAGES: u32 = 10;
+        let mut all = Vec::new();
+        for page in 1..=PAGES {
+            let body = get(
+                &self.http,
+                &format!("/organizations/{org}/settings/billing/budgets?per_page=100&page={page}"),
+                token,
+                now,
+            )
+            .map_err(|err| err.to_string())?;
+            let (budgets, more) = crate::github_allowances::parse_budgets(&body)
+                .map_err(|UnknownShape| "they came in an unknown shape".to_owned())?;
+            all.extend(budgets);
+            if !more {
+                return Ok(all);
+            }
+        }
+        Err(format!("there are more than {PAGES} pages of them"))
     }
 
     /// Which of `repositories` are private, read once and remembered for hours. Too many to look up, or one that can't
@@ -548,7 +569,13 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
         if repositories.len() > MAX_REPOSITORIES {
             return known;
         }
-        for repo in repositories {
+        for name in repositories {
+            // GitHub returns the bare name; `owner/repo` is read too, and another owner's repository stays unknown.
+            let repo = match name.split_once('/') {
+                Some((repo_owner, repo)) if repo_owner.eq_ignore_ascii_case(owner) => repo,
+                Some(_) => continue,
+                None => name.as_str(),
+            };
             if !valid_login(owner) || repo.contains('/') || repo.is_empty() {
                 continue;
             }
@@ -570,7 +597,7 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
                 Some(private)
             });
             if let Some(private) = private {
-                known.insert(repo.clone(), private);
+                known.insert(name.clone(), private);
             }
         }
         known
@@ -641,11 +668,13 @@ mod tests {
             assert!(url.starts_with(API));
             assert!(headers.contains(&("Authorization", "Bearer gho_billing")));
             self.urls.lock().unwrap().push(url.to_owned());
-            let path = url[API.len()..].split('?').next().unwrap();
-            self.routes
-                .lock()
-                .unwrap()
-                .get(path)
+            // A route with its query answers that query only; one without answers every query.
+            let full = &url[API.len()..];
+            let path = full.split('?').next().unwrap();
+            let routes = self.routes.lock().unwrap();
+            routes
+                .get(full)
+                .or_else(|| routes.get(path))
                 .cloned()
                 .ok_or(ProviderError::Network)
         }
@@ -972,6 +1001,81 @@ mod tests {
                 .messages()
                 .iter()
                 .any(|m| m.starts_with("Budgets couldn't be read"))
+        );
+    }
+
+    #[test]
+    fn every_page_of_budgets_is_read_and_a_billing_manager_is_told_why_allowances_are_missing() {
+        let org = r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme","usageItems":[]}"#;
+        let budget = |amount: u32| {
+            format!(
+                r#"{{"budget_type":"ProductPricing","budget_product_sku":"actions","budget_scope":"organization",
+                    "budget_amount":{amount},"prevent_further_usage":true,"budget_entity_name":"acme",
+                    "budget_alerting":{{"will_alert":true}}}}"#
+            )
+        };
+        let page = "/organizations/acme/settings/billing/budgets?per_page=100&page=";
+        let github = GitHub::default()
+            .on("/organizations/acme/settings/billing/usage/summary", 200, org)
+            // A billing manager reads the organization's public profile, without its plan.
+            .on("/orgs/acme", 200, r#"{"login":"acme"}"#)
+            .on(
+                "/organizations/acme/settings/billing/usage",
+                200,
+                r#"{"usageItems":[]}"#,
+            )
+            .on(
+                &format!("{page}1"),
+                200,
+                &format!(r#"{{"budgets":[{}],"has_next_page":true}}"#, budget(10)),
+            )
+            .on(
+                &format!("{page}2"),
+                200,
+                &format!(r#"{{"budgets":[{}],"has_next_page":false}}"#, budget(20)),
+            );
+        let account = provider(&github, Owner::Organization("acme".into()))
+            .fetch(now())
+            .unwrap()
+            .remove(0);
+        let budgets: Vec<_> = account
+            .messages()
+            .iter()
+            .filter(|m| m.starts_with("Budget for"))
+            .collect();
+        assert_eq!(budgets.len(), 2, "{:?}", account.messages());
+        assert!(budgets[1].contains("of $20.00"));
+        assert!(
+            account.messages().contains(
+                &"Included allowances: not shown, GitHub shows the organization's plan only to its owners, and this \
+              sign-in isn't one."
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn a_repository_named_with_its_owner_is_looked_up_under_that_owner_only() {
+        let github = GitHub::default()
+            .on("/repos/acme/site", 200, r#"{"full_name":"acme/site","private":true}"#)
+            .on(
+                "/repos/acme/other",
+                200,
+                r#"{"full_name":"acme/other","private":false}"#,
+            );
+        let provider = provider(&github, Owner::Organization("acme".into()));
+        let known = provider.visibility(
+            "gho_billing",
+            "acme",
+            &["acme/site".to_owned(), "other".to_owned(), "elsewhere/site".to_owned()],
+            now(),
+        );
+        assert_eq!(known.get("acme/site"), Some(&true));
+        assert_eq!(known.get("other"), Some(&false));
+        assert_eq!(
+            known.get("elsewhere/site"),
+            None,
+            "another owner's repository stays unknown"
         );
     }
 }
