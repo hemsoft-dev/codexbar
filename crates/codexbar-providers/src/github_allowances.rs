@@ -695,6 +695,9 @@ pub fn budget_lines(budgets: &[Budget], owner: &str, summary: &Summary, detail: 
                 budget.targets.join(", ")
             };
             let by_sku = budget.kind.eq_ignore_ascii_case("SkuPricing");
+            // Only product and SKU budgets can be matched to usage lines. A bundle (`BundlePricing` covers every AI
+            // credit SKU) or a type GitHub adds later is listed unmeasured, never at a spend that misses its SKUs.
+            let measurable = by_sku || budget.kind.eq_ignore_ascii_case("ProductPricing");
             let wanted: Vec<String> = budget
                 .targets
                 .iter()
@@ -715,6 +718,7 @@ pub fn budget_lines(budgets: &[Budget], owner: &str, summary: &Summary, detail: 
             let own_organization = budget.entity.is_empty() || budget.entity.eq_ignore_ascii_case(owner);
             let spent = match (budget.scope.as_str(), currency) {
                 (_, None) => None,
+                _ if !measurable => None,
                 ("organization", Some(_)) if own_organization => Some(
                     summary
                         .lines
@@ -1077,6 +1081,21 @@ mod tests {
             ]
         );
         assert!(parse_budgets(r#"{"budgets":[{"budget_product_skus":[1],"budget_amount":1}]}"#).is_err());
+        // A bundle of every AI credit SKU, or a type GitHub adds later, is listed but never measured.
+        let (bundles, _) = parse_budgets(
+            r#"{"budgets":[
+                {"budget_type":"BundlePricing","budget_product_sku":"ai_credits","budget_scope":"organization",
+                 "budget_amount":25,"prevent_further_usage":true,"budget_entity_name":"acme"},
+                {"budget_type":"SomethingNew","budget_product_sku":"actions","budget_scope":"organization",
+                 "budget_amount":5,"prevent_further_usage":true,"budget_entity_name":"acme"}]}"#,
+        )
+        .unwrap();
+        assert!(
+            budget_lines(&bundles, "acme", &summary, Some(&detail))
+                .iter()
+                .all(|line| line.ends_with("this account's usage can't show what it has spent.")),
+            "never a spend that misses the bundle's SKUs"
+        );
     }
 
     #[test]
