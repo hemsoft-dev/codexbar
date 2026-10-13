@@ -391,6 +391,18 @@ fn remember(record_id: &str, account: &GhAccount, cx: &mut App) -> Result<(), Sh
         return Err("The account was removed during the sign-in.".into());
     };
     if is_billing(&record) {
+        // An account following a user's own billing stays that user's: its history is theirs. Another user's billing
+        // is another account.
+        if billing_organization(&record).is_none()
+            && let Some(user) = record.external_id.as_deref()
+            && !user.eq_ignore_ascii_case(&account.username)
+        {
+            return Err(format!(
+                "This account follows {user}'s billing, not {}'s. Add another account for {}.",
+                account.username, account.username
+            )
+            .into());
+        }
         // One billing account per owner: the organization, or the user's own billing.
         let owner = billing_organization(&record).unwrap_or(&account.username).to_owned();
         if let Some(other) = hub.settings().accounts().iter().find(|other| {

@@ -677,8 +677,11 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         record.copilot_pool_total = pool_total;
     }
     // A billing account only signs in through the GitHub CLI (#104). Following another owner needs a new sign-in, which
-    // checks access to that owner's billing, so the old token goes.
+    // checks access to that owner's billing. The account becomes a new one, under a new id, so the old owner's spend
+    // history and last result are deleted with the old id rather than shown as the new owner's; the old token goes
+    // once the settings are saved.
     let mut billing_owner_changed = false;
+    let mut replaced_billing_id = None;
     if info.id == names::GITHUB_BILLING {
         record.method = AuthMethod::OAuth;
         let organization = (!billing_org.is_empty()).then_some(billing_org);
@@ -690,13 +693,8 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
                 .eq_ignore_ascii_case(organization.as_deref().unwrap_or_default());
         record.billing_organization = organization;
         if billing_owner_changed {
-            if let Err(err) =
-                codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record.id)
-            {
-                *form.error.borrow_mut() = Some(format!("The old sign-in couldn't be deleted: {err}").into());
-                window.refresh();
-                return false;
-            }
+            let new_id = AccountRecord::new(info.id, &record.label, method).id;
+            replaced_billing_id = Some(std::mem::replace(&mut record.id, new_id));
             record.external_id = None;
         }
     }
@@ -795,10 +793,22 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         if let Some(provider) = keep_cli_account {
             settings.upsert(SettingsHub::implicit_account(provider))?;
         }
+        if let Some(old_id) = &replaced_billing_id {
+            settings.remove(old_id);
+        }
         settings.upsert(record)
     });
     match saved {
         Ok(()) => {
+            if let Some(old_id) = &replaced_billing_id
+                && let Err(err) =
+                    codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), old_id)
+            {
+                SettingsHub::set_error(
+                    cx,
+                    Some(format!("The previous owner's sign-in couldn't be deleted: {err}").into()),
+                );
+            }
             if let Some((old_kind, old)) = left {
                 old_kind.forget(old, cx);
             }

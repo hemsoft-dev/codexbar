@@ -4881,10 +4881,81 @@ fn following_another_owner_drops_the_old_sign_in_and_signs_in_again(cx: &mut Tes
     type_text(cx, handle, "acme");
     click(cx, handle, "account-save");
     let saved = saved_settings(&settings);
-    assert_eq!(saved.accounts()[0].billing_organization.as_deref(), Some("acme"));
-    assert_eq!(saved.accounts()[0].external_id, None);
+    assert_eq!(
+        saved.accounts().len(),
+        1,
+        "the account is replaced, not added beside the old one"
+    );
+    let account = &saved.accounts()[0];
+    assert_ne!(
+        account.id, "gb-1",
+        "a new id, so the old owner's history and last result are deleted with the old one"
+    );
+    assert_eq!(account.label, "Mine");
+    assert_eq!(account.billing_organization.as_deref(), Some("acme"));
+    assert_eq!(account.external_id, None);
     assert_eq!(stored_token(cx, "gb-1"), None, "the old token goes");
     assert!(exists(cx, handle, "github-sign-in-status"), "a new sign-in starts");
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert!(!owned.contains_key("gb-1"), "the old id owns nothing any more");
+}
+
+#[gpui_kit::test]
+fn an_owner_change_that_cant_be_saved_keeps_the_old_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "billing-owner-change-fails",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gb-1", "providerId": "GitHubBilling", "displayLabel": "Mine", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "octocat" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::Waits);
+    let handle = open_billing_accounts(cx, &settings, &fake);
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(SettingsHub::global(cx).credentials().as_ref(), "gb-1", "gho_old")
+    })
+    .unwrap();
+    click(cx, handle, "edit-gb-1");
+    press(cx, handle, "tab");
+    press(cx, handle, "tab");
+    type_text(cx, handle, "acme");
+    let file = settings.0.join("settings.json");
+    let writable = std::fs::metadata(&file).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&file, read_only).unwrap();
+    click(cx, handle, "account-save");
+    std::fs::set_permissions(&file, writable).unwrap();
+    assert!(label_of(cx, "account-error").is_some(), "the save failed");
+    let saved = saved_settings(&settings);
+    assert_eq!(saved.accounts()[0].id, "gb-1");
+    assert_eq!(saved.accounts()[0].billing_organization, None);
+    assert!(
+        stored_token(cx, "gb-1").as_deref() == Some("gho_old"),
+        "the account still follows its owner, so it keeps that owner's sign-in"
+    );
+    assert!(!exists(cx, handle, "github-sign-in-status"), "no sign-in starts");
+}
+
+#[gpui_kit::test]
+fn a_personal_billing_account_stays_with_the_user_it_follows(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "billing-other-user",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gb-1", "providerId": "GitHubBilling", "displayLabel": "Mine", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "hubot" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
+    let handle = open_billing_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gb-1");
+    assert_eq!(
+        label_of(cx, "github-sign-in-error").as_deref(),
+        Some("This account follows hubot's billing, not octocat's. Add another account for octocat.")
+    );
+    assert_eq!(stored_token(cx, "gb-1"), None);
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some("hubot")
+    );
 }
 
 #[gpui_kit::test]
