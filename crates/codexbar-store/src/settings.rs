@@ -45,9 +45,10 @@ pub mod names {
     pub const GREPTILE: &str = "Greptile";
     pub const GITHUB_BILLING: &str = "GitHubBilling";
     pub const GEMINI: &str = "Gemini";
+    pub const GROK: &str = "Grok";
 
     /// Every provider: the WPF enum's order, then the Rust-only ones.
-    pub const ALL: [&str; 11] = [
+    pub const ALL: [&str; 12] = [
         OPENROUTER,
         COPILOT,
         CLAUDE,
@@ -59,6 +60,7 @@ pub mod names {
         GREPTILE,
         GITHUB_BILLING,
         GEMINI,
+        GROK,
     ];
 }
 
@@ -362,8 +364,10 @@ impl Settings {
     /// no account, whatever their switch says: they have no sign-in to find on their own, and a switch left on when the
     /// last account was removed must not bring back an account nobody added.
     pub fn is_enabled(&self, provider: &str) -> bool {
-        if matches!(provider, names::GREPTILE | names::GITHUB_BILLING | names::GEMINI)
-            && self.accounts_for(provider).next().is_none()
+        if matches!(
+            provider,
+            names::GREPTILE | names::GITHUB_BILLING | names::GEMINI | names::GROK
+        ) && self.accounts_for(provider).next().is_none()
         {
             return false;
         }

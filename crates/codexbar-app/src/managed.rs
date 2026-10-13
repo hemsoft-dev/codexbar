@@ -6,7 +6,9 @@ use codexbar_store::settings::AccountRecord;
 use gpui_kit::{App, Window};
 
 use crate::settings_hub::SettingsHub;
-use crate::{claude_sign_in, codex_sign_in, cursor_sign_in, gemini_sign_in, github_sign_in, opencode_sign_in};
+use crate::{
+    claude_sign_in, codex_sign_in, cursor_sign_in, gemini_sign_in, github_sign_in, grok_sign_in, opencode_sign_in,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Managed {
@@ -16,6 +18,7 @@ pub enum Managed {
     Cursor,
     OpenCode,
     Gemini,
+    Grok,
 }
 
 impl Managed {
@@ -33,6 +36,8 @@ impl Managed {
             Some(Self::OpenCode)
         } else if gemini_sign_in::is_managed(record) {
             Some(Self::Gemini)
+        } else if grok_sign_in::is_managed(record) {
+            Some(Self::Grok)
         } else {
             None
         }
@@ -46,6 +51,7 @@ impl Managed {
             Self::Cursor => cursor_sign_in::sign_in(record_id, window, cx),
             Self::OpenCode => opencode_sign_in::sign_in(record_id, window, cx),
             Self::Gemini => gemini_sign_in::sign_in(record_id, window, cx),
+            Self::Grok => grok_sign_in::sign_in(record_id, window, cx),
         }
     }
 
@@ -57,6 +63,7 @@ impl Managed {
             Self::Cursor => cursor_sign_in::sign_out(record_id, window, cx),
             Self::OpenCode => opencode_sign_in::sign_out(record_id, cx),
             Self::Gemini => gemini_sign_in::sign_out(record_id, cx),
+            Self::Grok => grok_sign_in::sign_out(record_id, cx),
         }
     }
 
@@ -69,6 +76,7 @@ impl Managed {
             Self::Cursor => cursor_sign_in::describe(hub.dir(), record),
             Self::OpenCode => opencode_sign_in::describe(hub, record),
             Self::Gemini => gemini_sign_in::describe(hub, record),
+            Self::Grok => grok_sign_in::describe(hub.dir(), record),
         }
     }
 
@@ -80,6 +88,7 @@ impl Managed {
             Self::Cursor => cursor_sign_in::auth_path(hub.dir(), record).exists(),
             Self::OpenCode => matches!(opencode_sign_in::credential(hub, record), Ok(Some(_))),
             Self::Gemini => matches!(gemini_sign_in::apps_session(hub, record), Ok(Some(_))),
+            Self::Grok => codexbar_providers::grok::read_auth(&grok_sign_in::home(hub.dir(), record)).is_some(),
         }
     }
 
@@ -92,6 +101,7 @@ impl Managed {
             Self::Cursor => cursor_sign_in::forget(record, cx),
             Self::OpenCode => opencode_sign_in::forget(record, cx),
             Self::Gemini => gemini_sign_in::forget(record, cx),
+            Self::Grok => grok_sign_in::forget(record, cx),
             Self::GitHub => {
                 if let Err(err) =
                     codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record.id)

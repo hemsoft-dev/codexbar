@@ -130,6 +130,17 @@ and keeps writing its own credential file; CodexBar only reads it.
   shape fails visibly. The dashboard-cookie method (Browser session) still
   works for existing setups.
 
+- **Grok (#108).** A Grok account with the OAuth method gets its own Grok CLI
+  home in the settings folder (`grok\<account id>`, used as `GROK_HOME`). The
+  official CLI signs it in (`grok login`, in a console window of its own) into a
+  temporary home first; CodexBar confirms the signed-in subject with xAI's
+  OIDC userinfo, then moves that home into the account's place, so a failed or
+  cancelled sign-in changes nothing. The account is bound to that xAI subject.
+  The CLI renews its own token: CodexBar runs `grok models` for the home when
+  the token is about to expire or the billing service refuses it, at most every
+  five minutes. Sign out deletes the account's home; it doesn't sign out of
+  xAI. An account with the Automatic method reads the Grok CLI's own sign-in.
+
 ## Approved client registrations
 
 A provider can use this path only once a human has confirmed its client

@@ -11,7 +11,7 @@ differences that remain, and why.
 | ChatGPT / Codex, Claude, Copilot, Cursor, OpenRouter, OpenCode Go + Zen, Moonshot, Greptile | Yes | Yes | |
 | GitHub Billing: monthly spend per owner | Yes | Yes | Windows signs in through the GitHub CLI ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
 | GitHub Billing: included allowances and budgets | Yes | Yes | Windows also counts billable usage past an allowance without repository visibility ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
-| Grok | Yes | No | [#108](https://github.com/hemsoft-dev/codexbar/issues/108) |
+| Grok | Yes | Yes, experimental | Windows signs in through the official Grok CLI in a home per account ([GROK.md](GROK.md)) |
 | Google Gemini: Gemini Apps limits | Yes | Yes, experimental | Windows signs in through a temporary Edge or Chrome profile instead of a web view ([GEMINI.md](GEMINI.md)) |
 | Google Gemini: coding quotas | Yes | Yes, experimental | Windows reads them through Google's Antigravity CLI (`agy`) instead of its own OAuth client; one Gemini account can show them ([GEMINI.md](GEMINI.md)) |
 

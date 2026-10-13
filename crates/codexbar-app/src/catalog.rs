@@ -28,7 +28,7 @@ pub struct ProviderInfo {
     pub multi_account: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 11] = [
+pub const PROVIDERS: [ProviderInfo; 12] = [
     ProviderInfo {
         id: names::CODEX,
         display: "ChatGPT · Codex",
@@ -160,6 +160,17 @@ pub const PROVIDERS: [ProviderInfo; 11] = [
         secret: None,
         default_method: AuthMethod::BrowserSession,
         setup_method: AuthMethod::BrowserSession,
+        multi_account: true,
+    },
+    ProviderInfo {
+        id: names::GROK,
+        display: "Grok",
+        sign_in: "Experimental. Automatic uses the Grok CLI's own sign-in (`grok`). OAuth signs an account in through \
+                  the Grok CLI in a folder of its own, so several xAI accounts can be added. Shows a paid plan's \
+                  weekly usage and Extra Usage Credits; not API or Cursor Grok Bot spending.",
+        secret: None,
+        default_method: AuthMethod::Automatic,
+        setup_method: AuthMethod::Automatic,
         multi_account: true,
     },
 ];
