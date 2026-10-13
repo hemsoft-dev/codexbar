@@ -17,6 +17,7 @@ pub enum Provider {
     Moonshot,
     Greptile,
     GitHubBilling,
+    Gemini,
 }
 
 impl Provider {
@@ -32,10 +33,11 @@ impl Provider {
             Self::Moonshot => "Moonshot (Kimi)",
             Self::Greptile => "Greptile",
             Self::GitHubBilling => "GitHub Billing",
+            Self::Gemini => "Gemini",
         }
     }
 
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Codex,
         Self::Claude,
         Self::Copilot,
@@ -45,6 +47,7 @@ impl Provider {
         Self::Moonshot,
         Self::Greptile,
         Self::GitHubBilling,
+        Self::Gemini,
     ];
 
     /// A stable key for storage; unlike the display name it never changes with wording.
@@ -59,6 +62,7 @@ impl Provider {
             Self::Moonshot => "moonshot",
             Self::Greptile => "greptile",
             Self::GitHubBilling => "github-billing",
+            Self::Gemini => "gemini",
         }
     }
 

@@ -121,13 +121,24 @@ impl HttpClient for UreqClient {
     }
 }
 
+/// A `Retry-After` value in seconds from `now`: either form RFC 9110 allows, a number of seconds or an HTTP date
+/// (`Tue, 13 Oct 2026 06:00:00 GMT`). A date already past is no wait.
+pub fn retry_after(value: &str, now: chrono::DateTime<chrono::Utc>) -> Option<u64> {
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(secs);
+    }
+    let at = chrono::DateTime::parse_from_rfc2822(value).ok()?;
+    Some((at.with_timezone(&chrono::Utc) - now).num_seconds().max(0) as u64)
+}
+
 fn read_response(mut response: ureq::http::Response<ureq::Body>) -> Result<HttpResponse, ProviderError> {
     let status = response.status().as_u16();
     let retry_after_secs = response
         .headers()
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse().ok());
+        .and_then(|value| retry_after(value, chrono::Utc::now()));
     let body = response
         .body_mut()
         .read_to_string()
@@ -137,4 +148,24 @@ fn read_response(mut response: ureq::http::Response<ureq::Body>) -> Result<HttpR
         body,
         retry_after_secs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_after_reads_seconds_and_http_dates() {
+        let now: chrono::DateTime<chrono::Utc> = "2026-10-13T05:59:00Z".parse().unwrap();
+        assert_eq!(retry_after("120", now), Some(120));
+        assert_eq!(retry_after(" 7 ", now), Some(7));
+        assert_eq!(retry_after("Tue, 13 Oct 2026 06:00:00 GMT", now), Some(60));
+        assert_eq!(
+            retry_after("Tue, 13 Oct 2026 05:00:00 GMT", now),
+            Some(0),
+            "a past date is no wait"
+        );
+        assert_eq!(retry_after("soon", now), None);
+        assert_eq!(retry_after("-5", now), None);
+    }
 }

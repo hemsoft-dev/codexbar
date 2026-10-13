@@ -9,6 +9,7 @@ use codexbar_providers::claude::{self, ClaudeCliRenewer, ClaudeProvider};
 use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
 use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
 use codexbar_providers::cursor::{self, CursorProvider};
+use codexbar_providers::gemini::GeminiProvider;
 use codexbar_providers::github_billing::GitHubBillingProvider;
 use codexbar_providers::greptile::GreptileProvider;
 use codexbar_providers::opencode::OpenCodeProvider;
@@ -75,6 +76,25 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
             provider.with_account(account.id.clone(), account.label.clone())
         } else if configured {
             provider.with_id(account.id.clone())
+        } else {
+            provider
+        };
+        providers.push(Arc::new(provider));
+    }
+
+    // Gemini (#106): each account with the Gemini Apps session CodexBar keeps for it, under its own id. Redirects are
+    // never followed, so the session goes nowhere but Gemini.
+    for account in enabled_accounts(hub, names::GEMINI) {
+        let session = crate::gemini_sign_in::apps_session(hub, &account);
+        let provider = GeminiProvider::new(
+            UreqClient::without_redirects(),
+            session.as_ref().ok().cloned().flatten(),
+            account.id.clone(),
+            account.label.clone(),
+        );
+        // A session Credential Manager couldn't read is reported, not taken for signed out.
+        let provider = if session.is_err() {
+            provider.with_unreadable_session()
         } else {
             provider
         };
@@ -296,7 +316,9 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
         .iter()
         .filter_map(|record| {
             let owned = match record.provider.as_str() {
-                names::OPENROUTER | names::MOONSHOT | names::GREPTILE | names::GITHUB_BILLING => record.id.clone(),
+                names::OPENROUTER | names::MOONSHOT | names::GREPTILE | names::GITHUB_BILLING | names::GEMINI => {
+                    record.id.clone()
+                }
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,

@@ -28,7 +28,7 @@ pub struct ProviderInfo {
     pub multi_account: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 10] = [
+pub const PROVIDERS: [ProviderInfo; 11] = [
     ProviderInfo {
         id: names::CODEX,
         display: "ChatGPT · Codex",
@@ -148,6 +148,17 @@ pub const PROVIDERS: [ProviderInfo; 10] = [
         secret: None,
         default_method: AuthMethod::OAuth,
         setup_method: AuthMethod::OAuth,
+        multi_account: true,
+    },
+    ProviderInfo {
+        id: names::GEMINI,
+        display: "Gemini",
+        sign_in: "Experimental. Browser session opens Gemini in a separate, temporary Edge or Chrome window where you \
+                  sign in to Google yourself; CodexBar keeps only the two Google session cookies Gemini Apps usage \
+                  needs, and deletes the window's data. Shows the consumer Gemini Apps five-hour and weekly limits.",
+        secret: None,
+        default_method: AuthMethod::BrowserSession,
+        setup_method: AuthMethod::BrowserSession,
         multi_account: true,
     },
 ];

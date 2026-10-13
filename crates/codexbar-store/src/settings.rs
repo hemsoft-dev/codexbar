@@ -44,9 +44,10 @@ pub mod names {
     /// Rust-only providers (#103 onward) follow the WPF ones; the retired WPF app never reads them.
     pub const GREPTILE: &str = "Greptile";
     pub const GITHUB_BILLING: &str = "GitHubBilling";
+    pub const GEMINI: &str = "Gemini";
 
     /// Every provider: the WPF enum's order, then the Rust-only ones.
-    pub const ALL: [&str; 10] = [
+    pub const ALL: [&str; 11] = [
         OPENROUTER,
         COPILOT,
         CLAUDE,
@@ -57,6 +58,7 @@ pub mod names {
         MOONSHOT,
         GREPTILE,
         GITHUB_BILLING,
+        GEMINI,
     ];
 }
 
@@ -187,7 +189,7 @@ impl AccountRecord {
             .and_then(AuthMethod::parse)
             .ok_or_else(invalid)?;
         Ok(Self {
-            id: text("id").ok_or_else(invalid)?.to_owned(),
+            id: text("id").filter(|id| valid_id(id)).ok_or_else(invalid)?.to_owned(),
             provider: provider.to_owned(),
             label: text("displayLabel").ok_or_else(invalid)?.to_owned(),
             enabled: object.get("enabled").and_then(Value::as_bool).ok_or_else(invalid)?,
@@ -352,7 +354,9 @@ impl Settings {
     /// no account, whatever their switch says: they have no sign-in to find on their own, and a switch left on when the
     /// last account was removed must not bring back an account nobody added.
     pub fn is_enabled(&self, provider: &str) -> bool {
-        if matches!(provider, names::GREPTILE | names::GITHUB_BILLING) && self.accounts_for(provider).next().is_none() {
+        if matches!(provider, names::GREPTILE | names::GITHUB_BILLING | names::GEMINI)
+            && self.accounts_for(provider).next().is_none()
+        {
             return false;
         }
         match provider_entry(&self.doc, provider) {
@@ -704,11 +708,20 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
     accounts
 }
 
+/// An account id names its Credential Manager entries, which add their own parts after it (`<id>:gemini-apps`,
+/// `<id>#part1.0`); an id holding those separators could name another account's entry.
+fn valid_id(id: &str) -> bool {
+    !id.contains([':', '#'])
+}
+
 fn validate(mut account: AccountRecord) -> Result<AccountRecord, SettingsError> {
     account.id = account.id.trim().to_owned();
     account.label = account.label.trim().to_owned();
     if account.id.is_empty() || account.label.is_empty() {
         return Err(SettingsError::InvalidEdit("Every account needs a name."));
+    }
+    if !valid_id(&account.id) {
+        return Err(SettingsError::InvalidEdit("An account id can't contain ':' or '#'."));
     }
     let provider = canonical_provider(&account.provider).ok_or(SettingsError::InvalidEdit("Unknown provider."))?;
     account.provider = provider.to_owned();
@@ -1248,6 +1261,22 @@ mod tests {
             "new providers wait for an account"
         );
         assert!(settings.accounts().is_empty());
+    }
+
+    #[test]
+    fn an_account_id_never_holds_a_credential_separator() {
+        let mut settings = Settings::from_json("{}");
+        let mut account = AccountRecord::new(names::GEMINI, "Personal", AuthMethod::BrowserSession);
+        account.id = "foo:gemini-apps".into();
+        assert!(settings.upsert(account.clone()).is_err());
+        account.id = "foo#part1.0".into();
+        assert!(settings.upsert(account.clone()).is_err());
+        account.id = "foo".into();
+        assert!(settings.upsert(account).is_ok());
+        let file = r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "foo:gemini-apps", "providerId": "Gemini", "displayLabel": "x", "enabled": true,
+              "authenticationMethod": "BrowserSession" } ] }"#;
+        assert!(accounts_of(&serde_json::from_str(file).unwrap()).is_err());
     }
 
     #[test]

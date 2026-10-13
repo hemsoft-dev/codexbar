@@ -10,6 +10,7 @@ mod codex_sign_in;
 mod cursor_sign_in;
 mod dashboard;
 mod focus_cards;
+mod gemini_sign_in;
 mod github_sign_in;
 mod groups_page;
 mod handoff;
@@ -130,6 +131,8 @@ fn main() {
         cursor_sign_in::init(cx);
         github_sign_in::init(cx);
         opencode_sign_in::init(cx);
+        gemini_sign_in::init(cx);
+        gemini_sign_in::clean_up(cx);
         github_sign_in::clean_up(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
         if is_demo() {

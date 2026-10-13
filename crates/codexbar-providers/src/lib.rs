@@ -2,6 +2,7 @@
 //! HTTPS, and maps the response onto `codexbar_core` snapshots. Fetches are blocking; callers run them off the UI thread.
 
 pub mod balance;
+pub mod browser_session;
 pub mod claude;
 pub mod claude_cli;
 pub mod codex;
@@ -12,6 +13,8 @@ pub mod copilot;
 pub mod cursor;
 pub mod cursor_cli;
 mod error;
+pub mod gemini;
+pub mod gemini_apps;
 pub mod gh_login;
 pub mod github_allowances;
 pub mod github_billing;
