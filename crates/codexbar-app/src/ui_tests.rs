@@ -4707,5 +4707,11 @@ fn greptile_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
     let settings = TempSettings::new("greptile-off", "{}");
     let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
     let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
-    assert!(adapters.iter().all(|a| a.name() != "Greptile"));
+    let greptile: Vec<_> = adapters.iter().filter(|a| a.name() == "Greptile").collect();
+    // A real GREPTILE_API_KEY on this machine stands in as the implicit account; without one, nothing runs.
+    if std::env::var("GREPTILE_API_KEY").is_ok_and(|key| !key.trim().is_empty()) {
+        assert_eq!(greptile.len(), 1, "the environment key is the implicit account");
+    } else {
+        assert!(greptile.is_empty());
+    }
 }

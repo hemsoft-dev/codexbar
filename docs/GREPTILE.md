@@ -12,10 +12,10 @@ pages of 100. It never calls a tool that starts a review, changes a repository
 or touches billing. The key is sent as a bearer token and kept in Windows
 Credential Manager (or read from `GREPTILE_API_KEY`).
 
-Pages are read to the end of the history, up to an offset of 1,000. Reviews are
-counted once by id. A page marked truncated, fewer reviews than the stated
-total, or a history deeper than the cap is shown as an error, never as a short
-count. JSON and event-stream responses are both accepted.
+Pages are read until a short page ends the history, up to an offset of 1,000;
+a full page is always followed, whatever its `total` says. Reviews are counted
+once by id. A page marked truncated, fewer unique reviews than the stated total,
+or a history deeper than the cap is shown as an error, never as a short count. JSON and event-stream responses are both accepted.
 
 ## What is shown
 
@@ -33,7 +33,8 @@ count. JSON and event-stream responses are both accepted.
   limit and an unreadable response are each shown as such on the account's row.
   The last good result stays visible meanwhile.
 
-Greptile is off until a Greptile account is added. Each account reports under
+Greptile is off until a Greptile account is added, or `GREPTILE_API_KEY` is
+set, which then stands in as one implicit account. Each account reports under
 its own id, so several organizations can be added side by side.
 
 ## Not verified here

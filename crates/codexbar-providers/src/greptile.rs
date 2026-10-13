@@ -380,8 +380,9 @@ impl<H: HttpClient> GreptileProvider<H> {
         })
     }
 
-    /// Reads every page, deduplicating reviews by id. A truncated page, a short page before the stated total, or a
-    /// history deeper than the offset cap is an error: a partial count is never shown as complete.
+    /// Reads every page, deduplicating reviews by id, until a short page. A truncated page, fewer unique reviews than
+    /// the stated total, or a history deeper than the offset cap is an error: a partial count is never shown as
+    /// complete.
     pub fn activity(&self, now: DateTime<Utc>) -> Result<Activity, ProviderError> {
         let key = self
             .key
@@ -411,24 +412,16 @@ impl<H: HttpClient> GreptileProvider<H> {
                     activity.counts.record(status);
                 }
             }
-            let next = offset + page.reviews.len();
-            if let Some(total) = expected
-                && next >= total
-            {
-                return if seen.len() >= total {
-                    Ok(activity)
-                } else {
-                    Err(incomplete)
-                };
-            }
+            // Only a short page ends the history. A full page is followed even when its `total` says it was the last,
+            // so a `total` that counts only that page can never stop the scan early.
             if page.reviews.len() < PAGE_SIZE {
-                return if expected.is_none() {
+                return if expected.is_none_or(|total| seen.len() >= total) {
                     Ok(activity)
                 } else {
                     Err(incomplete)
                 };
             }
-            offset = next;
+            offset += page.reviews.len();
         }
         Err(incomplete)
     }
@@ -668,7 +661,10 @@ mod tests {
         // Repeated ids leave fewer unique reviews than the total.
         let mut repeated = reviews(0..100, "COMPLETED");
         repeated[1] = json!({ "id": "r0", "status": "COMPLETED" });
-        assert!(incomplete(Mcp::answering([page(repeated, json!({ "total": 100 }))])));
+        assert!(incomplete(Mcp::answering([
+            page(repeated, json!({ "total": 100 })),
+            page(vec![], json!({ "total": 100 })),
+        ])));
         // A history deeper than the offset cap.
         let full: Vec<HttpResponse> = (0..12)
             .map(|i| page(reviews(i * 100..i * 100 + 100, "COMPLETED"), json!({})))
@@ -676,6 +672,17 @@ mod tests {
         let mcp = Mcp::answering(full);
         assert!(incomplete(mcp.clone()));
         assert_eq!(mcp.requests().len(), 11, "pages stop at the offset cap");
+    }
+
+    #[test]
+    fn a_total_that_counts_only_its_page_never_stops_the_scan_early() {
+        let mcp = Mcp::answering([
+            page(reviews(0..100, "COMPLETED"), json!({ "total": 100 })),
+            page(reviews(100..140, "COMPLETED"), json!({ "total": 40 })),
+        ]);
+        let activity = provider(&mcp).activity(now()).unwrap();
+        assert_eq!(activity.counts.completed, 140);
+        assert_eq!(mcp.requests().len(), 2);
     }
 
     #[test]
