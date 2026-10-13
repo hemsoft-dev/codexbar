@@ -4715,3 +4715,38 @@ fn greptile_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
         assert!(greptile.is_empty());
     }
 }
+
+#[gpui_kit::test]
+fn each_greptile_account_uses_its_own_saved_key_over_the_environment(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "greptile-saved-first",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": true,
+              "authenticationMethod": "ApiKey" },
+            { "id": "gr-2", "providerId": "Greptile", "displayLabel": "Side", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    cx.update(|cx| {
+        let store = SettingsHub::global(cx).credentials();
+        store.write("gr-1", "key-for-acme").unwrap();
+        store.write("gr-2", "key-for-side").unwrap();
+    });
+    let resolved = cx.update(|cx| {
+        let hub = SettingsHub::global(cx);
+        hub.settings()
+            .accounts()
+            .iter()
+            .map(|record| hub.secret_for(record))
+            .collect::<Vec<_>>()
+    });
+    // Whatever GREPTILE_API_KEY holds on this machine, each organization keeps its own key.
+    assert!(
+        resolved[0].0.as_deref() == Some("key-for-acme") && resolved[1].0.as_deref() == Some("key-for-side"),
+        "each account's saved key wins"
+    );
+    assert!(matches!(
+        resolved[0].1,
+        codexbar_store::credentials::SecretSource::CredentialManager
+    ));
+}

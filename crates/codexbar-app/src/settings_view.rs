@@ -505,8 +505,12 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                             Input::new(&form.secret).mask_toggle().into_any_element(),
                         ))
                         .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!(
-                            "Saved in Windows Credential Manager. The {} environment variable overrides it.",
-                            spec.env
+                            "Saved in Windows Credential Manager. {}",
+                            if spec.saved_first {
+                                format!("The {} environment variable is used only when none is saved.", spec.env)
+                            } else {
+                                format!("The {} environment variable overrides it.", spec.env)
+                            }
                         )))
                     })
                     .when(info.id == names::CODEX, |this| {
