@@ -327,6 +327,30 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         .with_trend(vec![
             0.05, 0.1, 0.08, 0.15, 0.2, 0.12, 0.18, 0.25, 0.22, 0.3, 0.28, 0.35, 0.38, 0.41,
         ]),
+        // #108: a paid plan's weekly pool and Extra Usage Credits, kept apart.
+        AccountSnapshot::new(
+            AccountId::new("grok"),
+            Provider::Grok,
+            vec![
+                Metric::Window {
+                    label: "Weekly usage".into(),
+                    used: 0.27,
+                    resets_at: thursday_nine,
+                    pace: None,
+                },
+                Metric::Balance {
+                    label: "Extra usage credits".into(),
+                    remaining: Money::from_cents(500),
+                    burn_per_day: None,
+                },
+            ],
+            fetched,
+        )
+        .with_label("SuperGrok")
+        .with_message("Plan: SuperGrok.")
+        .with_trend(vec![
+            0.02, 0.04, 0.05, 0.07, 0.1, 0.12, 0.13, 0.15, 0.18, 0.2, 0.21, 0.23, 0.25, 0.27,
+        ]),
     ]
 }
 
@@ -416,6 +440,7 @@ mod tests {
                 "GitHub Billing · HemSoft",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
+                "Grok · SuperGrok",
                 "Greptile · HemSoft",
                 "Moonshot (Kimi)",
             ]

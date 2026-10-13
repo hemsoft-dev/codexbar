@@ -12,6 +12,7 @@ use codexbar_providers::cursor::{self, CursorProvider};
 use codexbar_providers::gemini::GeminiProvider;
 use codexbar_providers::github_billing::GitHubBillingProvider;
 use codexbar_providers::greptile::GreptileProvider;
+use codexbar_providers::grok::{GrokProvider, SystemGrokCli};
 use codexbar_providers::opencode::OpenCodeProvider;
 use codexbar_providers::opencode_console::OpenCodeConsoleProvider;
 use codexbar_providers::{SystemCommandRunner, UreqClient, UsageProvider};
@@ -101,6 +102,24 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
             provider = provider.with_coding(Arc::new(SystemCommandRunner));
         }
         providers.push(Arc::new(provider));
+    }
+
+    // Grok (#108): each account reads its Grok CLI home; one CodexBar signed in is bound to the xAI account it holds.
+    for account in enabled_accounts(hub, names::GROK) {
+        let home = crate::grok_sign_in::home(hub.dir(), &account);
+        let subject = if crate::grok_sign_in::is_managed(&account) {
+            account.external_id.clone()
+        } else {
+            None
+        };
+        providers.push(Arc::new(GrokProvider::new(
+            UreqClient::without_redirects(),
+            Arc::new(SystemGrokCli),
+            home,
+            subject,
+            account.id.clone(),
+            account.label.clone(),
+        )));
     }
 
     // GitHub Billing (#104): each account with the token CodexBar keeps for it, reporting under its own id.
@@ -318,9 +337,12 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
         .iter()
         .filter_map(|record| {
             let owned = match record.provider.as_str() {
-                names::OPENROUTER | names::MOONSHOT | names::GREPTILE | names::GITHUB_BILLING | names::GEMINI => {
-                    record.id.clone()
-                }
+                names::OPENROUTER
+                | names::MOONSHOT
+                | names::GREPTILE
+                | names::GITHUB_BILLING
+                | names::GEMINI
+                | names::GROK => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,

@@ -47,6 +47,8 @@ impl Drop for TempSettings {
 fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindowHandle, Entity<Dashboard>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
@@ -356,6 +358,8 @@ fn history_view_handles_empty_and_single_sample_series(cx: &mut TestAppContext) 
     let settings = TempSettings::new("history-edge", "{}");
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
     });
@@ -1043,6 +1047,8 @@ fn open_live_dyn(
     use codexbar_store::HistoryStore;
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         SettingsHub::init_with(cx, &settings.0, Arc::new(store));
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
@@ -1066,6 +1072,9 @@ fn open_live_dyn(
         }
         if cx.try_global::<crate::gemini_sign_in::Service>().is_none() {
             crate::gemini_sign_in::init_with(cx, Arc::new(gemini_fixture::FakeGemini::default()));
+        }
+        if cx.try_global::<crate::grok_sign_in::Service>().is_none() {
+            crate::grok_sign_in::init_with(cx, Arc::new(grok_fixture::FakeGrok::default()));
         }
     });
     let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
@@ -1412,6 +1421,8 @@ fn one_user_failing_keeps_its_last_good_usage_and_snapshot(cx: &mut TestAppConte
     let settings = TempSettings::new("outcomes-partial", "{}");
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
@@ -5194,6 +5205,211 @@ fn one_gemini_account_shows_the_antigravity_clis_coding_quotas(cx: &mut TestAppC
         Some("“Personal” already shows the Antigravity CLI's coding quotas. It has one sign-in.")
     );
     assert_eq!(saved_settings(&settings).accounts().len(), 1);
+}
+
+// Grok (#108): the Grok CLI's own sign-in in a home per account, faked so tests never start the CLI or reach xAI.
+
+mod grok_fixture {
+    use std::path::Path;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
+    use crate::grok_sign_in::SignInService;
+
+    #[derive(Default)]
+    pub struct State {
+        /// The subject a sign-in writes and userinfo confirms; `None` fails the sign-in.
+        pub signs_in_as: Mutex<Option<String>>,
+    }
+
+    #[derive(Default, Clone)]
+    pub struct FakeGrok(pub Arc<State>);
+
+    impl SignInService for FakeGrok {
+        fn sign_in(&self, home: &Path, _: &AtomicBool) -> Result<(), String> {
+            let Some(subject) = self.0.signs_in_as.lock().unwrap().clone() else {
+                return Err("The Grok CLI window was closed before signing in.".into());
+            };
+            std::fs::create_dir_all(home).unwrap();
+            let auth = format!(
+                r#"{{"https://auth.x.ai::client":{{"key":"tok-{subject}","expires_at":"2099-01-01T00:00:00Z",
+                "user_id":"{subject}","email":"{subject}@example.com"}}}}"#
+            );
+            std::fs::write(home.join("auth.json"), auth).unwrap();
+            Ok(())
+        }
+
+        fn subject(&self, token: &str) -> Result<String, String> {
+            Ok(token.trim_start_matches("tok-").to_owned())
+        }
+    }
+}
+
+use grok_fixture::FakeGrok;
+
+fn open_grok_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: &FakeGrok) -> AnyWindowHandle {
+    let fake = fake.clone();
+    cx.update(|cx| crate::grok_sign_in::init_with(cx, Arc::new(fake)));
+    let handle = open_settings_page(cx, settings, MemoryCredentialStore::default(), 1);
+    // Grok is the twelfth group; Settings renders only groups in view, so scroll it in.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-1-11", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    handle
+}
+
+const GROK_ACCOUNT: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
+    { "id": "gk-1", "providerId": "Grok", "displayLabel": "Me", "enabled": true, "authenticationMethod": "OAuth" } ] }"#;
+
+#[gpui_kit::test]
+fn a_grok_account_signs_in_through_the_cli_in_its_own_home(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("grok-sign-in", GROK_ACCOUNT);
+    let fake = FakeGrok::default();
+    *fake.0.signs_in_as.lock().unwrap() = Some("sub-1".into());
+    let handle = open_grok_accounts(cx, &settings, &fake);
+    assert_eq!(
+        label_of(cx, "account-detail-gk-1").as_deref(),
+        Some("OAuth · Not signed in")
+    );
+    click(cx, handle, "sign-in-gk-1");
+    assert!(
+        !exists(cx, handle, "grok-sign-in-status"),
+        "the dialog closes once signed in"
+    );
+    let record = saved_settings(&settings).accounts()[0].clone();
+    assert_eq!(record.external_id.as_deref(), Some("sub-1"));
+    let home = settings.0.join("grok").join(crate::codex_sign_in::folder_name("gk-1"));
+    assert!(
+        home.join("auth.json").is_file(),
+        "the sign-in lives in the account's own Grok home"
+    );
+    assert!(
+        std::fs::read_dir(settings.0.join("grok")).unwrap().count() == 1,
+        "the temporary home is gone"
+    );
+    assert_eq!(
+        label_of(cx, "account-detail-gk-1").as_deref(),
+        Some("OAuth · sub-1@example.com")
+    );
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let grok: Vec<_> = adapters.iter().filter(|a| a.name() == "Grok").collect();
+    assert_eq!(grok.len(), 1);
+    assert_eq!(grok[0].account_id(), Some("gk-1"));
+
+    click(cx, handle, "sign-out-gk-1");
+    assert!(!home.exists(), "signing out deletes the account's Grok home");
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some("sub-1")
+    );
+}
+
+#[gpui_kit::test]
+fn a_grok_sign_in_that_cant_be_saved_keeps_the_earlier_home(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "grok-resign-fails",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gk-1", "providerId": "Grok", "displayLabel": "Me", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "sub-1" } ] }"#,
+    );
+    let home = settings.0.join("grok").join(crate::codex_sign_in::folder_name("gk-1"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("auth.json"), "earlier").unwrap();
+    let fake = FakeGrok::default();
+    *fake.0.signs_in_as.lock().unwrap() = Some("sub-1".into());
+    let handle = open_grok_accounts(cx, &settings, &fake);
+    let file = settings.0.join("settings.json");
+    let writable = std::fs::metadata(&file).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&file, read_only).unwrap();
+    click(cx, handle, "sign-in-gk-1");
+    std::fs::set_permissions(&file, writable).unwrap();
+    assert!(
+        label_of(cx, "grok-sign-in-error").is_some_and(|e| e.starts_with("The sign-in couldn't be saved")),
+        "the save failed"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        "earlier",
+        "the account keeps its earlier sign-in"
+    );
+    assert_eq!(
+        std::fs::read_dir(settings.0.join("grok")).unwrap().count(),
+        1,
+        "no backup or temporary home is left"
+    );
+}
+
+#[gpui_kit::test]
+fn an_interrupted_grok_sign_in_gets_its_earlier_home_back_at_start(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("grok-interrupted", GROK_ACCOUNT);
+    let grok = settings.0.join("grok");
+    let name = crate::codex_sign_in::folder_name("gk-1");
+    std::fs::create_dir_all(grok.join(format!("{name}.previous"))).unwrap();
+    std::fs::write(grok.join(format!("{name}.previous")).join("auth.json"), "earlier").unwrap();
+    std::fs::create_dir_all(grok.join("other.previous")).unwrap();
+    std::fs::create_dir_all(grok.join("other")).unwrap();
+    let _handle = open_grok_accounts(cx, &settings, &FakeGrok::default());
+    cx.update(crate::grok_sign_in::clean_up);
+    assert_eq!(
+        std::fs::read_to_string(grok.join(&name).join("auth.json")).unwrap(),
+        "earlier",
+        "the home that was set aside is back"
+    );
+    assert!(
+        !grok.join("other.previous").exists(),
+        "a backup whose home arrived is deleted"
+    );
+}
+
+#[gpui_kit::test]
+fn signing_a_grok_account_in_as_someone_else_keeps_nothing(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "grok-rebind",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gk-1", "providerId": "Grok", "displayLabel": "Me", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "sub-1" } ] }"#,
+    );
+    let fake = FakeGrok::default();
+    *fake.0.signs_in_as.lock().unwrap() = Some("sub-9".into());
+    let handle = open_grok_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gk-1");
+    assert_eq!(
+        label_of(cx, "grok-sign-in-error").as_deref(),
+        Some("This account was signed in to a different xAI account. Add another Grok account for it.")
+    );
+    let home = settings.0.join("grok").join(crate::codex_sign_in::folder_name("gk-1"));
+    assert!(!home.exists(), "nothing is kept for the other account");
+    assert!(
+        std::fs::read_dir(settings.0.join("grok"))
+            .map(|e| e.count())
+            .unwrap_or(0)
+            == 0,
+        "the temporary home is gone"
+    );
+}
+
+#[gpui_kit::test]
+fn a_grok_sign_in_that_doesnt_finish_says_so(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("grok-fails", GROK_ACCOUNT);
+    let handle = open_grok_accounts(cx, &settings, &FakeGrok::default());
+    click(cx, handle, "sign-in-gk-1");
+    assert_eq!(
+        label_of(cx, "grok-sign-in-error").as_deref(),
+        Some("The Grok CLI window was closed before signing in.")
+    );
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+}
+
+#[gpui_kit::test]
+fn grok_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("grok-off", "{}");
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    assert!(adapters.iter().all(|a| a.name() != "Grok"));
 }
 
 #[gpui_kit::test]

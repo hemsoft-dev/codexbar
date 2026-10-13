@@ -12,6 +12,7 @@ mod dashboard;
 mod focus_cards;
 mod gemini_sign_in;
 mod github_sign_in;
+mod grok_sign_in;
 mod groups_page;
 mod handoff;
 mod history_view;
@@ -133,6 +134,8 @@ fn main() {
         opencode_sign_in::init(cx);
         gemini_sign_in::init(cx);
         gemini_sign_in::clean_up(cx);
+        grok_sign_in::init(cx);
+        grok_sign_in::clean_up(cx);
         github_sign_in::clean_up(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
         if is_demo() {

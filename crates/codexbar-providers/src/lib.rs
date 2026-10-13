@@ -20,6 +20,7 @@ pub mod gh_login;
 pub mod github_allowances;
 pub mod github_billing;
 pub mod greptile;
+pub mod grok;
 mod http;
 mod jwt;
 pub mod oauth;
