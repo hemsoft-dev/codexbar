@@ -354,10 +354,16 @@ pub fn forget(record: AccountRecord, cx: &mut App) {
 
 /// Whether the account row's Gemini Apps connection is signed in.
 pub fn describe(hub: &SettingsHub, record: &AccountRecord) -> String {
-    match apps_session(hub, record) {
-        Err(_) => "Its sign-in couldn't be read from Windows Credential Manager".to_owned(),
-        Ok(Some(_)) => "Gemini Apps signed in".to_owned(),
-        Ok(None) => "Gemini Apps not signed in".to_owned(),
+    let apps = match apps_session(hub, record) {
+        Err(_) => "Its sign-in couldn't be read from Windows Credential Manager",
+        Ok(Some(_)) => "Gemini Apps signed in",
+        Ok(None) => "Gemini Apps not signed in",
+    };
+    // Coding quotas (#107) are a connection of their own.
+    if record.gemini_coding {
+        format!("{apps} · coding quotas from agy")
+    } else {
+        apps.to_owned()
     }
 }
 

@@ -127,6 +127,9 @@ pub struct AccountRecord {
     pub copilot_pool_total: Option<u64>,
     /// GitHub Billing (#104): the organization whose billing the account follows; `None` follows the signed-in user.
     pub billing_organization: Option<String>,
+    /// Gemini (#107): also show the coding quotas of the Antigravity CLI's own sign-in, which the user confirmed is
+    /// this account's Google account.
+    pub gemini_coding: bool,
 }
 
 impl AccountRecord {
@@ -145,6 +148,7 @@ impl AccountRecord {
             copilot_organization: None,
             copilot_pool_total: None,
             billing_organization: None,
+            gemini_coding: false,
         }
     }
 
@@ -170,6 +174,9 @@ impl AccountRecord {
         }
         if let Some(organization) = &self.billing_organization {
             map.insert("githubBillingOrganization".into(), json!(organization));
+        }
+        if self.gemini_coding {
+            map.insert("geminiCodingFromCli".into(), json!(true));
         }
         Value::Object(map)
     }
@@ -204,6 +211,7 @@ impl AccountRecord {
                 .and_then(Value::as_u64)
                 .filter(|total| *total > 0),
             billing_organization: text("githubBillingOrganization").map(str::to_owned),
+            gemini_coding: object.get("geminiCodingFromCli").and_then(Value::as_bool) == Some(true),
         })
     }
 }
@@ -640,6 +648,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_organization: None,
             copilot_pool_total: None,
             billing_organization: None,
+            gemini_coding: false,
         });
     }
 
@@ -687,6 +696,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_organization: None,
             copilot_pool_total: None,
             billing_organization: None,
+            gemini_coding: false,
         });
     }
     if known.is_empty() && copilot_entry.is_some() {
@@ -703,6 +713,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_organization: None,
             copilot_pool_total: None,
             billing_organization: None,
+            gemini_coding: false,
         });
     }
     accounts

@@ -355,6 +355,8 @@ struct AccountForm {
     pool_total: Entity<InputState>,
     /// GitHub Billing (#104): the organization to follow, blank for the signed-in user's own billing.
     billing_org: Entity<InputState>,
+    /// Gemini (#107): whether to show the Antigravity CLI's coding quotas.
+    gemini_coding: Entity<SelectState<Vec<SharedString>>>,
     error: Rc<RefCell<Option<SharedString>>>,
 }
 
@@ -457,6 +459,18 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                         .unwrap_or_default(),
                 )
         }),
+        gemini_coding: cx.new(|cx| {
+            let on = existing.as_ref().is_some_and(|r| r.gemini_coding);
+            SelectState::new(
+                vec![
+                    SharedString::from("Off"),
+                    SharedString::from("From the Antigravity CLI (agy)"),
+                ],
+                Some(IndexPath::default().row(usize::from(on))),
+                window,
+                cx,
+            )
+        }),
         error: Rc::default(),
     });
     let editing = existing.is_some();
@@ -547,6 +561,23 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                     .when(info.id == names::COPILOT && !oauth, |this| {
                         this.child(field("GitHub username", Input::new(&form.username).into_any_element()))
                     })
+                    .when(info.id == names::GEMINI, |this| {
+                        this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            "Browser session: after adding, CodexBar opens a temporary browser window for the Google \
+                             sign-in of Gemini Apps.",
+                        ))
+                        .child(field(
+                            "Coding quotas",
+                            Select::new(&form.gemini_coding)
+                                .accessibility_label("Coding quotas")
+                                .into_any_element(),
+                        ))
+                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            "From the Antigravity CLI shows the Gemini Models and Other models quotas of the account \
+                             agy is signed in to. Choose it only if that is this same Google account: CodexBar can't \
+                             check. One Gemini account can show them.",
+                        ))
+                    })
                     .when(info.id == names::GITHUB_BILLING, |this| {
                         this.child(field("Organization", Input::new(&form.billing_org).into_any_element()))
                             .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
@@ -633,6 +664,11 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let enterprise = form.enterprise.read(cx).value().trim().to_owned();
     let organization = form.organization.read(cx).value().trim().to_owned();
     let billing_org = form.billing_org.read(cx).value().trim().to_owned();
+    let gemini_coding = form
+        .gemini_coding
+        .read(cx)
+        .selected_index(cx)
+        .is_some_and(|ix| ix.row == 1);
     if info.id == names::GITHUB_BILLING
         && !billing_org.is_empty()
         && !codexbar_providers::github_billing::valid_login(&billing_org)
@@ -675,6 +711,27 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         record.copilot_enterprise = (!enterprise.is_empty()).then_some(enterprise);
         record.copilot_organization = (!organization.is_empty()).then_some(organization);
         record.copilot_pool_total = pool_total;
+    }
+    // The Antigravity CLI has one sign-in, so one Gemini account shows its coding quotas (#107).
+    if info.id == names::GEMINI {
+        if gemini_coding
+            && let Some(other) = SettingsHub::global(cx)
+                .settings()
+                .accounts()
+                .iter()
+                .find(|other| other.id != record.id && other.gemini_coding)
+        {
+            *form.error.borrow_mut() = Some(
+                format!(
+                    "“{}” already shows the Antigravity CLI's coding quotas. It has one sign-in.",
+                    other.label
+                )
+                .into(),
+            );
+            window.refresh();
+            return false;
+        }
+        record.gemini_coding = gemini_coding;
     }
     // A billing account only signs in through the GitHub CLI (#104). Following another owner needs a new sign-in, which
     // checks access to that owner's billing. The account becomes a new one, under a new id, so the old owner's spend

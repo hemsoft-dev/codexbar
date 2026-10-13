@@ -155,7 +155,8 @@ pub const PROVIDERS: [ProviderInfo; 11] = [
         display: "Gemini",
         sign_in: "Experimental. Browser session opens Gemini in a separate, temporary Edge or Chrome window where you \
                   sign in to Google yourself; CodexBar keeps only the two Google session cookies Gemini Apps usage \
-                  needs, and deletes the window's data. Shows the consumer Gemini Apps five-hour and weekly limits.",
+                  needs, and deletes the window's data. Shows the consumer Gemini Apps five-hour and weekly limits, \
+                  and can show the coding quotas of the Antigravity CLI (agy).",
         secret: None,
         default_method: AuthMethod::BrowserSession,
         setup_method: AuthMethod::BrowserSession,

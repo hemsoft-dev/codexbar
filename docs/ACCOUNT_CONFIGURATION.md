@@ -22,6 +22,7 @@ account in again with another identity replaces it without asking (see
 | `legacyCardKey` | Kept from older CodexBar versions for ordering |
 | `copilotEnterprise`, `copilotOrganization`, `copilotPoolTotal` | Copilot org billing for an Enterprise seat; written only when set |
 | `githubBillingOrganization` | The organization a GitHub Billing account follows; absent for the signed-in user's own billing |
+| `geminiCodingFromCli` | A Gemini account also shows the Antigravity CLI's coding quotas; written only when on |
 
 None of these are secrets. Pasted keys and cookies, the GitHub tokens of
 Copilot accounts CodexBar signs in, and the sign-ins of OpenCode accounts on

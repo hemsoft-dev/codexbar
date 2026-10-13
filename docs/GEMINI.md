@@ -3,8 +3,8 @@
 A Gemini account (#106) shows the consumer **Gemini Apps** limits from
 `gemini.google.com/usage`: the rolling five-hour and the weekly limit, with
 Gemini's own reset times. It is not Gemini API, Gemini CLI or Code Assist quota;
-coding quotas are [#107](https://github.com/hemsoft-dev/codexbar/issues/107).
-The integration is **experimental** and off until a Gemini account is added.
+it can also show the Gemini coding quotas (#107, below). The integration is
+**experimental** and off until a Gemini account is added.
 
 ## Signing in
 
@@ -58,6 +58,37 @@ asks, up to an hour. A saved session Credential Manager can't read is reported
 as such, not as signed out. Redirects are never followed, so the cookies go nowhere
 but `gemini.google.com`.
 
+## Coding quotas (#107)
+
+The coding quotas are the Antigravity daily quota summary: the **Gemini Models**
+and **Other models** (Claude and GPT) groups, each with a five-hour and a weekly
+limit. CodexBar reads them through Google's own Antigravity CLI,
+`agy -p "/usage" --output-format json`, a documented script interface that runs
+no model turn. The CLI keeps its own Google sign-in and renews it, so CodexBar
+borrows no OAuth client and stores no token.
+
+- CodexBar first runs `agy --version` and asks for `/usage` only from version
+  1.1.11 on, the first whose non-interactive `/usage` starts no agent turn. An
+  older CLI, or a version it can't read, is never asked, so `/usage` is never
+  sent to the model as a prompt.
+- Set the Gemini account's **Coding quotas** to *From the Antigravity CLI* in
+  Settings. Sign in to the CLI by running `agy` once. Choose it only for the
+  Google account `agy` is signed in to: CodexBar can't check, and matching
+  labels prove nothing.
+- The CLI keeps one sign-in for the Windows user (in Windows' credential store,
+  not its home folder), so one Gemini account can show coding quotas.
+- Buckets map by id and window, never by display name: `gemini-5h`,
+  `gemini-weekly`, `3p-5h` and `3p-weekly` become **Gemini Models five-hour**,
+  **Gemini Models weekly**, **Other models five-hour** and **Other models
+  weekly**. Percent used is `1 − remaining_fraction`, and resets come only from
+  `reset_time`.
+- A missing, duplicate, disabled, malformed or expired bucket stays unavailable
+  with a note, and the valid ones still show. With no usable bucket and no Gemini Apps
+  limits, the account says so instead of asking for a sign-in.
+- Gemini Apps and coding quotas are separate connections: either works without
+  the other, one failing never hides the other, and signing Gemini Apps out
+  leaves the coding quotas alone.
+
 ## Security notes and limits
 
 - The two cookies are Google session credentials, not a Gemini-only key: they can
@@ -75,7 +106,8 @@ but `gemini.google.com`.
 
 ## Not verified here
 
-The browser mechanism was checked on a hidden desktop (Edge started on a fresh
+The coding quotas were read live through the installed CLI (`agy` 1.3.3) on
+2026-10-12: four buckets, `num_turns` 0. The browser mechanism was checked on a hidden desktop (Edge started on a fresh
 profile, DevTools answered, cookies were listed, the browser closed and the
 profile was deleted). A real Google sign-in, and a comparison of both limits and
 resets with the same account's Usage page, are left to the account owner, along

@@ -295,6 +295,31 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     resets_at: thursday_nine,
                     pace: None,
                 },
+                // #107: coding quotas from the Antigravity CLI.
+                Metric::Window {
+                    label: "Gemini Models five-hour".into(),
+                    used: 0.0,
+                    resets_at: now + Duration::minutes(290),
+                    pace: None,
+                },
+                Metric::Window {
+                    label: "Gemini Models weekly".into(),
+                    used: 0.12,
+                    resets_at: thursday_nine,
+                    pace: None,
+                },
+                Metric::Window {
+                    label: "Other models five-hour".into(),
+                    used: 0.04,
+                    resets_at: now + Duration::minutes(290),
+                    pace: None,
+                },
+                Metric::Window {
+                    label: "Other models weekly".into(),
+                    used: 0.15,
+                    resets_at: thursday_nine,
+                    pace: None,
+                },
             ],
             fetched,
         )
