@@ -4937,7 +4937,7 @@ fn an_owner_change_that_cant_be_saved_keeps_the_old_sign_in(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-fn a_personal_billing_account_stays_with_the_user_it_follows(cx: &mut TestAppContext) {
+fn a_personal_billing_account_signed_in_under_another_login_starts_afresh(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
         "billing-other-user",
         r#"{ "accountConfigurationVersion": 1, "accounts": [
@@ -4946,16 +4946,41 @@ fn a_personal_billing_account_stays_with_the_user_it_follows(cx: &mut TestAppCon
     );
     let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
     let handle = open_billing_accounts(cx, &settings, &fake);
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(SettingsHub::global(cx).credentials().as_ref(), "gb-1", "gho_hubot")
+    })
+    .unwrap();
     click(cx, handle, "sign-in-gb-1");
-    assert_eq!(
-        label_of(cx, "github-sign-in-error").as_deref(),
-        Some("This account follows hubot's billing, not octocat's. Add another account for octocat.")
+    assert!(
+        !exists(cx, handle, "github-sign-in-status"),
+        "signing in again recovers the account, whatever its login is now"
     );
-    assert_eq!(stored_token(cx, "gb-1"), None);
-    assert_eq!(
-        saved_settings(&settings).accounts()[0].external_id.as_deref(),
-        Some("hubot")
+    let saved = saved_settings(&settings);
+    assert_eq!(saved.accounts().len(), 1, "replaced, not added beside");
+    let account = &saved.accounts()[0];
+    assert_ne!(
+        account.id, "gb-1",
+        "a new id, so hubot's history is deleted rather than shown as octocat's"
     );
+    assert_eq!(account.label, "Mine");
+    assert_eq!(account.external_id.as_deref(), Some("octocat"));
+    assert!(stored_token(cx, &account.id).as_deref() == Some("gho_token_for_octocat"));
+    assert_eq!(stored_token(cx, "gb-1"), None, "the old login's token goes");
+}
+
+#[gpui_kit::test]
+fn the_same_user_signing_in_again_keeps_the_account(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "billing-same-user",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gb-1", "providerId": "GitHubBilling", "displayLabel": "Mine", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "OctoCat" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
+    let handle = open_billing_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gb-1");
+    assert_eq!(saved_settings(&settings).accounts()[0].id, "gb-1");
+    assert!(stored_token(cx, "gb-1").as_deref() == Some("gho_token_for_octocat"));
 }
 
 #[gpui_kit::test]

@@ -348,15 +348,16 @@ impl Settings {
     }
 
     /// A provider is on while its legacy switch is on (kept in sync with its accounts on save). WPF defaults apply
-    /// when the provider is absent: on, except Moonshot. Providers added since (#103 onward) are off until an account
-    /// is added for them: they have no sign-in to find on their own.
+    /// when the provider is absent: on, except Moonshot. Providers added since (#103 onward) are off while they have
+    /// no account, whatever their switch says: they have no sign-in to find on their own, and a switch left on when the
+    /// last account was removed must not bring back an account nobody added.
     pub fn is_enabled(&self, provider: &str) -> bool {
+        if matches!(provider, names::GREPTILE | names::GITHUB_BILLING) && self.accounts_for(provider).next().is_none() {
+            return false;
+        }
         match provider_entry(&self.doc, provider) {
             Some(Value::Object(entry)) => entry.get("enabled").and_then(Value::as_bool).unwrap_or(true),
             Some(_) => true,
-            None if matches!(provider, names::GREPTILE | names::GITHUB_BILLING) => {
-                self.accounts_for(provider).next().is_some()
-            }
             None => provider != names::MOONSHOT,
         }
     }
@@ -1247,6 +1248,23 @@ mod tests {
             "new providers wait for an account"
         );
         assert!(settings.accounts().is_empty());
+    }
+
+    #[test]
+    fn new_providers_go_off_again_when_their_last_account_is_removed() {
+        let mut settings = Settings::from_json(
+            r#"{ "providers": { "GitHubBilling": { "enabled": true }, "Greptile": { "enabled": true } },
+                 "accountConfigurationVersion": 1, "accounts": [
+                 { "id": "gb-1", "providerId": "GitHubBilling", "displayLabel": "Mine", "enabled": true,
+                   "authenticationMethod": "OAuth" } ] }"#,
+        );
+        assert!(settings.is_enabled(names::GITHUB_BILLING));
+        assert!(
+            !settings.is_enabled(names::GREPTILE),
+            "a switch left on brings back no account"
+        );
+        assert!(settings.remove("gb-1"));
+        assert!(!settings.is_enabled(names::GITHUB_BILLING));
     }
 
     #[test]

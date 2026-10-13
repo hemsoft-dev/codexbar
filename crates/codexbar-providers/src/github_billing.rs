@@ -57,6 +57,17 @@ pub fn valid_login(login: &str) -> bool {
         && !login.ends_with('-')
 }
 
+/// A login GitHub returned for the signed-in user. Enterprise Managed Users' logins carry an underscore before the
+/// enterprise's shortcode (`octocat_acme`), which organization names never do.
+pub fn valid_user_login(login: &str) -> bool {
+    match login.rsplit_once('_') {
+        Some((user, shortcode)) => {
+            valid_login(user) && !shortcode.is_empty() && shortcode.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+        None => valid_login(login),
+    }
+}
+
 /// One product and SKU line of the summary. Amounts are dollars with GitHub's own precision.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsageLine {
@@ -313,7 +324,7 @@ pub fn signed_in_login<H: HttpClient>(http: &H, token: &str, now: DateTime<Utc>)
     serde_json::from_str::<Value>(&body)
         .ok()
         .and_then(|v| v.get("login")?.as_str().map(str::to_owned))
-        .filter(|login| valid_login(login))
+        .filter(|login| valid_user_login(login))
         .ok_or(ProviderError::Unexpected {
             detail: "a GitHub profile without a login",
         })
@@ -363,9 +374,16 @@ pub struct GitHubBillingProvider<H: HttpClient> {
     owner: Option<Owner>,
     account: String,
     label: String,
+    unreadable: bool,
 }
 
 impl<H: HttpClient> GitHubBillingProvider<H> {
+    /// The account's saved token couldn't be read: reported as such, not taken for signed out.
+    pub fn with_unreadable_token(mut self) -> Self {
+        self.unreadable = true;
+        self
+    }
+
     /// `owner` is `None` until the account has signed in once (its personal owner is the signed-in user).
     pub fn new(
         http: H,
@@ -380,10 +398,16 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
             owner,
             account: account.into(),
             label: label.into(),
+            unreadable: false,
         }
     }
 
     fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
+        if self.unreadable {
+            return Err(ProviderError::Unexpected {
+                detail: "its saved token couldn't be read from Windows Credential Manager",
+            });
+        }
         let (Some(token), Some(owner)) = (&self.token, &self.owner) else {
             return Err(ProviderError::NotSignedIn { hint: SIGN_IN_HINT });
         };
@@ -673,6 +697,15 @@ mod tests {
             signed_out.fetch(now()),
             Err(ProviderError::NotSignedIn { .. })
         ));
+        let unreadable =
+            GitHubBillingProvider::new(GitHub::default(), None, Some(org()), "gb-1", "x").with_unreadable_token();
+        assert_eq!(
+            unreadable.fetch(now()).unwrap_err(),
+            ProviderError::Unexpected {
+                detail: "its saved token couldn't be read from Windows Credential Manager"
+            },
+            "an unreadable token isn't taken for signed out"
+        );
     }
 
     #[test]
@@ -700,5 +733,31 @@ mod tests {
         for bad in ["", "-x", "x-", "a/b", "a b", "../x", &"x".repeat(40)] {
             assert!(!valid_login(bad), "{bad}");
         }
+        // An Enterprise Managed User's login is a user's login, never an organization name.
+        assert!(valid_user_login("octocat_acme") && valid_user_login("HemSoft"));
+        assert!(!valid_login("octocat_acme"));
+        for bad in [
+            "_acme",
+            "octocat_",
+            "octocat_ac-me",
+            "a/b_acme",
+            "octocat_a/b",
+            "-x_acme",
+        ] {
+            assert!(!valid_user_login(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_enterprise_managed_users_login_is_accepted() {
+        let github = GitHub::default().on("/user", 200, r#"{"login":"octocat_acme"}"#).on(
+            "/organizations/acme/settings/billing/usage/summary",
+            200,
+            r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme","usageItems":[]}"#,
+        );
+        assert_eq!(
+            verify(&github, "gho_billing", Some("acme"), now()).unwrap(),
+            "octocat_acme"
+        );
     }
 }

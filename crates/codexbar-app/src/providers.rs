@@ -83,14 +83,21 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 
     // GitHub Billing (#104): each account with the token CodexBar keeps for it, reporting under its own id.
     for account in enabled_accounts(hub, names::GITHUB_BILLING) {
-        let token = crate::github_sign_in::token(hub, &account).ok().flatten();
-        providers.push(Arc::new(GitHubBillingProvider::new(
+        let token = crate::github_sign_in::token(hub, &account);
+        let provider = GitHubBillingProvider::new(
             UreqClient::new(),
-            token,
+            token.as_ref().ok().cloned().flatten(),
             crate::github_sign_in::billing_owner(&account),
             account.id.clone(),
             account.label.clone(),
-        )));
+        );
+        // A token Credential Manager couldn't read is reported, not taken for signed out.
+        let provider = if token.is_err() {
+            provider.with_unreadable_token()
+        } else {
+            provider
+        };
+        providers.push(Arc::new(provider));
     }
 
     // Greptile (#103) is new: every account reports under its own id from the start, with no legacy id to keep. With no

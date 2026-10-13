@@ -390,19 +390,18 @@ fn remember(record_id: &str, account: &GhAccount, cx: &mut App) -> Result<(), Sh
     let Some(record) = hub.settings().accounts().iter().find(|a| a.id == record_id).cloned() else {
         return Err("The account was removed during the sign-in.".into());
     };
+    // An account following a user's own billing that signs in under another login (another user, or the same one after
+    // a username change, which GitHub's login alone can't tell apart) becomes a new account under a new id. The old
+    // login's spend history is deleted with the old id rather than shown as this login's, and signing in again always
+    // recovers the account.
+    let new_id = (is_billing(&record)
+        && billing_organization(&record).is_none()
+        && record
+            .external_id
+            .as_deref()
+            .is_some_and(|user| !user.eq_ignore_ascii_case(&account.username)))
+    .then(|| AccountRecord::new(&record.provider, &record.label, record.method).id);
     if is_billing(&record) {
-        // An account following a user's own billing stays that user's: its history is theirs. Another user's billing
-        // is another account.
-        if billing_organization(&record).is_none()
-            && let Some(user) = record.external_id.as_deref()
-            && !user.eq_ignore_ascii_case(&account.username)
-        {
-            return Err(format!(
-                "This account follows {user}'s billing, not {}'s. Add another account for {}.",
-                account.username, account.username
-            )
-            .into());
-        }
         // One billing account per owner: the organization, or the user's own billing.
         let owner = billing_organization(&record).unwrap_or(&account.username).to_owned();
         if let Some(other) = hub.settings().accounts().iter().find(|other| {
@@ -423,17 +422,35 @@ fn remember(record_id: &str, account: &GhAccount, cx: &mut App) -> Result<(), Sh
         return Err(format!("{} is already added as “{}”.", account.username, other.label).into());
     }
     let store = hub.credentials();
-    let previous = codexbar_store::credentials::read_long(store.as_ref(), &record.id)
-        .map_err(|err| SharedString::from(format!("The saved token couldn't be read: {err}")))?;
-    codexbar_store::credentials::write_long(store.as_ref(), &record.id, &account.token)
+    let old_id = record.id.clone();
+    let id = new_id.clone().unwrap_or_else(|| old_id.clone());
+    let previous = match new_id {
+        Some(_) => None,
+        None => codexbar_store::credentials::read_long(store.as_ref(), &id)
+            .map_err(|err| SharedString::from(format!("The saved token couldn't be read: {err}")))?,
+    };
+    codexbar_store::credentials::write_long(store.as_ref(), &id, &account.token)
         .map_err(|err| SharedString::from(format!("The token couldn't be saved: {err}")))?;
-    let id = record.id.clone();
     let result = SettingsHub::update(cx, |settings| {
+        if new_id.is_some() {
+            settings.remove(&old_id);
+        }
         settings.upsert(AccountRecord {
+            id: id.clone(),
             external_id: Some(account.username.clone()),
             ..record
         })
     });
+    if result.is_ok()
+        && new_id.is_some()
+        && let Err(err) =
+            codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &old_id)
+    {
+        SettingsHub::set_error(
+            cx,
+            Some(format!("The previous login's sign-in couldn't be deleted: {err}").into()),
+        );
+    }
     if let Err(err) = result {
         // The account still names the previous user, so it keeps the previous user's token: a token without its
         // username would credit one user's usage to another.

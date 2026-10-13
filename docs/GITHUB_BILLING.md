@@ -22,8 +22,10 @@ account ([OAUTH.md](OAUTH.md)).
   account per owner can be added.
 - An account follows one owner. Changing its organization makes it a new
   account that signs in again, and the old owner's history and token are
-  deleted. One following your own billing stays with the user it signed in as;
-  another user's billing is another account.
+  deleted. One following your own billing that signs in under another login
+  starts afresh the same way: GitHub's login can't tell another user from a
+  renamed one, so the old login's history is never shown as the new one's.
+- With no GitHub Billing account left, GitHub Billing is off.
 - The token is CodexBar's own: it never replaces or widens a Copilot sign-in or
   the GitHub CLI's own accounts. Sign out deletes CodexBar's copy; revoke it at
   github.com/settings/applications to end it on GitHub's side.
