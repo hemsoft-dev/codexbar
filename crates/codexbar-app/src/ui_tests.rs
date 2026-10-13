@@ -4449,7 +4449,89 @@ fn an_opencode_cookie_account_keeps_its_legacy_dashboard_id(cx: &mut TestAppCont
     assert_eq!(opencode.len(), 1);
     assert_eq!(
         opencode[0].account_id(),
-        None,
+        Some("opencode"),
         "the cookie account keeps its legacy dashboard id"
+    );
+}
+
+#[gpui_kit::test]
+fn an_opencode_workspace_a_cookie_account_tracks_is_not_added_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-cookie-duplicate",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "go-1", "providerId": "OpenCodeGo", "displayLabel": "Go", "enabled": true,
+              "authenticationMethod": "BrowserSession", "workspaceId": "wrk_01ABC" },
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let fake = FakeOpenCode::new(opencode_fixture::Outcome::SignsIn("wrk_01ABC", "usr_1"));
+    let handle = open_opencode_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-oc-1");
+    assert_eq!(
+        label_of(cx, "opencode-sign-in-error").as_deref(),
+        Some("Workspace wrk_01ABC is already added as “Go”.")
+    );
+    assert!(saved_console_sign_in(cx, "oc-1").is_none());
+}
+
+/// Picks "Browser session" in the open account dialog when OAuth, the method before it, is selected and the name
+/// field has the focus. The open list starts on the selected method, so the first Down stays there.
+fn choose_browser_session(cx: &mut TestAppContext, handle: AnyWindowHandle) {
+    press(cx, handle, "tab");
+    for _ in 0..2 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+}
+
+#[gpui_kit::test]
+fn only_one_opencode_account_reads_a_cookie(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-one-cookie",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "go-1", "providerId": "OpenCodeGo", "displayLabel": "Go", "enabled": true,
+              "authenticationMethod": "BrowserSession", "workspaceId": "wrk_01ABC" } ] }"#,
+    );
+    let handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    click(cx, handle, "add-OpenCodeGo");
+    choose_browser_session(cx, handle);
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("Only one OpenCode Go account can use a dashboard cookie. Use OAuth to add another workspace.")
+    );
+    assert_eq!(saved_settings(&settings).accounts().len(), 1);
+}
+
+#[gpui_kit::test]
+fn an_opencode_account_leaving_oauth_keeps_the_cookie_it_was_given(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-leave-oauth",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth", "workspaceId": "wrk_01ABC", "externalAccountId": "usr_1" } ] }"#,
+    );
+    let handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    let sign_in = opencode_fixture::credential("wrk_01ABC", "usr_1").to_secret();
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(SettingsHub::global(cx).credentials().as_ref(), "oc-1", &sign_in)
+    })
+    .unwrap();
+    click(cx, handle, "edit-oc-1");
+    choose_browser_session(cx, handle);
+    // The cookie field follows the method.
+    press(cx, handle, "tab");
+    type_text(cx, handle, "Fe26.2**new-cookie");
+    click(cx, handle, "account-save");
+    let saved = saved_settings(&settings);
+    assert_eq!(
+        saved.accounts()[0].method,
+        codexbar_store::settings::AuthMethod::BrowserSession
+    );
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "oc-1"));
+    assert!(
+        stored.ok().flatten().as_deref() == Some("Fe26.2**new-cookie"),
+        "the new cookie is kept, not deleted with the old sign-in"
     );
 }

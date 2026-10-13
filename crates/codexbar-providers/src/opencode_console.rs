@@ -142,10 +142,10 @@ impl std::fmt::Debug for DeviceChallenge {
     }
 }
 
-fn post(http: &impl HttpClient, path: &str, body: &Value) -> Result<crate::HttpResponse, SignInError> {
+/// The device flow takes form-encoded fields, as OpenCode documents it (and RFC 8628 specifies).
+fn post(http: &impl HttpClient, path: &str, fields: &[(&str, &str)]) -> Result<crate::HttpResponse, SignInError> {
     let url = format!("{CONSOLE}{path}");
-    let headers = [("Accept", "application/json"), ("Content-Type", "application/json")];
-    http.post_json(&url, &headers, &body.to_string())
+    http.post_form(&url, &[("Accept", "application/json")], fields)
         .map_err(|_| SignInError::Network)
 }
 
@@ -154,7 +154,7 @@ pub fn begin(http: &impl HttpClient, now: DateTime<Utc>) -> Result<DeviceChallen
     let response = post(
         http,
         "auth/device/code",
-        &json!({ "client_id": CLIENT_ID, "supports_org_scope": true }),
+        &[("client_id", CLIENT_ID), ("supports_org_scope", "true")],
     )?;
     if response.status != 200 {
         return Err(SignInError::Unexpected);
@@ -210,11 +210,11 @@ fn poll(http: &impl HttpClient, challenge: &DeviceChallenge) -> Result<Poll, Sig
     let response = post(
         http,
         "auth/device/token",
-        &json!({
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            "device_code": challenge.device_code,
-            "client_id": CLIENT_ID,
-        }),
+        &[
+            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+            ("device_code", &challenge.device_code),
+            ("client_id", CLIENT_ID),
+        ],
     )?;
     match response.status {
         200 => Ok(Poll::Approved(response.body)),
@@ -376,11 +376,11 @@ pub fn renew(http: &impl HttpClient, credential: &ConsoleCredential, now: DateTi
     let response = match post(
         http,
         "auth/device/token",
-        &json!({
-            "grant_type": "refresh_token",
-            "refresh_token": credential.refresh_token,
-            "client_id": CLIENT_ID,
-        }),
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &credential.refresh_token),
+            ("client_id", CLIENT_ID),
+        ],
     ) {
         Ok(response) => response,
         Err(_) => return Renewal::Unavailable,
@@ -464,7 +464,12 @@ pub fn parse_go_status(body: &str, user: &str, now: DateTime<Utc>) -> Result<GoS
     ];
     let mut metrics = Vec::new();
     for (key, label, length) in windows {
-        let meter = meters.get(key).filter(|m| m.is_object()).ok_or(UnknownShape)?;
+        let meter = match meters.get(key) {
+            Some(meter) if meter.is_object() => meter,
+            // A plan without a weekly or monthly limit leaves that meter out; it stays absent, not zero.
+            None | Some(Value::Null) if key != "fiveHour" => continue,
+            _ => return Err(UnknownShape),
+        };
         let used = microcents(meter.get("usedMicroCents"))
             .filter(|u| *u >= 0)
             .ok_or(UnknownShape)?;
@@ -522,6 +527,14 @@ pub trait CredentialSlot: Send + Sync {
 /// because the dashboard builds its providers anew for every refresh.
 static RENEWALS: Mutex<()> = Mutex::new(());
 
+/// Renewals Credential Manager refused to save, by account, with the sign-in each one replaced. A refresh token works
+/// once and reusing one ends the session, so an unsaved renewal must not be lost: it is used and saved again on the
+/// next refresh, as long as the saved sign-in is still the one it replaced.
+static UNSAVED: Mutex<Vec<(String, ConsoleCredential, ConsoleCredential)>> = Mutex::new(Vec::new());
+
+const UNSAVED_MESSAGE: &str = "The renewed OpenCode sign-in couldn't be saved to Windows Credential Manager. CodexBar \
+                               keeps it for now and tries again at the next refresh.";
+
 /// One OpenCode account signed in through the Console: its Go windows and Zen balance, in one dashboard account.
 pub struct OpenCodeConsoleProvider<H: HttpClient> {
     http: H,
@@ -553,31 +566,49 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
         }
     }
 
-    /// The sign-in to fetch with, renewed first when it is about to expire. A renewal is only saved over the sign-in
-    /// it renewed: one removed or replaced meanwhile (signed out, signed in again) is never brought back.
-    fn current(&self, now: DateTime<Utc>) -> Result<ConsoleCredential, ProviderError> {
-        let saved = self.saved()?;
-        if !saved.expires_soon(now) {
-            return Ok(saved);
+    /// A renewal kept from an earlier refresh: saved now if possible. `None` once the saved sign-in changed (signed
+    /// out, signed in again), which drops it. The flag says whether it is still unsaved.
+    fn unsaved(&self, saved: &ConsoleCredential) -> Option<(ConsoleCredential, bool)> {
+        let mut unsaved = UNSAVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let ix = unsaved.iter().position(|(account, _, _)| *account == self.account)?;
+        let (_, replaced, renewed) = unsaved.remove(ix);
+        if replaced != *saved {
+            return None;
         }
+        if self.slot.save(&renewed.to_secret()).is_ok() {
+            return Some((renewed, false));
+        }
+        unsaved.push((self.account.clone(), replaced, renewed.clone()));
+        Some((renewed, true))
+    }
+
+    /// The sign-in to fetch with, renewed first when it is about to expire, and whether a renewal is still unsaved. A
+    /// renewal is only saved over the sign-in it renewed: one removed or replaced meanwhile (signed out, signed in
+    /// again) is never brought back.
+    fn current(&self, now: DateTime<Utc>) -> Result<(ConsoleCredential, bool), ProviderError> {
         let _one_at_a_time = RENEWALS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Another refresh may have renewed it while this one waited.
-        let latest = self.saved()?;
+        let saved = self.saved()?;
+        // An unsaved renewal holds the only refresh token that still works, so it is the one renewed from.
+        let (latest, pending) = self.unsaved(&saved).unwrap_or_else(|| (saved.clone(), false));
         if !latest.expires_soon(now) {
-            return Ok(latest);
+            return Ok((latest, pending));
         }
         match renew(&self.http, &latest, now) {
             Renewal::Renewed(renewed) => {
-                if self.saved().ok().as_ref() != Some(&latest) {
+                if self.saved().ok().as_ref() != Some(&saved) {
                     return Err(ProviderError::NotSignedIn { hint: SIGN_IN_HINT });
                 }
-                // A failed save still fetches with the new token this time; the next renewal tries again.
-                let _ = self.slot.save(&renewed.to_secret());
-                Ok(renewed)
+                let mut unsaved = UNSAVED.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                unsaved.retain(|(account, _, _)| *account != self.account);
+                if self.slot.save(&renewed.to_secret()).is_err() {
+                    unsaved.push((self.account.clone(), saved, renewed.clone()));
+                    return Ok((renewed, true));
+                }
+                Ok((renewed, false))
             }
             Renewal::Rejected => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
             // Until it actually expires, the current token still works.
-            Renewal::Unavailable if latest.expires_at > now => Ok(latest),
+            Renewal::Unavailable if latest.expires_at > now => Ok((latest, pending)),
             Renewal::Unavailable => Err(ProviderError::Network),
         }
     }
@@ -591,13 +622,18 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
         )?;
         match response.status {
             200 => Ok(response.body),
-            401 | 403 => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
+            401 => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
+            // The workspace or the user's permission, which signing in again doesn't change.
+            403 => Err(ProviderError::Refused {
+                reason: "OpenCode refused this workspace's usage: the account lacks permission there, or the \
+                         workspace changed.",
+            }),
             status => Err(ProviderError::Http { status }),
         }
     }
 
     fn usage(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
-        let credential = self.current(now)?;
+        let (credential, unsaved) = self.current(now)?;
         let go = self.read("api/go/status", &credential).and_then(|body| {
             parse_go_status(&body, &credential.user_id, now).map_err(|UnknownShape| ProviderError::Unexpected {
                 detail: "OpenCode Go limits in an unknown shape",
@@ -610,6 +646,9 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
         });
         let mut metrics = Vec::new();
         let mut messages = Vec::new();
+        if unsaved {
+            messages.push(UNSAVED_MESSAGE.to_owned());
+        }
         let mut errors = Vec::new();
         match go {
             Ok(GoStatus::Subscribed(windows)) => metrics.extend(windows),
@@ -747,7 +786,13 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .map(|(_, _, body, _)| serde_json::from_str(body).unwrap_or(Value::Null))
+                .map(|(_, _, body, _)| {
+                    // Form fields, as the device flow sends them.
+                    let fields: serde_json::Map<String, Value> = form_urlencoded::parse(body.as_bytes())
+                        .map(|(name, value)| (name.into_owned(), Value::String(value.into_owned())))
+                        .collect();
+                    Value::Object(fields)
+                })
                 .collect()
         }
 
@@ -769,8 +814,17 @@ mod tests {
             self.answer("GET", url, headers, "")
         }
 
-        fn post_json(&self, url: &str, headers: &[(&str, &str)], body: &str) -> Result<HttpResponse, ProviderError> {
-            self.answer("POST", url, headers, body)
+        fn post_json(&self, _: &str, _: &[(&str, &str)], _: &str) -> Result<HttpResponse, ProviderError> {
+            panic!("the device flow posts forms, not JSON");
+        }
+
+        fn post_form(
+            &self,
+            url: &str,
+            headers: &[(&str, &str)],
+            fields: &[(&str, &str)],
+        ) -> Result<HttpResponse, ProviderError> {
+            self.answer("POST", url, headers, &crate::http::form_body(fields))
         }
     }
 
@@ -807,7 +861,7 @@ mod tests {
         let challenge = begin(&console, now()).unwrap();
         assert_eq!(
             console.bodies()[0],
-            json!({ "client_id": "codexbar-windows", "supports_org_scope": true })
+            json!({ "client_id": "codexbar-windows", "supports_org_scope": "true" })
         );
         assert_eq!(
             challenge.url,
@@ -1199,8 +1253,8 @@ mod tests {
 
     impl CredentialSlot for RemovedDuringRenewal {
         fn load(&self) -> Result<Option<String>, SlotUnavailable> {
-            // Loaded before renewing, again under the lock, then once more before saving.
-            if self.1.fetch_add(1, Ordering::SeqCst) >= 2 {
+            // Loaded before renewing, then once more before saving.
+            if self.1.fetch_add(1, Ordering::SeqCst) >= 1 {
                 return Ok(None);
             }
             self.0.load()
@@ -1223,5 +1277,90 @@ mod tests {
         );
         assert!(matches!(provider.fetch(now()), Err(ProviderError::NotSignedIn { .. })));
         assert_eq!(slot.saves.load(Ordering::SeqCst), 0, "nothing is written back");
+    }
+
+    /// A slot whose writes fail, like a Credential Manager that refuses them.
+    #[derive(Clone)]
+    struct ReadOnly(Slot, Arc<std::sync::atomic::AtomicBool>);
+
+    impl CredentialSlot for ReadOnly {
+        fn load(&self) -> Result<Option<String>, SlotUnavailable> {
+            self.0.load()
+        }
+
+        fn save(&self, secret: &str) -> Result<(), SlotUnavailable> {
+            if self.1.load(Ordering::SeqCst) {
+                return Err(SlotUnavailable);
+            }
+            self.0.save(secret)
+        }
+    }
+
+    #[test]
+    fn a_renewal_that_cant_be_saved_is_kept_said_and_saved_later() {
+        let renewed = TOKEN.replace("at-1", "at-2").replace("rt-1", "rt-2");
+        let console = Console::default()
+            .on("POST", "auth/device/token", 200, &renewed)
+            .on("GET", "api/go/status", 200, GO)
+            .on("GET", "api/billing/status", 200, BALANCE)
+            // The next refresh uses the kept renewal, with no second refresh-token request.
+            .on("GET", "api/go/status", 200, GO)
+            .on("GET", "api/billing/status", 200, BALANCE);
+        let slot = Slot::holding(&credential(now() + Duration::seconds(30)));
+        let refuses = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let provider = |console: &Console| {
+            OpenCodeConsoleProvider::new(
+                console.clone(),
+                Box::new(ReadOnly(slot.clone(), refuses.clone())),
+                "oc-unsaved",
+                "Team",
+            )
+        };
+        let account = provider(&console).fetch(now()).unwrap().remove(0);
+        assert_eq!(account.messages()[0], UNSAVED_MESSAGE);
+        assert_eq!(slot.saved().unwrap().refresh_token, "rt-1", "nothing saved yet");
+
+        refuses.store(false, Ordering::SeqCst);
+        let account = provider(&console).fetch(now()).unwrap().remove(0);
+        assert!(account.messages().is_empty());
+        assert_eq!(slot.saved().unwrap().refresh_token, "rt-2", "saved on the next refresh");
+        assert_eq!(console.header(4, "Authorization").as_deref(), Some("Bearer at-2"));
+        assert_eq!(console.requests(), 5);
+    }
+
+    #[test]
+    fn a_refused_workspace_isnt_an_expired_sign_in() {
+        let console = Console::default()
+            .on("GET", "api/go/status", 403, r#"{"_tag":"Forbidden"}"#)
+            .on("GET", "api/billing/status", 403, r#"{"_tag":"Forbidden"}"#);
+        let slot = Slot::holding(&credential(now() + Duration::hours(1)));
+        assert!(matches!(
+            provider(&console, &slot).fetch(now()),
+            Err(ProviderError::Refused { .. })
+        ));
+    }
+
+    #[test]
+    fn an_omitted_weekly_or_monthly_meter_stays_absent() {
+        let without_week = GO.replace(
+            r#""week":{"usedMicroCents":"50","limitMicroCents":"100","startsAt":"2026-09-20T00:00:00Z","resetsAt":"2026-09-27T00:00:00Z"},"#,
+            "",
+        );
+        assert_ne!(without_week, GO);
+        let GoStatus::Subscribed(metrics) = parse_go_status(&without_week, "usr_1", now()).unwrap() else {
+            panic!("subscribed");
+        };
+        let labels: Vec<&str> = metrics.iter().map(Metric::label).collect();
+        assert_eq!(labels, ["5-hour window", "Monthly"]);
+        let null_month = GO.replace(
+            r#""month":{"usedMicroCents":"75","limitMicroCents":"100"}"#,
+            r#""month":null"#,
+        );
+        assert!(matches!(parse_go_status(&null_month, "usr_1", now()), Ok(GoStatus::Subscribed(m)) if m.len() == 2));
+        // The 5-hour meter is required, and a weekly one that is there must be well-formed.
+        let without_five = GO.replace(r#""fiveHour":"#, r#""other":"#);
+        assert_eq!(parse_go_status(&without_five, "usr_1", now()), Err(UnknownShape));
+        let broken_week = GO.replace(r#""week":{"#, r#""week":"x","unused":{"#);
+        assert_eq!(parse_go_status(&broken_week, "usr_1", now()), Err(UnknownShape));
     }
 }

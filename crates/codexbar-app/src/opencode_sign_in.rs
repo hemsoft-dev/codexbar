@@ -321,7 +321,10 @@ fn remember(record_id: &str, credential: &ConsoleCredential, cx: &mut App) -> Re
         }
     }
     if let Some(other) = hub.settings().accounts().iter().find(|other| {
-        other.id != record.id && is_managed(other) && other.workspace_id.as_deref() == Some(&credential.workspace_id)
+        // Any OpenCode Go account, a cookie one included: two accounts for one workspace would show it twice.
+        other.id != record.id
+            && other.provider.eq_ignore_ascii_case(names::OPENCODE_GO)
+            && other.workspace_id.as_deref() == Some(&credential.workspace_id)
     }) {
         return Err(format!(
             "Workspace {} is already added as “{}”.",

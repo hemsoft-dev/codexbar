@@ -647,13 +647,38 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let opencode_oauth = info.id == names::OPENCODE_GO && method == AuthMethod::OAuth;
     if info.id == names::OPENCODE_GO && !opencode_oauth {
         record.workspace_id = (!workspace.is_empty()).then_some(workspace);
+        // Only one OpenCode Go account reads a dashboard cookie; more workspaces are added as OAuth accounts.
+        let other_cookie = SettingsHub::global(cx).settings().accounts().iter().any(|other| {
+            other.id != record.id
+                && other.provider.eq_ignore_ascii_case(names::OPENCODE_GO)
+                && !crate::opencode_sign_in::is_managed(other)
+        });
+        if other_cookie {
+            *form.error.borrow_mut() = Some(
+                "Only one OpenCode Go account can use a dashboard cookie. Use OAuth to add another workspace.".into(),
+            );
+            window.refresh();
+            return false;
+        }
     }
+    // An OpenCode account leaving OAuth with a new cookie: its saved sign-in, which may span several credential
+    // parts, is replaced by the cookie, so nothing is left to forget after saving.
+    let replaces_opencode_sign_in = info.id == names::OPENCODE_GO
+        && !opencode_oauth
+        && !secret.is_empty()
+        && previous.as_ref().is_some_and(crate::opencode_sign_in::is_managed);
 
     // The secret is written first: if Credential Manager fails, the account isn't saved without its key. An OpenCode
     // account on OAuth keeps its sign-in there instead, so no cookie is written over it.
     if info.secret.is_some() && !secret.is_empty() && !opencode_oauth {
         let store = SettingsHub::global(cx).credentials();
-        if let Err(err) = store.write(&record.id, &secret) {
+        let written = if replaces_opencode_sign_in {
+            codexbar_store::credentials::delete_long(store.as_ref(), &record.id)
+                .and_then(|()| store.write(&record.id, &secret))
+        } else {
+            store.write(&record.id, &secret)
+        };
+        if let Err(err) = written {
             *form.error.borrow_mut() = Some(err.to_string().into());
             window.refresh();
             return false;
@@ -672,6 +697,7 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let left = previous.as_ref().and_then(|old| {
         Managed::of(old)
             .filter(|old_kind| Some(*old_kind) != kind)
+            .filter(|_| !replaces_opencode_sign_in)
             .map(|old_kind| (old_kind, old.clone()))
     });
     let record_id = record.id.clone();

@@ -111,6 +111,12 @@ impl<H: HttpClient> UsageProvider for OpenCodeProvider<H> {
         "OpenCode Go + Zen"
     }
 
+    /// Always its one `opencode` account, so a failed cookie fetch is never taken for an OpenCode account signed in
+    /// through the Console (#102), which shares the provider name.
+    fn account_id(&self) -> Option<&str> {
+        Some("opencode")
+    }
+
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
         let workspace = self
             .workspace

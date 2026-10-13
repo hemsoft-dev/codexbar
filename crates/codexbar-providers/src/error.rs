@@ -15,6 +15,8 @@ pub enum ProviderError {
     RateLimited { retry_at: chrono::DateTime<chrono::Utc> },
     /// The response did not have the expected shape.
     Unexpected { detail: &'static str },
+    /// The provider understood the credentials but refused this request; `reason` says why, as a full sentence.
+    Refused { reason: &'static str },
 }
 
 impl ProviderError {
@@ -43,6 +45,7 @@ impl fmt::Display for ProviderError {
                 retry_at.with_timezone(&chrono::Local).format("%H:%M")
             ),
             Self::Unexpected { detail } => write!(f, "Unexpected usage response: {detail}."),
+            Self::Refused { reason } => f.write_str(reason),
         }
     }
 }
