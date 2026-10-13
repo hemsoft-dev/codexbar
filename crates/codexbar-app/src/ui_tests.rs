@@ -47,6 +47,8 @@ impl Drop for TempSettings {
 fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindowHandle, Entity<Dashboard>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
@@ -356,6 +358,8 @@ fn history_view_handles_empty_and_single_sample_series(cx: &mut TestAppContext) 
     let settings = TempSettings::new("history-edge", "{}");
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
     });
@@ -1043,6 +1047,8 @@ fn open_live_dyn(
     use codexbar_store::HistoryStore;
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         SettingsHub::init_with(cx, &settings.0, Arc::new(store));
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
@@ -1415,6 +1421,8 @@ fn one_user_failing_keeps_its_last_good_usage_and_snapshot(cx: &mut TestAppConte
     let settings = TempSettings::new("outcomes-partial", "{}");
     cx.update(|cx| {
         gpui_kit::init(cx);
+        // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
+        cx.set_reduce_motion(true);
         theme::init(cx);
         SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
