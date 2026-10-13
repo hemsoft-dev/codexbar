@@ -53,8 +53,53 @@ this one.
 A sign-in GitHub rejects, a missing permission, an owner with no billing data
 and a rate limit each show as such on the account's row.
 
-Included allowances (Actions minutes, storage and so on) and organization
-budgets are [#105](https://github.com/hemsoft-dev/codexbar/issues/105).
+## Included allowances (#105)
+
+For plans GitHub's
+[included-usage table](https://docs.github.com/en/billing/reference/product-usage-included)
+lists at the owner's scope (personal Free and Pro, organization Free and Team,
+checked 2026-10-12), each allowance this month is a bar that can pass 100%, and a
+line with used, included and left (or over). Enterprise allowances are pooled
+above the organization and aren't shown.
+
+- **Actions minutes** count standard GitHub-hosted runners at the Linux rate
+  (a macOS minute is about ten), with prices that must match GitHub's
+  [runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing).
+  Larger and self-hosted runners don't use included minutes. An unknown runner
+  or price leaves the allowance out.
+- **Actions storage** is the month's artifact GB-hours (`actions_storage`)
+  turned into GB held on average. Cache and custom image storage have
+  allowances of their own and don't count. Artifact storage shares its
+  allowance with Packages storage, so while Packages storage is in use it shows
+  only once something is billable.
+- **Packages storage and data transfer** show only a verified zero or billable
+  usage: GitHub doesn't say which package usage is free.
+- **Git LFS storage and bandwidth**, and on personal plans **Codespaces compute**
+  (machine hours times each SKU's cores, from GitHub's `codespaces_compute_dN`
+  ids) and **Codespaces storage**.
+- GitHub shows an organization's plan only to its owners, so a billing
+  manager's sign-in shows the spend and budgets but says why the included
+  allowances are missing.
+
+GitHub bills a covered SKU only once its included usage is used up, so billable
+usage means the allowance is spent and the billable part is exactly what went
+past it. Before then, only private repositories' usage counts, which takes each
+repository's visibility. GitHub reports visibility as it is now, so a repository
+that moved to another owner, or can't be read, leaves the allowance out; one
+made public or private within the month can be misjudged until something is
+billable. Quantities that don't add up, or billable usage before the allowance
+is used, also leave that allowance out. One allowance that can't be verified
+never hides the others or the spend.
+
+## Organization budgets
+
+An organization's budgets, every page of them, are listed with how much of each
+this month's usage has spent, and whether it stops usage and sends alerts.
+Organization and repository budgets are measured from the organization's own
+usage, by product or by SKU as the budget is set. A repository budget's spend is
+unknown, never zero, when the detail report can't be read. Other scopes (cost
+centers, enterprises) list their amount and say their spending can't be
+measured here.
 
 ## Not verified here
 

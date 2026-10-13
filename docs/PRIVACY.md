@@ -22,7 +22,7 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | OpenRouter | `https://openrouter.ai/api/v1/credits` | Your API key |
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
 | Greptile | `https://api.greptile.com/mcp` (only the read-only `list_code_reviews` tool) | Your organization API key |
-| GitHub Billing | `https://api.github.com/user` and `…/users/{user}/settings/billing/usage/summary` or `…/organizations/{org}/settings/billing/usage/summary` | The account's own GitHub CLI token, kept by CodexBar |
+| GitHub Billing | `https://api.github.com/user`; the owner's `…/settings/billing/usage/summary` and `…/settings/billing/usage`; for an organization `…/orgs/{org}` (its plan) and `…/settings/billing/budgets`; `…/repos/{owner}/{repo}` for repositories in this month's Actions usage (their visibility, remembered for six hours) | The account's own GitHub CLI token, kept by CodexBar |
 | OpenCode Go / Zen | OAuth accounts: `https://opencode.ai/console/api/go/status` and `…/console/api/billing/status`; cookie accounts: `https://opencode.ai/workspace/…` | The account's OpenCode sign-in (OAuth), or your dashboard auth cookie |
 
 For the GitHub CLI's Copilot accounts, CodexBar also runs `gh auth status` on
