@@ -42,6 +42,8 @@ pub fn cli() -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodingError {
     NotInstalled,
+    /// The CLI is older than the first version whose `/usage` runs no model turn, or its version can't be read.
+    TooOld,
     /// The CLI ran but didn't report usage: usually not signed in.
     NoUsage,
     TimedOut,
@@ -52,6 +54,9 @@ impl std::fmt::Display for CodingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
+            Self::TooOld => {
+                "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
+            }
             Self::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
             Self::TimedOut => "The Antigravity CLI took too long to report coding usage.",
             Self::Unknown => "The Antigravity CLI reported coding usage in a shape CodexBar doesn't know.",
@@ -143,7 +148,32 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
 }
 
 /// Runs the CLI and reads its coding quotas.
+/// The first Antigravity CLI whose non-interactive `/usage` answers without starting an agent turn (its changelog,
+/// 1.1.11). An older one could send `/usage` to the model as a prompt, using quota and starting a conversation.
+const FIRST_SAFE_VERSION: (u32, u32, u32) = (1, 1, 11);
+
+/// The `major.minor.patch` the CLI's `--version` prints (`1.3.3`, possibly after a name or before a suffix).
+fn version(text: &str) -> Option<(u32, u32, u32)> {
+    text.split_whitespace().find_map(|word| {
+        let core = word.trim_start_matches('v').split(['-', '+']).next()?;
+        let mut parts = core.split('.').map(|part| part.parse::<u32>().ok());
+        let version = (parts.next()??, parts.next()??, parts.next()??);
+        parts.next().is_none().then_some(version)
+    })
+}
+
 pub fn fetch(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Result<CodingUsage, CodingError> {
+    // `/usage` is only run by a CLI known to answer it without a model turn; an unreadable version counts as too old.
+    let installed = runner
+        .run(&cli(), &["--version"], StdDuration::from_secs(10))
+        .map_err(|err| match err {
+            CommandError::NotFound => CodingError::NotInstalled,
+            CommandError::TimedOut => CodingError::TimedOut,
+            CommandError::Failed => CodingError::TooOld,
+        })?;
+    if !installed.success || version(&installed.stdout).is_none_or(|found| found < FIRST_SAFE_VERSION) {
+        return Err(CodingError::TooOld);
+    }
     let output = runner
         .run(
             &cli(),
@@ -284,12 +314,19 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(args.iter().map(|a| (*a).to_owned()).collect());
+            if args == ["--version"] {
+                return self.0.clone().map(|_| CommandOutput {
+                    success: true,
+                    stdout: "1.3.3\n".to_owned(),
+                    stderr: String::new(),
+                });
+            }
             self.0.clone()
         }
     }
 
     #[test]
-    fn the_cli_is_asked_for_the_usage_command_only() {
+    fn the_cli_is_asked_for_its_version_then_the_usage_command_only() {
         let runner = Runner(
             Ok(CommandOutput {
                 success: true,
@@ -299,11 +336,57 @@ mod tests {
             Default::default(),
         );
         assert_eq!(fetch(&runner, now()).unwrap().metrics.len(), 4);
+        let asked = runner.1.lock().unwrap().clone();
         assert_eq!(
-            runner.1.lock().unwrap()[0],
-            ["-p", "/usage", "--output-format", "json", "--print-timeout", "25s"]
+            asked,
+            [
+                vec!["--version"],
+                vec!["-p", "/usage", "--output-format", "json", "--print-timeout", "25s"]
+            ]
         );
         let missing = Runner(Err(CommandError::NotFound), Default::default());
         assert_eq!(fetch(&missing, now()), Err(CodingError::NotInstalled));
+    }
+
+    /// Answers `--version` with `version`, and records whether `/usage` was ever asked.
+    struct Versioned(&'static str, std::sync::atomic::AtomicBool);
+
+    impl CommandRunner for Versioned {
+        fn run(&self, _: &str, args: &[&str], _: StdDuration) -> Result<CommandOutput, CommandError> {
+            if args != ["--version"] {
+                self.1.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(CommandOutput {
+                success: true,
+                stdout: if args == ["--version"] { self.0 } else { USAGE }.to_owned(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_cli_older_than_1_1_11_or_of_unknown_version_is_never_asked_for_usage() {
+        assert_eq!(version("1.3.3\n"), Some((1, 3, 3)));
+        assert_eq!(version("agy v1.1.11-beta"), Some((1, 1, 11)));
+        assert_eq!(version("1.3"), None);
+        assert_eq!(version("1.3.3.4"), None);
+        for (installed, safe) in [
+            ("1.1.11", true),
+            ("1.3.3", true),
+            ("2.0.0", true),
+            ("1.1.10", false),
+            ("1.1.8", false),
+            ("0.9.99", false),
+            ("unknown", false),
+            ("", false),
+        ] {
+            let runner = Versioned(installed, Default::default());
+            let result = fetch(&runner, now());
+            let asked = runner.1.load(std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(asked, safe, "{installed}");
+            if !safe {
+                assert_eq!(result, Err(CodingError::TooOld), "{installed}");
+            }
+        }
     }
 }

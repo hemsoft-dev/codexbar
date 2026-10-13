@@ -67,6 +67,10 @@ limit. CodexBar reads them through Google's own Antigravity CLI,
 no model turn. The CLI keeps its own Google sign-in and renews it, so CodexBar
 borrows no OAuth client and stores no token.
 
+- CodexBar first runs `agy --version` and asks for `/usage` only from version
+  1.1.11 on, the first whose non-interactive `/usage` starts no agent turn. An
+  older CLI, or a version it can't read, is never asked, so `/usage` is never
+  sent to the model as a prompt.
 - Set the Gemini account's **Coding quotas** to *From the Antigravity CLI* in
   Settings. Sign in to the CLI by running `agy` once. Choose it only for the
   Google account `agy` is signed in to: CodexBar can't check, and matching
@@ -79,7 +83,8 @@ borrows no OAuth client and stores no token.
   weekly**. Percent used is `1 − remaining_fraction`, and resets come only from
   `reset_time`.
 - A missing, duplicate, disabled, malformed or expired bucket stays unavailable
-  with a note, and the valid ones still show.
+  with a note, and the valid ones still show. With no usable bucket and no Gemini Apps
+  limits, the account says so instead of asking for a sign-in.
 - Gemini Apps and coding quotas are separate connections: either works without
   the other, one failing never hides the other, and signing Gemini Apps out
   leaves the coding quotas alone.

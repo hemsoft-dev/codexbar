@@ -26,6 +26,9 @@ fn coding_error(error: &CodingError) -> ProviderError {
     ProviderError::Refused {
         reason: match error {
             CodingError::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
+            CodingError::TooOld => {
+                "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
+            }
             CodingError::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
             CodingError::TimedOut => "The Antigravity CLI took too long to report coding usage.",
             CodingError::Unknown => "The Antigravity CLI reported coding usage in a shape CodexBar doesn't know.",
@@ -100,6 +103,13 @@ impl<H: HttpClient> GeminiProvider<H> {
             Some(Ok(usage)) => {
                 metrics.extend(usage.metrics.iter().cloned());
                 messages.extend(usage.notes.iter().cloned());
+                // Every bucket disabled, expired or malformed: with nothing else to show, the account fails for that
+                // reason, not with the Gemini Apps sign-in hint.
+                if usage.metrics.is_empty() {
+                    first_error.get_or_insert(ProviderError::Refused {
+                        reason: "The Antigravity CLI reported no coding quota CodexBar can show.",
+                    });
+                }
             }
             Some(Err(error)) => {
                 messages.push(format!("Coding quotas: {error}"));
@@ -177,9 +187,16 @@ mod tests {
         fn run(
             &self,
             _: &str,
-            _: &[&str],
+            args: &[&str],
             _: std::time::Duration,
         ) -> Result<crate::CommandOutput, crate::CommandError> {
+            if args == ["--version"] {
+                return self.0.clone().map(|_| crate::CommandOutput {
+                    success: true,
+                    stdout: "1.3.3".to_owned(),
+                    stderr: String::new(),
+                });
+            }
             self.0.clone()
         }
     }
@@ -227,6 +244,19 @@ mod tests {
         let account = provider.fetch(now()).unwrap().remove(0);
         assert_eq!(account.metrics().len(), 4);
         assert_eq!(account.messages(), ["Gemini Apps: not signed in."]);
+    }
+
+    #[test]
+    fn coding_quotas_with_no_usable_bucket_fail_for_that_reason() {
+        let all_disabled = USAGE.replace(r#""remaining_fraction""#, r#""disabled":true,"remaining_fraction""#);
+        let provider = GeminiProvider::new(Offline, None, "gm-1", "Personal").with_coding(agy(&all_disabled));
+        assert_eq!(
+            provider.fetch(now()).unwrap_err(),
+            ProviderError::Refused {
+                reason: "The Antigravity CLI reported no coding quota CodexBar can show."
+            },
+            "never the Gemini Apps sign-in hint"
+        );
     }
 
     #[test]
