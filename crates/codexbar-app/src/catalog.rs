@@ -18,6 +18,8 @@ pub struct ProviderInfo {
     pub sign_in: &'static str,
     pub secret: Option<SecretSpec>,
     pub default_method: AuthMethod,
+    /// The method a newly added account starts with; the default sign-in stays `default_method`.
+    pub setup_method: AuthMethod,
     /// Whether more than one account can be fetched (key-based providers).
     pub multi_account: bool,
 }
@@ -30,6 +32,7 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
                   through the Codex CLI and keeps it separate, so several ChatGPT accounts can be added.",
         secret: None,
         default_method: AuthMethod::Automatic,
+        setup_method: AuthMethod::Automatic,
         multi_account: true,
     },
     ProviderInfo {
@@ -39,6 +42,7 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
                   through a Claude Code window and keeps it separate, so several Claude accounts can be added.",
         secret: None,
         default_method: AuthMethod::OAuth,
+        setup_method: AuthMethod::OAuth,
         multi_account: true,
     },
     ProviderInfo {
@@ -49,6 +53,7 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
                   accounts. Enterprise seats can also show their organization's AI credits.",
         secret: None,
         default_method: AuthMethod::CommandLine,
+        setup_method: AuthMethod::CommandLine,
         multi_account: true,
     },
     ProviderInfo {
@@ -58,6 +63,7 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
                   Cursor CLI (cursor-agent) and keeps it separate, so several Cursor accounts can be added.",
         secret: None,
         default_method: AuthMethod::Automatic,
+        setup_method: AuthMethod::Automatic,
         multi_account: true,
     },
     ProviderInfo {
@@ -69,28 +75,34 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
             env: "OPENROUTER_API_KEY",
         }),
         default_method: AuthMethod::ApiKey,
+        setup_method: AuthMethod::ApiKey,
         multi_account: true,
     },
     ProviderInfo {
         id: names::OPENCODE_GO,
         display: "OpenCode Go",
-        sign_in: "Needs the opencode.ai dashboard auth cookie and workspace id.",
+        sign_in: "OAuth signs an account in with your browser through OpenCode's own approval page, where you pick the \
+                  workspace; it shows that workspace's Go limits and Zen balance. Add an account per workspace. Browser \
+                  session reads a copied dashboard auth cookie and workspace id, the older setup.",
         secret: Some(SecretSpec {
             label: "Dashboard auth cookie",
             env: "OPENCODE_GO_AUTH_COOKIE",
         }),
         default_method: AuthMethod::BrowserSession,
-        multi_account: false,
+        setup_method: AuthMethod::OAuth,
+        multi_account: true,
     },
     ProviderInfo {
         id: names::OPENCODE_ZEN,
         display: "OpenCode Zen",
-        sign_in: "Needs the opencode.ai dashboard auth cookie (shared with OpenCode Go when unset).",
+        sign_in: "Reads a copied opencode.ai dashboard auth cookie (OpenCode Go's when unset). An OpenCode Go account \
+                  signed in with OAuth already shows its workspace's Zen balance.",
         secret: Some(SecretSpec {
             label: "Dashboard auth cookie",
             env: "OPENCODE_ZEN_AUTH_COOKIE",
         }),
         default_method: AuthMethod::BrowserSession,
+        setup_method: AuthMethod::BrowserSession,
         multi_account: false,
     },
     ProviderInfo {
@@ -102,6 +114,7 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
             env: "MOONSHOT_API_KEY",
         }),
         default_method: AuthMethod::ApiKey,
+        setup_method: AuthMethod::ApiKey,
         multi_account: true,
     },
 ];

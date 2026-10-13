@@ -17,6 +17,7 @@ mod history_view;
 mod locale;
 mod managed;
 mod notifications;
+mod opencode_sign_in;
 mod package;
 mod prefs_hub;
 mod providers;
@@ -128,6 +129,7 @@ fn main() {
         claude_sign_in::init(cx);
         cursor_sign_in::init(cx);
         github_sign_in::init(cx);
+        opencode_sign_in::init(cx);
         github_sign_in::clean_up(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
         if is_demo() {
