@@ -47,7 +47,18 @@ fn find_in(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let names = program_names(name);
     dirs.iter()
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| runnable(candidate))
+}
+
+/// A file the system would run: on macOS and Linux it must also be executable, as `execvp` skips one that isn't.
+fn runnable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    path.is_file()
 }
 
 /// The CLI called `name` in `dir` (an installer's own folder), if it is there.
@@ -124,6 +135,16 @@ pub fn open_url(url: &str) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// A program file the system would run.
+    fn put(path: &Path) {
+        std::fs::write(path, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     #[test]
     fn a_program_is_found_by_its_platform_name_in_the_first_folder_that_has_it() {
         let root = std::env::temp_dir().join(format!("codexbar-platform-{}", std::process::id()));
@@ -131,14 +152,27 @@ mod tests {
         std::fs::create_dir_all(&first).unwrap();
         std::fs::create_dir_all(&second).unwrap();
         let name = program_names("tool").pop().unwrap();
-        std::fs::write(second.join(&name), "").unwrap();
+        put(&second.join(&name));
         assert_eq!(
             find_in("tool", &[first.clone(), second.clone()]),
             Some(second.join(&name))
         );
-        std::fs::write(first.join(&name), "").unwrap();
+        put(&first.join(&name));
         assert_eq!(program_in(&first, "tool"), Some(first.join(&name)));
         assert_eq!(find_in("missing", &[first, second]), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_isnt_executable_is_passed_over() {
+        let root = std::env::temp_dir().join(format!("codexbar-platform-x-{}", std::process::id()));
+        let (first, second) = (root.join("first"), root.join("second"));
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("tool"), "").unwrap();
+        put(&second.join("tool"));
+        assert_eq!(find_in("tool", &[first, second.clone()]), Some(second.join("tool")));
         let _ = std::fs::remove_dir_all(&root);
     }
 

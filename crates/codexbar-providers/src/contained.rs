@@ -73,8 +73,15 @@ mod terminal {
     }
 
     /// The script that runs `command` as configured (environment, folder, arguments) and records its exit code.
-    pub(super) fn script(command: &Command, status: &Path) -> String {
-        let mut script = String::from("#!/bin/sh\n");
+    pub(super) fn script(command: &Command, dir: &Path) -> String {
+        let file = |name: &str| quote(dir.join(name).as_os_str());
+        // The CLI ends with CodexBar's sign-in: once the waiter is gone (cancelled, timed out, or CodexBar quit), the
+        // watchdog stops the CLI before it can finish a sign-in nobody is waiting for.
+        let mut script = format!(
+            "#!/bin/sh\nwaiter=$(cat {})\n( while sleep 1; kill -0 \"$waiter\" 2>/dev/null; do :; done; pkill -TERM -P $$ ) &\n\
+             watchdog=$!\n",
+            file("waiter")
+        );
         for (name, value) in command.get_envs() {
             let name = name.to_string_lossy();
             match value {
@@ -90,7 +97,12 @@ mod terminal {
             script.push(' ');
             script.push_str(&quote(arg));
         }
-        script.push_str(&format!("\necho $? > {}\n", quote(status.as_os_str())));
+        // The code is written beside the status file and renamed onto it, so the waiter never reads it half written.
+        script.push_str(&format!(
+            "\ncode=$?\nkill \"$watchdog\" 2>/dev/null\necho \"$code\" > {tmp} && mv {tmp} {status}\n",
+            tmp = file("status.tmp"),
+            status = file("status")
+        ));
         script
     }
 
@@ -121,10 +133,12 @@ else exit 127; fi"#
         let path = dir.join("sign-in.command");
         let status = dir.join("status");
         let mut file = std::fs::File::create(&path)?;
-        file.write_all(script(command, &status).as_bytes())?;
+        file.write_all(script(command, &dir).as_bytes())?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        // The waiter leaves its process id for the script's watchdog, and gives up when CodexBar ($4) is gone.
         let waiter = format!(
-            "{}\nwhile [ ! -f \"$2\" ]; do sleep 0.5; done\ncode=$(cat \"$2\")\nrm -rf \"$3\"\nexit \"${{code:-1}}\"",
+            "echo $$ > \"$3/waiter\"\n{}\nwhile [ ! -f \"$2\" ]; do kill -0 \"$4\" 2>/dev/null || exit 1; sleep 0.5; \
+             done\ncode=$(cat \"$2\")\nrm -rf \"$3\"\nexit \"${{code:-1}}\"",
             launcher()
         );
         Command::new("/bin/sh")
@@ -132,6 +146,7 @@ else exit 127; fi"#
             .arg(&path)
             .arg(&status)
             .arg(&dir)
+            .arg(std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -144,6 +159,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::Path;
     use std::process::Command;
+    use std::time::{Duration, Instant};
 
     use super::terminal::{quote, script};
 
@@ -155,27 +171,55 @@ mod tests {
             .env("CLAUDE_CONFIG_DIR", "/tmp/a b")
             .env_remove("ANTHROPIC_API_KEY")
             .current_dir("/tmp");
-        let text = script(&command, Path::new("/tmp/x/status"));
-        assert!(text.starts_with("#!/bin/sh\n"));
+        let text = script(&command, Path::new("/tmp/x"));
+        assert!(text.starts_with("#!/bin/sh\nwaiter=$(cat '/tmp/x/waiter')\n"));
         assert!(text.contains("export CLAUDE_CONFIG_DIR='/tmp/a b'\n"));
         assert!(text.contains("unset ANTHROPIC_API_KEY\n"));
         assert!(text.contains("cd '/tmp' || exit 1\n"));
         assert!(text.contains(r"'/opt/it'\''s/claude' 'auth' 'login' '--claudeai'"));
-        assert!(text.ends_with("echo $? > '/tmp/x/status'\n"));
+        assert!(text.ends_with("echo \"$code\" > '/tmp/x/status.tmp' && mv '/tmp/x/status.tmp' '/tmp/x/status'\n"));
         assert_eq!(quote(OsStr::new("a'b")), r"'a'\''b'");
+    }
+
+    fn folder(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("codexbar-terminal-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     #[test]
     fn the_script_reports_the_command_exit_code_through_sh() {
-        let dir = std::env::temp_dir().join(format!("codexbar-terminal-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let status = dir.join("status");
+        let dir = folder("code");
+        // A waiter that is alive for the whole run: this test process.
+        std::fs::write(dir.join("waiter"), std::process::id().to_string()).unwrap();
         let mut command = Command::new("sh");
         command.args(["-c", "exit 3"]);
         let path = dir.join("script.sh");
-        std::fs::write(&path, script(&command, &status)).unwrap();
+        std::fs::write(&path, script(&command, &dir)).unwrap();
         assert!(Command::new("sh").arg(&path).status().unwrap().success());
-        assert_eq!(std::fs::read_to_string(&status).unwrap().trim(), "3");
+        assert_eq!(std::fs::read_to_string(dir.join("status")).unwrap().trim(), "3");
+        assert!(!dir.join("status.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_cli_stops_when_its_waiter_is_gone() {
+        let dir = folder("watchdog");
+        // A waiter that ends at once, as when a sign-in is cancelled.
+        let mut gone = Command::new("true").spawn().unwrap();
+        let gone_id = gone.id();
+        gone.wait().unwrap();
+        std::fs::write(dir.join("waiter"), gone_id.to_string()).unwrap();
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let path = dir.join("script.sh");
+        std::fs::write(&path, script(&command, &dir)).unwrap();
+        let started = Instant::now();
+        let status = Command::new("sh").arg(&path).status().unwrap();
+        assert!(status.success(), "the script itself finishes");
+        assert!(started.elapsed() < Duration::from_secs(10), "the 30 s CLI was stopped");
+        assert_ne!(std::fs::read_to_string(dir.join("status")).unwrap().trim(), "0");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

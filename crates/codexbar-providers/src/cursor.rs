@@ -64,10 +64,13 @@ pub fn read_access_token(path: &Path) -> Result<String, ProviderError> {
 }
 
 /// The Cursor CLI's sign-in in the macOS Keychain (service `cursor-access-token`, account `cursor-user`), through the
-/// system's `security` tool. macOS asks the user once whether CodexBar may read it.
+/// system's `security` tool. macOS asks the user once whether CodexBar may read it; an unanswered prompt gives up after
+/// a minute, so the other providers' refresh goes on.
 #[cfg(target_os = "macos")]
 fn keychain_token() -> Option<String> {
-    let output = std::process::Command::new("/usr/bin/security")
+    use std::io::Read as _;
+    use std::time::{Duration, Instant};
+    let mut child = std::process::Command::new("/usr/bin/security")
         .args([
             "find-generic-password",
             "-s",
@@ -77,12 +80,27 @@ fn keychain_token() -> Option<String> {
             "-w",
         ])
         .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        .output()
+        .spawn()
         .ok()?;
-    let token = String::from_utf8(output.stdout).ok()?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    // The token is one short line, so waiting before reading the pipe can't block on a full buffer.
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let mut token = String::new();
+    child.stdout.take()?.read_to_string(&mut token).ok()?;
     let token = token.trim();
-    (output.status.success() && !token.is_empty()).then(|| token.to_owned())
+    (status.success() && !token.is_empty()).then(|| token.to_owned())
 }
 
 /// Maps `GetCurrentPeriodUsage`: `planUsage.*PercentUsed` are percentages, `billingCycleEnd` (and
