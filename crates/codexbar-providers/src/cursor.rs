@@ -100,7 +100,23 @@ fn keychain_token() -> Option<String> {
     let mut token = String::new();
     child.stdout.take()?.read_to_string(&mut token).ok()?;
     let token = token.trim();
-    (status.success() && !token.is_empty()).then(|| token.to_owned())
+    let token = (status.success() && !token.is_empty()).then(|| token.to_owned());
+    *LAST_KEYCHAIN_TOKEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = token.clone();
+    token
+}
+
+/// The token the last Keychain read returned, for reads that mustn't wait on the Keychain.
+#[cfg(target_os = "macos")]
+static LAST_KEYCHAIN_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn last_keychain_token() -> Option<String> {
+    LAST_KEYCHAIN_TOKEN
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
 /// Maps `GetCurrentPeriodUsage`: `planUsage.*PercentUsed` are percentages, `billingCycleEnd` (and
@@ -176,8 +192,13 @@ pub fn account_id_for_token(token: &str) -> AccountId {
     }
 }
 
-/// The account the sign-in in `path` belongs to, when there is one.
+/// The account the sign-in in `path` belongs to, when there is one. This runs on the UI thread, so on macOS it never
+/// reads the Keychain (which may show a prompt): it uses the token the last background fetch read.
 pub fn signed_in_account(path: &Path) -> Option<AccountId> {
+    #[cfg(target_os = "macos")]
+    if path == default_auth_path() && !path.exists() {
+        return last_keychain_token().map(|token| account_id_for_token(&token));
+    }
     read_access_token(path).ok().map(|token| account_id_for_token(&token))
 }
 
