@@ -170,6 +170,42 @@ the account's id.
   the Widgets metadata by `scripts/Update-WidgetBindings.ps1`, with pinned
   versions.
 
+## macOS and Linux
+
+The macOS and Linux packages (#167) are built from source by two scripts at the repository root. CI builds both and
+keeps them as artifacts of the Package workflow. Neither has an update channel yet: install a newer one over the old.
+
+### macOS: CodexBar.app and a DMG
+
+```bash
+./package-macos.sh                        # target/package/macos/CodexBar.app and CodexBar-<version>.dmg
+CODESIGN_IDENTITY="Developer ID Application: …" ./package-macos.sh
+```
+
+It needs Rust and the Xcode Command Line Tools. The app is a menu-bar app (`LSUIElement`) with the bundle id
+`HemSoft.CodexBar` and an icon drawn by `cargo run -p codexbar-app --example icon`. Without `CODESIGN_IDENTITY` it is
+signed ad hoc: it runs on the Mac that built it, but Gatekeeper refuses it on another Mac until it is opened once with
+Control-click › Open (or `xattr -dr com.apple.quarantine CodexBar.app`). A Developer ID and notarization are the
+production choice and are left open.
+
+Open the DMG and drag CodexBar to Applications. The first alert (or Settings › Alerts › Send a test notification)
+asks for permission to show notifications. Allow it, and alerts appear in Notification Center from then on.
+
+### Linux: a .deb
+
+```bash
+./package-linux.sh                        # target/package/linux/codexbar_<version>_<arch>.deb
+sudo apt install ./target/package/linux/codexbar_*.deb
+```
+
+It needs Rust, `dpkg-deb` and the build headers listed in the README. The package installs `/usr/bin/codexbar`, the
+desktop entry `HemSoft.CodexBar.desktop` (the window's app id, so desktops show its name and icon) and the icon in
+four sizes. It depends on the libraries GPUI loads: xcb, xkbcommon, Vulkan and Wayland. A Vulkan driver (Mesa's,
+recommended) draws the window. Remove it with `sudo apt remove codexbar`; settings in `~/.codexbar` stay.
+
+On Wayland the tray icon raises the window but doesn't hide it, and Close leaves it open: a compositor may refuse
+to bring back a minimized window for a tray click, so CodexBar never minimizes there.
+
 ## Uninstall
 
 1. Quit CodexBar from the tray menu.

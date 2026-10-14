@@ -37,15 +37,23 @@ windows-future.workspace = true
 # are enough to build it. The version follows gpui-kit's own pin.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Dates in the user's locale on macOS and Linux (#167): the locale's name, and its formats and names.
+sys-locale = "0.3"
+pure-rust-locales = "0.8"
+chrono = { workspace = true, features = ["unstable-locales"] }
 
 # Asks the session bus whether a notification service is there (#161).
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The Region the user set, for date formats (#167).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSLocale", "NSString", "NSUserDefaults"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["runtime_shaders"] }
 
 [dev-dependencies]
+# The icon example (examples/icon.rs) writes PNGs for the macOS and Linux packages (#167).
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Headless UI integration tests: real views in in-process windows, no desktop input or focus changes.
 gpui-kit = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true

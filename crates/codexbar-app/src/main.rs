@@ -228,6 +228,8 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             window_min_size: Some(size(px(1040.), px(720.))),
+            // Linux desktops find the window's icon and name through the matching HemSoft.CodexBar.desktop (#167).
+            app_id: (!cfg!(windows)).then(|| notifications::APP_ID.to_owned()),
             ..TitleBar::window_options()
         };
 
