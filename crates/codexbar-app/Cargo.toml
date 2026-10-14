@@ -1,6 +1,6 @@
 [package]
 name = "codexbar-app"
-description = "CodexBar for Windows: GPUI dashboard and tray host"
+description = "CodexBar: GPUI dashboard and tray host"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -18,13 +18,27 @@ codexbar-store.workspace = true
 tray-icon.workspace = true
 raw-window-handle.workspace = true
 anyhow.workspace = true
+gpui-kit.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(windows)'.dependencies]
 windows.workspace = true
 windows-core.workspace = true
 windows-collections.workspace = true
 windows-future.workspace = true
-gpui-kit.workspace = true
-chrono.workspace = true
-serde_json.workspace = true
+
+# The Mac build compiles GPUI's Metal shaders at startup instead of with Xcode's `metal` tool, so the Command Line Tools
+# are enough to build it. The version follows gpui-kit's own pin.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Asks the session bus whether a notification service is there (#161).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["runtime_shaders"] }
 
 [dev-dependencies]
 # Headless UI integration tests: real views in in-process windows, no desktop input or focus changes.

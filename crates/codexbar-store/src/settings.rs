@@ -298,10 +298,7 @@ impl Settings {
         if let Some(dir) = std::env::var_os("CODEXBAR_SETTINGS_DIR").filter(|dir| !dir.is_empty()) {
             return PathBuf::from(dir);
         }
-        std::env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .unwrap_or_default()
-            .join(".codexbar")
+        codexbar_core::home_dir().unwrap_or_default().join(".codexbar")
     }
 
     /// Loads and validates settings. A missing or syntax-invalid file behaves like an empty one, as in the WPF app;
@@ -1420,10 +1417,7 @@ mod tests {
             let mut settings = Settings::load(&dir.0).unwrap();
             let outcome = move_plaintext_keys(&mut settings, &Garbling, &names::ALL);
             assert!(outcome.moved.is_empty());
-            assert_eq!(
-                outcome.failed[0].1,
-                "Windows Credential Manager didn't return the saved secret."
-            );
+            assert_eq!(outcome.failed[0].1, CredentialError::verification().to_string());
             assert!(file_text(&dir).contains("sk-or-plain"));
         }
 

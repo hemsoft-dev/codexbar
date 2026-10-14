@@ -639,7 +639,10 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                 account: account_id(username),
                 label: Some(username.clone()),
                 error: ProviderError::Unexpected {
-                    detail: "its saved token couldn't be read from Windows Credential Manager",
+                    detail: concat!(
+                        "its saved token couldn't be read from ",
+                        codexbar_core::secret_store_name!()
+                    ),
                 },
             });
         }
@@ -1268,7 +1271,9 @@ mod tests {
             panic!("failure")
         };
         assert_eq!(account.as_str(), "copilot-hemsoft");
-        assert!(matches!(error, ProviderError::Unexpected { detail } if detail.contains("Credential Manager")));
+        assert!(
+            matches!(error, ProviderError::Unexpected { detail } if detail.contains(codexbar_core::secret_store_name!()))
+        );
         assert!(provider.http.seen.lock().unwrap().is_empty());
     }
 

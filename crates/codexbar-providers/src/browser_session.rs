@@ -39,6 +39,7 @@ impl std::fmt::Display for BrowserError {
 impl std::error::Error for BrowserError {}
 
 /// Where Edge and Chrome install, in the order they're tried.
+#[cfg(windows)]
 pub fn candidates() -> Vec<PathBuf> {
     let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
     let mut paths = Vec::new();
@@ -53,6 +54,42 @@ pub fn candidates() -> Vec<PathBuf> {
         .flatten()
     {
         paths.push(base.join(r"Google\Chrome\Application\chrome.exe"));
+    }
+    paths
+}
+
+/// Edge, Chrome and Chromium in the system's and the user's Applications folders, in the order they're tried.
+#[cfg(target_os = "macos")]
+pub fn candidates() -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from("/Applications")];
+    roots.extend(std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Applications")));
+    let mut paths = Vec::new();
+    for app in ["Microsoft Edge", "Google Chrome", "Chromium"] {
+        for root in &roots {
+            paths.push(root.join(format!("{app}.app/Contents/MacOS/{app}")));
+        }
+    }
+    paths
+}
+
+/// Edge, Chrome and Chromium on PATH, in the order they're tried.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn candidates() -> Vec<PathBuf> {
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    let mut paths = Vec::new();
+    for name in [
+        "microsoft-edge",
+        "microsoft-edge-stable",
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+    ] {
+        for dir in &dirs {
+            paths.push(dir.join(name));
+        }
     }
     paths
 }
@@ -374,9 +411,16 @@ mod tests {
     #[test]
     fn edge_comes_before_chrome() {
         let paths = candidates();
-        let edge = paths.iter().position(|p| p.ends_with("msedge.exe"));
-        let chrome = paths.iter().position(|p| p.ends_with("chrome.exe"));
-        assert!(edge < chrome);
+        let (edge, chrome) = if cfg!(windows) {
+            ("msedge.exe", "chrome.exe")
+        } else if cfg!(target_os = "macos") {
+            ("Microsoft Edge", "Google Chrome")
+        } else {
+            ("microsoft-edge", "google-chrome")
+        };
+        let edge = paths.iter().position(|p| p.ends_with(edge));
+        let chrome = paths.iter().position(|p| p.ends_with(chrome));
+        assert!(edge.is_some() && edge < chrome, "{paths:?}");
     }
 
     #[test]

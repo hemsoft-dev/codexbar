@@ -44,13 +44,27 @@ jobs:
           category: gitleaks
 
   rust:
-    runs-on: windows-latest
+    # The same gates on every platform CodexBar runs on (#161).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
-      # rust-toolchain.toml pins the MSVC toolchain with rustfmt and clippy; rustup installs it on first use.
+      # GPUI's X11 and Wayland backends link these; the tray icon and the keyring speak D-Bus in pure Rust.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev
+
+      # rust-toolchain.toml pins stable with rustfmt and clippy; rustup installs it on first use.
       - name: Install Rust toolchain
+        shell: bash
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Cargo

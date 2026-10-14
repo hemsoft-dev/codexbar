@@ -4,6 +4,9 @@ mod account_table;
 mod alert_details;
 mod assets;
 mod brand;
+// Only Linux can render GPUI headlessly from a test.
+#[cfg(all(test, target_os = "linux"))]
+mod captures;
 mod catalog;
 mod claude_sign_in;
 mod codex_sign_in;
@@ -30,8 +33,11 @@ mod theme;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+#[cfg(windows)]
 mod widget_builder;
+#[cfg(windows)]
 mod widget_feed;
+#[cfg(windows)]
 mod widgets;
 mod zoom;
 
@@ -63,8 +69,12 @@ fn data_source() -> DataSource {
     }
 }
 
-/// This instance's name part, per user: `DOMAIN.user`, or `Demo.DOMAIN.user` for the demo.
+/// This instance's name part, per user: `DOMAIN.user`, or `Demo.DOMAIN.user` for the demo. On macOS and Linux the
+/// settings folder is already the user's own, so the name only tells the demo apart.
 fn instance() -> String {
+    #[cfg(not(windows))]
+    let user = String::from("user");
+    #[cfg(windows)]
     let user: String = format!(
         "{}.{}",
         std::env::var("USERDOMAIN").unwrap_or_default(),
@@ -80,6 +90,7 @@ fn instance() -> String {
 /// never send the same alert twice or write history and preferences over each other. The mutex is in the global
 /// namespace and named per user, so other users on the machine run their own. The demo has its own name, so design
 /// work can run beside the real app. A second launch exits; the first one is already in the notification area.
+#[cfg(windows)]
 fn already_running() -> bool {
     use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use windows::Win32::System::Threading::CreateMutexW;
@@ -94,8 +105,50 @@ fn already_running() -> bool {
     }
 }
 
+/// Makes every file and folder this process (and the CLIs it starts) creates private to the user, and the settings
+/// folder too if an earlier run made it with default permissions.
+#[cfg(unix)]
+fn private_files() {
+    use std::os::unix::fs::PermissionsExt as _;
+    // SAFETY: umask only sets this process's file mode creation mask; it can't fail.
+    unsafe { libc::umask(0o077) };
+    let dir = codexbar_store::settings::Settings::default_dir();
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+}
+
+/// On macOS and Linux the lock is an advisory lock on a file in the settings folder, held until the process exits.
+#[cfg(not(windows))]
+fn already_running() -> bool {
+    use std::sync::OnceLock;
+    static HELD: OnceLock<std::fs::File> = OnceLock::new();
+    let dir = codexbar_store::settings::Settings::default_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join(format!("instance.{}.lock", instance())));
+    match file {
+        Ok(file) => match file.try_lock() {
+            Ok(()) => {
+                let _ = HELD.set(file);
+                false
+            }
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            // Without the lock, run anyway rather than refuse to start.
+            Err(std::fs::TryLockError::Error(_)) => false,
+        },
+        Err(_) => false,
+    }
+}
+
 fn main() {
+    // Settings, history and sign-ins in ~/.codexbar stay readable by this user only (#161).
+    #[cfg(unix)]
+    private_files();
     // Windows starts CodexBar this way for the Widgets board (#94). The provider runs beside the tray app.
+    #[cfg(windows)]
     if std::env::args().any(|arg| arg == widgets::SERVER_ARG) {
         if let Err(err) = widgets::serve() {
             eprintln!("codexbar: widget provider failed: {}", err.message());
@@ -105,7 +158,9 @@ fn main() {
     }
     // `--package-status <file> [<trigger>]` reports the MSIX package and exits (#93); it runs beside an open
     // CodexBar. With a trigger file it first waits for that file, the way a running CodexBar meets a later update.
+    #[cfg(windows)]
     let mut args = std::env::args().skip_while(|arg| arg != "--package-status");
+    #[cfg(windows)]
     if args.next().is_some() {
         let file = args.next().map(std::path::PathBuf::from);
         let trigger = args.next().map(std::path::PathBuf::from);
@@ -115,17 +170,21 @@ fn main() {
     let focus = handoff::FocusRequest::from_args(std::env::args());
     // The handoff event exists before this instance takes the single-instance lock, so a later launch that finds
     // the lock taken always reaches a live event (one this instance holds open) rather than one it creates alone.
-    let handoff_event = handoff::listen(&instance());
+    let settings_dir = codexbar_store::settings::Settings::default_dir();
+    let handoff_listener = handoff::listen(&settings_dir, &instance());
     if already_running() {
         // A widget tile (#95) or a second launch: the running CodexBar shows its window, on the tile's account.
         if let Some(request) = &focus {
-            let _ = handoff::write_request(&codexbar_store::settings::Settings::default_dir(), request);
+            let _ = handoff::write_request(&settings_dir, request);
         }
-        handoff::signal(&instance());
+        handoff::signal(&settings_dir, &instance());
         return;
     }
     gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
+        // macOS and Linux name the app on its notifications by this identity; Windows registers its own (notifications).
+        #[cfg(not(windows))]
+        cx.set_app_identity(notifications::APP_ID, "CodexBar");
         settings_hub::SettingsHub::init(cx);
         codex_sign_in::init(cx);
         claude_sign_in::init(cx);
@@ -149,7 +208,7 @@ fn main() {
         let notifier: std::sync::Arc<dyn notifications::Notifier> = if is_demo() {
             std::sync::Arc::new(notifications::RecordingNotifier::default())
         } else {
-            std::sync::Arc::new(notifications::WindowsNotifier::new())
+            notifications::system_notifier()
         };
         notifications::Notifications::init(cx, notifier, !is_demo());
         zoom::init(cx);
@@ -189,7 +248,7 @@ fn main() {
             dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx));
         }
         // Later launches hand over here: show the window, on the requested account when there is one.
-        if let Some(event) = handoff_event {
+        if let Some(listener) = handoff_listener {
             let focus_target = dashboard.clone();
             let request_dir = dir.clone();
             cx.spawn(async move |cx| {
@@ -197,7 +256,7 @@ fn main() {
                     cx.background_executor()
                         .timer(std::time::Duration::from_millis(250))
                         .await;
-                    if !handoff::signaled(event) {
+                    if !listener.signaled() {
                         continue;
                     }
                     let request = handoff::take_request(&request_dir);

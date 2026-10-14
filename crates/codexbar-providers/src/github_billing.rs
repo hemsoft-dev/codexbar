@@ -422,7 +422,10 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
     fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
         if self.unreadable {
             return Err(ProviderError::Unexpected {
-                detail: "its saved token couldn't be read from Windows Credential Manager",
+                detail: concat!(
+                    "its saved token couldn't be read from ",
+                    codexbar_core::secret_store_name!()
+                ),
             });
         }
         let (Some(token), Some(owner)) = (&self.token, &self.owner) else {
@@ -880,7 +883,10 @@ mod tests {
         assert_eq!(
             unreadable.fetch(now()).unwrap_err(),
             ProviderError::Unexpected {
-                detail: "its saved token couldn't be read from Windows Credential Manager"
+                detail: concat!(
+                    "its saved token couldn't be read from ",
+                    codexbar_core::secret_store_name!()
+                )
             },
             "an unreadable token isn't taken for signed out"
         );

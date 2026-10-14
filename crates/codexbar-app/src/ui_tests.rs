@@ -43,6 +43,45 @@ impl Drop for TempSettings {
     }
 }
 
+/// Makes the settings file impossible to save until dropped. On Windows a read-only file can't be replaced. On macOS
+/// and Linux it can (replacing needs only its folder), so a folder takes the place of the save's temporary file.
+struct Unsavable {
+    settings: PathBuf,
+    #[cfg(windows)]
+    writable: std::fs::Permissions,
+}
+
+impl Unsavable {
+    fn new(settings: &TempSettings) -> Self {
+        let file = settings.0.join("settings.json");
+        #[cfg(windows)]
+        {
+            let writable = std::fs::metadata(&file).unwrap().permissions();
+            let mut read_only = writable.clone();
+            read_only.set_readonly(true);
+            std::fs::set_permissions(&file, read_only).unwrap();
+            Self {
+                settings: file,
+                writable,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::create_dir(file.with_extension("json.tmp")).unwrap();
+            Self { settings: file }
+        }
+    }
+}
+
+impl Drop for Unsavable {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        let _ = std::fs::set_permissions(&self.settings, self.writable.clone());
+        #[cfg(not(windows))]
+        let _ = std::fs::remove_dir(self.settings.with_extension("json.tmp"));
+    }
+}
+
 /// Opens the demo dashboard the way `main` does, with settings from `settings`.
 fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindowHandle, Entity<Dashboard>) {
     cx.update(|cx| {
@@ -75,16 +114,18 @@ fn press(cx: &mut TestAppContext, handle: AnyWindowHandle, key: &str) {
     cx.run_until_parked();
 }
 
-/// One Ctrl+wheel event at the middle of the window. The test helpers' `scroll` sends no modifiers.
-fn wheel(cx: &mut TestAppContext, handle: AnyWindowHandle, delta: ScrollDelta, control: bool) {
+/// One Ctrl+wheel (Command+wheel on macOS) event at the middle of the window. The test helpers' `scroll` sends no
+/// modifiers.
+fn wheel(cx: &mut TestAppContext, handle: AnyWindowHandle, delta: ScrollDelta, zoom: bool) {
     cx.update_window(handle, |_, window, cx| {
         window.dispatch_event(
             ScrollWheelEvent {
                 position: point(px(720.), px(480.)),
                 delta,
-                modifiers: Modifiers {
-                    control,
-                    ..Modifiers::default()
+                modifiers: if zoom {
+                    Modifiers::secondary_key()
+                } else {
+                    Modifiers::default()
                 },
                 ..Default::default()
             }
@@ -107,12 +148,12 @@ fn keyboard_shortcuts_step_and_reset_zoom(cx: &mut TestAppContext) {
     let (handle, _) = open_dashboard(cx, &settings);
     assert_eq!(level(cx), 1.0);
 
-    press(cx, handle, "ctrl-=");
-    press(cx, handle, "ctrl-=");
+    press(cx, handle, "secondary-=");
+    press(cx, handle, "secondary-=");
     assert_eq!(level(cx), 1.2);
-    press(cx, handle, "ctrl--");
+    press(cx, handle, "secondary--");
     assert_eq!(level(cx), 1.1);
-    press(cx, handle, "ctrl-0");
+    press(cx, handle, "secondary-0");
     assert_eq!(level(cx), 1.0);
 }
 
@@ -138,7 +179,7 @@ fn zoom_is_saved_after_input_settles(cx: &mut TestAppContext) {
     let settings = TempSettings::new("save", r#"{ "zoomLevel": 1.0 }"#);
     let (handle, _) = open_dashboard(cx, &settings);
 
-    press(cx, handle, "ctrl-=");
+    press(cx, handle, "secondary-=");
     assert_eq!(settings.zoom_on_disk(), Some(1.0), "the save waits for input to settle");
     cx.executor().advance_clock(Duration::from_millis(700));
     cx.run_until_parked();
@@ -150,7 +191,7 @@ fn pending_zoom_is_saved_on_quit(cx: &mut TestAppContext) {
     let settings = TempSettings::new("quit", r#"{ "zoomLevel": 1.0 }"#);
     let (handle, _) = open_dashboard(cx, &settings);
 
-    press(cx, handle, "ctrl-=");
+    press(cx, handle, "secondary-=");
     cx.update(|cx| cx.shutdown());
     assert_eq!(settings.zoom_on_disk(), Some(1.1));
 }
@@ -200,19 +241,19 @@ fn view_tabs_switch_views_by_click_and_keyboard(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn failed_save_reloads_from_the_injected_folder(cx: &mut TestAppContext) {
-    use std::os::windows::fs::OpenOptionsExt as _;
-
     let settings = TempSettings::new("reload", r#"{ "zoomLevel": 1.3 }"#);
     open_dashboard(cx, &settings);
     // Hold the shared write lock the way another writer would, so the save fails with Busy and the hub reloads.
-    let _lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .share_mode(0)
-        .open(settings.0.join("settings.write.lock"))
-        .unwrap();
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.share_mode(0);
+    }
+    let _lock = options.open(settings.0.join("settings.write.lock")).unwrap();
+    #[cfg(not(windows))]
+    _lock.try_lock().unwrap();
 
     let result = cx.update(|cx| {
         SettingsHub::update(cx, |settings| {
@@ -723,13 +764,24 @@ fn alerts_settings_page_shows_status_and_actions(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let status = label(cx, handle, "alerts-status").unwrap();
     assert!(
-        status.starts_with("Windows notifications are on.") && status.contains("active"),
+        status.starts_with(if cfg!(windows) {
+            "Windows notifications are on."
+        } else {
+            "Notifications are on."
+        }) && status.contains("active"),
         "{status}"
     );
 
     click(cx, handle, "alerts-reset");
     let status = label(cx, handle, "alerts-status").unwrap();
-    assert_eq!(status, "Windows notifications are on. No alerts are active.");
+    assert_eq!(
+        status,
+        if cfg!(windows) {
+            "Windows notifications are on. No alerts are active."
+        } else {
+            "Notifications are on. No alerts are active."
+        }
+    );
 }
 
 #[gpui_kit::test]
@@ -1216,6 +1268,7 @@ fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) 
     assert_eq!(restored.len(), 1);
 }
 
+#[cfg(windows)]
 #[gpui_kit::test]
 fn the_widget_snapshot_follows_each_refresh_without_secrets(cx: &mut TestAppContext) {
     use codexbar_store::widgets::{WidgetHealth, load_widget_snapshot};
@@ -1731,16 +1784,18 @@ fn exists(cx: &mut TestAppContext, handle: AnyWindowHandle, id: impl Into<gpui_k
 fn every_settings_section_can_be_opened(cx: &mut TestAppContext) {
     let settings = TempSettings::new("settings-nav", "{}");
     let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 0);
-    // General, Accounts, Alerts, Groups, Appearance, Widgets, About: each page shows its own controls.
-    let marks: [(usize, Option<&'static str>); 7] = [
+    // General, Accounts, Alerts, Groups, Appearance, Widgets (Windows only), About: each page shows its own controls.
+    let mut marks: Vec<(usize, Option<&'static str>)> = vec![
         (0, None),
         (1, Some("add-OpenRouter")),
         (2, Some("alerts-status")),
         (3, Some("group-new")),
         (4, None),
-        (5, None),
-        (6, Some("open-repo")),
     ];
+    if cfg!(windows) {
+        marks.push((5, None));
+    }
+    marks.push((ABOUT_PAGE, Some("open-repo")));
     // Last page first: once Accounts opens its list of providers, the sidebar's lower pages scroll out of view.
     for (page, mark) in marks.into_iter().rev() {
         cx.update_window(handle, |_, window, cx| {
@@ -1775,6 +1830,10 @@ fn every_settings_section_can_be_opened(cx: &mut TestAppContext) {
     );
 }
 
+/// Settings › About's page index: after Widgets, which only Windows has.
+const ABOUT_PAGE: usize = if cfg!(windows) { 6 } else { 5 };
+
+#[cfg(windows)]
 fn update_status(cx: &mut TestAppContext, handle: AnyWindowHandle) -> Option<String> {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -1785,7 +1844,173 @@ fn update_status(cx: &mut TestAppContext, handle: AnyWindowHandle) -> Option<Str
     .unwrap()
 }
 
-// The widget builder (#95): Settings › Widgets, page 5.
+// The widget builder (#95): Settings › Widgets, page 5. Only Windows has widgets.
+#[cfg(windows)]
+mod widget_builder {
+    use super::*;
+
+    /// Opens the dropdown of `item` in `group` and picks the option `downs` places down (the first Down is the first).
+    fn choose(cx: &mut TestAppContext, handle: AnyWindowHandle, group: usize, item: usize, downs: usize) {
+        cx.update_window(handle, |_, window, cx| {
+            window
+                .within(format!("group-{group}"))
+                .within(format!("item-{item}"))
+                .within("field")
+                .click("btn", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        for _ in 0..downs {
+            press(cx, handle, "down");
+        }
+        press(cx, handle, "enter");
+    }
+
+    fn builder(cx: &mut TestAppContext) -> codexbar_store::widgets::WidgetBuilder {
+        cx.update(|cx| crate::prefs_hub::PrefsHub::widget_builder(cx))
+    }
+
+    #[gpui_kit::test]
+    fn the_widget_builder_adds_tiles_sets_modes_and_saves(cx: &mut TestAppContext) {
+        use codexbar_store::widgets::TileMode;
+        let settings = TempSettings::new("widget-builder", "{}");
+        let (_dashboard, handle) = open_widget_builder(cx, &settings);
+
+        // My tiles starts with only Add a tile; its second option is the first limit (after the placeholder).
+        choose(cx, handle, 1, 0, 2);
+        let tiles = builder(cx).tiles;
+        assert_eq!(tiles.len(), 1, "one tile added");
+        assert_eq!(tiles[0].mode, TileMode::Automatic);
+        let first = tiles[0].clone();
+
+        // The tile's dropdown: Automatic, Compact percentage, Full bar, Balance only, Urgent status, Remove tile.
+        choose(cx, handle, 1, 0, 3);
+        assert_eq!(builder(cx).tiles[0].mode, TileMode::Bar);
+
+        // A second tile, then move it up.
+        choose(cx, handle, 1, 1, 2);
+        assert_eq!(builder(cx).tiles.len(), 2);
+        assert_ne!(builder(cx).tiles[1], first);
+        choose(cx, handle, 1, 1, 6);
+        assert_eq!(
+            builder(cx).tiles[1],
+            codexbar_store::widgets::WidgetTile {
+                mode: TileMode::Bar,
+                ..first.clone()
+            }
+        );
+
+        // Saved in dashboard.json, and sent to the widgets in widgets.json.
+        let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+        assert_eq!(saved.widget_builder().tiles.len(), 2);
+        let snapshot = codexbar_store::widgets::load_widget_snapshot(&settings.0).unwrap();
+        assert_eq!(
+            snapshot.builder.tiles,
+            builder(cx).tiles,
+            "the widgets get the tiles at once"
+        );
+
+        // Remove the first tile.
+        choose(cx, handle, 1, 0, 6);
+        assert_eq!(builder(cx).tiles.len(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn the_widget_preview_shows_each_layout(cx: &mut TestAppContext) {
+        use codexbar_store::widgets::{TileMode, WidgetTile};
+        let settings = TempSettings::new("widget-preview", "{}");
+        let (_dashboard, handle) = open_widget_builder(cx, &settings);
+        cx.update(|cx| {
+            crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
+                for (account, mode) in [
+                    ("codex-1", TileMode::Percent),
+                    ("claude-1", TileMode::Status),
+                    ("gone", TileMode::Bar),
+                ] {
+                    let snapshot = cx_metric(account);
+                    builder.add(WidgetTile {
+                        account: account.into(),
+                        metric: snapshot,
+                        mode,
+                    });
+                }
+            })
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.within("settings-sidebar").click("0-5-3", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        // Automatic previews all three sizes: one tile on small, two on medium, every tile on large.
+        let label = |cx: &mut TestAppContext, id: (&'static str, usize)| {
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).and_then(|found| found.label().map(str::to_owned))
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            label(cx, ("widget-preview", 0)).as_deref(),
+            Some("Small widget preview, 1 tiles")
+        );
+        assert_eq!(
+            label(cx, ("widget-preview", 1)).as_deref(),
+            Some("Medium widget preview, 2 tiles")
+        );
+        assert_eq!(
+            label(cx, ("widget-preview", 2)).as_deref(),
+            Some("Large widget preview, 3 tiles")
+        );
+        let removed = label(cx, ("preview-tile", 22)).unwrap();
+        assert!(removed.starts_with("Removed account"), "{removed}");
+
+        // Four tiles: one medium preview.
+        click(cx, handle, ("preview-layout", 3usize));
+        assert_eq!(
+            label(cx, ("widget-preview", 1)).as_deref(),
+            Some("Medium widget preview, 3 tiles")
+        );
+        assert!(label(cx, ("widget-preview", 0)).is_none());
+        click(cx, handle, ("preview-layout", 1usize));
+        assert_eq!(
+            label(cx, ("widget-preview", 1)).as_deref(),
+            Some("Medium widget preview, 1 tiles")
+        );
+    }
+
+    #[gpui_kit::test]
+    fn widget_settings_reset_after_confirming(cx: &mut TestAppContext) {
+        use codexbar_store::widgets::{WidgetRefresh, WidgetTile};
+        let settings = TempSettings::new("widget-reset", "{}");
+        let (_dashboard, handle) = open_widget_builder(cx, &settings);
+        cx.update(|cx| {
+            crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
+                builder.add(WidgetTile {
+                    account: "codex-1".into(),
+                    metric: cx_metric("codex-1"),
+                    mode: Default::default(),
+                });
+                builder.refresh = WidgetRefresh::FifteenMinutes;
+            })
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.within("settings-sidebar").click("0-5-4", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        click(cx, handle, "reset-widgets");
+        press(cx, handle, "escape");
+        assert_eq!(builder(cx).tiles.len(), 1, "cancel keeps the tiles");
+        click(cx, handle, "reset-widgets");
+        press(cx, handle, "enter");
+        assert_eq!(builder(cx), codexbar_store::widgets::WidgetBuilder::default());
+        assert_eq!(
+            codexbar_store::prefs::DashboardPrefs::load(&settings.0).widget_builder(),
+            &codexbar_store::widgets::WidgetBuilder::default()
+        );
+    }
+}
 
 fn open_widget_builder(cx: &mut TestAppContext, settings: &TempSettings) -> (Entity<Dashboard>, AnyWindowHandle) {
     let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
@@ -1804,171 +2029,9 @@ fn open_widget_builder(cx: &mut TestAppContext, settings: &TempSettings) -> (Ent
     (dashboard, handle)
 }
 
-/// Opens the dropdown of `item` in `group` and picks the option `downs` places down (the first Down is the first).
-fn choose(cx: &mut TestAppContext, handle: AnyWindowHandle, group: usize, item: usize, downs: usize) {
-    cx.update_window(handle, |_, window, cx| {
-        window
-            .within(format!("group-{group}"))
-            .within(format!("item-{item}"))
-            .within("field")
-            .click("btn", cx)
-    })
-    .unwrap();
-    cx.run_until_parked();
-    for _ in 0..downs {
-        press(cx, handle, "down");
-    }
-    press(cx, handle, "enter");
-}
-
-fn builder(cx: &mut TestAppContext) -> codexbar_store::widgets::WidgetBuilder {
-    cx.update(|cx| crate::prefs_hub::PrefsHub::widget_builder(cx))
-}
-
-#[gpui_kit::test]
-fn the_widget_builder_adds_tiles_sets_modes_and_saves(cx: &mut TestAppContext) {
-    use codexbar_store::widgets::TileMode;
-    let settings = TempSettings::new("widget-builder", "{}");
-    let (_dashboard, handle) = open_widget_builder(cx, &settings);
-
-    // My tiles starts with only Add a tile; its second option is the first limit (after the placeholder).
-    choose(cx, handle, 1, 0, 2);
-    let tiles = builder(cx).tiles;
-    assert_eq!(tiles.len(), 1, "one tile added");
-    assert_eq!(tiles[0].mode, TileMode::Automatic);
-    let first = tiles[0].clone();
-
-    // The tile's dropdown: Automatic, Compact percentage, Full bar, Balance only, Urgent status, Remove tile.
-    choose(cx, handle, 1, 0, 3);
-    assert_eq!(builder(cx).tiles[0].mode, TileMode::Bar);
-
-    // A second tile, then move it up.
-    choose(cx, handle, 1, 1, 2);
-    assert_eq!(builder(cx).tiles.len(), 2);
-    assert_ne!(builder(cx).tiles[1], first);
-    choose(cx, handle, 1, 1, 6);
-    assert_eq!(
-        builder(cx).tiles[1],
-        codexbar_store::widgets::WidgetTile {
-            mode: TileMode::Bar,
-            ..first.clone()
-        }
-    );
-
-    // Saved in dashboard.json, and sent to the widgets in widgets.json.
-    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
-    assert_eq!(saved.widget_builder().tiles.len(), 2);
-    let snapshot = codexbar_store::widgets::load_widget_snapshot(&settings.0).unwrap();
-    assert_eq!(
-        snapshot.builder.tiles,
-        builder(cx).tiles,
-        "the widgets get the tiles at once"
-    );
-
-    // Remove the first tile.
-    choose(cx, handle, 1, 0, 6);
-    assert_eq!(builder(cx).tiles.len(), 1);
-}
-
-#[gpui_kit::test]
-fn the_widget_preview_shows_each_layout(cx: &mut TestAppContext) {
-    use codexbar_store::widgets::{TileMode, WidgetTile};
-    let settings = TempSettings::new("widget-preview", "{}");
-    let (_dashboard, handle) = open_widget_builder(cx, &settings);
-    cx.update(|cx| {
-        crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
-            for (account, mode) in [
-                ("codex-1", TileMode::Percent),
-                ("claude-1", TileMode::Status),
-                ("gone", TileMode::Bar),
-            ] {
-                let snapshot = cx_metric(account);
-                builder.add(WidgetTile {
-                    account: account.into(),
-                    metric: snapshot,
-                    mode,
-                });
-            }
-        })
-    });
-    cx.update_window(handle, |_, window, cx| {
-        window.within("settings-sidebar").click("0-5-3", cx)
-    })
-    .unwrap();
-    cx.run_until_parked();
-
-    // Automatic previews all three sizes: one tile on small, two on medium, every tile on large.
-    let label = |cx: &mut TestAppContext, id: (&'static str, usize)| {
-        cx.update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
-            window.try_find(id).and_then(|found| found.label().map(str::to_owned))
-        })
-        .unwrap()
-    };
-    assert_eq!(
-        label(cx, ("widget-preview", 0)).as_deref(),
-        Some("Small widget preview, 1 tiles")
-    );
-    assert_eq!(
-        label(cx, ("widget-preview", 1)).as_deref(),
-        Some("Medium widget preview, 2 tiles")
-    );
-    assert_eq!(
-        label(cx, ("widget-preview", 2)).as_deref(),
-        Some("Large widget preview, 3 tiles")
-    );
-    let removed = label(cx, ("preview-tile", 22)).unwrap();
-    assert!(removed.starts_with("Removed account"), "{removed}");
-
-    // Four tiles: one medium preview.
-    click(cx, handle, ("preview-layout", 3usize));
-    assert_eq!(
-        label(cx, ("widget-preview", 1)).as_deref(),
-        Some("Medium widget preview, 3 tiles")
-    );
-    assert!(label(cx, ("widget-preview", 0)).is_none());
-    click(cx, handle, ("preview-layout", 1usize));
-    assert_eq!(
-        label(cx, ("widget-preview", 1)).as_deref(),
-        Some("Medium widget preview, 1 tiles")
-    );
-}
-
 /// The metric key the fake providers report (their Weekly window).
 fn cx_metric(_account: &str) -> String {
     "weekly".to_owned()
-}
-
-#[gpui_kit::test]
-fn widget_settings_reset_after_confirming(cx: &mut TestAppContext) {
-    use codexbar_store::widgets::{WidgetRefresh, WidgetTile};
-    let settings = TempSettings::new("widget-reset", "{}");
-    let (_dashboard, handle) = open_widget_builder(cx, &settings);
-    cx.update(|cx| {
-        crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
-            builder.add(WidgetTile {
-                account: "codex-1".into(),
-                metric: cx_metric("codex-1"),
-                mode: Default::default(),
-            });
-            builder.refresh = WidgetRefresh::FifteenMinutes;
-        })
-    });
-    cx.update_window(handle, |_, window, cx| {
-        window.within("settings-sidebar").click("0-5-4", cx)
-    })
-    .unwrap();
-    cx.run_until_parked();
-    click(cx, handle, "reset-widgets");
-    press(cx, handle, "escape");
-    assert_eq!(builder(cx).tiles.len(), 1, "cancel keeps the tiles");
-    click(cx, handle, "reset-widgets");
-    press(cx, handle, "enter");
-    assert_eq!(builder(cx), codexbar_store::widgets::WidgetBuilder::default());
-    assert_eq!(
-        codexbar_store::prefs::DashboardPrefs::load(&settings.0).widget_builder(),
-        &codexbar_store::widgets::WidgetBuilder::default()
-    );
 }
 
 #[gpui_kit::test]
@@ -2004,11 +2067,22 @@ fn a_widget_tile_opens_its_account_and_metric(cx: &mut TestAppContext) {
     );
 }
 
+#[cfg(not(windows))]
+#[gpui_kit::test]
+fn about_has_no_package_updates_outside_windows(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-about", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), ABOUT_PAGE);
+    assert!(!exists(cx, handle, "update-status"));
+    assert!(!exists(cx, handle, "check-updates"));
+    assert!(exists(cx, handle, "report-problem"));
+}
+
+#[cfg(windows)]
 #[gpui_kit::test]
 fn about_shows_the_build_and_where_updates_come_from(cx: &mut TestAppContext) {
     use crate::package::{UpdateState, Updates};
     let settings = TempSettings::new("settings-about", "{}");
-    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 6);
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), ABOUT_PAGE);
     // Tests run unpackaged: no channel to check, so Check now does nothing and there is nothing to install.
     let source = UpdateState::NotPackaged.label();
     assert_eq!(update_status(cx, handle).as_deref(), Some(source.as_str()));
@@ -2092,7 +2166,7 @@ fn an_account_added_by_keyboard_is_saved_with_its_key(cx: &mut TestAppContext) {
     let expected = if std::env::var_os("OPENROUTER_API_KEY").is_some() {
         "API key · From the OPENROUTER_API_KEY environment variable"
     } else {
-        "API key · Saved in Windows Credential Manager"
+        &format!("API key · Saved in {}", codexbar_store::credentials::STORE_NAME)
     };
     assert_eq!(detail.as_deref(), Some(expected));
 }
@@ -2177,7 +2251,10 @@ fn secure_store_failures_are_shown_and_nothing_is_saved_without_its_key(cx: &mut
     let handle = open_settings_page(cx, &settings, MemoryCredentialStore::failing(), 1);
     add_openrouter(cx, handle, "Work", "sk-secret-value");
     let error = label(cx, handle, "account-error").expect("the dialog says why");
-    assert_eq!(error, "Windows Credential Manager failed (error 5).");
+    assert_eq!(
+        error,
+        codexbar_store::credentials::CredentialError { code: 5 }.to_string()
+    );
     assert!(!error.contains("sk-secret-value"));
     assert!(exists(cx, handle, "account-save"), "the dialog stays open");
     assert!(
@@ -2421,8 +2498,10 @@ fn a_key_that_cannot_move_stays_usable_and_says_so(cx: &mut TestAppContext) {
     let notice = cx.update(|cx| SettingsHub::global(cx).notice()).expect("a notice");
     assert_eq!(
         notice.as_ref(),
-        "Keys for OpenRouter are still in the settings file: Windows Credential Manager failed (error 5). \
-         CodexBar tries again at the next start."
+        format!(
+            "Keys for OpenRouter are still in the settings file: {} CodexBar tries again at the next start.",
+            codexbar_store::credentials::CredentialError { code: 5 }
+        )
     );
     assert!(!notice.contains("sk-or"), "never the key itself");
 }
@@ -3429,7 +3508,7 @@ fn org_billing_settings_are_saved_per_copilot_account(cx: &mut TestAppContext) {
     );
     cx.update_window(handle, |_, window, cx| window.input("\u{8}\u{8}\u{8}\u{8}", cx))
         .unwrap();
-    press(cx, handle, "ctrl-a");
+    press(cx, handle, "secondary-a");
     type_text(cx, handle, "12,000");
     click(cx, handle, "account-save");
     let saved = saved_settings(&settings);
@@ -3477,13 +3556,9 @@ fn a_sign_in_that_cant_be_saved_keeps_the_previous_token(cx: &mut TestAppContext
     })
     .unwrap();
     // The settings file can't be written while the sign-in runs.
-    let file = settings.0.join("settings.json");
-    let writable = std::fs::metadata(&file).unwrap().permissions();
-    let mut read_only = writable.clone();
-    read_only.set_readonly(true);
-    std::fs::set_permissions(&file, read_only).unwrap();
+    let unsavable = Unsavable::new(&settings);
     click(cx, handle, "sign-in-gh-1");
-    std::fs::set_permissions(&file, writable).unwrap();
+    drop(unsavable);
     let error = label_of(cx, "github-sign-in-error").unwrap_or_default();
     assert!(error.starts_with("The sign-in couldn't be saved"), "{error}");
     let stored =
@@ -3510,7 +3585,10 @@ fn an_unreadable_copilot_token_is_shown_as_such(cx: &mut TestAppContext) {
     let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::failing(), 1);
     assert_eq!(
         label_of(cx, "account-detail-gh-1").as_deref(),
-        Some("OAuth · Its token couldn't be read from Windows Credential Manager")
+        Some(concat!(
+            "OAuth · Its token couldn't be read from ",
+            codexbar_core::secret_store_name!()
+        ))
     );
 }
 
@@ -4196,13 +4274,9 @@ fn a_cursor_sign_in_that_cant_be_saved_says_so(cx: &mut TestAppContext) {
     let settings = TempSettings::new("cursor-save-fails", MANAGED_CURSOR);
     let fake = FakeCursor::new(cursor_fixture::Outcome::SignsIn("dev"));
     let handle = open_cursor_accounts(cx, &settings, &fake);
-    let file = settings.0.join("settings.json");
-    let writable = std::fs::metadata(&file).unwrap().permissions();
-    let mut read_only = writable.clone();
-    read_only.set_readonly(true);
-    std::fs::set_permissions(&file, read_only).unwrap();
+    let unsavable = Unsavable::new(&settings);
     click(cx, handle, "sign-in-cu-1");
-    std::fs::set_permissions(&file, writable).unwrap();
+    drop(unsavable);
     let error = label_of(cx, "cursor-sign-in-error").unwrap_or_default();
     assert!(error.starts_with("The sign-in couldn't be saved"), "{error}");
     assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
@@ -4685,13 +4759,9 @@ fn a_cookie_that_cant_be_saved_with_the_account_gives_the_sign_in_back(cx: &mut 
     choose_browser_session(cx, handle);
     press(cx, handle, "tab");
     type_text(cx, handle, "Fe26.2**new-cookie");
-    let file = settings.0.join("settings.json");
-    let writable = std::fs::metadata(&file).unwrap().permissions();
-    let mut read_only = writable.clone();
-    read_only.set_readonly(true);
-    std::fs::set_permissions(&file, read_only).unwrap();
+    let unsavable = Unsavable::new(&settings);
     click(cx, handle, "account-save");
-    std::fs::set_permissions(&file, writable).unwrap();
+    drop(unsavable);
     assert!(label_of(cx, "account-error").is_some(), "the save failed");
     let saved = saved_console_sign_in(cx, "oc-1").expect("the OAuth account keeps its sign-in");
     assert_eq!(saved.workspace_id, "wrk_01ABC");
@@ -4932,13 +5002,9 @@ fn an_owner_change_that_cant_be_saved_keeps_the_old_sign_in(cx: &mut TestAppCont
     press(cx, handle, "tab");
     press(cx, handle, "tab");
     type_text(cx, handle, "acme");
-    let file = settings.0.join("settings.json");
-    let writable = std::fs::metadata(&file).unwrap().permissions();
-    let mut read_only = writable.clone();
-    read_only.set_readonly(true);
-    std::fs::set_permissions(&file, read_only).unwrap();
+    let unsavable = Unsavable::new(&settings);
     click(cx, handle, "account-save");
-    std::fs::set_permissions(&file, writable).unwrap();
+    drop(unsavable);
     assert!(label_of(cx, "account-error").is_some(), "the save failed");
     let saved = saved_settings(&settings);
     assert_eq!(saved.accounts()[0].id, "gb-1");
@@ -5320,13 +5386,9 @@ fn a_grok_sign_in_that_cant_be_saved_keeps_the_earlier_home(cx: &mut TestAppCont
     let fake = FakeGrok::default();
     *fake.0.signs_in_as.lock().unwrap() = Some("sub-1".into());
     let handle = open_grok_accounts(cx, &settings, &fake);
-    let file = settings.0.join("settings.json");
-    let writable = std::fs::metadata(&file).unwrap().permissions();
-    let mut read_only = writable.clone();
-    read_only.set_readonly(true);
-    std::fs::set_permissions(&file, read_only).unwrap();
+    let unsavable = Unsavable::new(&settings);
     click(cx, handle, "sign-in-gk-1");
-    std::fs::set_permissions(&file, writable).unwrap();
+    drop(unsavable);
     assert!(
         label_of(cx, "grok-sign-in-error").is_some_and(|e| e.starts_with("The sign-in couldn't be saved")),
         "the save failed"

@@ -1,4 +1,4 @@
-//! Interface zoom (#116): Ctrl+mouse wheel and Ctrl+= / Ctrl+- / Ctrl+0, matching the WPF app's 50–300% range in
+//! Interface zoom (#116): Ctrl+mouse wheel and Ctrl+= / Ctrl+- / Ctrl+0 (Command on macOS), matching the WPF app's 50–300% range in
 //! 10% steps. Zoom scales the theme's base font, which gpui-kit uses as the rem for type, spacing, controls and
 //! icons, so everything grows together. The level is saved to the shared `zoomLevel` setting after input settles.
 
@@ -67,6 +67,7 @@ fn wheel_steps(delta: &ScrollDelta, carry: &mut f32, lines_per_notch: Option<f32
 
 /// The system's "lines to scroll per notch" setting, which gpui multiplies wheel notches by. `None` when it is 0
 /// or "one screen at a time", where a notch can't be recovered from the line count.
+#[cfg(windows)]
 fn wheel_lines_per_notch() -> Option<f32> {
     use windows::Win32::UI::WindowsAndMessaging::{
         SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
@@ -82,6 +83,12 @@ fn wheel_lines_per_notch() -> Option<f32> {
         )
     };
     (ok.is_ok() && lines != 0 && lines != WHEEL_PAGESCROLL).then_some(lines as f32)
+}
+
+/// macOS and Linux have no such setting for gpui to apply, so each line event counts as one notch.
+#[cfg(not(windows))]
+fn wheel_lines_per_notch() -> Option<f32> {
+    None
 }
 
 /// Steps for one event of a gesture: a new or finished touchpad gesture starts from zero, so separate partial
@@ -115,11 +122,11 @@ pub fn init(cx: &mut App) {
     .detach();
 
     cx.bind_keys([
-        KeyBinding::new("ctrl-=", ZoomIn, None),
-        KeyBinding::new("ctrl-+", ZoomIn, None),
-        KeyBinding::new("ctrl-shift-=", ZoomIn, None),
-        KeyBinding::new("ctrl--", ZoomOut, None),
-        KeyBinding::new("ctrl-0", ResetZoom, None),
+        KeyBinding::new("secondary-=", ZoomIn, None),
+        KeyBinding::new("secondary-+", ZoomIn, None),
+        KeyBinding::new("secondary-shift-=", ZoomIn, None),
+        KeyBinding::new("secondary--", ZoomOut, None),
+        KeyBinding::new("secondary-0", ResetZoom, None),
     ]);
     cx.on_action(|_: &ZoomIn, cx| step(1, cx));
     cx.on_action(|_: &ZoomOut, cx| step(-1, cx));
@@ -226,14 +233,14 @@ fn apply(level: f64, cx: &mut App) {
     Theme::update(cx, |theme| theme.font_size = px(BASE_FONT_SIZE * level as f32));
 }
 
-/// Registers this frame's Ctrl+wheel listener in the capture phase, ahead of scrollable children, so the wheel
+/// Registers this frame's Ctrl+wheel (Command+wheel on macOS) listener in the capture phase, ahead of scrollable children, so the wheel
 /// zooms instead of scrolling. Call from a paint callback; a wheel without Ctrl passes through untouched.
 pub fn capture_wheel(window: &mut Window) {
     window.on_mouse_event(|event: &ScrollWheelEvent, phase, _window, cx| {
         if phase != DispatchPhase::Capture {
             return;
         }
-        if !event.modifiers.control {
+        if !event.modifiers.secondary() {
             // Plain scrolling between Ctrl gestures must not bank toward a later zoom step.
             cx.global_mut::<ZoomState>().pixel_carry = 0.0;
             return;

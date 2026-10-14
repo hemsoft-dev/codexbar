@@ -47,7 +47,7 @@ pub fn home(dir: &Path, record: &AccountRecord) -> PathBuf {
         std::env::var_os("GROK_HOME")
             .filter(|home| !home.is_empty())
             .map(PathBuf::from)
-            .or_else(|| std::env::var_os("USERPROFILE").map(|home| PathBuf::from(home).join(".grok")))
+            .or_else(|| codexbar_core::home_dir().map(|home| home.join(".grok")))
             .unwrap_or_else(|| PathBuf::from(".grok"))
     }
 }
