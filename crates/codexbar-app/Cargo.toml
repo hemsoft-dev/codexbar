@@ -33,6 +33,10 @@ windows-future.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Asks the session bus whether a notification service is there (#161).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus = "5"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["runtime_shaders"] }
 

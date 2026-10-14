@@ -259,16 +259,53 @@ impl Notifier for RecordingNotifier {
     }
 }
 
-/// macOS and Linux notifications, through GPUI's notification-center support. Neither platform reports a notification
-/// it then failed to raise, so none is ever sent again.
+/// macOS and Linux notifications, through GPUI's notification-center support. GPUI reports nothing about delivery, so
+/// the notifier only posts where delivery can work and otherwise reports why, which keeps the alert pending (#161).
 #[cfg(not(windows))]
 #[derive(Default)]
 pub struct SystemNotifier;
 
+/// Why this Mac can't show CodexBar's notifications: macOS delivers them only to an app bundle, and `cargo run` starts a
+/// plain program.
+#[cfg(target_os = "macos")]
+fn unavailable() -> Option<String> {
+    let bundled = std::env::current_exe().is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"));
+    (!bundled).then(|| {
+        "macOS shows notifications only from an app bundle, and this CodexBar runs as a plain program. Alerts stay \
+         active here until it runs from CodexBar.app."
+            .to_owned()
+    })
+}
+
+/// Why this desktop can't show notifications: no notification service is running or can be started on the session
+/// bus.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn unavailable() -> Option<String> {
+    const SERVICE: &str = "org.freedesktop.Notifications";
+    let available = (|| -> zbus::Result<bool> {
+        let connection = zbus::blocking::Connection::session()?;
+        let bus = zbus::blocking::fdo::DBusProxy::new(&connection)?;
+        let name = zbus::names::BusName::try_from(SERVICE)?;
+        Ok(bus.name_has_owner(name)?
+            || bus
+                .list_activatable_names()?
+                .iter()
+                .any(|activatable| activatable.as_str() == SERVICE))
+    })();
+    (!available.unwrap_or(false)).then(|| {
+        "No notification service is running on this desktop, so alerts can't pop up. They stay active here until \
+         one is."
+            .to_owned()
+    })
+}
+
 #[cfg(not(windows))]
 impl Notifier for SystemNotifier {
     fn status(&self) -> NotifierStatus {
-        NotifierStatus::Ready
+        match unavailable() {
+            Some(reason) => NotifierStatus::Blocked(reason),
+            None => NotifierStatus::Ready,
+        }
     }
 
     fn show(&self, alert: &Alert, cx: &App) -> Result<(), String> {
@@ -477,6 +514,17 @@ fn register_app_id() -> windows::core::Result<()> {
         let _ = RegCloseKey(key);
         set?;
         SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(APP_ID))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod mac_tests {
+    use super::*;
+
+    #[test]
+    fn a_plain_program_reports_notifications_blocked_so_alerts_stay_pending() {
+        // A test binary, like `cargo run`, isn't inside an app bundle.
+        assert!(matches!(SystemNotifier.status(), NotifierStatus::Blocked(reason) if reason.contains("app bundle")));
     }
 }
 
