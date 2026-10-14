@@ -143,7 +143,7 @@ impl LocaleStyle {
             .filter_map(|name| std::env::var(name).ok())
             .find(|value| !value.is_empty());
         let locale = from_env
-            .or_else(sys_locale::get_locale)
+            .or_else(formatting_locale)
             .and_then(|name| parse_locale(&name))
             .unwrap_or(chrono::Locale::en_US);
         Self(locale)
@@ -153,7 +153,11 @@ impl LocaleStyle {
     fn time_format(&self) -> String {
         let format = pure_rust_locales::locale_match!(self.0 => LC_TIME::T_FMT);
         let format = if format.is_empty() { "%H:%M:%S" } else { format };
+        // `%O` (the locale's own digits) and `%E` (its own era) are glibc modifiers chrono doesn't know; the plain
+        // directive is what they modify.
         let format = format
+            .replace("%O", "%")
+            .replace("%E", "%")
             .replace("%T", "%H:%M:%S")
             .replace("%r", "%I:%M:%S %p")
             .replace(":%S", "")
@@ -187,9 +191,17 @@ impl LocaleStyle {
 /// the formats are known for. "C" and "POSIX" are no language and give none.
 #[cfg(not(windows))]
 pub fn parse_locale(name: &str) -> Option<chrono::Locale> {
-    let base = name.split(['.', '@']).next()?;
+    // A POSIX modifier picks a variant ("sr_RS@latin" is Serbian in Latin script); one chrono has no variant for, or
+    // Apple's keyword list ("@rg=dezzzz"), is left out.
+    let (name, modifier) = name.split_once('@').unwrap_or((name, ""));
+    let base = name.split('.').next()?;
     if base.is_empty() || base == "C" || base == "POSIX" {
         return None;
+    }
+    if !modifier.is_empty()
+        && let Ok(locale) = chrono::Locale::try_from(format!("{}@{modifier}", base.replace('-', "_")).as_str())
+    {
+        return Some(locale);
     }
     // Apple writes scripts and regions as subtags ("zh-Hant_HK", "sr-Latn"); POSIX locales have language_REGION.
     let mut parts = base.split(['-', '_']);
@@ -215,20 +227,44 @@ pub fn parse_locale(name: &str) -> Option<chrono::Locale> {
         .or_else(|| locale(format!("{language}_{}", language.to_uppercase())))
 }
 
+/// `value` written out, or `None` when the format has a directive chrono can't write (`to_string` would panic).
+#[cfg(not(windows))]
+fn written(value: impl std::fmt::Display) -> Option<String> {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    write!(text, "{value}").ok().map(|()| text)
+}
+
 #[cfg(not(windows))]
 impl DateStyle for LocaleStyle {
     fn time(&self, at: NaiveDateTime) -> String {
-        at.and_utc().format_localized(&self.time_format(), self.0).to_string()
+        written(at.and_utc().format_localized(&self.time_format(), self.0)).unwrap_or_else(|| English.time(at))
     }
 
     fn weekday(&self, at: NaiveDate) -> String {
-        at.format_localized("%a", self.0).to_string()
+        written(at.format_localized("%a", self.0)).unwrap_or_else(|| English.weekday(at))
     }
 
     fn month_day(&self, at: NaiveDate) -> String {
         let format = if self.day_first() { "%-d %b" } else { "%b %-d" };
-        at.format_localized(format, self.0).to_string()
+        written(at.format_localized(format, self.0)).unwrap_or_else(|| English.month_day(at))
     }
+}
+
+/// The locale the system formats dates for: on macOS the Region set in System Settings (which can differ from the
+/// language), elsewhere the preferred language.
+#[cfg(not(windows))]
+fn formatting_locale() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(
+            objc2_foundation::NSLocale::currentLocale()
+                .localeIdentifier()
+                .to_string(),
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    sys_locale::get_locale()
 }
 
 #[cfg(test)]
@@ -280,6 +316,12 @@ mod tests {
         assert_eq!(parse_locale("zh-Hant_HK"), Some(chrono::Locale::zh_HK));
         assert_eq!(parse_locale("zh-Hans"), Some(chrono::Locale::zh_CN));
         assert_eq!(parse_locale("zh-Hant"), Some(chrono::Locale::zh_TW));
+        // glibc's digit and era modifiers ("%OH:%OM:%OS" in fa_IR) never break the formatting.
+        assert!(!style("fa_IR").time(at).is_empty());
+        assert!(!style("fa_IR").time(at).contains('%'));
+        // A modifier picks its variant; an unknown one (Apple's "@rg=") is ignored.
+        assert_eq!(parse_locale("sr_RS.UTF-8@latin"), Some(chrono::Locale::sr_RS_latin));
+        assert_eq!(parse_locale("en_GB@rg=dezzzz"), Some(chrono::Locale::en_GB));
         // A day before a month name is day-first ("%A %d %b %Y").
         assert!(style("to_TO").day_first());
         assert_eq!(parse_locale("C"), None);

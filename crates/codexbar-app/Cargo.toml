@@ -47,6 +47,8 @@ chrono = { workspace = true, features = ["unstable-locales"] }
 zbus = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# The Region the user set, for date formats (#167).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSLocale", "NSString"] }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["runtime_shaders"] }
 
 [dev-dependencies]

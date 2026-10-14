@@ -20,6 +20,9 @@ APP="$OUT/CodexBar.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/codexbar "$APP/Contents/MacOS/codexbar"
+# CodexBar's license and the embedded provider logos' notice travel with the app.
+cp LICENSE "$APP/Contents/Resources/LICENSE"
+cp crates/codexbar-app/assets/brand/LICENSE.md "$APP/Contents/Resources/provider-logos.md"
 
 # The icon, at every size the Finder and the Dock ask for.
 ICONSET=$(mktemp -d)/CodexBar.iconset

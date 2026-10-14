@@ -1059,6 +1059,7 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "libc",
+ "objc2-foundation 0.3.2",
  "pure-rust-locales",
  "raw-window-handle",
  "serde_json",
