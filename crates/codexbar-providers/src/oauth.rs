@@ -141,16 +141,12 @@ pub trait Browser {
     fn open(&self, url: &str) -> Result<(), OAuthError>;
 }
 
-/// The default browser, through the URL protocol handler (no shell parses the URL).
+/// The default browser (`platform::open_url`; no shell parses the URL).
 pub struct SystemBrowser;
 
 impl Browser for SystemBrowser {
     fn open(&self, url: &str) -> Result<(), OAuthError> {
-        std::process::Command::new("rundll32.exe")
-            .args(["url.dll,FileProtocolHandler", url])
-            .spawn()
-            .map(|_| ())
-            .map_err(|_| OAuthError::Browser)
+        crate::platform::open_url(url).map_err(|_| OAuthError::Browser)
     }
 }
 

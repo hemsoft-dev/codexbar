@@ -1,7 +1,8 @@
 //! Signing Cursor accounts in and out through Cursor's own CLI, `cursor-agent` (#81), each in a folder of its own.
 //!
-//! `cursor-agent` keeps its sign-in in `%APPDATA%\Cursor\auth.json`, so pointing `APPDATA` (and `CURSOR_CONFIG_DIR`,
-//! for its settings) at an account's folder keeps that account's sign-in there, apart from the Cursor app's and from
+//! `cursor-agent` keeps its sign-in in `%APPDATA%\Cursor\auth.json` (Windows) or `$XDG_CONFIG_HOME/cursor/auth.json`
+//! (Linux), so pointing `APPDATA` or `XDG_CONFIG_HOME` (and `CURSOR_CONFIG_DIR`, for its settings) at an account's
+//! folder keeps that account's sign-in there, apart from the Cursor app's and from
 //! every other account's. With `NO_OPEN_BROWSER` set, `cursor-agent login` prints the sign-in page as plain text and
 //! waits for the browser; CodexBar opens the page. CodexBar holds no Cursor client id and never writes `auth.json`.
 //! Every process runs in a kill-on-close job.
@@ -28,6 +29,8 @@ pub enum CursorCliError {
     Failed,
     TimedOut,
     Cancelled,
+    /// On macOS `cursor-agent` keeps one sign-in in the Keychain, so accounts can't each have their own (#161).
+    Unsupported,
 }
 
 impl std::fmt::Display for CursorCliError {
@@ -37,6 +40,10 @@ impl std::fmt::Display for CursorCliError {
             Self::Failed => "The Cursor CLI didn't complete the sign-in.",
             Self::TimedOut => "The sign-in took too long and was stopped.",
             Self::Cancelled => "Sign-in was cancelled.",
+            Self::Unsupported => {
+                "On macOS the Cursor CLI keeps one sign-in in the Keychain, so separate Cursor accounts can't be \
+                 signed in yet. Use Automatic with the Cursor CLI's own sign-in."
+            }
         })
     }
 }
@@ -45,7 +52,8 @@ impl std::error::Error for CursorCliError {}
 
 /// The sign-in file of an account's folder.
 pub fn auth_path(home: &Path) -> PathBuf {
-    home.join("Cursor").join("auth.json")
+    home.join(if cfg!(windows) { "Cursor" } else { "cursor" })
+        .join("auth.json")
 }
 
 /// The sign-in page in a line of `cursor-agent login` output.
@@ -254,15 +262,20 @@ fn run(home: &Path, args: &[&str]) -> Result<Vec<u8>, CursorCliError> {
 }
 
 fn cursor_agent(home: &Path) -> Result<Command, CursorCliError> {
+    // A sign-in run here would replace the user's own Keychain sign-in, not land in `home`.
+    if cfg!(target_os = "macos") {
+        return Err(CursorCliError::Unsupported);
+    }
     let program = program().ok_or(CursorCliError::NotInstalled)?;
     Ok(command_for(&program, home))
 }
 
 /// `program` set up to act on `home` only.
 fn command_for(program: &Path, home: &Path) -> Command {
-    let mut command = Command::new(program);
+    let mut command = crate::platform::command(program);
     command
         .env("APPDATA", home)
+        .env("XDG_CONFIG_HOME", home)
         .env("CURSOR_CONFIG_DIR", home)
         .env("NO_OPEN_BROWSER", "1")
         // An API key in CodexBar's environment would sign the CLI in as someone else.
@@ -270,20 +283,12 @@ fn command_for(program: &Path, home: &Path) -> Command {
     command
 }
 
-/// `cursor-agent` from PATH, else where Cursor's installer puts it (`%LOCALAPPDATA%\cursor-agent`).
+/// `cursor-agent` from PATH or an install folder, else where Cursor's Windows installer puts it
+/// (`%LOCALAPPDATA%\cursor-agent`).
 fn program() -> Option<PathBuf> {
-    let names = ["cursor-agent.exe", "cursor-agent.cmd"];
-    let on_path = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .flat_map(|dir| names.map(|name| dir.join(name)))
-            .find(|candidate| candidate.is_file())
-    });
-    on_path.or_else(|| {
+    crate::platform::find_program("cursor-agent").or_else(|| {
         let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("cursor-agent");
-        names
-            .map(|name| dir.join(name))
-            .into_iter()
-            .find(|candidate| candidate.is_file())
+        crate::platform::program_in(&dir, "cursor-agent")
     })
 }
 
@@ -334,6 +339,13 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn separate_accounts_are_refused_on_macos() {
+        let home = std::env::temp_dir().join("codexbar-cursor-home");
+        assert!(matches!(cursor_agent(&home), Err(CursorCliError::Unsupported)));
+    }
+
     #[test]
     fn every_cursor_command_acts_on_its_own_folder_only() {
         let home = std::env::temp_dir().join("codexbar-cursor-home");
@@ -346,14 +358,17 @@ mod tests {
         };
         let folder = Some(Some(home.to_string_lossy().into_owned()));
         assert_eq!(value("APPDATA"), folder);
+        assert_eq!(value("XDG_CONFIG_HOME"), folder);
         assert_eq!(value("CURSOR_CONFIG_DIR"), folder);
         assert_eq!(value("NO_OPEN_BROWSER"), Some(Some("1".to_owned())));
         assert_eq!(value("CURSOR_API_KEY"), Some(None));
-        assert_eq!(auth_path(&home), home.join("Cursor").join("auth.json"));
+        let folder = if cfg!(windows) { "Cursor" } else { "cursor" };
+        assert_eq!(auth_path(&home), home.join(folder).join("auth.json"));
     }
 
     /// Starts the installed Cursor CLI's sign-in for an empty temporary folder and stops it once the page is shown:
     /// checks the page is printed and nothing is signed in. Opens no browser. Run with `--ignored`.
+    #[cfg(not(target_os = "macos"))]
     #[test]
     #[ignore = "starts the installed Cursor CLI"]
     fn the_installed_cursor_cli_shows_a_sign_in_page() {

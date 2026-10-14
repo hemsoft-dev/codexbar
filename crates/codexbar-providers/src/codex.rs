@@ -89,7 +89,7 @@ pub fn default_auth_path() -> PathBuf {
     let home = std::env::var_os("CODEX_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".codex")))
+        .or_else(|| crate::platform::home_dir().map(|home| home.join(".codex")))
         .unwrap_or_else(|| PathBuf::from(".codex"));
     home.join("auth.json")
 }

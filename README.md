@@ -11,7 +11,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 | **ChatGPT / Codex** | Codex CLI ChatGPT login (`~/.codex/auth.json`), or browser sign-in per account through the Codex CLI | 5-hour + weekly usage limits |
 | **Claude** | Claude Code login (`~/.claude/.credentials.json`), or a separate sign-in per account through Claude Code | Session + weekly limits, extra-usage spend |
 | **Copilot** | GitHub CLI (`gh auth`), or browser sign-in per account through the GitHub CLI | Usage limits per account; organization AI credits for Enterprise seats |
-| **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`), or browser sign-in per account through the Cursor CLI | Plan usage and spend |
+| **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`; the Cursor CLI's sign-in on macOS and Linux), or browser sign-in per account through the Cursor CLI | Plan usage and spend |
 | **OpenCode Go / Zen** | Browser approval on OpenCode's own page, or a dashboard cookie + workspace ID | Go limits and Zen balance |
 | **OpenRouter** | API Key | Credits, usage across models |
 | **Moonshot (Kimi)** | API Key | Remaining API credit balance |
@@ -39,8 +39,9 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - Visual Studio Build Tools with the "Desktop development with C++" workload
 - Node.js 20 or later (required for `npm install` / pre-commit hook setup)
 
-macOS and Linux builds are in progress ([#161](https://github.com/hemsoft-dev/codexbar/issues/161)): the workspace
-builds and passes its tests there, with secrets in the macOS Keychain or the Linux Secret Service. They need:
+CodexBar also runs on macOS and Linux ([#161](https://github.com/hemsoft-dev/codexbar/issues/161)), built from
+source. It keeps secrets in the macOS Keychain or the Linux Secret Service and finds the provider CLIs on PATH and in
+`~/.local/bin`, Homebrew and `/usr/local/bin`. On macOS it is a menu-bar app with no Dock icon. Building needs:
 
 - macOS: [Rust](https://www.rust-lang.org/tools/install) and the Xcode Command Line Tools (`xcode-select --install`).
   GPUI's shaders compile at startup, so full Xcode isn't needed.
@@ -49,8 +50,10 @@ builds and passes its tests there, with secrets in the macOS Keychain or the Lin
   libxcb1-dev libx11-xcb-dev`. The tray icon needs a desktop with StatusNotifierItem support (KDE Plasma, or GNOME
   with the AppIndicator extension), and saved keys need a Secret Service such as GNOME Keyring or KWallet.
 
-Then `cargo run --release -p codexbar-app`. The MSIX package, its updates, Start with Windows and Windows widgets exist
-only on Windows.
+Then `cargo run --release -p codexbar-app`. Some features exist only on Windows: the MSIX package and its updates,
+Start with Windows and Windows widgets. On macOS, separate Cursor accounts can't be added yet, because the Cursor CLI
+keeps a single sign-in in the Keychain there. The Automatic method reads it. Dates use a fixed English format on macOS
+and Linux. A packaged macOS app and Linux packages are not available yet.
 
 ### Build from source
 
@@ -69,7 +72,7 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 1. **ChatGPT / Codex**: Run `codex` and sign in with your ChatGPT account. For more accounts, add a Codex account with the OAuth sign-in method in Settings > Accounts; CodexBar signs it in with your browser through the Codex CLI
 2. **Claude**: Run `claude` and sign in. For more accounts, add a Claude account with the Browser session method in Settings > Accounts; CodexBar opens a Claude Code window to sign it in
 3. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account, or add a Copilot account with the OAuth sign-in method and sign it in from Settings. For an Enterprise seat, set the account's enterprise and organization (and optionally the pool total) to see the organization's AI credits
-4. **Cursor**: Sign in to the Cursor app. For more accounts, install the Cursor CLI (`cursor-agent`) and add a Cursor account with the OAuth sign-in method in Settings > Accounts
+4. **Cursor**: Sign in to the Cursor app. For more accounts, install the Cursor CLI (`cursor-agent`) and add a Cursor account with the OAuth sign-in method in Settings > Accounts. On macOS and Linux, CodexBar reads the Cursor CLI's own sign-in instead of the app's: install `cursor-agent` and run `cursor-agent login`. Separate Cursor accounts work on Linux only
 5. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings, or set `OPENROUTER_API_KEY`
 6. **Moonshot (Kimi)**: Get an API key from [platform.kimi.ai](https://platform.kimi.ai/) and add it in Settings, or set `MOONSHOT_API_KEY`
 7. **OpenCode Go / Zen**: Add an OpenCode Go account in Settings > Accounts (OAuth, the default); CodexBar opens OpenCode's approval page, where you approve it and pick the workspace. Add one account per workspace. The older setup still works: an account with the Browser session method, the dashboard auth cookie and your workspace id (`wrk_…`), or `OPENCODE_GO_AUTH_COOKIE` and `OPENCODE_GO_WORKSPACE_ID`. OpenCode Zen uses the same cookie unless you give it its own (`OPENCODE_ZEN_AUTH_COOKIE`)

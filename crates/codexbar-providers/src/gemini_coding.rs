@@ -29,9 +29,13 @@ const BUCKETS: [(&str, &str, &str, i64); 4] = [
 
 /// The Antigravity CLI to run: on PATH, or where its installer puts it.
 pub fn cli() -> String {
-    let installed = std::env::var_os("LOCALAPPDATA")
-        .map(|base| PathBuf::from(base).join(r"agy\bin\agy.exe"))
-        .filter(|path| path.is_file());
+    // Its installer's folder: `%LOCALAPPDATA%\agy\bin` on Windows; elsewhere it links `agy` into `~/.local/bin`.
+    let installed = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA")
+            .and_then(|base| crate::platform::program_in(&PathBuf::from(base).join("agy").join("bin"), "agy"))
+    } else {
+        crate::platform::find_program("agy")
+    };
     match installed {
         Some(path) => path.to_string_lossy().into_owned(),
         None => "agy".to_owned(),

@@ -60,7 +60,7 @@ pub fn default_config_dir() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".claude")))
+        .or_else(|| crate::platform::home_dir().map(|home| home.join(".claude")))
         .unwrap_or_else(|| PathBuf::from(".claude"))
 }
 
@@ -69,10 +69,7 @@ pub fn default_config_dir() -> PathBuf {
 pub fn default_profile_path() -> PathBuf {
     match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
         Some(dir) => PathBuf::from(dir).join(".claude.json"),
-        None => std::env::var_os("USERPROFILE")
-            .map(PathBuf::from)
-            .unwrap_or_default()
-            .join(".claude.json"),
+        None => crate::platform::home_dir().unwrap_or_default().join(".claude.json"),
     }
 }
 
@@ -103,7 +100,7 @@ pub fn default_credentials_path() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".claude")))
+        .or_else(|| crate::platform::home_dir().map(|home| home.join(".claude")))
         .unwrap_or_else(|| PathBuf::from(".claude"))
         .join(".credentials.json")
 }

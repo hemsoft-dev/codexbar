@@ -7,7 +7,7 @@
 
 use std::io::{BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
@@ -73,7 +73,7 @@ impl AppServer {
     /// Starts `codex app-server` for the Codex home `home` and completes the handshake.
     pub fn start(home: &Path) -> Result<Self, AppServerError> {
         let program = codex_program().ok_or(AppServerError::NotInstalled)?;
-        let mut command = Command::new(program);
+        let mut command = crate::platform::command(program);
         command
             .arg("app-server")
             .env("CODEX_HOME", home)
@@ -335,12 +335,9 @@ impl Drop for Process {
     }
 }
 
-/// `codex.exe`, else `codex.cmd` (the npm install), from PATH.
+/// The Codex CLI: `codex.exe`, else `codex.cmd` (the npm install) on Windows, from PATH or an install folder.
 fn codex_program() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .flat_map(|dir| ["codex.exe", "codex.cmd"].map(|name| dir.join(name)))
-        .find(|candidate| candidate.is_file())
+    crate::platform::find_program("codex")
 }
 
 #[cfg(test)]
