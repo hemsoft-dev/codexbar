@@ -1,8 +1,8 @@
 //! Opening CodexBar on an account from a widget tile (#95): `codexbar --focus <account> [--metric <key>]`.
 //!
 //! Only one CodexBar runs per user, so a second launch hands its request to the running one: it writes
-//! `focus-request.json` into the settings folder and signals a named event, and the running CodexBar shows its
-//! window focused on that account. A first launch applies the request itself once its window is open.
+//! `focus-request.json` into the settings folder and signals a named event (Windows) or leaves a wake file (macOS,
+//! Linux), and the running CodexBar shows its window focused on that account. A first launch applies the request itself once its window is open.
 
 use std::path::Path;
 
@@ -69,36 +69,78 @@ pub fn take_request(dir: &Path) -> Option<FocusRequest> {
     FocusRequest::from_json(&text?)
 }
 
-/// The named event a second launch signals, per user like the single-instance lock (`main::already_running`).
+/// Wakes the running CodexBar after a second launch: a named event on Windows, a file the running CodexBar polls for
+/// elsewhere. Per user, like the single-instance lock (`main::already_running`).
+pub struct Listener {
+    #[cfg(windows)]
+    event: windows::Win32::Foundation::HANDLE,
+    #[cfg(not(windows))]
+    wake: std::path::PathBuf,
+}
+
+/// The named event a second launch signals.
+#[cfg(windows)]
 fn event_name(user: &str) -> windows::core::HSTRING {
     windows::core::HSTRING::from(format!(r"Global\HemSoft.CodexBar.Focus.{user}"))
 }
 
-/// The event the running CodexBar waits on. The handle lives as long as the process.
-pub fn listen(user: &str) -> Option<windows::Win32::Foundation::HANDLE> {
-    use windows::Win32::System::Threading::CreateEventW;
-    // SAFETY: an auto-reset, unsignaled event with default security and a valid name.
-    unsafe { CreateEventW(None, false, false, &event_name(user)) }.ok()
+/// The file a second launch creates, beside the focus request.
+#[cfg(not(windows))]
+fn wake_file(dir: &Path, user: &str) -> std::path::PathBuf {
+    dir.join(format!("focus-wake.{user}"))
 }
 
-/// Whether a second launch signaled since the last check.
-pub fn signaled(event: windows::Win32::Foundation::HANDLE) -> bool {
-    use windows::Win32::Foundation::WAIT_OBJECT_0;
-    use windows::Win32::System::Threading::WaitForSingleObject;
-    // SAFETY: a valid event handle; a zero timeout only polls.
-    unsafe { WaitForSingleObject(event, 0) == WAIT_OBJECT_0 }
+/// What the running CodexBar waits on. On Windows the event handle lives as long as the process.
+pub fn listen(dir: &Path, user: &str) -> Option<Listener> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::CreateEventW;
+        let _ = dir;
+        // SAFETY: an auto-reset, unsignaled event with default security and a valid name.
+        let event = unsafe { CreateEventW(None, false, false, &event_name(user)) }.ok()?;
+        Some(Listener { event })
+    }
+    #[cfg(not(windows))]
+    Some(Listener {
+        wake: wake_file(dir, user),
+    })
+}
+
+impl Listener {
+    /// Whether a second launch signaled since the last check.
+    pub fn signaled(&self) -> bool {
+        #[cfg(windows)]
+        {
+            use windows::Win32::Foundation::WAIT_OBJECT_0;
+            use windows::Win32::System::Threading::WaitForSingleObject;
+            // SAFETY: a valid event handle; a zero timeout only polls.
+            unsafe { WaitForSingleObject(self.event, 0) == WAIT_OBJECT_0 }
+        }
+        // Taken by deleting it, so each launch is acted on once.
+        #[cfg(not(windows))]
+        std::fs::remove_file(&self.wake).is_ok()
+    }
 }
 
 /// Wakes the running CodexBar.
-pub fn signal(user: &str) {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{CreateEventW, SetEvent};
-    // SAFETY: opens (or creates) the same named event, signals it and closes this process's handle.
-    unsafe {
-        if let Ok(event) = CreateEventW(None, false, false, &event_name(user)) {
-            let _ = SetEvent(event);
-            let _ = CloseHandle(event);
+pub fn signal(dir: &Path, user: &str) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{CreateEventW, SetEvent};
+        let _ = dir;
+        // SAFETY: opens (or creates) the same named event, signals it and closes this process's handle.
+        unsafe {
+            if let Ok(event) = CreateEventW(None, false, false, &event_name(user)) {
+                let _ = SetEvent(event);
+                let _ = CloseHandle(event);
+            }
         }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(wake_file(dir, user), b"");
     }
 }
 
@@ -149,11 +191,13 @@ mod tests {
 
     #[test]
     fn a_signal_reaches_the_listener_once() {
+        let dir = std::env::temp_dir().join(format!("codexbar-signal-{}", std::process::id()));
         let user = format!("test-{}", std::process::id());
-        let event = listen(&user).expect("event");
-        assert!(!signaled(event));
-        signal(&user);
-        assert!(signaled(event));
-        assert!(!signaled(event), "auto-reset");
+        let listener = listen(&dir, &user).expect("listener");
+        assert!(!listener.signaled());
+        signal(&dir, &user);
+        assert!(listener.signaled());
+        assert!(!listener.signaled(), "auto-reset");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

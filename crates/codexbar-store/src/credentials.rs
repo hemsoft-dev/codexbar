@@ -1,9 +1,29 @@
-//! Account secrets (API keys, dashboard cookies) in Windows Credential Manager, keyed by stable account id (#74).
-//! Each secret is a generic credential named `CodexBar:account:<id>`, persisted for the signed-in user on this machine.
+//! Account secrets (API keys, dashboard cookies) in the system's secret store, keyed by stable account id (#74).
+//! On Windows each secret is a generic credential in Credential Manager named `CodexBar:account:<id>`, persisted for
+//! the signed-in user on this machine. On macOS it is a Keychain password and on Linux a Secret Service item, both
+//! under the service `CodexBar` with the account id as the user (#161).
 
 use std::fmt;
 
+#[cfg(windows)]
 const TARGET_PREFIX: &str = "CodexBar:account:";
+
+/// The secret store's name in the middle of a sentence ("Saved in …").
+pub const STORE_NAME: &str = codexbar_core::secret_store_name!();
+
+/// The secret store's short name, once it was named in full nearby.
+#[cfg(windows)]
+pub const STORE_SHORT_NAME: &str = "Credential Manager";
+#[cfg(not(windows))]
+pub const STORE_SHORT_NAME: &str = STORE_NAME;
+
+/// The secret store's name at the start of a sentence.
+#[cfg(windows)]
+pub const STORE_TITLE: &str = "Windows Credential Manager";
+#[cfg(target_os = "macos")]
+pub const STORE_TITLE: &str = "The macOS Keychain";
+#[cfg(not(any(windows, target_os = "macos")))]
+pub const STORE_TITLE: &str = "The Secret Service keyring";
 
 /// A store failure, kept distinct from "no secret stored" (`Ok(None)`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,17 +33,21 @@ pub struct CredentialError {
 
 impl fmt::Display for CredentialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.code == VERIFY_FAILED {
-            return f.write_str("Windows Credential Manager didn't return the saved secret.");
+        match self.code {
+            VERIFY_FAILED => write!(f, "{STORE_TITLE} didn't return the saved secret."),
+            #[cfg(not(windows))]
+            ACCESS_DENIED => write!(f, "{STORE_TITLE} is locked or refused access."),
+            #[cfg(not(windows))]
+            UNAVAILABLE => write!(f, "{STORE_TITLE} isn't available."),
+            code => write!(f, "{STORE_TITLE} failed (error {code})."),
         }
-        write!(f, "Windows Credential Manager failed (error {}).", self.code)
     }
 }
 
 impl std::error::Error for CredentialError {}
 
 impl CredentialError {
-    /// Credential Manager accepted a secret but returned something else when read back.
+    /// The store accepted a secret but returned something else when read back.
     pub fn verification() -> Self {
         Self { code: VERIFY_FAILED }
     }
@@ -31,6 +55,12 @@ impl CredentialError {
 
 /// Not a Windows error code: the code `CredentialError::verification` reports.
 const VERIFY_FAILED: u32 = 0xC0DE_0001;
+/// The keychain is locked or refused access; Windows' own code for access denied.
+#[cfg(not(windows))]
+const ACCESS_DENIED: u32 = 5;
+/// No keychain could be reached, e.g. no Secret Service running.
+#[cfg(not(windows))]
+const UNAVAILABLE: u32 = 0xC0DE_0002;
 
 /// Read, add/replace and delete secrets by account id.
 pub trait CredentialStore: Send + Sync {
@@ -40,17 +70,26 @@ pub trait CredentialStore: Send + Sync {
     fn delete(&self, account_id: &str) -> Result<(), CredentialError>;
 }
 
+#[cfg(windows)]
 pub fn target_name(account_id: &str) -> String {
     format!("{TARGET_PREFIX}{account_id}")
 }
 
+/// This platform's secret store.
+#[cfg(windows)]
+pub type SystemCredentialStore = WindowsCredentialStore;
+#[cfg(not(windows))]
+pub type SystemCredentialStore = keychain::KeychainCredentialStore;
+
 /// Windows Credential Manager.
+#[cfg(windows)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WindowsCredentialStore {
     /// Prefix for tests so they never touch real CodexBar entries.
     namespace: Option<&'static str>,
 }
 
+#[cfg(windows)]
 impl WindowsCredentialStore {
     pub fn new() -> Self {
         Self { namespace: None }
@@ -147,6 +186,78 @@ mod win {
                 Ok(()) => Ok(()),
                 Err(err) if err.code() == ERROR_NOT_FOUND.to_hresult() => Ok(()),
                 Err(_) => Err(last_error()),
+            }
+        }
+    }
+}
+
+/// The macOS Keychain or the Linux Secret Service, through the keyring crates. Each secret is a password under the
+/// service `CodexBar` with the account id as its user.
+#[cfg(not(windows))]
+pub mod keychain {
+    use std::sync::{Arc, OnceLock};
+
+    use keyring_core::{CredentialStore as Backend, Entry, Error};
+
+    use super::{ACCESS_DENIED, CredentialError, CredentialStore, UNAVAILABLE};
+
+    const SERVICE: &str = "CodexBar";
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct KeychainCredentialStore;
+
+    impl KeychainCredentialStore {
+        pub fn new() -> Self {
+            Self
+        }
+
+        fn entry(&self, account_id: &str) -> Result<Entry, CredentialError> {
+            backend()?.build(SERVICE, account_id, None).map_err(|err| error(&err))
+        }
+    }
+
+    /// The platform store, connected once. A failed connection (no Secret Service running) is kept and reported on
+    /// every use rather than retried on each read.
+    fn backend() -> Result<Arc<Backend>, CredentialError> {
+        static BACKEND: OnceLock<Result<Arc<Backend>, CredentialError>> = OnceLock::new();
+        BACKEND
+            .get_or_init(|| {
+                #[cfg(target_os = "macos")]
+                let store = apple_native_keyring_store::keychain::Store::new();
+                #[cfg(not(target_os = "macos"))]
+                let store = zbus_secret_service_keyring_store::Store::new();
+                store.map(|store| store as Arc<Backend>).map_err(|err| error(&err))
+            })
+            .clone()
+    }
+
+    /// The error's kind only: a keyring error can carry the secret's bytes, which must never reach a message.
+    pub(super) fn error(err: &Error) -> CredentialError {
+        let code = match err {
+            Error::NoStorageAccess(_) => ACCESS_DENIED,
+            Error::NoDefaultStore | Error::NotSupportedByStore(_) => UNAVAILABLE,
+            _ => 1,
+        };
+        CredentialError { code }
+    }
+
+    impl CredentialStore for KeychainCredentialStore {
+        fn read(&self, account_id: &str) -> Result<Option<String>, CredentialError> {
+            match self.entry(account_id)?.get_password() {
+                Ok(secret) => Ok(Some(secret)),
+                Err(Error::NoEntry) => Ok(None),
+                Err(err) => Err(error(&err)),
+            }
+        }
+
+        fn write(&self, account_id: &str, secret: &str) -> Result<(), CredentialError> {
+            self.entry(account_id)?.set_password(secret).map_err(|err| error(&err))
+        }
+
+        fn delete(&self, account_id: &str) -> Result<(), CredentialError> {
+            match self.entry(account_id)?.delete_credential() {
+                Ok(()) | Err(Error::NoEntry) => Ok(()),
+                Err(err) => Err(error(&err)),
             }
         }
     }
@@ -402,6 +513,22 @@ mod tests {
         let (secret, source) = resolve_secret(None, &MemoryCredentialStore::failing(), "acct", Some("file".into()));
         assert_eq!(secret.as_deref(), Some("file"));
         assert!(matches!(source, SecretSource::StoreUnavailable(_)));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn keychain_errors_keep_only_their_kind() {
+        use keyring_core::Error;
+        let locked = keychain::error(&Error::NoStorageAccess("locked".into()));
+        assert_eq!(
+            locked.to_string(),
+            format!("{STORE_TITLE} is locked or refused access.")
+        );
+        let missing = keychain::error(&Error::NoDefaultStore);
+        assert_eq!(missing.to_string(), format!("{STORE_TITLE} isn't available."));
+        // The bytes of a badly encoded secret never reach the message.
+        let bad = keychain::error(&Error::BadEncoding(b"sk-secret".to_vec()));
+        assert!(!bad.to_string().contains("sk-secret") && !format!("{bad:?}").contains("sk-secret"));
     }
 
     #[cfg(windows)]

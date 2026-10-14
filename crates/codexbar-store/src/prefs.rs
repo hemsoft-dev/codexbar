@@ -683,16 +683,8 @@ mod tests {
 
     #[test]
     fn save_while_another_writer_holds_the_lock_is_busy_and_keeps_the_change() {
-        use std::os::windows::fs::OpenOptionsExt as _;
         let dir = Dir::new("busy");
-        let lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .share_mode(0)
-            .open(dir.0.join(LOCK_FILE))
-            .unwrap();
+        let lock = crate::lock::FileLock::acquire(&dir.0.join(LOCK_FILE)).unwrap();
         let mut prefs = DashboardPrefs::load(&dir.0);
         prefs.set_shows_history("cursor", false);
         assert_eq!(prefs.save(&dir.0).unwrap_err().kind(), io::ErrorKind::WouldBlock);

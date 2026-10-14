@@ -1,6 +1,10 @@
 //! The MSIX package (#93): whether CodexBar runs from its package, which version, and Windows' own update check for a
 //! package installed through an App Installer file (`package.ps1` writes one into the local channel folder). The
-//! build from source (`run.ps1`) has no package; everything here reports that instead of failing.
+//! build from source (`run.ps1`) has no package; everything here reports that instead of failing. macOS and Linux
+//! builds have no package either (#161).
+
+// Outside Windows only the "no package" answers are used; the rest stays so callers have one API on every platform.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 use std::sync::OnceLock;
 
@@ -44,6 +48,7 @@ impl Apartment {
         KEPT.call_once(|| {
             // SAFETY: the usage cookie is deliberately never passed to `CoDecrementMTAUsage`, so the apartment lasts
             // until the process exits. Should it fail, calls here fail as Windows errors, as before.
+            #[cfg(windows)]
             let _ = unsafe { windows::Win32::System::Com::CoIncrementMTAUsage() };
         });
         Self
@@ -56,6 +61,12 @@ pub fn installed() -> Option<&'static Installed> {
     INSTALLED.get_or_init(read_installed).as_ref()
 }
 
+#[cfg(not(windows))]
+fn read_installed() -> Option<Installed> {
+    None
+}
+
+#[cfg(windows)]
 fn read_installed() -> Option<Installed> {
     use windows::ApplicationModel::Package;
     // Unpackaged processes get APPMODEL_ERROR_NO_PACKAGE here.
@@ -139,6 +150,7 @@ impl UpdateState {
 const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Waits for `operation` up to `timeout`, then cancels it. `None` means it didn't finish in time.
+#[cfg(windows)]
 fn finish<T>(
     operation: &windows_future::IAsyncOperation<T>,
     timeout: std::time::Duration,
@@ -157,8 +169,15 @@ where
     operation.GetResults().map(Some)
 }
 
+/// There is no package outside Windows, so nothing to check.
+#[cfg(not(windows))]
+pub fn check() -> UpdateState {
+    UpdateState::NotPackaged
+}
+
 /// Asks Windows whether the App Installer channel has a newer version, once more after a short pause if Windows
 /// reports an error (seen right after an install). Blocking: run it off the UI thread.
+#[cfg(windows)]
 pub fn check() -> UpdateState {
     let _apartment = Apartment::enter();
     match check_once() {
@@ -170,6 +189,7 @@ pub fn check() -> UpdateState {
     }
 }
 
+#[cfg(windows)]
 fn check_once() -> UpdateState {
     use windows::ApplicationModel::{Package, PackageUpdateAvailability};
     use windows::Management::Deployment::PackageManager;
@@ -195,7 +215,14 @@ fn check_once() -> UpdateState {
     result.unwrap_or_else(|err| UpdateState::Failed(err.message()))
 }
 
+/// Outside Windows CodexBar has no startup task.
+#[cfg(not(windows))]
+pub fn launched_at_startup() -> bool {
+    false
+}
+
 /// Whether Windows started CodexBar for its startup task (Start with Windows) rather than the user starting it.
+#[cfg(windows)]
 pub fn launched_at_startup() -> bool {
     use windows::ApplicationModel::Activation::ActivationKind;
     installed().is_some()
@@ -204,8 +231,15 @@ pub fn launched_at_startup() -> bool {
             .is_ok_and(|kind| kind == ActivationKind::StartupTask)
 }
 
+/// There is no package outside Windows, so nothing to install.
+#[cfg(not(windows))]
+pub fn install() -> Result<(), String> {
+    Err("Only the Windows package can install updates.".into())
+}
+
 /// Installs the channel's newer version. Windows closes CodexBar to replace it and starts it again afterwards, so on
 /// success this call doesn't return; it returns the error otherwise. Blocking: run it off the UI thread.
+#[cfg(windows)]
 pub fn install() -> Result<(), String> {
     let _apartment = Apartment::enter();
     use windows::ApplicationModel::Package;
@@ -282,10 +316,12 @@ impl Startup {
     }
 }
 
+#[cfg(windows)]
 fn startup_task() -> windows::core::Result<windows::ApplicationModel::StartupTask> {
     windows::ApplicationModel::StartupTask::GetAsync(&windows::core::HSTRING::from(STARTUP_TASK))?.join()
 }
 
+#[cfg(windows)]
 fn startup_from(state: windows::ApplicationModel::StartupTaskState) -> Startup {
     use windows::ApplicationModel::StartupTaskState;
     match state {
@@ -301,10 +337,20 @@ fn startup_from(state: windows::ApplicationModel::StartupTaskState) -> Startup {
 pub fn startup() -> Option<Startup> {
     let _apartment = Apartment::enter();
     installed()?;
-    Some(startup_from(startup_task().ok()?.State().ok()?))
+    #[cfg(windows)]
+    return Some(startup_from(startup_task().ok()?.State().ok()?));
+    #[cfg(not(windows))]
+    None
+}
+
+/// Outside Windows CodexBar has no startup task to change.
+#[cfg(not(windows))]
+pub fn set_startup(_on: bool) -> Option<Startup> {
+    None
 }
 
 /// Turns Start with Windows on or off and returns the state Windows ends up in (a user's or a policy's choice wins).
+#[cfg(windows)]
 pub fn set_startup(on: bool) -> Option<Startup> {
     let _apartment = Apartment::enter();
     installed()?;
@@ -354,6 +400,7 @@ impl StartupSetting {
 
 /// `codexbar --package-status <file>`: writes the package identity and a fresh update check to `file` as JSON and
 /// exits, so the package can be verified without opening a window (`scripts/Test-MsixChannel.ps1`).
+#[cfg(windows)]
 pub fn write_status(path: &std::path::Path, trigger: Option<&std::path::Path>) -> std::io::Result<()> {
     // A marker first, so a caller waiting on the status can tell "never started" from "still checking".
     let _ = std::fs::write(path.with_extension("started"), "");
@@ -454,6 +501,7 @@ impl Updates {
         .detach();
     }
 
+    #[cfg(windows)]
     pub fn install_now(cx: &mut App) {
         if !Self::state(cx).can_install() {
             return;
@@ -567,6 +615,7 @@ mod tests {
         assert!(Startup::OffByUser.note().contains("Task Manager"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_status_file_says_unpackaged() {
         let path = std::env::temp_dir().join(format!("codexbar-package-status-{}.json", std::process::id()));
@@ -576,12 +625,23 @@ mod tests {
         assert_eq!(written, r#"{"packaged":false}"#);
     }
 
+    #[cfg(not(windows))]
+    #[test]
+    fn other_platforms_have_no_package_to_check_or_install() {
+        assert_eq!(installed(), None);
+        assert_eq!(check(), UpdateState::NotPackaged);
+        assert!(install().is_err());
+        assert!(!launched_at_startup());
+    }
+
+    #[cfg(windows)]
     #[test]
     fn unpackaged_checks_and_installs_fail_without_panicking() {
         assert!(matches!(check(), UpdateState::Failed(_)));
         assert!(install().is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn calls_on_threads_that_come_and_go_never_crash() {
         // Each thread ends before the next starts, as background workers do; the cached activation factories must

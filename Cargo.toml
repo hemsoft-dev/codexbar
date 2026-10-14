@@ -17,7 +17,8 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 ureq = "3.4"
-tray-icon = "0.26"
+# On Linux the KSNI backend speaks StatusNotifierItem over D-Bus itself: no GTK main loop, no appindicator library.
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 raw-window-handle = "0.6"
 anyhow = "1"
 sha2 = "0.10"

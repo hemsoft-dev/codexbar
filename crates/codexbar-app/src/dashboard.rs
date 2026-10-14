@@ -186,11 +186,13 @@ pub struct Dashboard {
     /// can still write them back, and a failed rewrite needs another try, so each refresh checks them again.
     forgotten: HashMap<String, bool>,
     /// When `widgets.json` was last written (#94); it is rewritten at least every few minutes so the widgets can
-    /// tell a running CodexBar from one that quit.
+    /// tell a running CodexBar from one that quit. Only Windows has widgets.
+    #[cfg(windows)]
     widgets_written: Option<DateTime<Utc>>,
     /// A widget tile's account (#95) that wasn't loaded yet when it was tapped; shown once it arrives.
     pending_focus: Option<(crate::handoff::FocusRequest, Instant)>,
     /// The widget builder's choices the last snapshot carried (#95).
+    #[cfg(windows)]
     widget_builder: codexbar_store::widgets::WidgetBuilder,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -257,6 +259,7 @@ impl Dashboard {
                     this.table.update(cx, |table, _| table.delegate_mut().set_now(now));
                     // The tooltip's "last known" age advances too; it is only republished when its text changes.
                     this.publish_tooltip(cx);
+                    #[cfg(windows)]
                     if this
                         .widgets_written
                         .is_none_or(|at| this.now - at >= crate::widget_feed::HEARTBEAT)
@@ -302,6 +305,7 @@ impl Dashboard {
         let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| {
             this.rearrange_if_changed(cx);
             // The widget builder's tiles (#95) go to the widgets with the next snapshot; write it now.
+            #[cfg(windows)]
             if crate::prefs_hub::PrefsHub::widget_builder(cx) != this.widget_builder {
                 this.save_widget_snapshot(cx);
             }
@@ -344,8 +348,10 @@ impl Dashboard {
             ranked_with: Default::default(),
             owned_ids: crate::providers::owned_account_ids(SettingsHub::global(cx)),
             forgotten: HashMap::new(),
+            #[cfg(windows)]
             widgets_written: None,
             pending_focus: None,
+            #[cfg(windows)]
             widget_builder: Default::default(),
             _clock: clock,
             _subscriptions: vec![selection, activation, layout_changes, alert_changes, settings_changes],
@@ -1046,6 +1052,7 @@ impl Dashboard {
             }
         });
         self.publish_tooltip(cx);
+        #[cfg(windows)]
         self.save_widget_snapshot(cx);
         // A tap waits for its account only briefly, so it never takes over after the user has moved on.
         if self
@@ -1068,6 +1075,7 @@ impl Dashboard {
 
     /// Writes what the Windows widgets show (#94), for live data only. A failed write only leaves the widgets on the
     /// previous snapshot until the next one.
+    #[cfg(windows)]
     fn save_widget_snapshot(&mut self, cx: &mut Context<Self>) {
         self.widget_builder = crate::prefs_hub::PrefsHub::widget_builder(cx);
         let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, Utc::now())

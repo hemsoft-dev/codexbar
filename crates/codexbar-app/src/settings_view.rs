@@ -62,11 +62,20 @@ pub fn render(_: &mut Window, cx: &mut App) -> impl IntoElement {
                     alerts_page(cx),
                     crate::groups_page::groups_page(cx),
                     appearance_page(),
+                    // Widgets exist only on the Windows 11 Widgets board (#94).
+                    #[cfg(windows)]
                     crate::widget_builder::widgets_page(cx),
                     about_page(),
                 ]),
         )
 }
+
+/// What alerts arrive as, at the start of a sentence.
+const NOTIFICATIONS: &str = if cfg!(windows) {
+    "Windows notifications"
+} else {
+    "Notifications"
+};
 
 fn minutes_label(minutes: u64) -> SharedString {
     match minutes {
@@ -531,7 +540,8 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                             Input::new(&form.secret).mask_toggle().into_any_element(),
                         ))
                         .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!(
-                            "Saved in Windows Credential Manager. {}",
+                            "Saved in {}. {}",
+                            codexbar_store::credentials::STORE_NAME,
                             if spec.saved_first {
                                 format!("The {} environment variable is used only when none is saved.", spec.env)
                             } else {
@@ -900,20 +910,26 @@ fn confirm_remove(record: AccountRecord, window: &mut Window, cx: &mut App) {
     // Only accounts that hold a pasted secret have anything in Credential Manager to delete. An account that is its own
     // dashboard account loses its stored usage too (#85); one that keeps showing through the provider's sign-in keeps it.
     let owns_account = crate::providers::owned_account_ids(SettingsHub::global(cx)).contains_key(&record.id);
-    let description = match (catalog::info(&record.provider).secret.is_some(), owns_account) {
+    let description = SharedString::from(match (catalog::info(&record.provider).secret.is_some(), owns_account) {
         _ if crate::managed::Managed::of(&record).is_some() => {
-            "It is signed out and CodexBar's sign-in for it is deleted, with its usage history. The provider's own sign-in is kept."
+            "It is signed out and CodexBar's sign-in for it is deleted, with its usage history. The provider's own sign-in is kept.".to_owned()
         }
-        (true, true) => "Its saved key is deleted from Credential Manager, and its usage history is deleted.",
-        (true, false) => "Its saved key is deleted from Credential Manager. Usage history is kept.",
-        (false, true) => "Its usage history is deleted. The provider's own sign-in is kept.",
-        (false, false) => "The provider's own sign-in and usage history are kept.",
-    };
+        (true, true) => format!(
+            "Its saved key is deleted from {}, and its usage history is deleted.",
+            codexbar_store::credentials::STORE_SHORT_NAME
+        ),
+        (true, false) => format!(
+            "Its saved key is deleted from {}. Usage history is kept.",
+            codexbar_store::credentials::STORE_SHORT_NAME
+        ),
+        (false, true) => "Its usage history is deleted. The provider's own sign-in is kept.".to_owned(),
+        (false, false) => "The provider's own sign-in and usage history are kept.".to_owned(),
+    });
     window.open_alert_dialog(cx, move |alert, _, _| {
         let record = record.clone();
         alert
             .title(format!("Remove “{label}”?"))
-            .description(description)
+            .description(description.clone())
             .button_props(
                 DialogButtonProps::default()
                     .ok_text("Remove")
@@ -1001,6 +1017,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     });
 }
 
+#[cfg(windows)]
 pub(crate) fn info_item(title: &'static str, body: &'static str) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         v_flex()
@@ -1076,7 +1093,7 @@ fn alerts_page(cx: &App) -> SettingPage {
         .group(
             SettingGroup::new()
                 .title("Usage alerts")
-                .description("Windows notifications when an account needs attention. Each one notifies once, and again only after it recovers.")
+                .description(format!("{NOTIFICATIONS} when an account needs attention. Each one notifies once, and again only after it recovers."))
                 .item(
                     SettingItem::new(
                         "Alerts",
@@ -1154,9 +1171,9 @@ fn alerts_page(cx: &App) -> SettingPage {
             let active = Notifications::active(cx).len();
             let summary = match (&problem, active) {
                 (Some(problem), _) => problem.clone(),
-                (None, 0) => "Windows notifications are on. No alerts are active.".to_owned(),
-                (None, 1) => "Windows notifications are on. 1 alert is active until it recovers.".to_owned(),
-                (None, n) => format!("Windows notifications are on. {n} alerts are active until they recover."),
+                (None, 0) => format!("{NOTIFICATIONS} are on. No alerts are active."),
+                (None, 1) => format!("{NOTIFICATIONS} are on. 1 alert is active until it recovers."),
+                (None, n) => format!("{NOTIFICATIONS} are on. {n} alerts are active until they recover."),
             };
             v_flex()
                 .w_full()
@@ -1218,15 +1235,19 @@ fn appearance_page() -> SettingPage {
                     },
                 ),
             )
-            .description(
-                "System follows the Windows app mode. While Windows high contrast is on, CodexBar uses its colors.",
-            ),
+            .description(if cfg!(windows) {
+                "System follows the Windows app mode. While Windows high contrast is on, CodexBar uses its colors."
+            } else {
+                "System follows the system's light or dark appearance."
+            }),
         ),
     )
 }
 
 fn about_page() -> SettingPage {
-    use crate::package::{self, Updates};
+    use crate::package;
+    #[cfg(windows)]
+    use crate::package::Updates;
     let installed = package::installed();
     let version = installed.map_or_else(
         || SharedString::from(env!("CARGO_PKG_VERSION")),
@@ -1234,94 +1255,101 @@ fn about_page() -> SettingPage {
     );
     let build = SharedString::from(package::BUILD.unwrap_or("Development build"));
     let source = SharedString::from(match installed {
-        None => "Built from source with run.ps1".to_owned(),
+        None if cfg!(windows) => "Built from source with run.ps1".to_owned(),
+        None => "Built from source".to_owned(),
         Some(package::Installed {
             app_installer: Some(channel),
             ..
         }) => format!("MSIX package, updates from {channel}"),
         Some(_) => "MSIX package, installed without an update channel".to_owned(),
     });
-    SettingPage::new("About").icon(IconName::Info).group(
-        SettingGroup::new()
-            .title("CodexBar for Windows")
-            .item(SettingItem::new(
-                "Version",
-                SettingField::render(move |_, _, _| version.clone()),
-            ))
-            .item(SettingItem::new(
-                "Build",
-                SettingField::render(move |_, _, _| build.clone()),
-            ))
-            .item(SettingItem::new(
-                "Installed as",
-                SettingField::render(move |_, _, _| source.clone()),
-            ))
-            .item(SettingItem::render(|_, _, cx| {
-                let state = Updates::state(cx);
+    let group = SettingGroup::new()
+        .title(if cfg!(windows) {
+            "CodexBar for Windows"
+        } else {
+            "CodexBar"
+        })
+        .item(SettingItem::new(
+            "Version",
+            SettingField::render(move |_, _, _| version.clone()),
+        ))
+        .item(SettingItem::new(
+            "Build",
+            SettingField::render(move |_, _, _| build.clone()),
+        ))
+        .item(SettingItem::new(
+            "Installed as",
+            SettingField::render(move |_, _, _| source.clone()),
+        ));
+    // Only the Windows package has an update channel (#93).
+    #[cfg(windows)]
+    let group = group.item(SettingItem::render(|_, _, cx| {
+        let state = Updates::state(cx);
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_center()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().font_semibold().child("Updates"))
+                    .child(
+                        div()
+                            .id("update-status")
+                            .role(Role::Status)
+                            .test_support()
+                            .aria_label(SharedString::from(state.label()))
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(state.label()),
+                    ),
+            )
+            .when(state.can_install(), |this| {
+                this.child(
+                    Button::new("install-update")
+                        .small()
+                        .primary()
+                        .label("Install and restart")
+                        .on_click(|_, _, cx| Updates::install_now(cx)),
+                )
+            })
+            .child(
+                Button::new("check-updates")
+                    .small()
+                    .outline()
+                    .label("Check now")
+                    .disabled(!state.can_check())
+                    .on_click(|_, _, cx| Updates::check_now(cx)),
+            )
+    }));
+    let group = group
+        .item(SettingItem::new(
+            "Settings file",
+            SettingField::render(|_, _, cx| {
+                SharedString::from(SettingsHub::global(cx).settings().path().display().to_string())
+            }),
+        ))
+        .item(SettingItem::new(
+            "Support",
+            SettingField::render(|_, _, _| {
                 h_flex()
-                    .w_full()
-                    .gap_3()
-                    .items_center()
+                    .gap_2()
                     .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().font_semibold().child("Updates"))
-                            .child(
-                                div()
-                                    .id("update-status")
-                                    .role(Role::Status)
-                                    .test_support()
-                                    .aria_label(SharedString::from(state.label()))
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(state.label()),
-                            ),
-                    )
-                    .when(state.can_install(), |this| {
-                        this.child(
-                            Button::new("install-update")
-                                .small()
-                                .primary()
-                                .label("Install and restart")
-                                .on_click(|_, _, cx| Updates::install_now(cx)),
-                        )
-                    })
-                    .child(
-                        Button::new("check-updates")
+                        Button::new("report-problem")
                             .small()
                             .outline()
-                            .label("Check now")
-                            .disabled(!state.can_check())
-                            .on_click(|_, _, cx| Updates::check_now(cx)),
+                            .label("Report a problem…")
+                            .on_click(|_, _, cx| cx.open_url("https://github.com/hemsoft-dev/codexbar/issues/new")),
                     )
-            }))
-            .item(SettingItem::new(
-                "Settings file",
-                SettingField::render(|_, _, cx| {
-                    SharedString::from(SettingsHub::global(cx).settings().path().display().to_string())
-                }),
-            ))
-            .item(SettingItem::new(
-                "Support",
-                SettingField::render(|_, _, _| {
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("report-problem")
-                                .small()
-                                .outline()
-                                .label("Report a problem…")
-                                .on_click(|_, _, cx| cx.open_url("https://github.com/hemsoft-dev/codexbar/issues/new")),
-                        )
-                        .child(
-                            Button::new("open-repo")
-                                .small()
-                                .outline()
-                                .label("GitHub…")
-                                .on_click(|_, _, cx| cx.open_url("https://github.com/hemsoft-dev/codexbar")),
-                        )
-                }),
-            )),
-    )
+                    .child(
+                        Button::new("open-repo")
+                            .small()
+                            .outline()
+                            .label("GitHub…")
+                            .on_click(|_, _, cx| cx.open_url("https://github.com/hemsoft-dev/codexbar")),
+                    )
+            }),
+        ));
+    SettingPage::new("About").icon(IconName::Info).group(group)
 }

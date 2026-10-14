@@ -65,7 +65,10 @@ impl<H: HttpClient> GeminiProvider<H> {
     fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
         let apps = if self.unreadable {
             Some(Err(ProviderError::Unexpected {
-                detail: "its saved Gemini Apps session couldn't be read from Windows Credential Manager",
+                detail: concat!(
+                    "its saved Gemini Apps session couldn't be read from ",
+                    codexbar_core::secret_store_name!()
+                ),
             }))
         } else {
             self.apps

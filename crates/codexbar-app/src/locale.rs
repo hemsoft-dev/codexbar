@@ -3,7 +3,9 @@
 //! Settings > Time & language shows on the next redraw. Tests use the fixed English style, so their output doesn't
 //! depend on the machine running them.
 
-use chrono::{Datelike as _, NaiveDate, NaiveDateTime, Timelike as _};
+#[cfg(windows)]
+use chrono::{Datelike as _, Timelike as _};
+use chrono::{NaiveDate, NaiveDateTime};
 use codexbar_core::format::{DateStyle, English};
 
 /// The style the app shows dates in.
@@ -16,7 +18,8 @@ pub fn describe(error: &codexbar_providers::ProviderError) -> String {
     error.describe_with(&|at| style().time(at.with_timezone(&chrono::Local).naive_local()))
 }
 
-/// The Windows user locale, through `GetDateFormatEx` and `GetTimeFormatEx`; English if a call fails.
+/// The Windows user locale, through `GetDateFormatEx` and `GetTimeFormatEx`; English if a call fails. On macOS and
+/// Linux it is the fixed English style for now.
 pub struct WindowsLocale;
 
 #[cfg(windows)]
@@ -141,6 +144,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_windows_locale_formats_every_part() {
         // Whatever this machine's locale, every part comes back non-empty and carries the right numbers.

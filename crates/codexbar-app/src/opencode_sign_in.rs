@@ -406,7 +406,11 @@ pub fn forget(record: AccountRecord, cx: &mut App) {
 /// Which workspace the account row says it tracks, and whether it is signed in.
 pub fn describe(hub: &SettingsHub, record: &AccountRecord) -> String {
     match (credential(hub, record), &record.workspace_id) {
-        (Err(_), _) => "Its sign-in couldn't be read from Windows Credential Manager".to_owned(),
+        (Err(_), _) => concat!(
+            "Its sign-in couldn't be read from ",
+            codexbar_core::secret_store_name!()
+        )
+        .to_owned(),
         (Ok(Some(credential)), _) => format!("Workspace {}", credential.workspace_id),
         (Ok(None), Some(workspace)) if record.external_id.is_some() => format!("Workspace {workspace} · Not signed in"),
         (Ok(None), _) => "Not signed in".to_owned(),

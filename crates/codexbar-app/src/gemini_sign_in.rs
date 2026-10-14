@@ -355,7 +355,10 @@ pub fn forget(record: AccountRecord, cx: &mut App) {
 /// Whether the account row's Gemini Apps connection is signed in.
 pub fn describe(hub: &SettingsHub, record: &AccountRecord) -> String {
     let apps = match apps_session(hub, record) {
-        Err(_) => "Its sign-in couldn't be read from Windows Credential Manager",
+        Err(_) => concat!(
+            "Its sign-in couldn't be read from ",
+            codexbar_core::secret_store_name!()
+        ),
         Ok(Some(_)) => "Gemini Apps signed in",
         Ok(None) => "Gemini Apps not signed in",
     };

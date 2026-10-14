@@ -492,7 +492,7 @@ pub fn describe(hub: &SettingsHub, record: &AccountRecord) -> String {
 
 fn describe_user(hub: &SettingsHub, record: &AccountRecord) -> String {
     match (&record.external_id, token(hub, record)) {
-        (_, Err(_)) => "Its token couldn't be read from Windows Credential Manager".to_owned(),
+        (_, Err(_)) => concat!("Its token couldn't be read from ", codexbar_core::secret_store_name!()).to_owned(),
         (Some(user), Ok(Some(_))) => user.clone(),
         (Some(user), Ok(None)) => format!("{user} · Not signed in"),
         (None, Ok(_)) => "Not signed in".to_owned(),

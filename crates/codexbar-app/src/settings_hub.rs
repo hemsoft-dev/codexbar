@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use codexbar_store::credentials::{CredentialStore, SecretSource, WindowsCredentialStore, resolve_secret};
+use codexbar_store::credentials::{
+    CredentialStore, STORE_NAME, STORE_SHORT_NAME, SecretSource, SystemCredentialStore, resolve_secret,
+};
 use codexbar_store::settings::{AccountRecord, Settings, SettingsError, legacy_id};
 use gpui_kit::{App, BorrowAppContext as _, Global, SharedString};
 
@@ -26,7 +28,7 @@ impl Global for SettingsHub {}
 
 impl SettingsHub {
     pub fn init(cx: &mut App) {
-        Self::init_with(cx, &Settings::default_dir(), Arc::new(WindowsCredentialStore::new()));
+        Self::init_with(cx, &Settings::default_dir(), Arc::new(SystemCredentialStore::new()));
     }
 
     /// Loads settings from `dir` with the given credential store; tests pass a temporary folder and an in-memory
@@ -237,9 +239,18 @@ impl SettingsHub {
 pub fn describe_source(source: &SecretSource) -> SharedString {
     match source {
         SecretSource::Environment(name) => format!("From the {name} environment variable").into(),
-        SecretSource::CredentialManager => "Saved in Windows Credential Manager".into(),
-        SecretSource::SettingsFile => "In the settings file; moves to Credential Manager at the next start".into(),
+        SecretSource::CredentialManager => format!("Saved in {STORE_NAME}").into(),
+        SecretSource::SettingsFile => {
+            format!("In the settings file; moves to {STORE_SHORT_NAME} at the next start").into()
+        }
         SecretSource::Missing => "Not set".into(),
-        SecretSource::StoreUnavailable(err) => format!("Credential Manager unavailable: {err}").into(),
+        SecretSource::StoreUnavailable(err) => {
+            let store = if cfg!(windows) {
+                STORE_SHORT_NAME
+            } else {
+                "The keychain"
+            };
+            format!("{store} unavailable: {err}").into()
+        }
     }
 }

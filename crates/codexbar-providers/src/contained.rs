@@ -34,10 +34,15 @@ fn spawn_with(command: &mut Command, console: bool) -> std::io::Result<Contained
         command.creation_flags(window | CREATE_SUSPENDED);
     }
     #[cfg(not(windows))]
-    let _ = console;
-    let mut child = command.spawn()?;
+    {
+        let _ = console;
+        Ok(Contained {
+            child: command.spawn()?,
+        })
+    }
     #[cfg(windows)]
     {
+        let mut child = command.spawn()?;
         // Without its job the process could outlive CodexBar (and a GitHub sign-in finish unseen), so it doesn't run.
         let job = job::Job::kill_on_close(&child);
         if job.is_none() || !job::resume(child.id()) {
@@ -47,8 +52,6 @@ fn spawn_with(command: &mut Command, console: bool) -> std::io::Result<Contained
         }
         Ok(Contained { child, _job: job })
     }
-    #[cfg(not(windows))]
-    Ok(Contained { child })
 }
 
 #[cfg(windows)]

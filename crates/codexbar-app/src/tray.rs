@@ -1,15 +1,19 @@
 //! The notification-area icon: left click toggles the dashboard, right click opens the menu.
 //!
-//! GPUI has no hide/show for windows, so visibility goes through Win32 on the window's HWND. The window is never
-//! destroyed while the app runs; closing it hides it, which keeps the last view and makes reopening instant.
+//! GPUI has no hide/show for windows, so on Windows visibility goes through Win32 on the window's HWND; elsewhere the
+//! window is minimized and restored. The window is never destroyed while the app runs; closing it hides it, which
+//! keeps the last view and makes reopening instant.
 
 use std::time::Duration;
 
 use gpui_kit::{App, Global, Window};
+#[cfg(windows)]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+#[cfg(windows)]
 use windows::Win32::Foundation::HWND;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible, SW_HIDE, SW_RESTORE, SW_SHOW, ShowWindow};
 
 /// How often queued tray and menu events are drained on the UI thread.
@@ -110,6 +114,7 @@ pub fn set_tooltip(cx: &App, text: &str) {
     }
 }
 
+#[cfg(windows)]
 fn hwnd(window: &Window) -> Option<HWND> {
     match HasWindowHandle::window_handle(window).ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut core::ffi::c_void)),
@@ -118,10 +123,12 @@ fn hwnd(window: &Window) -> Option<HWND> {
 }
 
 /// True when the window is on screen and not minimized.
+#[cfg(windows)]
 pub fn is_shown(window: &Window) -> bool {
     hwnd(window).is_some_and(|hwnd| unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() })
 }
 
+#[cfg(windows)]
 pub fn hide(window: &Window) {
     if let Some(hwnd) = hwnd(window) {
         // The return value is the previous visibility, not an error.
@@ -129,11 +136,28 @@ pub fn hide(window: &Window) {
     }
 }
 
+#[cfg(windows)]
 pub fn show(window: &Window) {
     if let Some(hwnd) = hwnd(window) {
         let restore = unsafe { IsIconic(hwnd).as_bool() };
         let _ = unsafe { ShowWindow(hwnd, if restore { SW_RESTORE } else { SW_SHOW }) };
     }
+    window.activate_window();
+}
+
+/// True when the window is the active one.
+#[cfg(not(windows))]
+pub fn is_shown(window: &Window) -> bool {
+    window.is_window_active()
+}
+
+#[cfg(not(windows))]
+pub fn hide(window: &Window) {
+    window.minimize_window();
+}
+
+#[cfg(not(windows))]
+pub fn show(window: &Window) {
     window.activate_window();
 }
 

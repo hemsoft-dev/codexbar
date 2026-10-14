@@ -27,7 +27,8 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - **Alerts** when an account nears or hits its limit
 - **Groups and ordering** by urgency or by hand
 - **System, light and dark appearance**, following Windows high contrast
-- **Privacy-first**: on-device only, no data sent anywhere except provider APIs; keys are kept in Windows Credential Manager
+- **Privacy-first**: on-device only, no data sent anywhere except provider APIs; keys are kept in Windows Credential
+  Manager (the Keychain on macOS, the Secret Service keyring on Linux)
 
 ## Getting Started
 
@@ -37,6 +38,19 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - [Rust](https://www.rust-lang.org/tools/install) (the MSVC toolchain; `rust-toolchain.toml` pins stable)
 - Visual Studio Build Tools with the "Desktop development with C++" workload
 - Node.js 20 or later (required for `npm install` / pre-commit hook setup)
+
+macOS and Linux builds are in progress ([#161](https://github.com/hemsoft-dev/codexbar/issues/161)): the workspace
+builds and passes its tests there, with secrets in the macOS Keychain or the Linux Secret Service. They need:
+
+- macOS: [Rust](https://www.rust-lang.org/tools/install) and the Xcode Command Line Tools (`xcode-select --install`).
+  GPUI's shaders compile at startup, so full Xcode isn't needed.
+- Linux: Rust plus the headers GPUI links against, on Debian or Ubuntu
+  `sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev
+  libxcb1-dev libx11-xcb-dev`. The tray icon needs a desktop with StatusNotifierItem support (KDE Plasma, or GNOME
+  with the AppIndicator extension), and saved keys need a Secret Service such as GNOME Keyring or KWallet.
+
+Then `cargo run --release -p codexbar-app`. The MSIX package, its updates, Start with Windows and Windows widgets exist
+only on Windows.
 
 ### Build from source
 

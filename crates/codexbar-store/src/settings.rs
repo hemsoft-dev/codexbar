@@ -1420,10 +1420,7 @@ mod tests {
             let mut settings = Settings::load(&dir.0).unwrap();
             let outcome = move_plaintext_keys(&mut settings, &Garbling, &names::ALL);
             assert!(outcome.moved.is_empty());
-            assert_eq!(
-                outcome.failed[0].1,
-                "Windows Credential Manager didn't return the saved secret."
-            );
+            assert_eq!(outcome.failed[0].1, CredentialError::verification().to_string());
             assert!(file_text(&dir).contains("sk-or-plain"));
         }
 

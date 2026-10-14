@@ -594,7 +594,10 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
             }
             Ok(None) => Err(ProviderError::NotSignedIn { hint: SIGN_IN_HINT }),
             Err(SlotUnavailable) => Err(ProviderError::Unexpected {
-                detail: "the saved OpenCode sign-in couldn't be read from Windows Credential Manager",
+                detail: concat!(
+                    "the saved OpenCode sign-in couldn't be read from ",
+                    codexbar_core::secret_store_name!()
+                ),
             }),
         }
     }

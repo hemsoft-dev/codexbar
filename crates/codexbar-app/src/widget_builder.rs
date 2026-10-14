@@ -382,6 +382,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     });
 }
 
+#[cfg(windows)]
 pub fn widgets_page(cx: &App) -> SettingPage {
     let builder = PrefsHub::widget_builder(cx);
     let snapshot = cx.try_global::<WidgetFeed>().map(|feed| &feed.0);

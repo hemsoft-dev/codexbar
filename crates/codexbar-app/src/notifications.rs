@@ -1,4 +1,5 @@
-//! Delivers alerts (#87) as Windows notifications and keeps the active-alert set: an alert is marked active only once
+//! Delivers alerts (#87) as system notifications (Windows toasts, or the macOS and Linux notification centers through
+//! GPUI) and keeps the active-alert set: an alert is marked active only once
 //! it was shown, so a blocked or failed notification is tried again on the next refresh.
 
 use std::collections::BTreeSet;
@@ -21,7 +22,7 @@ pub enum NotifierStatus {
 
 pub trait Notifier: Send + Sync {
     fn status(&self) -> NotifierStatus;
-    fn show(&self, alert: &Alert) -> Result<(), String>;
+    fn show(&self, alert: &Alert, cx: &App) -> Result<(), String>;
     /// Alert keys whose notification Windows accepted but then failed to raise, since the last call.
     fn take_failed(&self) -> Vec<String> {
         Vec::new()
@@ -108,7 +109,7 @@ impl Notifications {
         };
         let problem = match notifier.status() {
             NotifierStatus::Blocked(reason) => Some(reason),
-            NotifierStatus::Ready => notifier.show(&alert).err(),
+            NotifierStatus::Ready => notifier.show(&alert, cx).err(),
         };
         cx.update_global(|global: &mut Self, _| global.problem = problem.map(Into::into));
         cx.refresh_windows();
@@ -185,7 +186,7 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
             NotifierStatus::Blocked(reason) => problem = Some(reason),
             NotifierStatus::Ready => {
                 for alert in &evaluation.notify {
-                    match notifier.show(alert) {
+                    match notifier.show(alert, cx) {
                         Ok(()) => next.extend(alert.keys().cloned()),
                         Err(err) => problem = Some(err),
                     }
@@ -240,7 +241,7 @@ impl Notifier for RecordingNotifier {
         }
     }
 
-    fn show(&self, alert: &Alert) -> Result<(), String> {
+    fn show(&self, alert: &Alert, _cx: &App) -> Result<(), String> {
         self.shown.lock().unwrap().push(alert.clone());
         Ok(())
     }
@@ -258,8 +259,44 @@ impl Notifier for RecordingNotifier {
     }
 }
 
+/// macOS and Linux notifications, through GPUI's notification-center support. Neither platform reports a notification
+/// it then failed to raise, so none is ever sent again.
+#[cfg(not(windows))]
+#[derive(Default)]
+pub struct SystemNotifier;
+
+#[cfg(not(windows))]
+impl Notifier for SystemNotifier {
+    fn status(&self) -> NotifierStatus {
+        NotifierStatus::Ready
+    }
+
+    fn show(&self, alert: &Alert, cx: &App) -> Result<(), String> {
+        cx.show_system_notification(gpui_kit::SystemNotification {
+            tag: SharedString::from(if alert.key.is_empty() {
+                "test".to_owned()
+            } else {
+                alert.key.clone()
+            }),
+            title: alert.title.clone().into(),
+            body: alert.body.clone().into(),
+            actions: Vec::new(),
+        });
+        Ok(())
+    }
+}
+
+/// The platform's notifier.
+pub fn system_notifier() -> Arc<dyn Notifier> {
+    #[cfg(windows)]
+    return Arc::new(WindowsNotifier::new());
+    #[cfg(not(windows))]
+    Arc::new(SystemNotifier)
+}
+
 /// Windows toast notifications. The unpackaged app sends them under a per-user AppUserModelID registered in
 /// `HKCU\Software\Classes\AppUserModelId` so they show CodexBar's name; the MSIX package (#93) has its own.
+#[cfg(windows)]
 pub struct WindowsNotifier {
     /// Why the app id couldn't be registered; without it Windows may drop notifications silently.
     registration: Option<String>,
@@ -270,9 +307,11 @@ pub struct WindowsNotifier {
 }
 
 /// The AppUserModelID the unpackaged app sends notifications under.
+#[cfg(windows)]
 pub const APP_ID: &str = "HemSoft.CodexBar";
 
 /// The AppUserModelID notifications go out under: the package's when CodexBar runs from it.
+#[cfg(windows)]
 fn app_id() -> windows::core::HSTRING {
     crate::package::installed().map_or_else(
         || windows::core::HSTRING::from(APP_ID),
@@ -280,6 +319,7 @@ fn app_id() -> windows::core::HSTRING {
     )
 }
 
+#[cfg(windows)]
 impl WindowsNotifier {
     /// Registers the app id for this user and this process (the package needs none). Registration failures are
     /// reported by `status`.
@@ -302,6 +342,7 @@ impl WindowsNotifier {
     }
 }
 
+#[cfg(windows)]
 impl Notifier for WindowsNotifier {
     fn status(&self) -> NotifierStatus {
         use windows::UI::Notifications::{NotificationSetting, ToastNotificationManager};
@@ -326,7 +367,7 @@ impl Notifier for WindowsNotifier {
         }
     }
 
-    fn show(&self, alert: &Alert) -> Result<(), String> {
+    fn show(&self, alert: &Alert, _cx: &App) -> Result<(), String> {
         use windows::Data::Xml::Dom::XmlDocument;
         use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
         use windows::core::HSTRING;
@@ -381,6 +422,7 @@ impl Notifier for WindowsNotifier {
 }
 
 /// The toast payload: a title line and a body line, escaped for XML.
+#[cfg(windows)]
 fn toast_xml(title: &str, body: &str) -> String {
     format!(
         "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
@@ -389,6 +431,7 @@ fn toast_xml(title: &str, body: &str) -> String {
     )
 }
 
+#[cfg(windows)]
 fn escape(text: &str) -> String {
     // XML 1.0 forbids most control characters; one in a provider's label would make the whole toast fail to load.
     let text: String = text
@@ -404,6 +447,7 @@ fn escape(text: &str) -> String {
 
 /// Registers the AppUserModelID's display name for this user, and claims it for this process, so Windows shows
 /// "CodexBar" on notifications from an unpackaged app.
+#[cfg(windows)]
 fn register_app_id() -> windows::core::Result<()> {
     use windows::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW,
@@ -437,7 +481,7 @@ fn register_app_id() -> windows::core::Result<()> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
