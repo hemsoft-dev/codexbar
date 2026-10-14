@@ -130,7 +130,11 @@ impl DateStyle for WindowsLocale {
 /// Dates in a POSIX locale's own conventions, from the locale data glibc ships (#167): its time format without seconds,
 /// its weekday and month names, and day-first or month-first order.
 #[cfg(not(windows))]
-pub struct LocaleStyle(pub chrono::Locale);
+pub struct LocaleStyle {
+    pub locale: chrono::Locale,
+    /// The user's own choice of a 24-hour (`true`) or 12-hour clock over the locale's, where the system has one.
+    pub clock_24h: Option<bool>,
+}
 
 #[cfg(not(windows))]
 impl LocaleStyle {
@@ -146,12 +150,24 @@ impl LocaleStyle {
             .or_else(formatting_locale)
             .and_then(|name| parse_locale(&name))
             .unwrap_or(chrono::Locale::en_US);
-        Self(locale)
+        Self {
+            locale,
+            clock_24h: clock_choice(),
+        }
+    }
+
+    /// The locale's own conventions, with no clock choice over them.
+    #[cfg(test)]
+    pub fn new(locale: chrono::Locale) -> Self {
+        Self {
+            locale,
+            clock_24h: None,
+        }
     }
 
     /// The locale's time format with minutes as its smallest unit, and no leading zero on a 12-hour clock.
     fn time_format(&self) -> String {
-        let format = pure_rust_locales::locale_match!(self.0 => LC_TIME::T_FMT);
+        let format = pure_rust_locales::locale_match!(self.locale => LC_TIME::T_FMT);
         let format = if format.is_empty() { "%H:%M:%S" } else { format };
         // `%O` (the locale's own digits) and `%E` (its own era) are glibc modifiers chrono doesn't know; the plain
         // directive is what they modify.
@@ -164,7 +180,7 @@ impl LocaleStyle {
             .replace(".%S", "")
             .replace("%I", "%-I");
         // Seconds written with the locale's own words ("%H時%M分%S秒"): drop them with the text that follows them.
-        match format.find("%S") {
+        let format = match format.find("%S") {
             Some(at) => {
                 let rest = &format[at + 2..];
                 let end = rest
@@ -173,12 +189,32 @@ impl LocaleStyle {
                 format!("{}{}", &format[..at], &rest[end..])
             }
             None => format,
+        };
+        // A time zone ("%Z %I:%M:%S %p" in ar_AE) has no place on a clock reading that is already local.
+        let mut format = ["%Z ", " %Z", "%Z", "%z ", " %z", "%z"]
+            .iter()
+            .fold(format, |format, zone| format.replace(zone, ""));
+        match self.clock_24h {
+            Some(true) => {
+                format = format.replace("%-I", "%H").replace("%l", "%H");
+                for meridiem in [" %p", "%p ", "%p", " %P", "%P"] {
+                    format = format.replace(meridiem, "");
+                }
+            }
+            Some(false) if !format.contains("%p") && !format.contains("%P") => {
+                format = format.replace("%H", "%-I").replace("%k", "%-I") + " %p";
+            }
+            _ => {}
         }
+        format
     }
 
     /// Whether the locale's date writes the day before the month ("1.11." rather than "11/1").
     fn day_first(&self) -> bool {
-        let format = pure_rust_locales::locale_match!(self.0 => LC_TIME::D_FMT).replace("%D", "%m/%d/%y");
+        let format = pure_rust_locales::locale_match!(self.locale => LC_TIME::D_FMT)
+            .replace("%D", "%m/%d/%y")
+            .replace("%O", "%")
+            .replace("%E", "%");
         let first = |directives: &[&str]| directives.iter().filter_map(|directive| format.find(directive)).min();
         match (first(&["%d", "%e"]), first(&["%m", "%b", "%B", "%h"])) {
             (Some(day), Some(month)) => day < month,
@@ -238,17 +274,37 @@ fn written(value: impl std::fmt::Display) -> Option<String> {
 #[cfg(not(windows))]
 impl DateStyle for LocaleStyle {
     fn time(&self, at: NaiveDateTime) -> String {
-        written(at.and_utc().format_localized(&self.time_format(), self.0)).unwrap_or_else(|| English.time(at))
+        written(at.and_utc().format_localized(&self.time_format(), self.locale)).unwrap_or_else(|| English.time(at))
     }
 
     fn weekday(&self, at: NaiveDate) -> String {
-        written(at.format_localized("%a", self.0)).unwrap_or_else(|| English.weekday(at))
+        written(at.format_localized("%a", self.locale)).unwrap_or_else(|| English.weekday(at))
     }
 
     fn month_day(&self, at: NaiveDate) -> String {
         let format = if self.day_first() { "%-d %b" } else { "%b %-d" };
-        written(at.format_localized(format, self.0)).unwrap_or_else(|| English.month_day(at))
+        written(at.format_localized(format, self.locale)).unwrap_or_else(|| English.month_day(at))
     }
+}
+
+/// The clock the user chose over the Region's, on macOS: System Settings › General › Date & Time › 24-hour time sets
+/// `AppleICUForce24HourTime` or `AppleICUForce12HourTime`.
+#[cfg(not(windows))]
+fn clock_choice() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSString, NSUserDefaults};
+        let defaults = NSUserDefaults::standardUserDefaults();
+        if defaults.boolForKey(&NSString::from_str("AppleICUForce24HourTime")) {
+            return Some(true);
+        }
+        if defaults.boolForKey(&NSString::from_str("AppleICUForce12HourTime")) {
+            return Some(false);
+        }
+        None
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 /// The locale the system formats dates for: on macOS the Region set in System Settings (which can differ from the
@@ -297,7 +353,7 @@ mod tests {
     #[test]
     fn posix_locales_set_the_clock_names_and_order() {
         let at = thursday_nine();
-        let style = |name: &str| LocaleStyle(parse_locale(name).expect(name));
+        let style = |name: &str| LocaleStyle::new(parse_locale(name).expect(name));
         let us = style("en_US.UTF-8");
         assert_eq!(us.time(at), "9:05 AM");
         assert_eq!(us.weekday(at.date()), "Thu");
@@ -322,6 +378,21 @@ mod tests {
         // A modifier picks its variant; an unknown one (Apple's "@rg=") is ignored.
         assert_eq!(parse_locale("sr_RS.UTF-8@latin"), Some(chrono::Locale::sr_RS_latin));
         assert_eq!(parse_locale("en_GB@rg=dezzzz"), Some(chrono::Locale::en_GB));
+        // No time zone on a local clock ("%Z %I:%M:%S %p" in ar_AE).
+        assert!(!style("ar_AE").time(at).contains("+00"));
+        // The digit modifier in a date ("%Od-%Om-%Oy" in or_IN) still says day-first.
+        assert!(style("or_IN").day_first());
+        // The user's clock choice wins over the locale's.
+        let us_24h = LocaleStyle {
+            clock_24h: Some(true),
+            ..style("en_US")
+        };
+        assert_eq!(us_24h.time(at), "09:05");
+        let german_12h = LocaleStyle {
+            clock_24h: Some(false),
+            ..style("de_DE")
+        };
+        assert!(german_12h.time(at).starts_with("9:05"), "{}", german_12h.time(at));
         // A day before a month name is day-first ("%A %d %b %Y").
         assert!(style("to_TO").day_first());
         assert_eq!(parse_locale("C"), None);

@@ -5,6 +5,8 @@
 #
 #   ./package-macos.sh            builds target/package/macos/CodexBar.app and CodexBar-<version>.dmg
 #   OUT=dist ./package-macos.sh   puts both in dist/
+#
+# The app is universal (Apple silicon and Intel); TARGETS=aarch64-apple-darwin builds for one only.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -12,14 +14,20 @@ OUT=${OUT:-target/package/macos}
 IDENTITY=${CODESIGN_IDENTITY:--}
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 BUNDLE_ID=HemSoft.CodexBar
+TARGETS=${TARGETS:-aarch64-apple-darwin x86_64-apple-darwin}
 
-cargo build --release --locked -p codexbar-app
+rustup target add $TARGETS
+BINARIES=()
+for target in $TARGETS; do
+    cargo build --release --locked -p codexbar-app --target "$target"
+    BINARIES+=("target/$target/release/codexbar")
+done
 cargo build --release --locked -p codexbar-app --example icon
 
 APP="$OUT/CodexBar.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp target/release/codexbar "$APP/Contents/MacOS/codexbar"
+lipo -create -output "$APP/Contents/MacOS/codexbar" "${BINARIES[@]}"
 # CodexBar's license and the embedded provider logos' notice travel with the app.
 cp LICENSE "$APP/Contents/Resources/LICENSE"
 cp crates/codexbar-app/assets/brand/LICENSE.md "$APP/Contents/Resources/provider-logos.md"

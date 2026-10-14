@@ -4,7 +4,8 @@
 #   ./package-linux.sh            builds target/package/linux/codexbar_<version>_<arch>.deb
 #   OUT=dist ./package-linux.sh   puts it in dist/
 #
-# Install it with `sudo apt install ./codexbar_<version>_<arch>.deb`, which also installs what it depends on.
+# Install it with `sudo apt install ./codexbar_<version>_<arch>.deb`, which also installs what it depends on. Building
+# needs dpkg-dev for dpkg-shlibdeps.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -39,16 +40,23 @@ DESKTOP
 install -Dm644 LICENSE "$ROOT/usr/share/doc/codexbar/copyright"
 install -Dm644 crates/codexbar-app/assets/brand/LICENSE.md "$ROOT/usr/share/doc/codexbar/provider-logos.md"
 
-# GPUI links xcb and xkbcommon, loads Vulkan and Wayland at run time, and its font stack uses FreeType and fontconfig; the tray and the keyring speak D-Bus in
-# pure Rust. A Vulkan driver (Mesa's, or the GPU vendor's) draws the window.
+# What the binary links, with the minimum versions it needs, the way Debian computes them (dpkg-shlibdeps). GPUI also
+# loads Vulkan and Wayland at run time and its font stack uses FreeType and fontconfig, which no link records, so they
+# are listed by hand. The tray and the keyring speak D-Bus in pure Rust. A Vulkan driver (Mesa's, or the GPU vendor's)
+# draws the window.
+SHLIBS=$(mktemp -d)
+mkdir -p "$SHLIBS/debian"
+printf 'Source: codexbar\n\nPackage: codexbar\nArchitecture: any\n' > "$SHLIBS/debian/control"
+LINKED=$(cd "$SHLIBS" && dpkg-shlibdeps -O "$ROOT/usr/bin/codexbar" | sed -n 's/^shlibs:Depends=//p')
+rm -rf "$SHLIBS"
+test -n "$LINKED"
 mkdir -p "$ROOT/DEBIAN"
 cat > "$ROOT/DEBIAN/control" <<CONTROL
 Package: codexbar
 Version: $VERSION
 Architecture: $ARCH
 Maintainer: HemSoft <codexbar@users.noreply.github.com>
-Depends: libc6, libgcc-s1, libxcb1, libxcb-xkb1, libxkbcommon0, libxkbcommon-x11-0, libvulkan1, libwayland-client0,
- libfreetype6, libfontconfig1
+Depends: $LINKED, libvulkan1, libwayland-client0, libfreetype6, libfontconfig1
 Recommends: mesa-vulkan-drivers, libegl1, gnome-keyring | kwalletmanager
 Section: utils
 Priority: optional
