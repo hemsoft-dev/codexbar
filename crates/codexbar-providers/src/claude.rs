@@ -1,5 +1,6 @@
 //! Claude subscription limits (5-hour and weekly), read with the sign-in Claude Code keeps in a config folder's
-//! `.credentials.json`: Claude Code's own (`~/.claude`), or one CodexBar signed in through Claude Code (#80).
+//! `.credentials.json`: Claude Code's own (`~/.claude`), or one CodexBar signed in through Claude Code (#80). On macOS
+//! Claude Code keeps the sign-in in the login Keychain instead, one item per folder.
 //!
 //! This provider never refreshes or rewrites a token itself, because a refresh racing Claude Code can sign it out.
 //! When a token expires (or is refused) it asks Claude Code to renew it (`claude_cli::renew`), which takes Claude
@@ -105,9 +106,112 @@ pub fn default_credentials_path() -> PathBuf {
         .join(".credentials.json")
 }
 
+/// Whether `config` is Claude Code's own folder, `~/.claude`, which Claude Code uses when no folder is set.
+pub fn is_default_config_dir(config: &Path) -> bool {
+    crate::platform::home_dir().is_some_and(|home| config == home.join(".claude"))
+}
+
+/// The login Keychain item Claude Code keeps a config folder's sign-in in on macOS: `Claude Code-credentials` for its
+/// own folder, and for any other a suffix of the first 8 hex digits of the folder's SHA-256.
+pub fn keychain_service(config: &Path) -> String {
+    const SERVICE: &str = "Claude Code-credentials";
+    if is_default_config_dir(config) {
+        return SERVICE.to_owned();
+    }
+    let digest = Sha256::digest(config.to_string_lossy().as_bytes());
+    let short: String = digest.iter().take(4).map(|byte| format!("{byte:02x}")).collect();
+    format!("{SERVICE}-{short}")
+}
+
+/// Whether the config folder holding the sign-in file `path` is signed in: the file, or on macOS its Keychain item.
+pub fn has_credentials(path: &Path) -> bool {
+    path.is_file() || path.parent().is_some_and(keychain::holds)
+}
+
+/// The sign-in for the folder holding `path`: its `.credentials.json`, or on macOS, where Claude Code keeps it in the
+/// login Keychain instead, the folder's Keychain item.
+fn credentials_text(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .or_else(|| path.parent().and_then(keychain::read))
+}
+
+/// Claude Code's sign-ins in the macOS login Keychain. Claude Code reads and writes them with `security`, so reading
+/// them with it too never asks the user, where the Security framework would ask for CodexBar.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Whether a folder holds an item is asked on every frame of the settings page, so a lookup is reused this long.
+    const PRESENCE_TTL: Duration = Duration::from_secs(5);
+    static PRESENCE: Mutex<Vec<(String, Instant, bool)>> = Mutex::new(Vec::new());
+
+    /// The item's account: the user name, as Claude Code writes it.
+    fn account() -> String {
+        std::env::var("USER")
+            .ok()
+            .filter(|user| {
+                !user.is_empty()
+                    && user
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+            })
+            .unwrap_or_else(|| "claude-code-user".to_owned())
+    }
+
+    fn lookup(service: &str) -> Command {
+        let mut command = Command::new("/usr/bin/security");
+        command
+            .args(["find-generic-password", "-a", &account(), "-s", service])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+
+    pub fn read(config: &Path) -> Option<String> {
+        let output = lookup(&super::keychain_service(config)).arg("-w").output().ok()?;
+        let text = String::from_utf8(output.stdout).ok()?;
+        let text = text.trim_end();
+        (output.status.success() && !text.is_empty()).then(|| text.to_owned())
+    }
+
+    pub fn holds(config: &Path) -> bool {
+        let service = super::keychain_service(config);
+        let now = Instant::now();
+        let mut known = PRESENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        known.retain(|(_, at, _)| now.duration_since(*at) < PRESENCE_TTL);
+        if let Some((_, _, held)) = known.iter().find(|(name, _, _)| *name == service) {
+            return *held;
+        }
+        let held = lookup(&service)
+            .stdout(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        known.push((service, now, held));
+        held
+    }
+}
+
+/// Claude Code keeps its sign-ins in files everywhere but macOS.
+#[cfg(not(target_os = "macos"))]
+mod keychain {
+    use std::path::Path;
+
+    pub fn read(_: &Path) -> Option<String> {
+        None
+    }
+
+    pub fn holds(_: &Path) -> bool {
+        false
+    }
+}
+
 pub fn read_credentials(path: &Path) -> Result<Credentials, ProviderError> {
     let not_signed_in = ProviderError::NotSignedIn { hint: SIGN_IN_HINT };
-    let text = std::fs::read_to_string(path).map_err(|_| not_signed_in.clone())?;
+    let text = credentials_text(path).ok_or_else(|| not_signed_in.clone())?;
     let json: Value = serde_json::from_str(&text).map_err(|_| not_signed_in.clone())?;
     let oauth = json.get("claudeAiOauth").ok_or_else(|| not_signed_in.clone())?;
     let access_token = oauth
@@ -589,7 +693,7 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
     /// No sign-in fails the adapter as a whole. Otherwise the account is known from Claude Code's profile, so a
     /// failure (expiry, backoff) is that account's, never another identity's. Fresh results are reused for a while.
     fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
-        if !self.credentials_path.is_file() {
+        if !has_credentials(&self.credentials_path) {
             return Err(ProviderError::NotSignedIn {
                 hint: self.not_signed_in_hint(),
             });
@@ -662,7 +766,7 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
         let current = self
             .profile
             .as_deref()
-            .filter(|_| self.credentials_path.is_file())
+            .filter(|_| has_credentials(&self.credentials_path))
             .and_then(signed_in_identity)
             .map(|(id, _)| id);
         current.or_else(|| self.account.as_ref().map(|(id, _)| AccountId::new(id.clone())))
@@ -918,6 +1022,17 @@ mod tests {
             parse_usage(r#"{"five_hour":null,"seven_day":null}"#, None, now()),
             Err(ProviderError::Unexpected { .. })
         ));
+    }
+
+    #[test]
+    fn keychain_items_are_named_as_claude_code_names_them() {
+        // Claude Code: `Claude Code-credentials`, plus `-` and sha256(folder)[..8] for a folder that isn't its own.
+        assert_eq!(
+            keychain_service(Path::new("/Users/home/.codexbar/claude/abc")),
+            "Claude Code-credentials-88a2166c"
+        );
+        let home = crate::platform::home_dir().expect("a home folder");
+        assert_eq!(keychain_service(&home.join(".claude")), "Claude Code-credentials");
     }
 
     #[test]
