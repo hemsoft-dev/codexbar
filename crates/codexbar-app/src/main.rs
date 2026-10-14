@@ -26,6 +26,8 @@ mod opencode_sign_in;
 mod package;
 mod prefs_hub;
 mod providers;
+#[cfg(feature = "capture")]
+mod self_capture;
 mod settings_hub;
 mod settings_view;
 mod status;
@@ -185,6 +187,9 @@ fn main() {
         // macOS and Linux name the app on its notifications by this identity; Windows registers its own (notifications).
         #[cfg(not(windows))]
         cx.set_app_identity(notifications::APP_ID, "CodexBar");
+        // A menu-bar app on macOS: no Dock icon and no app menu; the menu-bar icon opens the dashboard (#161).
+        #[cfg(target_os = "macos")]
+        cx.set_activation_policy(gpui_kit::ActivationPolicy::Accessory);
         settings_hub::SettingsHub::init(cx);
         codex_sign_in::init(cx);
         claude_sign_in::init(cx);
@@ -227,9 +232,13 @@ fn main() {
         };
 
         let (handle, dashboard) = gpui_kit::open_window(options, cx, |window, cx| {
+            // Window managers and the macOS Window menu name the window by its title; Windows keeps the untitled
+            // window it has always had.
+            #[cfg(not(windows))]
+            window.set_window_title("CodexBar");
             // Closing hides: the window lives as long as the app, so the tray reopens the last view instantly.
-            window.on_window_should_close(cx, |window, _| {
-                tray::hide(window);
+            window.on_window_should_close(cx, |window, cx| {
+                tray::hide(window, cx);
                 false
             });
             cx.new(|cx| Dashboard::new(data_source(), window, cx))
@@ -237,7 +246,7 @@ fn main() {
         .expect("failed to open the dashboard window");
         // Start with Windows (the package's startup task) goes straight to the notification area.
         if package::launched_at_startup() {
-            let _ = cx.update_window(handle, |_, window, _| tray::hide(window));
+            let _ = cx.update_window(handle, |_, window, cx| tray::hide(window, cx));
         } else {
             cx.activate(true);
         }
@@ -264,7 +273,7 @@ fn main() {
                         if let Some(request) = &request {
                             focus_target.update(cx, |dashboard, cx| dashboard.focus_account(request, cx));
                         }
-                        let _ = cx.update_window(handle, |_, window, _| tray::show(window));
+                        let _ = cx.update_window(handle, |_, window, cx| tray::show(window, cx));
                     });
                 }
             })
@@ -276,21 +285,30 @@ fn main() {
             TrayCommand::Toggle | TrayCommand::Open => {
                 let _ = cx.update_window(handle, |_, window, cx| {
                     let hide = command == TrayCommand::Toggle && dashboard.read(cx).should_hide_on_toggle(window);
-                    if hide { tray::hide(window) } else { tray::show(window) }
+                    if hide {
+                        tray::hide(window, cx)
+                    } else {
+                        tray::show(window, cx)
+                    }
                 });
             }
             TrayCommand::Refresh => dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)),
             TrayCommand::Settings => {
                 dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
-                let _ = cx.update_window(handle, |_, window, _| tray::show(window));
+                let _ = cx.update_window(handle, |_, window, cx| tray::show(window, cx));
             }
             TrayCommand::Quit => cx.quit(),
         });
         if let Err(err) = result {
             eprintln!("codexbar: tray icon unavailable: {err}");
+            // Without the menu-bar icon a Mac needs the Dock icon to reach the window.
+            #[cfg(target_os = "macos")]
+            cx.set_activation_policy(gpui_kit::ActivationPolicy::Regular);
             // Without a tray icon the window is the only way in, even after a start with Windows.
-            let _ = cx.update_window(handle, |_, window, _| tray::show(window));
+            let _ = cx.update_window(handle, |_, window, cx| tray::show(window, cx));
         }
+        #[cfg(feature = "capture")]
+        self_capture::start(cx, handle, tooltip_source.clone());
         // Restored accounts were shown before the tray icon existed; give it their text now.
         tooltip_source.update(cx, |dashboard, cx| dashboard.publish_tooltip(cx));
     });

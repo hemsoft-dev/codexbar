@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use gpui_kit::{App, Global, Window};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -48,8 +48,13 @@ pub fn init(cx: &mut App, on_command: impl Fn(TrayCommand, &mut App) + 'static) 
     let menu = Menu::new();
     menu.append_items(&[&open, &refresh, &settings, &PredefinedMenuItem::separator(), &quit])?;
 
-    let icon = TrayIconBuilder::new()
-        .with_icon(brand_icon()?)
+    let builder = TrayIconBuilder::new();
+    // The macOS menu bar draws template images in its own color, light or dark.
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_icon_templated(menu_bar_icon()?);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.with_icon(brand_icon()?);
+    let icon = builder
         .with_tooltip("CodexBar")
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
@@ -107,6 +112,19 @@ pub fn has_tooltip_target(cx: &App) -> bool {
     cx.try_global::<TrayState>().is_some()
 }
 
+/// Where the tray icon is on screen, as `(x, y, width, height)` in physical pixels; `None` without an icon or on Linux,
+/// where tray-icon can't tell.
+#[cfg(feature = "capture")]
+pub fn rect(cx: &App) -> Option<(f64, f64, f64, f64)> {
+    let rect = cx.try_global::<TrayState>()?.icon.rect()?;
+    Some((
+        rect.position.x,
+        rect.position.y,
+        f64::from(rect.size.width),
+        f64::from(rect.size.height),
+    ))
+}
+
 /// Replaces the hover text, e.g. "CodexBar — ChatGPT · Codex 91%, resets in 38m".
 pub fn set_tooltip(cx: &App, text: &str) {
     if let Some(state) = cx.try_global::<TrayState>() {
@@ -129,7 +147,7 @@ pub fn is_shown(window: &Window) -> bool {
 }
 
 #[cfg(windows)]
-pub fn hide(window: &Window) {
+pub fn hide(window: &Window, _cx: &App) {
     if let Some(hwnd) = hwnd(window) {
         // The return value is the previous visibility, not an error.
         let _ = unsafe { ShowWindow(hwnd, SW_HIDE) };
@@ -137,7 +155,7 @@ pub fn hide(window: &Window) {
 }
 
 #[cfg(windows)]
-pub fn show(window: &Window) {
+pub fn show(window: &Window, _cx: &App) {
     if let Some(hwnd) = hwnd(window) {
         let restore = unsafe { IsIconic(hwnd).as_bool() };
         let _ = unsafe { ShowWindow(hwnd, if restore { SW_RESTORE } else { SW_SHOW }) };
@@ -153,17 +171,59 @@ pub fn is_shown(window: &Window) -> bool {
     window.is_visible()
 }
 
+/// macOS hides the whole app, the way a menu-bar app gets out of the way; Linux on X11 minimizes the window, since GPUI
+/// has no hide for it there. On Wayland the window stays up: a tray click carries no input serial, so the compositor
+/// may refuse to bring a minimized window back (xdg-activation), and it would stay out of reach.
 #[cfg(not(windows))]
-pub fn hide(window: &Window) {
-    window.minimize_window();
+pub fn hide(window: &Window, cx: &App) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window;
+        cx.hide();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cx;
+        if !on_wayland(window) {
+            window.minimize_window();
+        }
+    }
 }
 
+/// Whether GPUI drew the window through Wayland rather than X11.
+#[cfg(target_os = "linux")]
+fn on_wayland(window: &Window) -> bool {
+    HasWindowHandle::window_handle(window).is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)))
+}
+
+/// Brings the window to the front; an accessory app (macOS) must be activated first or it stays behind others.
 #[cfg(not(windows))]
-pub fn show(window: &Window) {
+pub fn show(window: &Window, cx: &App) {
+    cx.activate(true);
     window.activate_window();
 }
 
+/// The menu-bar template image: the brand mark's three bars, opaque, with their empty tracks faint, on nothing.
+#[cfg(any(target_os = "macos", test))]
+fn menu_bar_icon() -> anyhow::Result<Icon> {
+    const SIZE: usize = 32;
+    let bars = [(6, 26), (14, 20), (22, 14)];
+    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            for (top, end) in bars {
+                if (top..top + 5).contains(&y) && (3..29).contains(&x) {
+                    let alpha = if x < end + 2 { 0xFF } else { 0x55 };
+                    rgba[(y * SIZE + x) * 4..][..4].copy_from_slice(&[0, 0, 0, alpha]);
+                }
+            }
+        }
+    }
+    Ok(Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)?)
+}
+
 /// A 32x32 gold-on-black mark: three usage bars of falling length, echoing the app icon.
+#[cfg(any(not(target_os = "macos"), test))]
 fn brand_icon() -> anyhow::Result<Icon> {
     const SIZE: usize = 32;
     const BLACK: [u8; 4] = [0x0A, 0x0A, 0x0A, 0xFF];
@@ -188,6 +248,7 @@ fn brand_icon() -> anyhow::Result<Icon> {
 }
 
 /// Whether (x, y) falls outside a rounded square of the given corner radius.
+#[cfg(any(not(target_os = "macos"), test))]
 fn rounded_corner_cut(x: usize, y: usize, size: usize, radius: usize) -> bool {
     let (x, y, r) = (x as f32 + 0.5, y as f32 + 0.5, radius as f32);
     let max = size as f32;
@@ -211,5 +272,6 @@ mod tests {
     #[test]
     fn brand_icon_builds() {
         assert!(brand_icon().is_ok());
+        assert!(menu_bar_icon().is_ok());
     }
 }

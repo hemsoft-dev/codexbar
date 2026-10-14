@@ -1301,7 +1301,11 @@ impl Dashboard {
                     .text_color(cx.theme().muted_foreground)
                     .child(Icon::new(IconName::Search).small())
                     .child(div().flex_1().child("Search accounts…"))
-                    .child(div().text_xs().child("Ctrl+K")),
+                    .child(
+                        div()
+                            .text_xs()
+                            .child(if cfg!(target_os = "macos") { "⌘K" } else { "Ctrl+K" }),
+                    ),
             )
             .child(
                 SidebarMenu::new().children(items).child(
