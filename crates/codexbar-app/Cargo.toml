@@ -10,6 +10,11 @@ publish.workspace = true
 name = "codexbar"
 path = "src/main.rs"
 
+[features]
+# `CODEXBAR_CAPTURE_DIR=<folder> cargo run --features capture -p codexbar-app -- --demo` renders the running app's views
+# to PNGs and quits (src/self_capture.rs), for screenshots where no screen-capture tool may run.
+capture = ["gpui-kit/test-support"]
+
 [dependencies]
 sha2.workspace = true
 codexbar-core.workspace = true
