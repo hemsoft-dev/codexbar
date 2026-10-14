@@ -87,7 +87,7 @@ pub struct SystemGrokCli;
 
 impl GrokCli for SystemGrokCli {
     fn renew(&self, home: &Path) -> bool {
-        let mut command = std::process::Command::new(cli());
+        let mut command = crate::platform::command(cli());
         command
             .arg("models")
             .env("GROK_HOME", home)
@@ -116,7 +116,7 @@ pub struct LoginWindow(crate::contained::Contained);
 
 impl LoginWindow {
     pub fn open(home: &Path) -> std::io::Result<Self> {
-        let mut command = std::process::Command::new(cli());
+        let mut command = crate::platform::command(cli());
         command.arg("login").env("GROK_HOME", home);
         crate::contained::spawn_console(&mut command).map(Self)
     }
@@ -134,9 +134,9 @@ impl LoginWindow {
 
 /// The Grok CLI: where its installer puts it, or on PATH.
 pub fn cli() -> String {
-    let installed = std::env::var_os("USERPROFILE")
-        .map(|home| PathBuf::from(home).join(r".grok\bin\grok.exe"))
-        .filter(|path| path.is_file());
+    let installed = crate::platform::home_dir()
+        .and_then(|home| crate::platform::program_in(&home.join(".grok").join("bin"), "grok"))
+        .or_else(|| crate::platform::find_program("grok"));
     match installed {
         Some(path) => path.to_string_lossy().into_owned(),
         None => "grok".to_owned(),

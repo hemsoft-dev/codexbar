@@ -303,7 +303,7 @@ fn wait_output(mut process: crate::contained::Contained, timeout: Duration) -> R
 
 /// `gh` with the private config folder, no prompts, colors, update checks or token overrides.
 fn gh(program: &Path, config: &Path) -> Command {
-    let mut command = Command::new(program);
+    let mut command = crate::platform::command(program);
     command
         .env("GH_CONFIG_DIR", config)
         .env("GH_PROMPT_DISABLED", "1")
@@ -312,6 +312,11 @@ fn gh(program: &Path, config: &Path) -> Command {
     for name in OVERRIDES {
         command.env_remove(name);
     }
+    // On Linux `gh` asks the Secret Service for a stored token even with `--insecure-storage`, and a locked keyring
+    // with nobody to unlock it holds it there forever (#161). A private folder never uses the keyring, so `gh` gets a
+    // session bus it can't reach and goes straight on.
+    #[cfg(not(any(windows, target_os = "macos")))]
+    command.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/dev/null");
     command
 }
 
@@ -336,10 +341,7 @@ pub fn clean_up(parent: &Path) -> std::io::Result<usize> {
 }
 
 fn gh_program() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("gh.exe"))
-        .find(|candidate| candidate.is_file())
+    crate::platform::find_program("gh")
 }
 
 /// The name every private config folder starts with.

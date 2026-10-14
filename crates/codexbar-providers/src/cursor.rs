@@ -1,5 +1,6 @@
 //! Cursor included-usage for the current billing period, read with the sign-in Cursor keeps in
-//! `%APPDATA%\Cursor\auth.json`.
+//! `%APPDATA%\Cursor\auth.json` on Windows and `$XDG_CONFIG_HOME/cursor/auth.json` (`~/.config`) on Linux. On macOS
+//! Cursor keeps it in the Keychain instead (#161).
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -17,6 +18,7 @@ const SIGN_IN_HINT: &str = "Sign in to Cursor, then refresh CodexBar.";
 /// The hint for a sign-in CodexBar made (#81).
 pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again in Settings > Accounts.";
 
+#[cfg(windows)]
 pub fn default_auth_path() -> PathBuf {
     std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -25,8 +27,33 @@ pub fn default_auth_path() -> PathBuf {
         .join("auth.json")
 }
 
+/// The file Cursor would use on macOS. It keeps the sign-in in the Keychain there, so this file only exists if a user
+/// put one; `read_access_token` reads the Keychain for it.
+#[cfg(target_os = "macos")]
+pub fn default_auth_path() -> PathBuf {
+    crate::platform::home_dir()
+        .unwrap_or_default()
+        .join(".cursor")
+        .join("auth.json")
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn default_auth_path() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::platform::home_dir().map(|home| home.join(".config")))
+        .unwrap_or_default()
+        .join("cursor")
+        .join("auth.json")
+}
+
 pub fn read_access_token(path: &Path) -> Result<String, ProviderError> {
     let not_signed_in = ProviderError::NotSignedIn { hint: SIGN_IN_HINT };
+    #[cfg(target_os = "macos")]
+    if path == default_auth_path() && !path.exists() {
+        return keychain_token().ok_or(not_signed_in);
+    }
     let text = std::fs::read_to_string(path).map_err(|_| not_signed_in.clone())?;
     let json: Value = serde_json::from_str(&text).map_err(|_| not_signed_in.clone())?;
     json.get("accessToken")
@@ -34,6 +61,28 @@ pub fn read_access_token(path: &Path) -> Result<String, ProviderError> {
         .filter(|token| !token.trim().is_empty())
         .map(str::to_owned)
         .ok_or(not_signed_in)
+}
+
+/// The Cursor CLI's sign-in in the macOS Keychain (service `cursor-access-token`, account `cursor-user`), through the
+/// system's `security` tool. macOS asks the user once whether CodexBar may read it.
+#[cfg(target_os = "macos")]
+fn keychain_token() -> Option<String> {
+    let output = std::process::Command::new("/usr/bin/security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "cursor-access-token",
+            "-a",
+            "cursor-user",
+            "-w",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let token = String::from_utf8(output.stdout).ok()?;
+    let token = token.trim();
+    (output.status.success() && !token.is_empty()).then(|| token.to_owned())
 }
 
 /// Maps `GetCurrentPeriodUsage`: `planUsage.*PercentUsed` are percentages, `billingCycleEnd` (and

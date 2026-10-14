@@ -161,7 +161,7 @@ fn claude(config: &Path) -> Result<Command, ClaudeCliError> {
 
 /// `program` set up to act on `config` only.
 fn command_for(program: &Path, config: &Path) -> Command {
-    let mut command = Command::new(program);
+    let mut command = crate::platform::command(program);
     // Claude Code prefers CLAUDE_SECURESTORAGE_CONFIG_DIR over CLAUDE_CONFIG_DIR for its credentials
     // (anthropics/claude-code#79223), so an inherited one would sign in, renew or sign out another folder.
     command
@@ -174,12 +174,10 @@ fn command_for(program: &Path, config: &Path) -> Command {
     command
 }
 
-/// `claude.exe` (the native install), else `claude.cmd` (npm), from PATH.
+/// Claude Code: `claude.exe` (the native install), else `claude.cmd` (npm) on Windows, from PATH or an install
+/// folder.
 fn claude_program() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .flat_map(|dir| ["claude.exe", "claude.cmd"].map(|name| dir.join(name)))
-        .find(|candidate| candidate.is_file())
+    crate::platform::find_program("claude")
 }
 
 #[cfg(test)]

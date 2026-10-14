@@ -1,4 +1,4 @@
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// Output of a finished command. `stdout` may carry secrets (tokens); callers must never log it.
@@ -29,7 +29,7 @@ pub struct SystemCommandRunner;
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError> {
-        let mut command = Command::new(program);
+        let mut command = crate::platform::command(program);
         command
             .args(args)
             .stdin(Stdio::null())

@@ -17,7 +17,7 @@ pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
 }
 
 /// Spawns `command` in a console window of its own, for a CLI the user signs in through, inside a kill-on-close
-/// job.
+/// job. On macOS and Linux it runs in a terminal window instead (`terminal`).
 pub(crate) fn spawn_console(command: &mut Command) -> std::io::Result<Contained> {
     spawn_with(command, true)
 }
@@ -35,10 +35,12 @@ fn spawn_with(command: &mut Command, console: bool) -> std::io::Result<Contained
     }
     #[cfg(not(windows))]
     {
-        let _ = console;
-        Ok(Contained {
-            child: command.spawn()?,
-        })
+        let child = if console {
+            terminal::spawn(command)?
+        } else {
+            command.spawn()?
+        };
+        Ok(Contained { child })
     }
     #[cfg(windows)]
     {
@@ -51,6 +53,130 @@ fn spawn_with(command: &mut Command, console: bool) -> std::io::Result<Contained
             return Err(std::io::Error::other("the process couldn't be started"));
         }
         Ok(Contained { child, _job: job })
+    }
+}
+
+/// A CLI the user signs in through, in a terminal window of its own on macOS and Linux (#161). The command is written
+/// to a script that the terminal runs and that records the CLI's exit code in a file; the returned child waits for
+/// that file and exits with that code, so callers watch it as they would the CLI itself. Ending the child doesn't
+/// close the terminal window.
+#[cfg(not(windows))]
+mod terminal {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::path::Path;
+    use std::process::{Child, Command, Stdio};
+
+    /// `text` in single quotes for `sh`.
+    pub(super) fn quote(text: &std::ffi::OsStr) -> String {
+        format!("'{}'", text.to_string_lossy().replace('\'', r"'\''"))
+    }
+
+    /// The script that runs `command` as configured (environment, folder, arguments) and records its exit code.
+    pub(super) fn script(command: &Command, status: &Path) -> String {
+        let mut script = String::from("#!/bin/sh\n");
+        for (name, value) in command.get_envs() {
+            let name = name.to_string_lossy();
+            match value {
+                Some(value) => script.push_str(&format!("export {name}={}\n", quote(value))),
+                None => script.push_str(&format!("unset {name}\n")),
+            }
+        }
+        if let Some(dir) = command.get_current_dir() {
+            script.push_str(&format!("cd {} || exit 1\n", quote(dir.as_os_str())));
+        }
+        script.push_str(&quote(command.get_program()));
+        for arg in command.get_args() {
+            script.push(' ');
+            script.push_str(&quote(arg));
+        }
+        script.push_str(&format!("\necho $? > {}\n", quote(status.as_os_str())));
+        script
+    }
+
+    /// Opens the script in Terminal (macOS) or the first terminal emulator found (Linux).
+    fn launcher() -> &'static str {
+        if cfg!(target_os = "macos") {
+            r#"/usr/bin/open -a Terminal "$1""#
+        } else {
+            r#"if command -v x-terminal-emulator >/dev/null; then x-terminal-emulator -e "$1" &
+elif command -v gnome-terminal >/dev/null; then gnome-terminal -- "$1" &
+elif command -v konsole >/dev/null; then konsole -e "$1" &
+elif command -v xfce4-terminal >/dev/null; then xfce4-terminal -e "$1" &
+elif command -v kitty >/dev/null; then kitty "$1" &
+elif command -v alacritty >/dev/null; then alacritty -e "$1" &
+elif command -v xterm >/dev/null; then xterm -e "$1" &
+else exit 127; fi"#
+        }
+    }
+
+    pub(super) fn spawn(command: &Command) -> std::io::Result<Child> {
+        let mut name = [0u8; 8];
+        getrandom::fill(&mut name).map_err(|_| std::io::Error::other("no random name for the script folder"))?;
+        let suffix: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
+        let dir = std::env::temp_dir().join(format!("codexbar-terminal-{suffix}"));
+        std::fs::create_dir(&dir)?;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        // Terminal opens `.command` files; other terminals run any executable.
+        let path = dir.join("sign-in.command");
+        let status = dir.join("status");
+        let mut file = std::fs::File::create(&path)?;
+        file.write_all(script(command, &status).as_bytes())?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+        let waiter = format!(
+            "{}\nwhile [ ! -f \"$2\" ]; do sleep 0.5; done\ncode=$(cat \"$2\")\nrm -rf \"$3\"\nexit \"${{code:-1}}\"",
+            launcher()
+        );
+        Command::new("/bin/sh")
+            .args(["-c", &waiter, "sh"])
+            .arg(&path)
+            .arg(&status)
+            .arg(&dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    }
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use std::ffi::OsStr;
+    use std::path::Path;
+    use std::process::Command;
+
+    use super::terminal::{quote, script};
+
+    #[test]
+    fn the_terminal_script_runs_the_command_as_configured() {
+        let mut command = Command::new("/opt/it's/claude");
+        command
+            .args(["auth", "login", "--claudeai"])
+            .env("CLAUDE_CONFIG_DIR", "/tmp/a b")
+            .env_remove("ANTHROPIC_API_KEY")
+            .current_dir("/tmp");
+        let text = script(&command, Path::new("/tmp/x/status"));
+        assert!(text.starts_with("#!/bin/sh\n"));
+        assert!(text.contains("export CLAUDE_CONFIG_DIR='/tmp/a b'\n"));
+        assert!(text.contains("unset ANTHROPIC_API_KEY\n"));
+        assert!(text.contains("cd '/tmp' || exit 1\n"));
+        assert!(text.contains(r"'/opt/it'\''s/claude' 'auth' 'login' '--claudeai'"));
+        assert!(text.ends_with("echo $? > '/tmp/x/status'\n"));
+        assert_eq!(quote(OsStr::new("a'b")), r"'a'\''b'");
+    }
+
+    #[test]
+    fn the_script_reports_the_command_exit_code_through_sh() {
+        let dir = std::env::temp_dir().join(format!("codexbar-terminal-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let status = dir.join("status");
+        let mut command = Command::new("sh");
+        command.args(["-c", "exit 3"]);
+        let path = dir.join("script.sh");
+        std::fs::write(&path, script(&command, &status)).unwrap();
+        assert!(Command::new("sh").arg(&path).status().unwrap().success());
+        assert_eq!(std::fs::read_to_string(&status).unwrap().trim(), "3");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
