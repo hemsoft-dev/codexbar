@@ -145,26 +145,21 @@ pub fn show(window: &Window) {
     window.activate_window();
 }
 
-/// Whether the tray last hid the window. GPUI reports whether a window is active, not whether it is on screen: a click
-/// on the tray icon can take activation away from a window that is still in view.
+/// True while the platform presents the window: not minimized, hidden or fully covered. Unlike whether it is active,
+/// this stays true when a click on the tray icon takes activation away, and it follows a restore from the Dock or
+/// taskbar.
 #[cfg(not(windows))]
-static HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// True unless the tray hid the window.
-#[cfg(not(windows))]
-pub fn is_shown(_window: &Window) -> bool {
-    !HIDDEN.load(std::sync::atomic::Ordering::SeqCst)
+pub fn is_shown(window: &Window) -> bool {
+    window.is_visible()
 }
 
 #[cfg(not(windows))]
 pub fn hide(window: &Window) {
-    HIDDEN.store(true, std::sync::atomic::Ordering::SeqCst);
     window.minimize_window();
 }
 
 #[cfg(not(windows))]
 pub fn show(window: &Window) {
-    HIDDEN.store(false, std::sync::atomic::Ordering::SeqCst);
     window.activate_window();
 }
 

@@ -277,10 +277,43 @@ fn unavailable() -> Option<String> {
     })
 }
 
-/// Why this desktop can't show notifications: no notification service is running or can be started on the session
-/// bus.
+/// Why this desktop can't show notifications, from the last look at the session bus. The look runs on a thread of its
+/// own, at most once a minute, so a slow bus never holds up the UI; until the first one finishes, alerts wait.
 #[cfg(not(any(windows, target_os = "macos")))]
 fn unavailable() -> Option<String> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    struct Probe {
+        checked: Option<(Instant, Option<String>)>,
+        running: bool,
+    }
+    static PROBE: Mutex<Probe> = Mutex::new(Probe {
+        checked: None,
+        running: false,
+    });
+    let mut probe = PROBE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let stale = probe
+        .checked
+        .as_ref()
+        .is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(60));
+    if stale && !probe.running {
+        probe.running = true;
+        std::thread::spawn(|| {
+            let result = look_for_service();
+            let mut probe = PROBE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            probe.checked = Some((Instant::now(), result));
+            probe.running = false;
+        });
+    }
+    match &probe.checked {
+        Some((_, result)) => result.clone(),
+        None => Some("Looking for the desktop's notification service…".to_owned()),
+    }
+}
+
+/// Why no notification can pop up: no notification service is running or can be started on the session bus.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn look_for_service() -> Option<String> {
     const SERVICE: &str = "org.freedesktop.Notifications";
     let available = (|| -> zbus::Result<bool> {
         let connection = zbus::blocking::Connection::session()?;
