@@ -30,6 +30,9 @@ windows-future.workspace = true
 
 # The Mac build compiles GPUI's Metal shaders at startup instead of with Xcode's `metal` tool, so the Command Line Tools
 # are enough to build it. The version follows gpui-kit's own pin.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["runtime_shaders"] }
 

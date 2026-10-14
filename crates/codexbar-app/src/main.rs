@@ -69,8 +69,12 @@ fn data_source() -> DataSource {
     }
 }
 
-/// This instance's name part, per user: `DOMAIN.user`, or `Demo.DOMAIN.user` for the demo.
+/// This instance's name part, per user: `DOMAIN.user`, or `Demo.DOMAIN.user` for the demo. On macOS and Linux the
+/// settings folder is already the user's own, so the name only tells the demo apart.
 fn instance() -> String {
+    #[cfg(not(windows))]
+    let user = String::from("user");
+    #[cfg(windows)]
     let user: String = format!(
         "{}.{}",
         std::env::var("USERDOMAIN").unwrap_or_default(),
@@ -101,6 +105,17 @@ fn already_running() -> bool {
     }
 }
 
+/// Makes every file and folder this process (and the CLIs it starts) creates private to the user, and the settings
+/// folder too if an earlier run made it with default permissions.
+#[cfg(unix)]
+fn private_files() {
+    use std::os::unix::fs::PermissionsExt as _;
+    // SAFETY: umask only sets this process's file mode creation mask; it can't fail.
+    unsafe { libc::umask(0o077) };
+    let dir = codexbar_store::settings::Settings::default_dir();
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+}
+
 /// On macOS and Linux the lock is an advisory lock on a file in the settings folder, held until the process exits.
 #[cfg(not(windows))]
 fn already_running() -> bool {
@@ -129,6 +144,9 @@ fn already_running() -> bool {
 }
 
 fn main() {
+    // Settings, history and sign-ins in ~/.codexbar stay readable by this user only (#161).
+    #[cfg(unix)]
+    private_files();
     // Windows starts CodexBar this way for the Widgets board (#94). The provider runs beside the tray app.
     #[cfg(windows)]
     if std::env::args().any(|arg| arg == widgets::SERVER_ARG) {
@@ -164,6 +182,9 @@ fn main() {
     }
     gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
+        // macOS and Linux name the app on its notifications by this identity; Windows registers its own (notifications).
+        #[cfg(not(windows))]
+        cx.set_app_identity(notifications::APP_ID, "CodexBar");
         settings_hub::SettingsHub::init(cx);
         codex_sign_in::init(cx);
         claude_sign_in::init(cx);

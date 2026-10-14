@@ -306,8 +306,7 @@ pub struct WindowsNotifier {
     reason: Arc<Mutex<Option<String>>>,
 }
 
-/// The AppUserModelID the unpackaged app sends notifications under.
-#[cfg(windows)]
+/// The AppUserModelID the unpackaged app sends notifications under, and the app identity on macOS and Linux.
 pub const APP_ID: &str = "HemSoft.CodexBar";
 
 /// The AppUserModelID notifications go out under: the package's when CodexBar runs from it.

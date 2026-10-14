@@ -53,8 +53,7 @@ impl Sample {
 
 /// `~/.codexbar/history.jsonl`, next to the existing settings file.
 pub fn default_history_path() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
+    codexbar_core::home_dir()
         .unwrap_or_default()
         .join(".codexbar")
         .join("history.jsonl")
