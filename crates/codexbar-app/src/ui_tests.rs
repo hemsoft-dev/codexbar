@@ -43,7 +43,6 @@ impl Drop for TempSettings {
     }
 }
 
-/// Opens the demo dashboard the way `main` does, with settings from `settings`.
 /// Makes the settings file impossible to save until dropped. On Windows a read-only file can't be replaced. On macOS
 /// and Linux it can (replacing needs only its folder), so a folder takes the place of the save's temporary file.
 struct Unsavable {
@@ -83,6 +82,7 @@ impl Drop for Unsavable {
     }
 }
 
+/// Opens the demo dashboard the way `main` does, with settings from `settings`.
 fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindowHandle, Entity<Dashboard>) {
     cx.update(|cx| {
         gpui_kit::init(cx);

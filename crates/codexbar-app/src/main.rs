@@ -4,6 +4,9 @@ mod account_table;
 mod alert_details;
 mod assets;
 mod brand;
+// Only Linux can render GPUI headlessly from a test.
+#[cfg(all(test, target_os = "linux"))]
+mod captures;
 mod catalog;
 mod claude_sign_in;
 mod codex_sign_in;
