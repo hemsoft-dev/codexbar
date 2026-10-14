@@ -36,9 +36,10 @@ StartupWMClass=$APP_ID
 Categories=Utility;
 Keywords=AI;usage;limits;Codex;Claude;Copilot;
 DESKTOP
+install -Dm644 LICENSE "$ROOT/usr/share/doc/codexbar/copyright"
 install -Dm644 crates/codexbar-app/assets/brand/LICENSE.md "$ROOT/usr/share/doc/codexbar/provider-logos.md"
 
-# GPUI links xcb and xkbcommon, and loads Vulkan and Wayland at run time; the tray and the keyring speak D-Bus in
+# GPUI links xcb and xkbcommon, loads Vulkan and Wayland at run time, and its font stack uses FreeType and fontconfig; the tray and the keyring speak D-Bus in
 # pure Rust. A Vulkan driver (Mesa's, or the GPU vendor's) draws the window.
 mkdir -p "$ROOT/DEBIAN"
 cat > "$ROOT/DEBIAN/control" <<CONTROL
@@ -46,7 +47,8 @@ Package: codexbar
 Version: $VERSION
 Architecture: $ARCH
 Maintainer: HemSoft <codexbar@users.noreply.github.com>
-Depends: libc6, libgcc-s1, libxcb1, libxcb-xkb1, libxkbcommon0, libxkbcommon-x11-0, libvulkan1, libwayland-client0
+Depends: libc6, libgcc-s1, libxcb1, libxcb-xkb1, libxkbcommon0, libxkbcommon-x11-0, libvulkan1, libwayland-client0,
+ libfreetype6, libfontconfig1
 Recommends: mesa-vulkan-drivers, libegl1, gnome-keyring | kwalletmanager
 Section: utils
 Priority: optional

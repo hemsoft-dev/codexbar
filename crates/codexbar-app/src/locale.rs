@@ -153,18 +153,30 @@ impl LocaleStyle {
     fn time_format(&self) -> String {
         let format = pure_rust_locales::locale_match!(self.0 => LC_TIME::T_FMT);
         let format = if format.is_empty() { "%H:%M:%S" } else { format };
-        format
+        let format = format
             .replace("%T", "%H:%M:%S")
             .replace("%r", "%I:%M:%S %p")
             .replace(":%S", "")
             .replace(".%S", "")
-            .replace("%I", "%-I")
+            .replace("%I", "%-I");
+        // Seconds written with the locale's own words ("%H時%M分%S秒"): drop them with the text that follows them.
+        match format.find("%S") {
+            Some(at) => {
+                let rest = &format[at + 2..];
+                let end = rest
+                    .find(|ch: char| ch == '%' || ch.is_whitespace())
+                    .unwrap_or(rest.len());
+                format!("{}{}", &format[..at], &rest[end..])
+            }
+            None => format,
+        }
     }
 
     /// Whether the locale's date writes the day before the month ("1.11." rather than "11/1").
     fn day_first(&self) -> bool {
         let format = pure_rust_locales::locale_match!(self.0 => LC_TIME::D_FMT).replace("%D", "%m/%d/%y");
-        match (format.find("%d").or_else(|| format.find("%e")), format.find("%m")) {
+        let first = |directives: &[&str]| directives.iter().filter_map(|directive| format.find(directive)).min();
+        match (first(&["%d", "%e"]), first(&["%m", "%b", "%B", "%h"])) {
             (Some(day), Some(month)) => day < month,
             _ => false,
         }
@@ -175,16 +187,32 @@ impl LocaleStyle {
 /// the formats are known for. "C" and "POSIX" are no language and give none.
 #[cfg(not(windows))]
 pub fn parse_locale(name: &str) -> Option<chrono::Locale> {
-    let base = name.split(['.', '@']).next()?.replace('-', "_");
+    let base = name.split(['.', '@']).next()?;
     if base.is_empty() || base == "C" || base == "POSIX" {
         return None;
     }
-    if let Ok(locale) = chrono::Locale::try_from(base.as_str()) {
-        return Some(locale);
+    // Apple writes scripts and regions as subtags ("zh-Hant_HK", "sr-Latn"); POSIX locales have language_REGION.
+    let mut parts = base.split(['-', '_']);
+    let language = parts.next()?;
+    let (mut script, mut region) = (None, None);
+    for part in parts {
+        match part.len() {
+            4 => script = Some(part),
+            2 | 3 => region = Some(part.to_uppercase()),
+            _ => {}
+        }
     }
-    // A bare language ("fr", "de"): its main country, the way "fr" means French as written in France.
-    let language = base.split('_').next()?;
-    chrono::Locale::try_from(format!("{language}_{}", language.to_uppercase()).as_str()).ok()
+    let locale = |name: String| chrono::Locale::try_from(name.as_str()).ok();
+    region
+        .and_then(|region| locale(format!("{language}_{region}")))
+        // A script without a region: where it is written ("zh-Hant" is Taiwan's Chinese, "zh-Hans" mainland China's).
+        .or_else(|| match (language, script) {
+            ("zh", Some("Hant")) => locale("zh_TW".into()),
+            ("zh", Some("Hans")) => locale("zh_CN".into()),
+            _ => None,
+        })
+        // A bare language ("fr", "de"): its main country, the way "fr" means French as written in France.
+        .or_else(|| locale(format!("{language}_{}", language.to_uppercase())))
 }
 
 #[cfg(not(windows))]
@@ -246,6 +274,14 @@ mod tests {
         assert_eq!(british.time(at), "09:05");
         assert_eq!(british.month_day(at.date()), "8 Oct");
         assert_eq!(style("fr").weekday(at.date()), "jeu.");
+        // Seconds in the locale's own words go, with their word.
+        assert_eq!(style("ja_JP.UTF-8").time(at), "09時05分");
+        // Apple's script subtags: the region decides, or the script's home when there is none.
+        assert_eq!(parse_locale("zh-Hant_HK"), Some(chrono::Locale::zh_HK));
+        assert_eq!(parse_locale("zh-Hans"), Some(chrono::Locale::zh_CN));
+        assert_eq!(parse_locale("zh-Hant"), Some(chrono::Locale::zh_TW));
+        // A day before a month name is day-first ("%A %d %b %Y").
+        assert!(style("to_TO").day_first());
         assert_eq!(parse_locale("C"), None);
         assert_eq!(parse_locale("POSIX"), None);
         assert_eq!(parse_locale("xx_YY"), None);
