@@ -106,40 +106,47 @@ pub fn default_credentials_path() -> PathBuf {
         .join(".credentials.json")
 }
 
-/// Whether `config` is Claude Code's own folder, `~/.claude`, which Claude Code uses when no folder is set.
+/// Whether `config` is Claude Code's own folder used the way Claude Code uses it when no folder is set: `~/.claude`
+/// with `CLAUDE_CONFIG_DIR` unset. Claude Code goes by whether a folder is set, not by where it is, so a set
+/// `CLAUDE_CONFIG_DIR=~/.claude` is any other folder to it.
 pub fn is_default_config_dir(config: &Path) -> bool {
-    crate::platform::home_dir().is_some_and(|home| config == home.join(".claude"))
+    std::env::var_os("CLAUDE_CONFIG_DIR").is_none_or(|value| value.is_empty())
+        && crate::platform::home_dir().is_some_and(|home| config == home.join(".claude"))
 }
 
 /// The login Keychain item Claude Code keeps a config folder's sign-in in on macOS: `Claude Code-credentials` for its
-/// own folder, and for any other a suffix of the first 8 hex digits of the folder's SHA-256.
+/// own folder ([`is_default_config_dir`]), and for any other a suffix of the first 8 hex digits of the SHA-256 of the
+/// folder's path in Unicode NFC, as Claude Code normalizes it.
 pub fn keychain_service(config: &Path) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
     const SERVICE: &str = "Claude Code-credentials";
     if is_default_config_dir(config) {
         return SERVICE.to_owned();
     }
-    let digest = Sha256::digest(config.to_string_lossy().as_bytes());
+    let path: String = config.to_string_lossy().nfc().collect();
+    let digest = Sha256::digest(path.as_bytes());
     let short: String = digest.iter().take(4).map(|byte| format!("{byte:02x}")).collect();
     format!("{SERVICE}-{short}")
 }
 
-/// Whether the config folder holding the sign-in file `path` is signed in: the file, or on macOS its Keychain item.
+/// Whether the config folder holding the sign-in file `path` is signed in: on macOS its Keychain item, or the file.
 pub fn has_credentials(path: &Path) -> bool {
-    path.is_file() || path.parent().is_some_and(keychain::holds)
+    path.parent().is_some_and(keychain::holds) || path.is_file()
 }
 
-/// The sign-in for the folder holding `path`: its `.credentials.json`, or on macOS, where Claude Code keeps it in the
-/// login Keychain instead, the folder's Keychain item.
+/// The sign-in for the folder holding `path`. On macOS Claude Code keeps it in the login Keychain and may leave an
+/// older `.credentials.json` behind, so the Keychain item comes first there and the file is only a fallback.
 fn credentials_text(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .or_else(|| path.parent().and_then(keychain::read))
+    path.parent()
+        .and_then(keychain::read)
+        .or_else(|| std::fs::read_to_string(path).ok())
 }
 
 /// Claude Code's sign-ins in the macOS login Keychain. Claude Code reads and writes them with `security`, so reading
 /// them with it too never asks the user, where the Security framework would ask for CodexBar.
 #[cfg(target_os = "macos")]
 mod keychain {
+    use std::io::Read as _;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::Mutex;
@@ -147,6 +154,9 @@ mod keychain {
 
     /// Whether a folder holds an item is asked on every frame of the settings page, so a lookup is reused this long.
     const PRESENCE_TTL: Duration = Duration::from_secs(5);
+    /// A lookup still running after this long is waiting on a Keychain dialog: it is stopped and counts as no item,
+    /// so one stuck lookup never holds up a refresh.
+    const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
     static PRESENCE: Mutex<Vec<(String, Instant, bool)>> = Mutex::new(Vec::new());
 
     /// The item's account: the user name, as Claude Code writes it.
@@ -162,20 +172,40 @@ mod keychain {
             .unwrap_or_else(|| "claude-code-user".to_owned())
     }
 
-    fn lookup(service: &str) -> Command {
-        let mut command = Command::new("/usr/bin/security");
-        command
+    /// Runs `security find-generic-password` for `service` with `extra` arguments, within [`LOOKUP_TIMEOUT`]. Its
+    /// stdout when it found the item.
+    fn lookup(service: &str, extra: &[&str]) -> Option<Vec<u8>> {
+        let mut child = Command::new("/usr/bin/security")
             .args(["find-generic-password", "-a", &account(), "-s", service])
+            .args(extra)
             .stdin(Stdio::null())
-            .stderr(Stdio::null());
-        command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = Instant::now() + LOOKUP_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        };
+        // The item is a few kilobytes at most, well within the pipe's buffer, so it is all there once `security` exits.
+        let mut stdout = Vec::new();
+        child.stdout.take()?.read_to_end(&mut stdout).ok()?;
+        status.success().then_some(stdout)
     }
 
     pub fn read(config: &Path) -> Option<String> {
-        let output = lookup(&super::keychain_service(config)).arg("-w").output().ok()?;
-        let text = String::from_utf8(output.stdout).ok()?;
+        let stdout = lookup(&super::keychain_service(config), &["-w"])?;
+        let text = String::from_utf8(stdout).ok()?;
         let text = text.trim_end();
-        (output.status.success() && !text.is_empty()).then(|| text.to_owned())
+        (!text.is_empty()).then(|| text.to_owned())
     }
 
     pub fn holds(config: &Path) -> bool {
@@ -186,10 +216,8 @@ mod keychain {
         if let Some((_, _, held)) = known.iter().find(|(name, _, _)| *name == service) {
             return *held;
         }
-        let held = lookup(&service)
-            .stdout(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
+        // Without `-w` only the item's attributes are read, which needs no access to its secret and so no dialog.
+        let held = lookup(&service, &[]).is_some();
         known.push((service, now, held));
         held
     }
@@ -1031,8 +1059,17 @@ mod tests {
             keychain_service(Path::new("/Users/home/.codexbar/claude/abc")),
             "Claude Code-credentials-88a2166c"
         );
-        let home = crate::platform::home_dir().expect("a home folder");
-        assert_eq!(keychain_service(&home.join(".claude")), "Claude Code-credentials");
+        // Claude Code hashes the path in NFC, so a decomposed "é" names the same item as a composed one.
+        assert_eq!(
+            keychain_service(Path::new("/Users/home/Caf\u{65}\u{301}/claude")),
+            keychain_service(Path::new("/Users/home/Caf\u{e9}/claude"))
+        );
+        // Its own folder has the plain name, but only while no folder is set: a set one is hashed even when it is
+        // `~/.claude`.
+        if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
+            let home = crate::platform::home_dir().expect("a home folder");
+            assert_eq!(keychain_service(&home.join(".claude")), "Claude Code-credentials");
+        }
     }
 
     #[test]

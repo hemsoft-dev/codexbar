@@ -164,8 +164,9 @@ fn command_for(program: &Path, config: &Path) -> Command {
     let mut command = crate::platform::command(program);
     // Claude Code prefers CLAUDE_SECURESTORAGE_CONFIG_DIR over CLAUDE_CONFIG_DIR for its credentials
     // (anthropics/claude-code#79223), so an inherited one would sign in, renew or sign out another folder. A set
-    // folder also names the macOS Keychain item after its hash, so Claude Code's own `~/.claude` is passed as empty,
-    // which Claude Code reads as that folder under the item's plain name (`claude::keychain_service`).
+    // folder also names the macOS Keychain item after its hash, so Claude Code's own `~/.claude`, when no folder is set
+    // for CodexBar, is passed as empty, which Claude Code reads as that folder under the item's plain name
+    // (`claude::keychain_service`).
     let secure_storage = if crate::claude::is_default_config_dir(config) {
         std::ffi::OsStr::new("")
     } else {
@@ -220,6 +221,9 @@ mod tests {
 
     #[test]
     fn claude_codes_own_folder_keeps_its_plain_keychain_item() {
+        if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+            return;
+        }
         let home = crate::platform::home_dir().expect("a home folder");
         let command = command_for(Path::new("claude"), &home.join(".claude"));
         let secure_storage = command
