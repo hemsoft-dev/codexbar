@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use gpui_kit::{App, Global, Window};
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
@@ -171,8 +171,9 @@ pub fn is_shown(window: &Window) -> bool {
     window.is_visible()
 }
 
-/// macOS hides the whole app, the way a menu-bar app gets out of the way; Linux minimizes the window, since GPUI has
-/// no hide for it there.
+/// macOS hides the whole app, the way a menu-bar app gets out of the way; Linux on X11 minimizes the window, since GPUI
+/// has no hide for it there. On Wayland the window stays up: a tray click carries no input serial, so the compositor
+/// may refuse to bring a minimized window back (xdg-activation), and it would stay out of reach.
 #[cfg(not(windows))]
 pub fn hide(window: &Window, cx: &App) {
     #[cfg(target_os = "macos")]
@@ -183,8 +184,16 @@ pub fn hide(window: &Window, cx: &App) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = cx;
-        window.minimize_window();
+        if !on_wayland(window) {
+            window.minimize_window();
+        }
     }
+}
+
+/// Whether GPUI drew the window through Wayland rather than X11.
+#[cfg(target_os = "linux")]
+fn on_wayland(window: &Window) -> bool {
+    HasWindowHandle::window_handle(window).is_ok_and(|handle| matches!(handle.as_raw(), RawWindowHandle::Wayland(_)))
 }
 
 /// Brings the window to the front; an accessory app (macOS) must be activated first or it stays behind others.

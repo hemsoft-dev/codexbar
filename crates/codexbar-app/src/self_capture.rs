@@ -13,11 +13,16 @@ use gpui_kit::{AnyWindowHandle, App, AppContext as _, AsyncApp, Entity};
 use crate::dashboard::{Dashboard, DashboardView};
 use crate::theme::Appearance;
 
-/// Starts the capture if `CODEXBAR_CAPTURE_DIR` is set.
+/// Starts the capture if `CODEXBAR_CAPTURE_DIR` is set and this is the demo.
 pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>) {
     let Some(dir) = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(PathBuf::from) else {
         return;
     };
+    // Real accounts must never end up in a screenshot, and the capture changes the appearance it shows.
+    if !crate::is_demo() {
+        eprintln!("codexbar: CODEXBAR_CAPTURE_DIR works only with --demo");
+        return;
+    }
     let _ = std::fs::create_dir_all(&dir);
     cx.spawn(async move |cx| {
         let report = run(cx, handle, &dashboard, &dir).await;
