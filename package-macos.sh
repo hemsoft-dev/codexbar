@@ -71,7 +71,16 @@ cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 DMG="$OUT/CodexBar-$VERSION.dmg"
 rm -f "$DMG"
-hdiutil create -quiet -volname CodexBar -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+# hdiutil sometimes finds the disk-image driver busy right after a build (seen on GitHub's macOS runners); try again.
+for attempt in 1 2 3; do
+    if hdiutil create -volname CodexBar -srcfolder "$STAGE" -ov -format UDZO "$DMG"; then
+        break
+    fi
+    if [ "$attempt" = 3 ]; then
+        exit 1
+    fi
+    sleep 10
+done
 rm -rf "$STAGE"
 
 echo "Built $APP and $DMG"
