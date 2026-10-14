@@ -94,16 +94,7 @@ impl Notifications {
     /// Sends a sample notification from Settings, so the user can see where alerts appear and whether Windows
     /// shows them.
     pub fn send_test(cx: &mut App) {
-        let alert = Alert {
-            key: String::new(),
-            kind: codexbar_core::alerts::AlertKind::Usage,
-            account: "CodexBar".into(),
-            metric: "Test".into(),
-            value: String::new(),
-            title: "CodexBar alerts are on".into(),
-            body: "Usage and balance alerts will appear like this.".into(),
-            covers: Vec::new(),
-        };
+        let alert = test_alert();
         let Some(notifier) = cx.try_global::<Self>().map(|global| global.notifier.clone()) else {
             return;
         };
@@ -119,6 +110,20 @@ impl Notifications {
     pub fn reset(cx: &mut App) {
         Self::set_active(cx, Default::default());
         cx.refresh_windows();
+    }
+}
+
+/// The sample notification Settings sends.
+pub fn test_alert() -> Alert {
+    Alert {
+        key: String::new(),
+        kind: codexbar_core::alerts::AlertKind::Usage,
+        account: "CodexBar".into(),
+        metric: "Test".into(),
+        value: String::new(),
+        title: "CodexBar alerts are on".into(),
+        body: "Usage and balance alerts will appear like this.".into(),
+        covers: Vec::new(),
     }
 }
 

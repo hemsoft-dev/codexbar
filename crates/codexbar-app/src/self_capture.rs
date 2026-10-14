@@ -96,11 +96,31 @@ async fn run(
     settle(cx).await;
     let reshown = shown(cx, handle);
     let tray = cx.update(|cx| crate::tray::rect(cx));
+    // With CODEXBAR_CAPTURE_NOTIFY=1, the system notifier (never the demo's) says whether it can deliver here, and
+    // posts the Settings test notification when it can.
+    let notification = if std::env::var_os("CODEXBAR_CAPTURE_NOTIFY").is_some() {
+        cx.update(|cx| {
+            let notifier = crate::notifications::system_notifier();
+            match notifier.status() {
+                crate::notifications::NotifierStatus::Ready => {
+                    match notifier.show(&crate::notifications::test_alert(), cx) {
+                        Ok(()) => "posted".to_owned(),
+                        Err(err) => format!("failed: {err}"),
+                    }
+                }
+                crate::notifications::NotifierStatus::Blocked(reason) => format!("blocked: {reason}"),
+            }
+        })
+    } else {
+        "not asked".to_owned()
+    };
+    settle(cx).await;
     serde_json::json!({
         "saved": saved,
         "shownAtStart": before,
         "shownAfterHide": hidden,
         "shownAfterShow": reshown,
+        "notification": notification,
         "trayIconRect": tray.map(|(x, y, w, h)| serde_json::json!({ "x": x, "y": y, "width": w, "height": h })),
     })
 }

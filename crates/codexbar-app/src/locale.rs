@@ -1,6 +1,6 @@
-//! Dates and times in the Windows user's own locale (#84): 12- or 24-hour time, local month and weekday names, and
-//! the locale's own month-day order. Windows reads the user's current settings on every call, so a change in
-//! Settings > Time & language shows on the next redraw. Tests use the fixed English style, so their output doesn't
+//! Dates and times in the user's own locale (#84): 12- or 24-hour time, local month and weekday names, and the
+//! locale's own month-day order. Windows reads the user's current settings on every call, so a change in
+//! Settings > Time & language shows on the next redraw. macOS and Linux read the locale once at start (#167). Tests use the fixed English style, so their output doesn't
 //! depend on the machine running them.
 
 #[cfg(windows)]
@@ -10,7 +10,16 @@ use codexbar_core::format::{DateStyle, English};
 
 /// The style the app shows dates in.
 pub fn style() -> &'static dyn DateStyle {
-    if cfg!(test) { &English } else { &WindowsLocale }
+    if cfg!(test) {
+        return &English;
+    }
+    #[cfg(windows)]
+    return &WindowsLocale;
+    #[cfg(not(windows))]
+    {
+        static SYSTEM: std::sync::LazyLock<LocaleStyle> = std::sync::LazyLock::new(LocaleStyle::system);
+        &*SYSTEM
+    }
 }
 
 /// A provider error's message with any time in the user's locale and timezone.
@@ -18,8 +27,8 @@ pub fn describe(error: &codexbar_providers::ProviderError) -> String {
     error.describe_with(&|at| style().time(at.with_timezone(&chrono::Local).naive_local()))
 }
 
-/// The Windows user locale, through `GetDateFormatEx` and `GetTimeFormatEx`; English if a call fails. On macOS and
-/// Linux it is the fixed English style for now.
+/// The Windows user locale, through `GetDateFormatEx` and `GetTimeFormatEx`; English if a call fails.
+#[cfg(windows)]
 pub struct WindowsLocale;
 
 #[cfg(windows)]
@@ -118,18 +127,79 @@ impl DateStyle for WindowsLocale {
     }
 }
 
+/// Dates in a POSIX locale's own conventions, from the locale data glibc ships (#167): its time format without seconds,
+/// its weekday and month names, and day-first or month-first order.
 #[cfg(not(windows))]
-impl DateStyle for WindowsLocale {
+pub struct LocaleStyle(pub chrono::Locale);
+
+#[cfg(not(windows))]
+impl LocaleStyle {
+    /// The user's locale for dates: `LC_ALL`, `LC_TIME` or `LANG` when set (Linux, and anything started from a shell),
+    /// otherwise the system's preferred language (a macOS app started from Finder has no `LANG`). US English when
+    /// none can be read.
+    pub fn system() -> Self {
+        let from_env = ["LC_ALL", "LC_TIME", "LANG"]
+            .iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .find(|value| !value.is_empty());
+        let locale = from_env
+            .or_else(sys_locale::get_locale)
+            .and_then(|name| parse_locale(&name))
+            .unwrap_or(chrono::Locale::en_US);
+        Self(locale)
+    }
+
+    /// The locale's time format with minutes as its smallest unit, and no leading zero on a 12-hour clock.
+    fn time_format(&self) -> String {
+        let format = pure_rust_locales::locale_match!(self.0 => LC_TIME::T_FMT);
+        let format = if format.is_empty() { "%H:%M:%S" } else { format };
+        format
+            .replace("%T", "%H:%M:%S")
+            .replace("%r", "%I:%M:%S %p")
+            .replace(":%S", "")
+            .replace(".%S", "")
+            .replace("%I", "%-I")
+    }
+
+    /// Whether the locale's date writes the day before the month ("1.11." rather than "11/1").
+    fn day_first(&self) -> bool {
+        let format = pure_rust_locales::locale_match!(self.0 => LC_TIME::D_FMT).replace("%D", "%m/%d/%y");
+        match (format.find("%d").or_else(|| format.find("%e")), format.find("%m")) {
+            (Some(day), Some(month)) => day < month,
+            _ => false,
+        }
+    }
+}
+
+/// A locale name as the environment or the system gives it ("de_DE.UTF-8", "de-DE", "pt_BR@euro", "fr"), as a locale
+/// the formats are known for. "C" and "POSIX" are no language and give none.
+#[cfg(not(windows))]
+pub fn parse_locale(name: &str) -> Option<chrono::Locale> {
+    let base = name.split(['.', '@']).next()?.replace('-', "_");
+    if base.is_empty() || base == "C" || base == "POSIX" {
+        return None;
+    }
+    if let Ok(locale) = chrono::Locale::try_from(base.as_str()) {
+        return Some(locale);
+    }
+    // A bare language ("fr", "de"): its main country, the way "fr" means French as written in France.
+    let language = base.split('_').next()?;
+    chrono::Locale::try_from(format!("{language}_{}", language.to_uppercase()).as_str()).ok()
+}
+
+#[cfg(not(windows))]
+impl DateStyle for LocaleStyle {
     fn time(&self, at: NaiveDateTime) -> String {
-        English.time(at)
+        at.and_utc().format_localized(&self.time_format(), self.0).to_string()
     }
 
     fn weekday(&self, at: NaiveDate) -> String {
-        English.weekday(at)
+        at.format_localized("%a", self.0).to_string()
     }
 
     fn month_day(&self, at: NaiveDate) -> String {
-        English.month_day(at)
+        let format = if self.day_first() { "%-d %b" } else { "%b %-d" };
+        at.format_localized(format, self.0).to_string()
     }
 }
 
@@ -157,6 +227,28 @@ mod tests {
         assert!(WindowsLocale.month_day_time(at).contains(&month_day));
         let full = WindowsLocale.full(at);
         assert!(full.contains("2026") && full.ends_with(&time), "{full}");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_locales_set_the_clock_names_and_order() {
+        let at = thursday_nine();
+        let style = |name: &str| LocaleStyle(parse_locale(name).expect(name));
+        let us = style("en_US.UTF-8");
+        assert_eq!(us.time(at), "9:05 AM");
+        assert_eq!(us.weekday(at.date()), "Thu");
+        assert_eq!(us.month_day(at.date()), "Oct 8");
+        let german = style("de-DE");
+        assert_eq!(german.time(at), "09:05");
+        assert_eq!(german.weekday(at.date()), "Do");
+        assert_eq!(german.month_day(at.date()), "8 Okt");
+        let british = style("en_GB");
+        assert_eq!(british.time(at), "09:05");
+        assert_eq!(british.month_day(at.date()), "8 Oct");
+        assert_eq!(style("fr").weekday(at.date()), "jeu.");
+        assert_eq!(parse_locale("C"), None);
+        assert_eq!(parse_locale("POSIX"), None);
+        assert_eq!(parse_locale("xx_YY"), None);
     }
 
     #[test]

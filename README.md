@@ -50,10 +50,13 @@ source. It keeps secrets in the macOS Keychain or the Linux Secret Service and f
   libxcb1-dev libx11-xcb-dev`. The tray icon needs a desktop with StatusNotifierItem support (KDE Plasma, or GNOME
   with the AppIndicator extension), and saved keys need a Secret Service such as GNOME Keyring or KWallet.
 
-Then `cargo run --release -p codexbar-app`. Some features exist only on Windows: the MSIX package and its updates,
-Start with Windows and Windows widgets. On macOS, separate Cursor accounts can't be added yet, because the Cursor CLI
-keeps a single sign-in in the Keychain there. The Automatic method reads it. Dates use a fixed English format on macOS
-and Linux. A packaged macOS app and Linux packages are not available yet.
+Then `cargo run --release -p codexbar-app`, or build a package: `./package-macos.sh` makes `CodexBar.app` and a
+DMG, and `./package-linux.sh` makes a `.deb` for Debian and Ubuntu (see [docs/PACKAGING.md](docs/PACKAGING.md#macos-and-linux)).
+On macOS only the app from the DMG shows notifications, because macOS delivers them only to an app bundle.
+
+Some features exist only on Windows: the MSIX package and its updates, Start with Windows, and Windows widgets. On
+macOS, separate Cursor accounts can't be added yet, because the Cursor CLI keeps a single sign-in in the Keychain
+there. The Automatic method reads that sign-in. Dates follow the system's locale on every platform.
 
 ### Build from source
 
