@@ -1088,6 +1088,7 @@ dependencies = [
  "codexbar-core",
  "form_urlencoded",
  "getrandom 0.3.4",
+ "libc",
  "serde_json",
  "sha2 0.10.9",
  "unicode-normalization",

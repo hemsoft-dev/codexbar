@@ -163,18 +163,13 @@ fn claude(config: &Path) -> Result<Command, ClaudeCliError> {
 fn command_for(program: &Path, config: &Path) -> Command {
     let mut command = crate::platform::command(program);
     // Claude Code prefers CLAUDE_SECURESTORAGE_CONFIG_DIR over CLAUDE_CONFIG_DIR for its credentials
-    // (anthropics/claude-code#79223), so an inherited one would sign in, renew or sign out another folder. A set
-    // folder also names the macOS Keychain item after its hash, so Claude Code's own `~/.claude`, when no folder is set
-    // for CodexBar, is passed as empty, which Claude Code reads as that folder under the item's plain name
-    // (`claude::keychain_service`).
-    let secure_storage = if crate::claude::is_default_config_dir(config) {
-        std::ffi::OsStr::new("")
-    } else {
-        config.as_os_str()
-    };
-    command
-        .env("CLAUDE_CONFIG_DIR", config)
-        .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", secure_storage);
+    // (anthropics/claude-code#79223), so it is always set to the one CodexBar reads the sign-in from
+    // (`claude::secure_storage_selector`): empty for Claude Code's own `~/.claude`, the folder for one CodexBar signed
+    // in, so an inherited one never signs in, renews or signs out another folder.
+    command.env("CLAUDE_CONFIG_DIR", config).env(
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+        crate::claude::secure_storage_selector(config),
+    );
     // An API key or token in CodexBar's environment would sign Claude Code in as someone else.
     for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
         command.env_remove(name);
@@ -221,7 +216,10 @@ mod tests {
 
     #[test]
     fn claude_codes_own_folder_keeps_its_plain_keychain_item() {
-        if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+        if ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some())
+        {
             return;
         }
         let home = crate::platform::home_dir().expect("a home folder");

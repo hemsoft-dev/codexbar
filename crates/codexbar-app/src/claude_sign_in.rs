@@ -307,9 +307,10 @@ pub fn forget(record: AccountRecord, cx: &mut App) {
         let result = cx
             .background_spawn(async move {
                 let config = config_dir(&dir, &record);
-                if codexbar_providers::claude::has_credentials(&codexbar_providers::claude_cli::credentials_path(
-                    &config,
-                )) {
+                // On macOS the sign-in is a Keychain item named after the folder, which nothing can find once the folder
+                // is gone, so it is signed out even when a lookup said there was none: that lookup may have timed out.
+                let credentials = codexbar_providers::claude_cli::credentials_path(&config);
+                if cfg!(target_os = "macos") || codexbar_providers::claude::has_credentials(&credentials) {
                     let _ = service.sign_out(&config);
                 }
                 delete_folder(&dir, &record)
@@ -329,7 +330,7 @@ pub fn forget(record: AccountRecord, cx: &mut App) {
 
 /// What the account row says about the sign-in: its email, or that it isn't signed in.
 pub fn describe(dir: &Path, record: &AccountRecord) -> String {
-    if !codexbar_providers::claude::has_credentials(&credentials_path(dir, record)) {
+    if !codexbar_providers::claude::seems_signed_in(&credentials_path(dir, record)) {
         return "Not signed in".to_owned();
     }
     codexbar_providers::claude::signed_in_identity(&profile_path(dir, record))

@@ -7,6 +7,7 @@
 //! Code's own refresh lock, then reads the file again. The usage endpoint punishes polling with hour-long 429s, so
 //! results are cached and every 429/403 starts a backoff, per sign-in file and across refreshes.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -114,24 +115,49 @@ pub fn is_default_config_dir(config: &Path) -> bool {
         && crate::platform::home_dir().is_some_and(|home| config == home.join(".claude"))
 }
 
-/// The login Keychain item Claude Code keeps a config folder's sign-in in on macOS: `Claude Code-credentials` for its
-/// own folder ([`is_default_config_dir`]), and for any other a suffix of the first 8 hex digits of the SHA-256 of the
-/// folder's path in Unicode NFC, as Claude Code normalizes it.
+/// What Claude Code keeps `config`'s sign-in under, as `CLAUDE_SECURESTORAGE_CONFIG_DIR`: empty for its own folder
+/// ([`is_default_config_dir`]), the folder itself for any other. Claude Code prefers this selector to the config
+/// folder, so the folder Claude Code uses on its own ([`default_config_dir`]) keeps one set for CodexBar, and a
+/// folder CodexBar signed in never does.
+pub fn secure_storage_selector(config: &Path) -> OsString {
+    if config == default_config_dir()
+        && let Some(selector) = std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+    {
+        return selector;
+    }
+    if is_default_config_dir(config) {
+        OsString::new()
+    } else {
+        config.as_os_str().to_owned()
+    }
+}
+
+/// The login Keychain item Claude Code keeps a config folder's sign-in in on macOS: `Claude Code-credentials` for an
+/// empty [`secure_storage_selector`], and for any other a suffix of the first 8 hex digits of the SHA-256 of the
+/// selector in Unicode NFC, as Claude Code normalizes it.
 pub fn keychain_service(config: &Path) -> String {
     use unicode_normalization::UnicodeNormalization as _;
     const SERVICE: &str = "Claude Code-credentials";
-    if is_default_config_dir(config) {
+    let selector = secure_storage_selector(config);
+    if selector.is_empty() {
         return SERVICE.to_owned();
     }
-    let path: String = config.to_string_lossy().nfc().collect();
+    let path: String = selector.to_string_lossy().nfc().collect();
     let digest = Sha256::digest(path.as_bytes());
     let short: String = digest.iter().take(4).map(|byte| format!("{byte:02x}")).collect();
     format!("{SERVICE}-{short}")
 }
 
 /// Whether the config folder holding the sign-in file `path` is signed in: on macOS its Keychain item, or the file.
+/// May wait for the Keychain, so never on the UI thread; there, use [`seems_signed_in`].
 pub fn has_credentials(path: &Path) -> bool {
     path.parent().is_some_and(keychain::holds) || path.is_file()
+}
+
+/// [`has_credentials`] as last known, never waiting: a Keychain answer that is missing or old is looked up in the
+/// background for a later call, and until then counts as no item.
+pub fn seems_signed_in(path: &Path) -> bool {
+    path.parent().is_some_and(keychain::holds_known) || path.is_file()
 }
 
 /// The sign-in for the folder holding `path`. On macOS Claude Code keeps it in the login Keychain and may leave an
@@ -152,24 +178,79 @@ mod keychain {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
-    /// Whether a folder holds an item is asked on every frame of the settings page, so a lookup is reused this long.
+    /// How long a lookup of whether a folder holds an item is reused.
     const PRESENCE_TTL: Duration = Duration::from_secs(5);
     /// A lookup still running after this long is waiting on a Keychain dialog: it is stopped and counts as no item,
     /// so one stuck lookup never holds up a refresh.
     const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
-    static PRESENCE: Mutex<Vec<(String, Instant, bool)>> = Mutex::new(Vec::new());
 
-    /// The item's account: the user name, as Claude Code writes it.
+    /// What is known about one item: whether it was there, and when that was looked up.
+    struct Presence {
+        service: String,
+        known: Option<(Instant, bool)>,
+        looking: bool,
+    }
+
+    static PRESENCE: Mutex<Vec<Presence>> = Mutex::new(Vec::new());
+
+    /// Runs `f` on the item's entry, made when there is none. The lock is never held while `security` runs.
+    fn with_presence<R>(service: &str, f: impl FnOnce(&mut Presence) -> R) -> R {
+        let mut all = PRESENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = all.iter_mut().find(|entry| entry.service == service) {
+            return f(entry);
+        }
+        all.push(Presence {
+            service: service.to_owned(),
+            known: None,
+            looking: false,
+        });
+        f(all.last_mut().expect("just pushed"))
+    }
+
+    fn fresh(entry: &Presence) -> Option<bool> {
+        entry
+            .known
+            .filter(|(at, _)| at.elapsed() < PRESENCE_TTL)
+            .map(|(_, held)| held)
+    }
+
+    /// The item's account, as Claude Code picks it: `$USER`, else the login name, and a fixed name for one that
+    /// isn't a plain name.
     fn account() -> String {
-        std::env::var("USER")
+        let name = std::env::var("USER")
             .ok()
-            .filter(|user| {
-                !user.is_empty()
-                    && user
-                        .chars()
-                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-            })
-            .unwrap_or_else(|| "claude-code-user".to_owned())
+            .filter(|user| !user.is_empty())
+            .or_else(login_name)
+            .unwrap_or_default();
+        let plain = !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'));
+        if plain { name } else { "claude-code-user".to_owned() }
+    }
+
+    /// The effective user's login name from the user database.
+    fn login_name() -> Option<String> {
+        let mut buffer = vec![0 as libc::c_char; 4096];
+        // SAFETY: `passwd` is plain data that `getpwuid_r` fills in; all-zero is a valid value to start from.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: every pointer is valid for the call, and `buffer.len()` is the buffer's real size.
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::geteuid(),
+                &mut entry,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if status != 0 || found.is_null() || entry.pw_name.is_null() {
+            return None;
+        }
+        // SAFETY: on success `pw_name` points to a NUL-terminated string inside `buffer`, which is still alive.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+        name.to_str().ok().map(str::to_owned)
     }
 
     /// Runs `security find-generic-password` for `service` with `extra` arguments, within [`LOOKUP_TIMEOUT`]. Its
@@ -183,22 +264,27 @@ mod keychain {
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
+        // Read while it runs: an item larger than the pipe's buffer would otherwise keep `security` from exiting.
+        let mut stdout = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).map(|_| bytes)
+        });
         let deadline = Instant::now() + LOOKUP_TIMEOUT;
         let status = loop {
             match child.try_wait() {
-                Ok(Some(status)) => break status,
+                Ok(Some(status)) => break Some(status),
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return None;
+                    break None;
                 }
             }
         };
-        // The item is a few kilobytes at most, well within the pipe's buffer, so it is all there once `security` exits.
-        let mut stdout = Vec::new();
-        child.stdout.take()?.read_to_end(&mut stdout).ok()?;
-        status.success().then_some(stdout)
+        // The pipe closes once `security` has exited or been killed, so the reader always finishes.
+        let bytes = reader.join().ok()?.ok()?;
+        status?.success().then_some(bytes)
     }
 
     pub fn read(config: &Path) -> Option<String> {
@@ -208,17 +294,35 @@ mod keychain {
         (!text.is_empty()).then(|| text.to_owned())
     }
 
+    /// Looks the item up, reusing an answer from the last [`PRESENCE_TTL`].
     pub fn holds(config: &Path) -> bool {
         let service = super::keychain_service(config);
-        let now = Instant::now();
-        let mut known = PRESENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        known.retain(|(_, at, _)| now.duration_since(*at) < PRESENCE_TTL);
-        if let Some((_, _, held)) = known.iter().find(|(name, _, _)| *name == service) {
-            return *held;
+        if let Some(held) = with_presence(&service, |entry| fresh(entry)) {
+            return held;
         }
         // Without `-w` only the item's attributes are read, which needs no access to its secret and so no dialog.
         let held = lookup(&service, &[]).is_some();
-        known.push((service, now, held));
+        with_presence(&service, |entry| entry.known = Some((Instant::now(), held)));
+        held
+    }
+
+    /// The last answer for the item, never waiting: a missing or old one is looked up on another thread.
+    pub fn holds_known(config: &Path) -> bool {
+        let service = super::keychain_service(config);
+        let (held, look) = with_presence(&service, |entry| {
+            let look = fresh(entry).is_none() && !entry.looking;
+            entry.looking |= look;
+            (entry.known.is_some_and(|(_, held)| held), look)
+        });
+        if look {
+            std::thread::spawn(move || {
+                let held = lookup(&service, &[]).is_some();
+                with_presence(&service, |entry| {
+                    entry.known = Some((Instant::now(), held));
+                    entry.looking = false;
+                });
+            });
+        }
         held
     }
 }
@@ -233,6 +337,10 @@ mod keychain {
     }
 
     pub fn holds(_: &Path) -> bool {
+        false
+    }
+
+    pub fn holds_known(_: &Path) -> bool {
         false
     }
 }
@@ -794,7 +902,7 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
         let current = self
             .profile
             .as_deref()
-            .filter(|_| has_credentials(&self.credentials_path))
+            .filter(|_| seems_signed_in(&self.credentials_path))
             .and_then(signed_in_identity)
             .map(|(id, _)| id);
         current.or_else(|| self.account.as_ref().map(|(id, _)| AccountId::new(id.clone())))
@@ -1066,7 +1174,10 @@ mod tests {
         );
         // Its own folder has the plain name, but only while no folder is set: a set one is hashed even when it is
         // `~/.claude`.
-        if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() {
+        if ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+            .iter()
+            .all(|name| std::env::var_os(name).is_none())
+        {
             let home = crate::platform::home_dir().expect("a home folder");
             assert_eq!(keychain_service(&home.join(".claude")), "Claude Code-credentials");
         }

@@ -213,7 +213,7 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     // signed-in one holding the same account.
     records.sort_by_key(|record| {
         let managed = crate::claude_sign_in::is_managed(record);
-        let signed_in = claude::has_credentials(&crate::claude_sign_in::credentials_path(hub.dir(), record));
+        let signed_in = claude::seems_signed_in(&crate::claude_sign_in::credentials_path(hub.dir(), record));
         (!signed_in, !managed)
     });
     let mut folders = Vec::new();
