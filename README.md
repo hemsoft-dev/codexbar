@@ -11,7 +11,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 | **ChatGPT / Codex** | Codex CLI ChatGPT login (`~/.codex/auth.json`), or browser sign-in per account through the Codex CLI | 5-hour + weekly usage limits |
 | **Claude** | Claude Code login (`~/.claude/.credentials.json`), or a separate sign-in per account through Claude Code | Session + weekly limits, extra-usage spend |
 | **Copilot** | GitHub CLI (`gh auth`), or browser sign-in per account through the GitHub CLI | Usage limits per account; organization AI credits for Enterprise seats |
-| **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`), or browser sign-in per account through the Cursor CLI | Plan usage and spend |
+| **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`; the Cursor CLI's sign-in on macOS and Linux), or browser sign-in per account through the Cursor CLI | Plan usage and spend |
 | **OpenCode Go / Zen** | Browser approval on OpenCode's own page, or a dashboard cookie + workspace ID | Go limits and Zen balance |
 | **OpenRouter** | API Key | Credits, usage across models |
 | **Moonshot (Kimi)** | API Key | Remaining API credit balance |
@@ -39,8 +39,9 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - Visual Studio Build Tools with the "Desktop development with C++" workload
 - Node.js 20 or later (required for `npm install` / pre-commit hook setup)
 
-macOS and Linux builds are in progress ([#161](https://github.com/hemsoft-dev/codexbar/issues/161)): the workspace
-builds and passes its tests there, with secrets in the macOS Keychain or the Linux Secret Service. They need:
+CodexBar also runs on macOS and Linux ([#161](https://github.com/hemsoft-dev/codexbar/issues/161)), built from
+source. It keeps secrets in the macOS Keychain or the Linux Secret Service and finds the provider CLIs on PATH and in
+`~/.local/bin`, Homebrew and `/usr/local/bin`. On macOS it is a menu-bar app with no Dock icon. Building needs:
 
 - macOS: [Rust](https://www.rust-lang.org/tools/install) and the Xcode Command Line Tools (`xcode-select --install`).
   GPUI's shaders compile at startup, so full Xcode isn't needed.
@@ -49,8 +50,10 @@ builds and passes its tests there, with secrets in the macOS Keychain or the Lin
   libxcb1-dev libx11-xcb-dev`. The tray icon needs a desktop with StatusNotifierItem support (KDE Plasma, or GNOME
   with the AppIndicator extension), and saved keys need a Secret Service such as GNOME Keyring or KWallet.
 
-Then `cargo run --release -p codexbar-app`. The MSIX package, its updates, Start with Windows and Windows widgets exist
-only on Windows.
+Then `cargo run --release -p codexbar-app`. Some features exist only on Windows: the MSIX package and its updates,
+Start with Windows and Windows widgets. On macOS, separate Cursor accounts can't be added yet, because the Cursor CLI
+keeps a single sign-in in the Keychain there. The Automatic method reads it. Dates use a fixed English format on macOS
+and Linux. A packaged macOS app and Linux packages are not available yet.
 
 ### Build from source
 
