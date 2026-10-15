@@ -154,8 +154,8 @@ pub fn has_credentials(path: &Path) -> bool {
     path.parent().is_some_and(keychain::holds) || credentials_file(path).is_file()
 }
 
-/// [`has_credentials`] as last known, for the UI thread: an old Keychain answer is looked up again in the background
-/// for a later call, and only an item never looked up before waits, at most a second, for its first answer.
+/// [`has_credentials`] for the UI thread: a Keychain lookup runs on another thread and is waited for at most a
+/// second, after which the last answer stands in.
 pub fn seems_signed_in(path: &Path) -> bool {
     path.parent().is_some_and(keychain::holds_known) || credentials_file(path).is_file()
 }
@@ -201,8 +201,9 @@ mod keychain {
     /// A lookup still running after this long is waiting on a Keychain dialog: it is stopped and counts as no item,
     /// so one stuck lookup never holds up a refresh.
     const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
-    /// How long a first look at an item waits for its answer before counting it as absent for now.
-    const FIRST_ANSWER_WAIT: Duration = Duration::from_secs(1);
+    /// How long a call that starts a lookup waits for its answer before using the last one (absent when there is
+    /// none).
+    const ANSWER_WAIT: Duration = Duration::from_secs(1);
 
     /// What is known about one item: whether it was there, and when that was looked up.
     struct Presence {
@@ -378,9 +379,9 @@ mod keychain {
         held
     }
 
-    /// The last answer for the item, looked up again on another thread when it is old. The first time there is no
-    /// answer yet, so it waits for that lookup up to [`FIRST_ANSWER_WAIT`]: a lookup takes milliseconds, and an
-    /// unknown item counted as absent would sort a folder as signed out.
+    /// Whether the item holds a sign-in, for the UI thread: an answer from the last [`PRESENCE_TTL`] is reused, and
+    /// otherwise a lookup on another thread is waited for up to [`ANSWER_WAIT`]. A lookup takes milliseconds, and
+    /// an old or missing answer could sort a signed-in folder behind a signed-out one holding the same account.
     pub fn holds_known(config: &Path) -> bool {
         let service = super::keychain_service(config);
         let (known, look) = with_presence(&service, |entry| {
@@ -400,10 +401,13 @@ mod keychain {
                 let _ = sender.send(held);
             });
         }
-        match known {
-            Some(held) => held,
-            None if look => answer.recv_timeout(FIRST_ANSWER_WAIT).unwrap_or(false),
-            None => false,
+        // A new answer, which takes milliseconds, decides whenever one was asked for; the last one stands in only
+        // while a lookup is slow.
+        let last = known.unwrap_or(false);
+        if look {
+            answer.recv_timeout(ANSWER_WAIT).unwrap_or(last)
+        } else {
+            last
         }
     }
 }
