@@ -148,16 +148,57 @@ pub fn keychain_service(config: &Path) -> String {
     format!("{SERVICE}-{short}")
 }
 
-/// Whether the config folder holding the sign-in file `path` is signed in: on macOS its Keychain item, or the file.
-/// May wait for the Keychain, so never on the UI thread; there, use [`seems_signed_in`].
-pub fn has_credentials(path: &Path) -> bool {
-    path.parent().is_some_and(keychain::holds) || credentials_file(path).is_file()
+/// What a folder's macOS Keychain item says about its sign-in. Elsewhere there is never an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum KeychainItem {
+    /// No item, or none could be read: the sign-in file decides, as in Claude Code.
+    Absent,
+    SignedIn,
+    /// An item without a Claude sign-in (only MCP servers' tokens, `mcpOAuth`): signed out, whatever the file says,
+    /// as Claude Code goes by the item once there is one.
+    NoSignIn,
 }
 
-/// [`has_credentials`] for the UI thread: a Keychain lookup runs on another thread and is waited for at most a
-/// second, after which the last answer stands in.
+impl KeychainItem {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn of(text: &str) -> Self {
+        if parse_credentials(text).is_some() {
+            Self::SignedIn
+        } else {
+            Self::NoSignIn
+        }
+    }
+
+    fn or_file(self, path: &Path) -> bool {
+        match self {
+            Self::Absent => credentials_file(path).is_file(),
+            Self::SignedIn => true,
+            Self::NoSignIn => false,
+        }
+    }
+}
+
+/// Whether the config folder holding the sign-in file `path` is signed in: on macOS its Keychain item when there is
+/// one, else the file. May wait for the Keychain, so never on the UI thread; there, use [`seems_signed_in`].
+pub fn has_credentials(path: &Path) -> bool {
+    path.parent()
+        .map_or(KeychainItem::Absent, keychain::holds)
+        .or_file(path)
+}
+
+/// [`has_credentials`] for the UI thread, which never waits: the Keychain answer is the last one known, and an old
+/// or missing one is looked up on another thread. An answer that changes there counts in [`keychain_changes`].
 pub fn seems_signed_in(path: &Path) -> bool {
-    path.parent().is_some_and(keychain::holds_known) || credentials_file(path).is_file()
+    path.parent()
+        .map_or(KeychainItem::Absent, keychain::holds_known)
+        .or_file(path)
+}
+
+/// Counts Keychain answers that changed in a background lookup. A change means a list built from
+/// [`seems_signed_in`] may be out of date, so the dashboard refreshes when this moves.
+pub fn keychain_changes() -> u64 {
+    keychain::CHANGES.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Where Claude Code keeps the sign-in file of the folder holding `path`: in the folder its
@@ -194,21 +235,23 @@ mod keychain {
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
+
+    use super::KeychainItem;
 
     /// How long a lookup of whether a folder holds an item is reused.
     const PRESENCE_TTL: Duration = Duration::from_secs(5);
     /// A lookup still running after this long is waiting on a Keychain dialog: it is stopped and counts as no item,
     /// so one stuck lookup never holds up a refresh.
     const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
-    /// How long a call that starts a lookup waits for its answer before using the last one (absent when there is
-    /// none).
-    const ANSWER_WAIT: Duration = Duration::from_secs(1);
 
-    /// What is known about one item: whether it was there, and when that was looked up.
+    pub static CHANGES: AtomicU64 = AtomicU64::new(0);
+
+    /// What is known about one item, and when that was looked up.
     struct Presence {
         service: String,
-        known: Option<(Instant, bool)>,
+        known: Option<(Instant, KeychainItem)>,
         looking: bool,
     }
 
@@ -228,7 +271,7 @@ mod keychain {
         f(all.last_mut().expect("just pushed"))
     }
 
-    fn fresh(entry: &Presence) -> Option<bool> {
+    fn fresh(entry: &Presence) -> Option<KeychainItem> {
         entry
             .known
             .filter(|(at, _)| at.elapsed() < PRESENCE_TTL)
@@ -318,13 +361,13 @@ mod keychain {
         }
     }
 
-    fn remember(service: &str, held: bool) {
-        with_presence(service, |entry| entry.known = Some((Instant::now(), held)));
+    fn remember(service: &str, item: KeychainItem) {
+        with_presence(service, |entry| entry.known = Some((Instant::now(), item)));
     }
 
     /// Records the item as gone, after Claude Code signed the folder out.
     pub fn forget(config: &Path) {
-        remember(&super::keychain_service(config), false);
+        remember(&super::keychain_service(config), KeychainItem::Absent);
     }
 
     /// The item's contents, when it is there.
@@ -335,22 +378,16 @@ mod keychain {
         (!text.is_empty()).then(|| text.to_owned())
     }
 
-    /// Whether the item holds a Claude sign-in. It can be there without one: Claude Code also keeps MCP servers'
-    /// OAuth tokens in it (`mcpOAuth`), and a failed sign-in can leave only those.
-    fn signed_in(service: &str) -> bool {
-        contents(service).is_some_and(|text| super::parse_credentials(&text).is_some())
+    fn look(service: &str) -> KeychainItem {
+        contents(service).map_or(KeychainItem::Absent, |text| KeychainItem::of(&text))
     }
 
-    /// The item's sign-in. Reading it also answers whether it holds one, which replaces an older answer, such as one
-    /// from just before a sign-in.
+    /// The item's contents. Reading them also answers what the item holds, which replaces an older answer, such as
+    /// one from just before a sign-in.
     pub fn read(config: &Path) -> Option<String> {
         let service = super::keychain_service(config);
         let text = contents(&service);
-        remember(
-            &service,
-            text.as_deref()
-                .is_some_and(|text| super::parse_credentials(text).is_some()),
-        );
+        remember(&service, text.as_deref().map_or(KeychainItem::Absent, KeychainItem::of));
         text
     }
 
@@ -363,52 +400,44 @@ mod keychain {
             Some((Some(0 | 44), _))
         );
         if gone {
-            remember(&service, false);
+            remember(&service, KeychainItem::Absent);
         }
         gone
     }
 
     /// Looks the item up, reusing an answer from the last [`PRESENCE_TTL`].
-    pub fn holds(config: &Path) -> bool {
+    pub fn holds(config: &Path) -> KeychainItem {
         let service = super::keychain_service(config);
-        if let Some(held) = with_presence(&service, |entry| fresh(entry)) {
-            return held;
+        if let Some(item) = with_presence(&service, |entry| fresh(entry)) {
+            return item;
         }
-        let held = signed_in(&service);
-        remember(&service, held);
-        held
+        let item = look(&service);
+        remember(&service, item);
+        item
     }
 
-    /// Whether the item holds a sign-in, for the UI thread: an answer from the last [`PRESENCE_TTL`] is reused, and
-    /// otherwise a lookup on another thread is waited for up to [`ANSWER_WAIT`]. A lookup takes milliseconds, and
-    /// an old or missing answer could sort a signed-in folder behind a signed-out one holding the same account.
-    pub fn holds_known(config: &Path) -> bool {
+    /// The last answer for the item, never waiting: a missing or old one is looked up on another thread, which counts
+    /// a changed answer in [`CHANGES`] so lists built from the old one are built again.
+    pub fn holds_known(config: &Path) -> KeychainItem {
         let service = super::keychain_service(config);
-        let (known, look) = with_presence(&service, |entry| {
-            let look = fresh(entry).is_none() && !entry.looking;
-            entry.looking |= look;
-            (entry.known.map(|(_, held)| held), look)
+        let (known, start) = with_presence(&service, |entry| {
+            let start = fresh(entry).is_none() && !entry.looking;
+            entry.looking |= start;
+            (entry.known.map(|(_, item)| item), start)
         });
-        let (sender, answer) = std::sync::mpsc::channel();
-        if look {
-            let service = service.clone();
+        if start {
             std::thread::spawn(move || {
-                let held = signed_in(&service);
-                with_presence(&service, |entry| {
-                    entry.known = Some((Instant::now(), held));
+                let item = look(&service);
+                let before = with_presence(&service, |entry| {
                     entry.looking = false;
+                    entry.known.replace((Instant::now(), item)).map(|(_, before)| before)
                 });
-                let _ = sender.send(held);
+                if before.unwrap_or(KeychainItem::Absent) != item {
+                    CHANGES.fetch_add(1, Ordering::Relaxed);
+                }
             });
         }
-        // A new answer, which takes milliseconds, decides whenever one was asked for; the last one stands in only
-        // while a lookup is slow.
-        let last = known.unwrap_or(false);
-        if look {
-            answer.recv_timeout(ANSWER_WAIT).unwrap_or(last)
-        } else {
-            last
-        }
+        known.unwrap_or(KeychainItem::Absent)
     }
 }
 
@@ -416,6 +445,11 @@ mod keychain {
 #[cfg(not(target_os = "macos"))]
 mod keychain {
     use std::path::Path;
+    use std::sync::atomic::AtomicU64;
+
+    use super::KeychainItem;
+
+    pub static CHANGES: AtomicU64 = AtomicU64::new(0);
 
     pub fn read(_: &Path) -> Option<String> {
         None
@@ -427,12 +461,12 @@ mod keychain {
 
     pub fn forget(_: &Path) {}
 
-    pub fn holds(_: &Path) -> bool {
-        false
+    pub fn holds(_: &Path) -> KeychainItem {
+        KeychainItem::Absent
     }
 
-    pub fn holds_known(_: &Path) -> bool {
-        false
+    pub fn holds_known(_: &Path) -> KeychainItem {
+        KeychainItem::Absent
     }
 }
 
@@ -444,19 +478,15 @@ pub fn delete_keychain_item(path: &Path) -> bool {
 }
 
 /// The sign-in for the folder holding `path`. On macOS Claude Code keeps it in the login Keychain and may leave an
-/// older `.credentials.json` behind, so the Keychain item comes first there and the file is only a fallback, also
-/// for an item that holds no Claude sign-in.
+/// older `.credentials.json` behind, so as in Claude Code an item decides when there is one, even one without a
+/// Claude sign-in, and the file only when there is none.
 pub fn read_credentials(path: &Path) -> Result<Credentials, ProviderError> {
-    path.parent()
-        .and_then(keychain::read)
-        .as_deref()
+    let text = match path.parent().and_then(keychain::read) {
+        Some(text) => Some(text),
+        None => std::fs::read_to_string(credentials_file(path)).ok(),
+    };
+    text.as_deref()
         .and_then(parse_credentials)
-        .or_else(|| {
-            std::fs::read_to_string(credentials_file(path))
-                .ok()
-                .as_deref()
-                .and_then(parse_credentials)
-        })
         .ok_or(ProviderError::NotSignedIn { hint: SIGN_IN_HINT })
 }
 
@@ -1284,6 +1314,10 @@ mod tests {
         assert!(parse_credentials(r#"{"mcpOAuth":{"server":{"accessToken":"x"}}}"#).is_none());
         assert!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":" "}}"#).is_none());
         assert!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":"x"},"mcpOAuth":{}}"#).is_some());
+        // An item without a Claude sign-in is signed out even beside a sign-in file; without an item the file decides.
+        assert_eq!(KeychainItem::of(r#"{"mcpOAuth":{}}"#), KeychainItem::NoSignIn);
+        assert!(!KeychainItem::NoSignIn.or_file(Path::new("Cargo.toml")));
+        assert!(KeychainItem::SignedIn.or_file(Path::new("missing/.credentials.json")));
         // A folder CodexBar signed in keeps its sign-in file in itself.
         let file = Path::new("/Users/home/.codexbar/claude/abc/.credentials.json");
         assert_eq!(credentials_file(file), file);
