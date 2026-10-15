@@ -62,7 +62,9 @@ pub fn renew(config: &Path) -> Result<(), ClaudeCliError> {
 
 /// Signs the folder out; Claude Code deletes its sign-in.
 pub fn sign_out(config: &Path) -> Result<(), ClaudeCliError> {
-    run(config, &["auth", "logout"], LOGOUT_TIMEOUT).map(|_| ())
+    run(config, &["auth", "logout"], LOGOUT_TIMEOUT)?;
+    crate::claude::signed_out(&credentials_path(config));
+    Ok(())
 }
 
 /// A `claude auth login` window the user is signing in through.
@@ -163,10 +165,13 @@ fn claude(config: &Path) -> Result<Command, ClaudeCliError> {
 fn command_for(program: &Path, config: &Path) -> Command {
     let mut command = crate::platform::command(program);
     // Claude Code prefers CLAUDE_SECURESTORAGE_CONFIG_DIR over CLAUDE_CONFIG_DIR for its credentials
-    // (anthropics/claude-code#79223), so an inherited one would sign in, renew or sign out another folder.
-    command
-        .env("CLAUDE_CONFIG_DIR", config)
-        .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", config);
+    // (anthropics/claude-code#79223), so it is always set to the one CodexBar reads the sign-in from
+    // (`claude::secure_storage_selector`): empty for Claude Code's own `~/.claude`, the folder for one CodexBar signed
+    // in, so an inherited one never signs in, renews or signs out another folder.
+    command.env("CLAUDE_CONFIG_DIR", config).env(
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+        crate::claude::secure_storage_selector(config),
+    );
     // An API key or token in CodexBar's environment would sign Claude Code in as someone else.
     for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
         command.env_remove(name);
@@ -209,6 +214,24 @@ mod tests {
         for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
             assert_eq!(value(name), Some(None), "{name} is removed");
         }
+    }
+
+    #[test]
+    fn claude_codes_own_folder_keeps_its_plain_keychain_item() {
+        if ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some())
+        {
+            return;
+        }
+        let home = crate::platform::home_dir().expect("a home folder");
+        let command = command_for(Path::new("claude"), &home.join(".claude"));
+        let secure_storage = command
+            .get_envs()
+            .find(|(name, _)| *name == "CLAUDE_SECURESTORAGE_CONFIG_DIR")
+            .and_then(|(_, value)| value);
+        // Empty means `~/.claude` to Claude Code, under the item name without a folder hash.
+        assert_eq!(secure_storage, Some(std::ffi::OsStr::new("")));
     }
 
     /// Runs the installed Claude Code against a temporary folder holding a fake, expired sign-in: `auth status`

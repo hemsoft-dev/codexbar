@@ -1,11 +1,13 @@
 //! Claude subscription limits (5-hour and weekly), read with the sign-in Claude Code keeps in a config folder's
-//! `.credentials.json`: Claude Code's own (`~/.claude`), or one CodexBar signed in through Claude Code (#80).
+//! `.credentials.json`: Claude Code's own (`~/.claude`), or one CodexBar signed in through Claude Code (#80). On macOS
+//! Claude Code keeps the sign-in in the login Keychain instead, one item per folder.
 //!
 //! This provider never refreshes or rewrites a token itself, because a refresh racing Claude Code can sign it out.
 //! When a token expires (or is refused) it asks Claude Code to renew it (`claude_cli::renew`), which takes Claude
 //! Code's own refresh lock, then reads the file again. The usage endpoint punishes polling with hour-long 429s, so
 //! results are cached and every 429/403 starts a backoff, per sign-in file and across refreshes.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -105,23 +107,407 @@ pub fn default_credentials_path() -> PathBuf {
         .join(".credentials.json")
 }
 
+/// Whether `config` is Claude Code's own folder used the way Claude Code uses it when no folder is set: `~/.claude`
+/// with `CLAUDE_CONFIG_DIR` unset. Claude Code goes by whether a folder is set, not by where it is, so a set
+/// `CLAUDE_CONFIG_DIR=~/.claude` is any other folder to it.
+pub fn is_default_config_dir(config: &Path) -> bool {
+    std::env::var_os("CLAUDE_CONFIG_DIR").is_none_or(|value| value.is_empty())
+        && crate::platform::home_dir().is_some_and(|home| config == home.join(".claude"))
+}
+
+/// What Claude Code keeps `config`'s sign-in under, as `CLAUDE_SECURESTORAGE_CONFIG_DIR`: empty for its own folder
+/// ([`is_default_config_dir`]), the folder itself for any other. Claude Code prefers this selector to the config
+/// folder, so the folder Claude Code uses on its own ([`default_config_dir`]) keeps one set for CodexBar, and a
+/// folder CodexBar signed in never does.
+pub fn secure_storage_selector(config: &Path) -> OsString {
+    if config == default_config_dir()
+        && let Some(selector) = std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+    {
+        return selector;
+    }
+    if is_default_config_dir(config) {
+        OsString::new()
+    } else {
+        config.as_os_str().to_owned()
+    }
+}
+
+/// The login Keychain item Claude Code keeps a config folder's sign-in in on macOS: `Claude Code-credentials` for an
+/// empty [`secure_storage_selector`], and for any other a suffix of the first 8 hex digits of the SHA-256 of the
+/// selector in Unicode NFC, as Claude Code normalizes it.
+pub fn keychain_service(config: &Path) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
+    const SERVICE: &str = "Claude Code-credentials";
+    let selector = secure_storage_selector(config);
+    if selector.is_empty() {
+        return SERVICE.to_owned();
+    }
+    let path: String = selector.to_string_lossy().nfc().collect();
+    let digest = Sha256::digest(path.as_bytes());
+    let short: String = digest.iter().take(4).map(|byte| format!("{byte:02x}")).collect();
+    format!("{SERVICE}-{short}")
+}
+
+/// What a folder's macOS Keychain item says about its sign-in. Elsewhere there is never an item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum KeychainItem {
+    /// No item, or none could be read: the sign-in file decides, as in Claude Code.
+    Absent,
+    SignedIn,
+    /// An item without a Claude sign-in (only MCP servers' tokens, `mcpOAuth`): signed out, whatever the file says,
+    /// as Claude Code goes by the item once there is one.
+    NoSignIn,
+}
+
+impl KeychainItem {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn of(text: &str) -> Self {
+        if parse_credentials(text).is_some() {
+            Self::SignedIn
+        } else {
+            Self::NoSignIn
+        }
+    }
+
+    fn or_file(self, path: &Path) -> bool {
+        match self {
+            Self::Absent => credentials_file(path).is_file(),
+            Self::SignedIn => true,
+            Self::NoSignIn => false,
+        }
+    }
+}
+
+/// Whether the config folder holding the sign-in file `path` is signed in: on macOS its Keychain item when there is
+/// one, else the file. May wait for the Keychain, so never on the UI thread; there, use [`seems_signed_in`].
+pub fn has_credentials(path: &Path) -> bool {
+    path.parent()
+        .map_or(KeychainItem::Absent, keychain::holds)
+        .or_file(path)
+}
+
+/// [`has_credentials`] for the UI thread, which never waits: the Keychain answer is the last one known, and an old
+/// or missing one is looked up on another thread. An answer that changes there counts in [`keychain_changes`].
+pub fn seems_signed_in(path: &Path) -> bool {
+    path.parent()
+        .map_or(KeychainItem::Absent, keychain::holds_known)
+        .or_file(path)
+}
+
+/// Counts Keychain answers that changed in a background lookup. A change means a list built from
+/// [`seems_signed_in`] may be out of date, so the dashboard refreshes when this moves.
+pub fn keychain_changes() -> u64 {
+    keychain::CHANGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Where Claude Code keeps the sign-in file of the folder holding `path`: in the folder its
+/// [`secure_storage_selector`] names (`~/.claude` for an empty one), which is the folder itself unless an inherited
+/// selector moved it.
+fn credentials_file(path: &Path) -> PathBuf {
+    let Some(config) = path.parent() else {
+        return path.to_owned();
+    };
+    let selector = secure_storage_selector(config);
+    if selector == config.as_os_str() {
+        return path.to_owned();
+    }
+    let folder = if selector.is_empty() {
+        crate::platform::home_dir().map_or_else(|| config.to_owned(), |home| home.join(".claude"))
+    } else {
+        PathBuf::from(selector)
+    };
+    folder.join(".credentials.json")
+}
+
+/// Records that the folder holding `path` was just signed out, so a Keychain answer from before isn't reused.
+pub fn signed_out(path: &Path) {
+    if let Some(config) = path.parent() {
+        keychain::forget(config);
+    }
+}
+
+/// Claude Code's sign-ins in the macOS login Keychain. Claude Code reads and writes them with `security`, so reading
+/// them with it too never asks the user, where the Security framework would ask for CodexBar.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::io::Read as _;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::KeychainItem;
+
+    /// How long a lookup of whether a folder holds an item is reused.
+    const PRESENCE_TTL: Duration = Duration::from_secs(5);
+    /// A lookup still running after this long is waiting on a Keychain dialog: it is stopped and counts as no item,
+    /// so one stuck lookup never holds up a refresh.
+    const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+    pub static CHANGES: AtomicU64 = AtomicU64::new(0);
+
+    /// What is known about one item, and when that was looked up.
+    struct Presence {
+        service: String,
+        known: Option<(Instant, KeychainItem)>,
+        looking: bool,
+    }
+
+    static PRESENCE: Mutex<Vec<Presence>> = Mutex::new(Vec::new());
+
+    /// Runs `f` on the item's entry, made when there is none. The lock is never held while `security` runs.
+    fn with_presence<R>(service: &str, f: impl FnOnce(&mut Presence) -> R) -> R {
+        let mut all = PRESENCE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(entry) = all.iter_mut().find(|entry| entry.service == service) {
+            return f(entry);
+        }
+        all.push(Presence {
+            service: service.to_owned(),
+            known: None,
+            looking: false,
+        });
+        f(all.last_mut().expect("just pushed"))
+    }
+
+    fn fresh(entry: &Presence) -> Option<KeychainItem> {
+        entry
+            .known
+            .filter(|(at, _)| at.elapsed() < PRESENCE_TTL)
+            .map(|(_, held)| held)
+    }
+
+    /// The item's account, as Claude Code picks it: `$USER`, else the login name, and a fixed name for one that
+    /// isn't a plain name.
+    fn account() -> String {
+        let name = std::env::var("USER")
+            .ok()
+            .filter(|user| !user.is_empty())
+            .or_else(login_name)
+            .unwrap_or_default();
+        let plain = !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'));
+        if plain { name } else { "claude-code-user".to_owned() }
+    }
+
+    /// The effective user's login name from the user database.
+    fn login_name() -> Option<String> {
+        let mut buffer = vec![0 as libc::c_char; 4096];
+        // SAFETY: `passwd` is plain data that `getpwuid_r` fills in; all-zero is a valid value to start from.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: every pointer is valid for the call, and `buffer.len()` is the buffer's real size.
+        let status = unsafe {
+            libc::getpwuid_r(
+                libc::geteuid(),
+                &mut entry,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        if status != 0 || found.is_null() || entry.pw_name.is_null() {
+            return None;
+        }
+        // SAFETY: on success `pw_name` points to a NUL-terminated string inside `buffer`, which is still alive.
+        let name = unsafe { std::ffi::CStr::from_ptr(entry.pw_name) };
+        name.to_str().ok().map(str::to_owned)
+    }
+
+    /// Runs `security` with `args` within [`LOOKUP_TIMEOUT`]: its exit code and stdout, or `None` when it couldn't
+    /// start or was stopped.
+    fn security(args: &[&str]) -> Option<(Option<i32>, Vec<u8>)> {
+        let mut child = Command::new("/usr/bin/security")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        // Read while it runs: an item larger than the pipe's buffer would otherwise keep `security` from exiting.
+        let mut stdout = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stdout.read_to_end(&mut bytes).map(|_| bytes)
+        });
+        let deadline = Instant::now() + LOOKUP_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+            }
+        };
+        // The pipe closes once `security` has exited or been killed, so the reader always finishes.
+        let bytes = reader.join().ok()?.ok()?;
+        Some((status?.code(), bytes))
+    }
+
+    /// Looks the item up with `extra` arguments: its stdout when it was found.
+    fn lookup(service: &str, extra: &[&str]) -> Option<Vec<u8>> {
+        let account = account();
+        let mut args = vec!["find-generic-password", "-a", &account, "-s", service];
+        args.extend_from_slice(extra);
+        match security(&args)? {
+            (Some(0), stdout) => Some(stdout),
+            _ => None,
+        }
+    }
+
+    fn remember(service: &str, item: KeychainItem) {
+        with_presence(service, |entry| entry.known = Some((Instant::now(), item)));
+    }
+
+    /// Records the item as gone, after Claude Code signed the folder out.
+    pub fn forget(config: &Path) {
+        remember(&super::keychain_service(config), KeychainItem::Absent);
+    }
+
+    /// The item's contents, when it is there.
+    fn contents(service: &str) -> Option<String> {
+        let stdout = lookup(service, &["-w"])?;
+        let text = String::from_utf8(stdout).ok()?;
+        let text = text.trim_end();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    fn look(service: &str) -> KeychainItem {
+        contents(service).map_or(KeychainItem::Absent, |text| KeychainItem::of(&text))
+    }
+
+    /// The item's contents. Reading them also answers what the item holds, which replaces an older answer, such as
+    /// one from just before a sign-in.
+    pub fn read(config: &Path) -> Option<String> {
+        let service = super::keychain_service(config);
+        let text = contents(&service);
+        remember(&service, text.as_deref().map_or(KeychainItem::Absent, KeychainItem::of));
+        text
+    }
+
+    /// Deletes the item. True when it is gone: deleted, or never there (`security` exits with 44 then).
+    pub fn delete(config: &Path) -> bool {
+        let service = super::keychain_service(config);
+        let account = account();
+        let gone = matches!(
+            security(&["delete-generic-password", "-a", &account, "-s", &service]),
+            Some((Some(0 | 44), _))
+        );
+        if gone {
+            remember(&service, KeychainItem::Absent);
+        }
+        gone
+    }
+
+    /// Looks the item up, reusing an answer from the last [`PRESENCE_TTL`].
+    pub fn holds(config: &Path) -> KeychainItem {
+        let service = super::keychain_service(config);
+        if let Some(item) = with_presence(&service, |entry| fresh(entry)) {
+            return item;
+        }
+        let item = look(&service);
+        remember(&service, item);
+        item
+    }
+
+    /// The last answer for the item, never waiting: a missing or old one is looked up on another thread, which counts
+    /// a changed answer in [`CHANGES`] so lists built from the old one are built again.
+    pub fn holds_known(config: &Path) -> KeychainItem {
+        let service = super::keychain_service(config);
+        let (known, start) = with_presence(&service, |entry| {
+            let start = fresh(entry).is_none() && !entry.looking;
+            entry.looking |= start;
+            (entry.known.map(|(_, item)| item), start)
+        });
+        let answer = known.unwrap_or(KeychainItem::Absent);
+        if start {
+            std::thread::spawn(move || {
+                let item = look(&service);
+                with_presence(&service, |entry| {
+                    entry.looking = false;
+                    entry.known = Some((Instant::now(), item));
+                });
+                // Against the answer given out, which a list may have been built from: a blocking lookup may have
+                // stored the new one meanwhile, and that alone rebuilds nothing.
+                if item != answer {
+                    CHANGES.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        answer
+    }
+}
+
+/// Claude Code keeps its sign-ins in files everywhere but macOS.
+#[cfg(not(target_os = "macos"))]
+mod keychain {
+    use std::path::Path;
+    use std::sync::atomic::AtomicU64;
+
+    use super::KeychainItem;
+
+    pub static CHANGES: AtomicU64 = AtomicU64::new(0);
+
+    pub fn read(_: &Path) -> Option<String> {
+        None
+    }
+
+    pub fn delete(_: &Path) -> bool {
+        true
+    }
+
+    pub fn forget(_: &Path) {}
+
+    pub fn holds(_: &Path) -> KeychainItem {
+        KeychainItem::Absent
+    }
+
+    pub fn holds_known(_: &Path) -> KeychainItem {
+        KeychainItem::Absent
+    }
+}
+
+/// Deletes the macOS Keychain item of the folder holding the sign-in file `path`, for a folder about to be removed:
+/// the item is named after the folder, so nothing could find it afterwards. True when it is gone, and always
+/// elsewhere.
+pub fn delete_keychain_item(path: &Path) -> bool {
+    path.parent().is_none_or(keychain::delete)
+}
+
+/// The sign-in for the folder holding `path`. On macOS Claude Code keeps it in the login Keychain and may leave an
+/// older `.credentials.json` behind, so as in Claude Code an item decides when there is one, even one without a
+/// Claude sign-in, and the file only when there is none.
 pub fn read_credentials(path: &Path) -> Result<Credentials, ProviderError> {
-    let not_signed_in = ProviderError::NotSignedIn { hint: SIGN_IN_HINT };
-    let text = std::fs::read_to_string(path).map_err(|_| not_signed_in.clone())?;
-    let json: Value = serde_json::from_str(&text).map_err(|_| not_signed_in.clone())?;
-    let oauth = json.get("claudeAiOauth").ok_or_else(|| not_signed_in.clone())?;
+    let text = match path.parent().and_then(keychain::read) {
+        Some(text) => Some(text),
+        None => std::fs::read_to_string(credentials_file(path)).ok(),
+    };
+    text.as_deref()
+        .and_then(parse_credentials)
+        .ok_or(ProviderError::NotSignedIn { hint: SIGN_IN_HINT })
+}
+
+/// The Claude sign-in in Claude Code's credentials JSON (`claudeAiOauth`), when it has an access token.
+fn parse_credentials(text: &str) -> Option<Credentials> {
+    let json: Value = serde_json::from_str(text).ok()?;
+    let oauth = json.get("claudeAiOauth")?;
     let access_token = oauth
         .get("accessToken")
         .and_then(Value::as_str)
-        .filter(|token| !token.trim().is_empty())
-        .ok_or(not_signed_in)?
+        .filter(|token| !token.trim().is_empty())?
         .to_owned();
     let expires_at = oauth
         .get("expiresAt")
         .and_then(Value::as_i64)
         .and_then(DateTime::from_timestamp_millis);
     let subscription = oauth.get("subscriptionType").and_then(Value::as_str).map(str::to_owned);
-    Ok(Credentials {
+    Some(Credentials {
         access_token,
         expires_at,
         subscription,
@@ -467,7 +853,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
         match read_credentials(&self.credentials_path) {
             Ok(credentials) => Ok(credentials),
             // Claude Code may be replacing the file right now; one more read after a moment sees the finished file.
-            Err(_) if self.credentials_path.is_file() => {
+            Err(_) if credentials_file(&self.credentials_path).is_file() => {
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 read_credentials(&self.credentials_path).map_err(not_signed_in)
             }
@@ -589,7 +975,7 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
     /// No sign-in fails the adapter as a whole. Otherwise the account is known from Claude Code's profile, so a
     /// failure (expiry, backoff) is that account's, never another identity's. Fresh results are reused for a while.
     fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
-        if !self.credentials_path.is_file() {
+        if !has_credentials(&self.credentials_path) {
             return Err(ProviderError::NotSignedIn {
                 hint: self.not_signed_in_hint(),
             });
@@ -662,7 +1048,7 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
         let current = self
             .profile
             .as_deref()
-            .filter(|_| self.credentials_path.is_file())
+            .filter(|_| seems_signed_in(&self.credentials_path))
             .and_then(signed_in_identity)
             .map(|(id, _)| id);
         current.or_else(|| self.account.as_ref().map(|(id, _)| AccountId::new(id.clone())))
@@ -918,6 +1304,40 @@ mod tests {
             parse_usage(r#"{"five_hour":null,"seven_day":null}"#, None, now()),
             Err(ProviderError::Unexpected { .. })
         ));
+    }
+
+    #[test]
+    fn keychain_items_are_named_as_claude_code_names_them() {
+        // Claude Code: `Claude Code-credentials`, plus `-` and sha256(folder)[..8] for a folder that isn't its own.
+        assert_eq!(
+            keychain_service(Path::new("/Users/home/.codexbar/claude/abc")),
+            "Claude Code-credentials-88a2166c"
+        );
+        // Claude Code keeps MCP servers' tokens beside the sign-in; those alone are no sign-in.
+        assert!(parse_credentials(r#"{"mcpOAuth":{"server":{"accessToken":"x"}}}"#).is_none());
+        assert!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":" "}}"#).is_none());
+        assert!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":"x"},"mcpOAuth":{}}"#).is_some());
+        // An item without a Claude sign-in is signed out even beside a sign-in file; without an item the file decides.
+        assert_eq!(KeychainItem::of(r#"{"mcpOAuth":{}}"#), KeychainItem::NoSignIn);
+        assert!(!KeychainItem::NoSignIn.or_file(Path::new("Cargo.toml")));
+        assert!(KeychainItem::SignedIn.or_file(Path::new("missing/.credentials.json")));
+        // A folder CodexBar signed in keeps its sign-in file in itself.
+        let file = Path::new("/Users/home/.codexbar/claude/abc/.credentials.json");
+        assert_eq!(credentials_file(file), file);
+        // Claude Code hashes the path in NFC, so a decomposed "é" names the same item as a composed one.
+        assert_eq!(
+            keychain_service(Path::new("/Users/home/Caf\u{65}\u{301}/claude")),
+            keychain_service(Path::new("/Users/home/Caf\u{e9}/claude"))
+        );
+        // Its own folder has the plain name, but only while no folder is set: a set one is hashed even when it is
+        // `~/.claude`.
+        if ["CLAUDE_CONFIG_DIR", "CLAUDE_SECURESTORAGE_CONFIG_DIR"]
+            .iter()
+            .all(|name| std::env::var_os(name).is_none())
+        {
+            let home = crate::platform::home_dir().expect("a home folder");
+            assert_eq!(keychain_service(&home.join(".claude")), "Claude Code-credentials");
+        }
     }
 
     #[test]

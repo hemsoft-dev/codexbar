@@ -233,11 +233,20 @@ impl Dashboard {
         });
 
         // Once a second: advance the clock that ages and countdowns read, and refresh when due.
+        // Read now, before the first refresh below can start Keychain lookups: the task only starts later.
+        let mut keychain_changes = codexbar_providers::claude::keychain_changes();
         let clock = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
                     this.now = Utc::now();
+                    // A Claude sign-in looked up in the Keychain in the background came out differently from what the
+                    // accounts were last sorted by: fetch again with the new answer.
+                    let changes = codexbar_providers::claude::keychain_changes();
+                    if changes != keychain_changes {
+                        keychain_changes = changes;
+                        SettingsHub::request_refresh(cx);
+                    }
                     // Windows' animation setting, system appearance and high contrast can change while CodexBar
                     // runs (#92); gpui-kit reads the animation setting only at start.
                     gpui_kit::base::apply_system_reduce_motion(cx);

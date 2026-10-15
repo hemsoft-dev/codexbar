@@ -84,7 +84,9 @@ impl Managed {
         match self {
             Self::Codex => codex_sign_in::auth_path(hub.dir(), record).exists(),
             Self::GitHub => matches!(github_sign_in::token(hub, record), Ok(Some(_))),
-            Self::Claude => claude_sign_in::credentials_path(hub.dir(), record).exists(),
+            Self::Claude => {
+                codexbar_providers::claude::seems_signed_in(&claude_sign_in::credentials_path(hub.dir(), record))
+            }
             Self::Cursor => cursor_sign_in::auth_path(hub.dir(), record).exists(),
             Self::OpenCode => matches!(opencode_sign_in::credential(hub, record), Ok(Some(_))),
             Self::Gemini => matches!(gemini_sign_in::apps_session(hub, record), Ok(Some(_))),
