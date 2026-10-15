@@ -425,19 +425,22 @@ mod keychain {
             entry.looking |= start;
             (entry.known.map(|(_, item)| item), start)
         });
+        let answer = known.unwrap_or(KeychainItem::Absent);
         if start {
             std::thread::spawn(move || {
                 let item = look(&service);
-                let before = with_presence(&service, |entry| {
+                with_presence(&service, |entry| {
                     entry.looking = false;
-                    entry.known.replace((Instant::now(), item)).map(|(_, before)| before)
+                    entry.known = Some((Instant::now(), item));
                 });
-                if before.unwrap_or(KeychainItem::Absent) != item {
+                // Against the answer given out, which a list may have been built from: a blocking lookup may have
+                // stored the new one meanwhile, and that alone rebuilds nothing.
+                if item != answer {
                     CHANGES.fetch_add(1, Ordering::Relaxed);
                 }
             });
         }
-        known.unwrap_or(KeychainItem::Absent)
+        answer
     }
 }
 

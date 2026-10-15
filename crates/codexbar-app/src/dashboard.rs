@@ -233,8 +233,9 @@ impl Dashboard {
         });
 
         // Once a second: advance the clock that ages and countdowns read, and refresh when due.
+        // Read now, before the first refresh below can start Keychain lookups: the task only starts later.
+        let mut keychain_changes = codexbar_providers::claude::keychain_changes();
         let clock = cx.spawn(async move |this, cx| {
-            let mut keychain_changes = codexbar_providers::claude::keychain_changes();
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
