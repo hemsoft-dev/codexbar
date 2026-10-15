@@ -186,14 +186,6 @@ pub fn signed_out(path: &Path) {
     }
 }
 
-/// The sign-in for the folder holding `path`. On macOS Claude Code keeps it in the login Keychain and may leave an
-/// older `.credentials.json` behind, so the Keychain item comes first there and the file is only a fallback.
-fn credentials_text(path: &Path) -> Option<String> {
-    path.parent()
-        .and_then(keychain::read)
-        .or_else(|| std::fs::read_to_string(credentials_file(path)).ok())
-}
-
 /// Claude Code's sign-ins in the macOS login Keychain. Claude Code reads and writes them with `security`, so reading
 /// them with it too never asks the user, where the Security framework would ask for CodexBar.
 #[cfg(target_os = "macos")]
@@ -334,18 +326,31 @@ mod keychain {
         remember(&super::keychain_service(config), false);
     }
 
-    /// The item's sign-in. Reading it also proves it is there, which replaces an older answer that it wasn't, such
-    /// as one from just before a sign-in.
-    pub fn read(config: &Path) -> Option<String> {
-        let service = super::keychain_service(config);
-        let stdout = lookup(&service, &["-w"])?;
+    /// The item's contents, when it is there.
+    fn contents(service: &str) -> Option<String> {
+        let stdout = lookup(service, &["-w"])?;
         let text = String::from_utf8(stdout).ok()?;
         let text = text.trim_end();
-        if text.is_empty() {
-            return None;
-        }
-        remember(&service, true);
-        Some(text.to_owned())
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+
+    /// Whether the item holds a Claude sign-in. It can be there without one: Claude Code also keeps MCP servers'
+    /// OAuth tokens in it (`mcpOAuth`), and a failed sign-in can leave only those.
+    fn signed_in(service: &str) -> bool {
+        contents(service).is_some_and(|text| super::parse_credentials(&text).is_some())
+    }
+
+    /// The item's sign-in. Reading it also answers whether it holds one, which replaces an older answer, such as one
+    /// from just before a sign-in.
+    pub fn read(config: &Path) -> Option<String> {
+        let service = super::keychain_service(config);
+        let text = contents(&service);
+        remember(
+            &service,
+            text.as_deref()
+                .is_some_and(|text| super::parse_credentials(text).is_some()),
+        );
+        text
     }
 
     /// Deletes the item. True when it is gone: deleted, or never there (`security` exits with 44 then).
@@ -368,8 +373,7 @@ mod keychain {
         if let Some(held) = with_presence(&service, |entry| fresh(entry)) {
             return held;
         }
-        // Without `-w` only the item's attributes are read, which needs no access to its secret and so no dialog.
-        let held = lookup(&service, &[]).is_some();
+        let held = signed_in(&service);
         remember(&service, held);
         held
     }
@@ -388,7 +392,7 @@ mod keychain {
         if look {
             let service = service.clone();
             std::thread::spawn(move || {
-                let held = lookup(&service, &[]).is_some();
+                let held = signed_in(&service);
                 with_presence(&service, |entry| {
                     entry.known = Some((Instant::now(), held));
                     entry.looking = false;
@@ -435,23 +439,38 @@ pub fn delete_keychain_item(path: &Path) -> bool {
     path.parent().is_none_or(keychain::delete)
 }
 
+/// The sign-in for the folder holding `path`. On macOS Claude Code keeps it in the login Keychain and may leave an
+/// older `.credentials.json` behind, so the Keychain item comes first there and the file is only a fallback, also
+/// for an item that holds no Claude sign-in.
 pub fn read_credentials(path: &Path) -> Result<Credentials, ProviderError> {
-    let not_signed_in = ProviderError::NotSignedIn { hint: SIGN_IN_HINT };
-    let text = credentials_text(path).ok_or_else(|| not_signed_in.clone())?;
-    let json: Value = serde_json::from_str(&text).map_err(|_| not_signed_in.clone())?;
-    let oauth = json.get("claudeAiOauth").ok_or_else(|| not_signed_in.clone())?;
+    path.parent()
+        .and_then(keychain::read)
+        .as_deref()
+        .and_then(parse_credentials)
+        .or_else(|| {
+            std::fs::read_to_string(credentials_file(path))
+                .ok()
+                .as_deref()
+                .and_then(parse_credentials)
+        })
+        .ok_or(ProviderError::NotSignedIn { hint: SIGN_IN_HINT })
+}
+
+/// The Claude sign-in in Claude Code's credentials JSON (`claudeAiOauth`), when it has an access token.
+fn parse_credentials(text: &str) -> Option<Credentials> {
+    let json: Value = serde_json::from_str(text).ok()?;
+    let oauth = json.get("claudeAiOauth")?;
     let access_token = oauth
         .get("accessToken")
         .and_then(Value::as_str)
-        .filter(|token| !token.trim().is_empty())
-        .ok_or(not_signed_in)?
+        .filter(|token| !token.trim().is_empty())?
         .to_owned();
     let expires_at = oauth
         .get("expiresAt")
         .and_then(Value::as_i64)
         .and_then(DateTime::from_timestamp_millis);
     let subscription = oauth.get("subscriptionType").and_then(Value::as_str).map(str::to_owned);
-    Ok(Credentials {
+    Some(Credentials {
         access_token,
         expires_at,
         subscription,
@@ -1257,6 +1276,10 @@ mod tests {
             keychain_service(Path::new("/Users/home/.codexbar/claude/abc")),
             "Claude Code-credentials-88a2166c"
         );
+        // Claude Code keeps MCP servers' tokens beside the sign-in; those alone are no sign-in.
+        assert!(parse_credentials(r#"{"mcpOAuth":{"server":{"accessToken":"x"}}}"#).is_none());
+        assert!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":" "}}"#).is_none());
+        assert!(parse_credentials(r#"{"claudeAiOauth":{"accessToken":"x"},"mcpOAuth":{}}"#).is_some());
         // A folder CodexBar signed in keeps its sign-in file in itself.
         let file = Path::new("/Users/home/.codexbar/claude/abc/.credentials.json");
         assert_eq!(credentials_file(file), file);
