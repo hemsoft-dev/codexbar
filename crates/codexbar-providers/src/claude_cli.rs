@@ -3,22 +3,21 @@
 //! them and never holds an Anthropic client id.
 //!
 //! - `claude auth login` is an interactive terminal UI, so it runs in a console window of its own for the user.
-//! - `claude auth status --json` makes Claude Code check the sign-in, renewing an expired token through its own
-//!   refresh, which takes Claude Code's refresh lock (`.oauth_refresh.lock.owner`) so it never races another Claude
-//!   Code process. That is CodexBar's renewal: a stale refresh can't overwrite newer credentials because CodexBar
-//!   never writes them.
+//! - `claude mcp get <a name no folder configures>` renews a sign-in that expires soon. Claude Code has no command
+//!   for that alone (`auth status` only reads the stored sign-in, #170), but loading the MCP server list fetches the
+//!   account's claude.ai connectors, and that first runs Claude Code's own refresh. The refresh takes Claude Code's
+//!   refresh lock (`.oauth_refresh.lock.owner`), so it never races another Claude Code process. That is CodexBar's
+//!   renewal: a stale refresh can't overwrite newer credentials because CodexBar never writes them.
 //! - `claude auth logout` deletes the folder's sign-in.
 //!
 //! Every process runs in a kill-on-close job, so none outlives CodexBar.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
-const STATUS_TIMEOUT: Duration = Duration::from_secs(60);
+const RENEW_TIMEOUT: Duration = Duration::from_secs(60);
 const LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(250);
 
@@ -49,20 +48,38 @@ pub fn credentials_path(config: &Path) -> PathBuf {
     config.join(".credentials.json")
 }
 
-/// Asks Claude Code to check the folder's sign-in, renewing it if it has expired. Ok when Claude Code reports a
-/// signed-in account afterwards.
+/// Asks Claude Code to renew the folder's sign-in if it expires soon. Ok when Claude Code ran; whether the sign-in
+/// was renewed is for the caller to read, because Claude Code reports nothing about it.
+///
+/// `mcp get` for a name that isn't configured loads the server list (renewing on the way, see the module docs) and
+/// stops there with "not found", so it starts or checks no MCP server. Its exit code is therefore ignored.
 pub fn renew(config: &Path) -> Result<(), ClaudeCliError> {
-    let output = run(config, &["auth", "status", "--json"], STATUS_TIMEOUT)?;
-    let status: Value = serde_json::from_slice(&output).map_err(|_| ClaudeCliError::Failed)?;
-    match status.get("loggedIn").and_then(Value::as_bool) {
-        Some(true) => Ok(()),
-        _ => Err(ClaudeCliError::Failed),
+    let program = claude_program().ok_or(ClaudeCliError::NotInstalled)?;
+    run(renew_command(&program, config), RENEW_TIMEOUT).map(|_| ())
+}
+
+/// The server `renew` asks for. Unlikely to be configured; if it is, `mcp get` only checks that one server.
+const RENEW_PROBE: &str = "codexbar-renew-sign-in";
+
+fn renew_command(program: &Path, config: &Path) -> Command {
+    let mut command = command_for(program, config);
+    command.args(["mcp", "get", RENEW_PROBE]);
+    // With claude.ai connectors turned off, Claude Code skips the fetch and with it the refresh.
+    command.env_remove("ENABLE_CLAUDEAI_MCP_SERVERS");
+    // The folder holds no project `.mcp.json`, unlike whatever folder CodexBar was started in.
+    if config.is_dir() {
+        command.current_dir(config);
     }
+    command
 }
 
 /// Signs the folder out; Claude Code deletes its sign-in.
 pub fn sign_out(config: &Path) -> Result<(), ClaudeCliError> {
-    run(config, &["auth", "logout"], LOGOUT_TIMEOUT)?;
+    let mut command = claude(config)?;
+    command.args(["auth", "logout"]);
+    if !run(command, LOGOUT_TIMEOUT)?.success() {
+        return Err(ClaudeCliError::Failed);
+    }
     crate::claude::signed_out(&credentials_path(config));
     Ok(())
 }
@@ -122,29 +139,18 @@ impl LoginWindow {
     }
 }
 
-/// Runs a short `claude` command for `config` with no window, returning its stdout.
-fn run(config: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, ClaudeCliError> {
-    use std::io::Read as _;
-    let mut command = claude(config)?;
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+/// Runs a short `claude` command with no window and no output, returning how it exited.
+fn run(mut command: Command, timeout: Duration) -> Result<ExitStatus, ClaudeCliError> {
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     let mut process = crate::contained::spawn(&mut command).map_err(|err| match err.kind() {
         std::io::ErrorKind::NotFound => ClaudeCliError::NotInstalled,
         _ => ClaudeCliError::Failed,
     })?;
-    let mut stdout = process.child.stdout.take().ok_or(ClaudeCliError::Failed)?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
     let deadline = Instant::now() + timeout;
     loop {
         match process.child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return Err(ClaudeCliError::Failed),
+            Ok(Some(status)) => return Ok(status),
+            Err(_) => return Err(ClaudeCliError::Failed),
             Ok(None) if Instant::now() >= deadline => {
                 let _ = process.child.kill();
                 let _ = process.child.wait();
@@ -153,7 +159,6 @@ fn run(config: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, Claud
             Ok(None) => std::thread::sleep(Duration::from_millis(25)),
         }
     }
-    reader.join().ok().and_then(Result::ok).ok_or(ClaudeCliError::Failed)
 }
 
 fn claude(config: &Path) -> Result<Command, ClaudeCliError> {
@@ -234,18 +239,41 @@ mod tests {
         assert_eq!(secure_storage, Some(std::ffi::OsStr::new("")));
     }
 
-    /// Runs the installed Claude Code against a temporary folder holding a fake, expired sign-in: `auth status`
-    /// tries Claude Code's own refresh (which fails for the fake token, so CodexBar reports it not renewed) and
-    /// leaves the file as it was, and `auth logout` deletes it. Opens no window. Run with `--ignored`.
+    #[test]
+    fn renewing_asks_for_a_server_and_keeps_claude_ai_connectors_on() {
+        let config = std::env::temp_dir();
+        let command = renew_command(Path::new("claude.exe"), &config);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["mcp", "get", RENEW_PROBE]);
+        // The connector fetch is what runs Claude Code's refresh.
+        let connectors = command
+            .get_envs()
+            .find(|(name, _)| *name == "ENABLE_CLAUDEAI_MCP_SERVERS")
+            .map(|(_, value)| value);
+        assert_eq!(connectors, Some(None), "an inherited setting is removed");
+        assert_eq!(command.get_current_dir(), Some(config.as_path()));
+        // A folder that doesn't exist (yet) can't be the working folder, and isn't needed as one.
+        let missing = config.join("codexbar-no-such-folder");
+        assert_eq!(renew_command(Path::new("claude.exe"), &missing).get_current_dir(), None);
+    }
+
+    /// Runs the installed Claude Code against a temporary folder holding a fake, expired sign-in: renewing makes
+    /// Claude Code try its own refresh, which the server refuses for the fake token, so Claude Code drops the
+    /// sign-in (`auth status` would leave it as it was, #170). `auth logout` then deletes it. Opens no window and
+    /// needs the network. Run with `--ignored`.
     #[test]
     #[ignore = "starts the installed Claude Code"]
-    fn the_installed_claude_code_checks_and_signs_out_a_folder() {
+    fn the_installed_claude_code_renews_and_signs_out_a_folder() {
         let config = std::env::temp_dir().join(format!("codexbar-live-claude-{}", std::process::id()));
         std::fs::create_dir_all(&config).unwrap();
-        let fake = r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-fake","refreshToken":"sk-ant-ort01-fake","expiresAt":1700000000000,"subscriptionType":"pro"}}"#;
+        let fake = r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-fake","refreshToken":"sk-ant-ort01-fake","expiresAt":1700000000000,"scopes":["user:inference","user:profile","user:mcp_servers"],"subscriptionType":"pro"}}"#;
         std::fs::write(credentials_path(&config), fake).unwrap();
-        let _ = renew(&config);
-        assert_eq!(std::fs::read_to_string(credentials_path(&config)).unwrap(), fake);
+        assert!(crate::claude::read_credentials(&credentials_path(&config)).is_ok());
+        assert_eq!(renew(&config), Ok(()));
+        assert!(
+            crate::claude::read_credentials(&credentials_path(&config)).is_err(),
+            "Claude Code tried its refresh and dropped the refused sign-in"
+        );
         assert_eq!(sign_out(&config), Ok(()));
         assert!(!credentials_path(&config).exists());
         let _ = std::fs::remove_dir_all(&config);

@@ -784,7 +784,7 @@ pub trait Renewer: Send + Sync {
     fn renew(&self, config: &Path) -> Result<(), ClaudeCliError>;
 }
 
-/// Renews through `claude auth status`, which runs Claude Code's own locked refresh.
+/// Renews through `claude mcp get`, which runs Claude Code's own locked refresh (`claude_cli::renew`).
 pub struct ClaudeCliRenewer;
 
 impl Renewer for ClaudeCliRenewer {
@@ -943,7 +943,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
             renewed = true;
             credentials = self.read()?;
         }
-        // Claude Code reports a folder signed in even when its refresh failed, so the file decides.
+        // Claude Code doesn't report whether its refresh worked, so the stored sign-in decides.
         if credentials.expires_at.is_some_and(|at| at <= now) {
             return Err(ProviderError::Expired { hint: self.hint });
         }

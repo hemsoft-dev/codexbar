@@ -61,8 +61,9 @@ page, and confirms the approved user and workspace with the Console. See [OAUTH.
   app's, your `gh` accounts) are read, never written by CodexBar. One exception
   is renewal: when a Codex or Claude sign-in (the CLI's own or one CodexBar
   made) is about to expire or is refused, CodexBar asks that CLI to renew it
-  (`codex app-server`, `claude auth status`). The CLI then writes the renewed
-  tokens, as it would when you use it.
+  (`codex app-server`; for Claude, `claude mcp get` with a server name nobody
+  configures, which renews the sign-in and connects to no MCP server). The CLI
+  then writes the renewed tokens, as it would when you use it.
 - Secrets never appear in the UI, error messages, notifications, logs or
   saved snapshots. Errors keep only a provider's short error text or status.
 
