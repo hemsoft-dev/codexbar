@@ -63,7 +63,10 @@ page, and confirms the approved user and workspace with the Console. See [OAUTH.
   made) is about to expire or is refused, CodexBar asks that CLI to renew it
   (`codex app-server`; for Claude, `claude mcp get` with a server name nobody
   configures, which renews the sign-in and connects to no MCP server). The CLI
-  then writes the renewed tokens, as it would when you use it.
+  then writes the renewed tokens, as it would when you use it. Claude Code's
+  renewal also asks Anthropic for the account's claude.ai connector list
+  (`https://api.anthropic.com/v1/mcp_servers`), as it does whenever it lists
+  MCP servers; CodexBar doesn't read the answer.
 - Secrets never appear in the UI, error messages, notifications, logs or
   saved snapshots. Errors keep only a provider's short error text or status.
 

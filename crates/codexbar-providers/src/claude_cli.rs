@@ -62,19 +62,14 @@ pub fn renew(config: &Path) -> Result<(), ClaudeCliError> {
 const RENEW_PROBE: &str = "codexbar-renew-sign-in";
 
 fn renew_command(program: &Path, config: &Path) -> Command {
-    // Absolute, because a relative folder would be read again from inside the working folder set below.
-    let config = std::path::absolute(config).unwrap_or_else(|_| config.to_owned());
-    let config = config.as_path();
     let mut command = command_for(program, config);
     command.args(["mcp", "get", RENEW_PROBE]);
     // With claude.ai connectors turned off, Claude Code skips the fetch and with it the refresh. One inherited from
     // CodexBar's environment is dropped; one the user set in Claude Code's own settings (`env`, or
     // `disableClaudeAiConnectors`) is their choice and stays, so such a sign-in isn't renewed and keeps its hint.
     command.env_remove("ENABLE_CLAUDEAI_MCP_SERVERS");
-    // The folder holds no project `.mcp.json`, unlike whatever folder CodexBar was started in.
-    if config.is_dir() {
-        command.current_dir(config);
-    }
+    // The working folder stays CodexBar's: a project `.mcp.json` there is listed but never connected to, and moving
+    // would change how a relative folder or program path resolves.
     command
 }
 
@@ -256,24 +251,8 @@ mod tests {
             .find(|(name, _)| *name == "ENABLE_CLAUDEAI_MCP_SERVERS")
             .map(|(_, value)| value);
         assert_eq!(connectors, Some(None), "an inherited setting is removed");
-        assert_eq!(command.get_current_dir(), Some(config.as_path()));
-        // A folder that doesn't exist (yet) can't be the working folder, and isn't needed as one.
-        let missing = config.join("codexbar-no-such-folder");
-        assert_eq!(renew_command(Path::new("claude.exe"), &missing).get_current_dir(), None);
-    }
-
-    #[test]
-    fn renewing_a_relative_folder_names_it_absolutely() {
-        // Tests run in the crate folder, which holds `src`.
-        let relative = Path::new("src");
-        let command = renew_command(Path::new("claude.exe"), relative);
-        let absolute = std::path::absolute(relative).unwrap();
-        let folder = command
-            .get_envs()
-            .find(|(name, _)| *name == "CLAUDE_CONFIG_DIR")
-            .and_then(|(_, value)| value);
-        assert_eq!(folder, Some(absolute.as_os_str()));
-        assert_eq!(command.get_current_dir(), Some(absolute.as_path()));
+        // Relative folders and program paths resolve from CodexBar's own working folder, as for every command.
+        assert_eq!(command.get_current_dir(), None);
     }
 
     /// Runs the installed Claude Code against a temporary folder holding a fake, expired sign-in: renewing makes
