@@ -151,13 +151,39 @@ pub fn keychain_service(config: &Path) -> String {
 /// Whether the config folder holding the sign-in file `path` is signed in: on macOS its Keychain item, or the file.
 /// May wait for the Keychain, so never on the UI thread; there, use [`seems_signed_in`].
 pub fn has_credentials(path: &Path) -> bool {
-    path.parent().is_some_and(keychain::holds) || path.is_file()
+    path.parent().is_some_and(keychain::holds) || credentials_file(path).is_file()
 }
 
 /// [`has_credentials`] as last known, for the UI thread: an old Keychain answer is looked up again in the background
 /// for a later call, and only an item never looked up before waits, at most a second, for its first answer.
 pub fn seems_signed_in(path: &Path) -> bool {
-    path.parent().is_some_and(keychain::holds_known) || path.is_file()
+    path.parent().is_some_and(keychain::holds_known) || credentials_file(path).is_file()
+}
+
+/// Where Claude Code keeps the sign-in file of the folder holding `path`: in the folder its
+/// [`secure_storage_selector`] names (`~/.claude` for an empty one), which is the folder itself unless an inherited
+/// selector moved it.
+fn credentials_file(path: &Path) -> PathBuf {
+    let Some(config) = path.parent() else {
+        return path.to_owned();
+    };
+    let selector = secure_storage_selector(config);
+    if selector == config.as_os_str() {
+        return path.to_owned();
+    }
+    let folder = if selector.is_empty() {
+        crate::platform::home_dir().map_or_else(|| config.to_owned(), |home| home.join(".claude"))
+    } else {
+        PathBuf::from(selector)
+    };
+    folder.join(".credentials.json")
+}
+
+/// Records that the folder holding `path` was just signed out, so a Keychain answer from before isn't reused.
+pub fn signed_out(path: &Path) {
+    if let Some(config) = path.parent() {
+        keychain::forget(config);
+    }
 }
 
 /// The sign-in for the folder holding `path`. On macOS Claude Code keeps it in the login Keychain and may leave an
@@ -165,7 +191,7 @@ pub fn seems_signed_in(path: &Path) -> bool {
 fn credentials_text(path: &Path) -> Option<String> {
     path.parent()
         .and_then(keychain::read)
-        .or_else(|| std::fs::read_to_string(path).ok())
+        .or_else(|| std::fs::read_to_string(credentials_file(path)).ok())
 }
 
 /// Claude Code's sign-ins in the macOS login Keychain. Claude Code reads and writes them with `security`, so reading
@@ -303,6 +329,11 @@ mod keychain {
         with_presence(service, |entry| entry.known = Some((Instant::now(), held)));
     }
 
+    /// Records the item as gone, after Claude Code signed the folder out.
+    pub fn forget(config: &Path) {
+        remember(&super::keychain_service(config), false);
+    }
+
     /// The item's sign-in. Reading it also proves it is there, which replaces an older answer that it wasn't, such
     /// as one from just before a sign-in.
     pub fn read(config: &Path) -> Option<String> {
@@ -385,6 +416,8 @@ mod keychain {
     pub fn delete(_: &Path) -> bool {
         true
     }
+
+    pub fn forget(_: &Path) {}
 
     pub fn holds(_: &Path) -> bool {
         false
@@ -764,7 +797,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
         match read_credentials(&self.credentials_path) {
             Ok(credentials) => Ok(credentials),
             // Claude Code may be replacing the file right now; one more read after a moment sees the finished file.
-            Err(_) if self.credentials_path.is_file() => {
+            Err(_) if credentials_file(&self.credentials_path).is_file() => {
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 read_credentials(&self.credentials_path).map_err(not_signed_in)
             }
@@ -1224,6 +1257,9 @@ mod tests {
             keychain_service(Path::new("/Users/home/.codexbar/claude/abc")),
             "Claude Code-credentials-88a2166c"
         );
+        // A folder CodexBar signed in keeps its sign-in file in itself.
+        let file = Path::new("/Users/home/.codexbar/claude/abc/.credentials.json");
+        assert_eq!(credentials_file(file), file);
         // Claude Code hashes the path in NFC, so a decomposed "é" names the same item as a composed one.
         assert_eq!(
             keychain_service(Path::new("/Users/home/Caf\u{65}\u{301}/claude")),

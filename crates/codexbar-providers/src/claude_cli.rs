@@ -62,7 +62,9 @@ pub fn renew(config: &Path) -> Result<(), ClaudeCliError> {
 
 /// Signs the folder out; Claude Code deletes its sign-in.
 pub fn sign_out(config: &Path) -> Result<(), ClaudeCliError> {
-    run(config, &["auth", "logout"], LOGOUT_TIMEOUT).map(|_| ())
+    run(config, &["auth", "logout"], LOGOUT_TIMEOUT)?;
+    crate::claude::signed_out(&credentials_path(config));
+    Ok(())
 }
 
 /// A `claude auth login` window the user is signing in through.
