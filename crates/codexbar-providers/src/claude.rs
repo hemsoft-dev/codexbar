@@ -154,8 +154,8 @@ pub fn has_credentials(path: &Path) -> bool {
     path.parent().is_some_and(keychain::holds) || path.is_file()
 }
 
-/// [`has_credentials`] as last known, never waiting: a Keychain answer that is missing or old is looked up in the
-/// background for a later call, and until then counts as no item.
+/// [`has_credentials`] as last known, for the UI thread: an old Keychain answer is looked up again in the background
+/// for a later call, and only an item never looked up before waits, at most a second, for its first answer.
 pub fn seems_signed_in(path: &Path) -> bool {
     path.parent().is_some_and(keychain::holds_known) || path.is_file()
 }
@@ -183,6 +183,8 @@ mod keychain {
     /// A lookup still running after this long is waiting on a Keychain dialog: it is stopped and counts as no item,
     /// so one stuck lookup never holds up a refresh.
     const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
+    /// How long a first look at an item waits for its answer before counting it as absent for now.
+    const FIRST_ANSWER_WAIT: Duration = Duration::from_secs(1);
 
     /// What is known about one item: whether it was there, and when that was looked up.
     struct Presence {
@@ -253,12 +255,11 @@ mod keychain {
         name.to_str().ok().map(str::to_owned)
     }
 
-    /// Runs `security find-generic-password` for `service` with `extra` arguments, within [`LOOKUP_TIMEOUT`]. Its
-    /// stdout when it found the item.
-    fn lookup(service: &str, extra: &[&str]) -> Option<Vec<u8>> {
+    /// Runs `security` with `args` within [`LOOKUP_TIMEOUT`]: its exit code and stdout, or `None` when it couldn't
+    /// start or was stopped.
+    fn security(args: &[&str]) -> Option<(Option<i32>, Vec<u8>)> {
         let mut child = Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-a", &account(), "-s", service])
-            .args(extra)
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -284,14 +285,50 @@ mod keychain {
         };
         // The pipe closes once `security` has exited or been killed, so the reader always finishes.
         let bytes = reader.join().ok()?.ok()?;
-        status?.success().then_some(bytes)
+        Some((status?.code(), bytes))
     }
 
+    /// Looks the item up with `extra` arguments: its stdout when it was found.
+    fn lookup(service: &str, extra: &[&str]) -> Option<Vec<u8>> {
+        let account = account();
+        let mut args = vec!["find-generic-password", "-a", &account, "-s", service];
+        args.extend_from_slice(extra);
+        match security(&args)? {
+            (Some(0), stdout) => Some(stdout),
+            _ => None,
+        }
+    }
+
+    fn remember(service: &str, held: bool) {
+        with_presence(service, |entry| entry.known = Some((Instant::now(), held)));
+    }
+
+    /// The item's sign-in. Reading it also proves it is there, which replaces an older answer that it wasn't, such
+    /// as one from just before a sign-in.
     pub fn read(config: &Path) -> Option<String> {
-        let stdout = lookup(&super::keychain_service(config), &["-w"])?;
+        let service = super::keychain_service(config);
+        let stdout = lookup(&service, &["-w"])?;
         let text = String::from_utf8(stdout).ok()?;
         let text = text.trim_end();
-        (!text.is_empty()).then(|| text.to_owned())
+        if text.is_empty() {
+            return None;
+        }
+        remember(&service, true);
+        Some(text.to_owned())
+    }
+
+    /// Deletes the item. True when it is gone: deleted, or never there (`security` exits with 44 then).
+    pub fn delete(config: &Path) -> bool {
+        let service = super::keychain_service(config);
+        let account = account();
+        let gone = matches!(
+            security(&["delete-generic-password", "-a", &account, "-s", &service]),
+            Some((Some(0 | 44), _))
+        );
+        if gone {
+            remember(&service, false);
+        }
+        gone
     }
 
     /// Looks the item up, reusing an answer from the last [`PRESENCE_TTL`].
@@ -302,28 +339,37 @@ mod keychain {
         }
         // Without `-w` only the item's attributes are read, which needs no access to its secret and so no dialog.
         let held = lookup(&service, &[]).is_some();
-        with_presence(&service, |entry| entry.known = Some((Instant::now(), held)));
+        remember(&service, held);
         held
     }
 
-    /// The last answer for the item, never waiting: a missing or old one is looked up on another thread.
+    /// The last answer for the item, looked up again on another thread when it is old. The first time there is no
+    /// answer yet, so it waits for that lookup up to [`FIRST_ANSWER_WAIT`]: a lookup takes milliseconds, and an
+    /// unknown item counted as absent would sort a folder as signed out.
     pub fn holds_known(config: &Path) -> bool {
         let service = super::keychain_service(config);
-        let (held, look) = with_presence(&service, |entry| {
+        let (known, look) = with_presence(&service, |entry| {
             let look = fresh(entry).is_none() && !entry.looking;
             entry.looking |= look;
-            (entry.known.is_some_and(|(_, held)| held), look)
+            (entry.known.map(|(_, held)| held), look)
         });
+        let (sender, answer) = std::sync::mpsc::channel();
         if look {
+            let service = service.clone();
             std::thread::spawn(move || {
                 let held = lookup(&service, &[]).is_some();
                 with_presence(&service, |entry| {
                     entry.known = Some((Instant::now(), held));
                     entry.looking = false;
                 });
+                let _ = sender.send(held);
             });
         }
-        held
+        match known {
+            Some(held) => held,
+            None if look => answer.recv_timeout(FIRST_ANSWER_WAIT).unwrap_or(false),
+            None => false,
+        }
     }
 }
 
@@ -336,6 +382,10 @@ mod keychain {
         None
     }
 
+    pub fn delete(_: &Path) -> bool {
+        true
+    }
+
     pub fn holds(_: &Path) -> bool {
         false
     }
@@ -343,6 +393,13 @@ mod keychain {
     pub fn holds_known(_: &Path) -> bool {
         false
     }
+}
+
+/// Deletes the macOS Keychain item of the folder holding the sign-in file `path`, for a folder about to be removed:
+/// the item is named after the folder, so nothing could find it afterwards. True when it is gone, and always
+/// elsewhere.
+pub fn delete_keychain_item(path: &Path) -> bool {
+    path.parent().is_none_or(keychain::delete)
 }
 
 pub fn read_credentials(path: &Path) -> Result<Credentials, ProviderError> {
