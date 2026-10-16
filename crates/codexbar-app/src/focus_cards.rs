@@ -3,11 +3,11 @@
 
 use chrono::{DateTime, Local, Utc};
 use codexbar_core::{AccountSnapshot, Metric, Severity, format};
-use gpui_kit::component::chart::{AreaChart, BarChart, PieChart};
+use gpui_kit::component::chart::{AreaChart, BarChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, Background, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
-    linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
+    AnyElement, App, Background, FontWeight, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, rems,
 };
 
 use crate::history_view::ValueKind;
@@ -277,11 +277,10 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
     }
 }
 
-/// A donut for the secondary window (or the primary one), or the balance when there is no limit.
+/// The share of a pool as a ring gauge (#174), or the credits, balance or spend when no metric has a share.
 fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
-    let metric = secondary_metric(account, now).or(account.primary());
-    let track = cx.theme().muted;
-    let Some(metric) = metric else {
+    use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
+    let Some(metric) = share_metric(account, now) else {
         return Card::new("No limits", "", div()).takeaway("This account reports no limits");
     };
 
@@ -320,39 +319,103 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         return Card::new(metric.label().to_owned(), "Current balance", body).takeaway(takeaway);
     };
 
+    // The number leads (#174): large in the ring, with the pace in the ring's opening and the reset in the caption.
+    let muted = cx.theme().muted_foreground;
     let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
-    let slices = vec![(used, color), ((1.0 - used).max(0.0), track)];
-    let donut = div()
+    let projected = metric.projected_at_reset(now);
+    let pace = projected.map(|projected| format!("on pace for {:.0}%", projected * 100.0));
+    let spoken = match &pace {
+        Some(pace) => format!("{}: {:.0}% used, {pace} by the reset", metric.label(), used * 100.0),
+        None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
+    };
+    let ring = div()
+        .id("focus-share")
+        .role(Role::Note)
+        .test_support()
+        .aria_label(spoken)
         .relative()
         .size_full()
-        .child(
-            PieChart::new(slices)
-                .id("focus-share")
-                .value(|(value, _)| *value as f32)
-                .color(|(_, color)| *color)
-                .inner_radius(62.)
-                .outer_radius(84.)
-                .tooltip_name(|_| "Used".into())
-                .tooltip_value(|(value, _), _, _| format!("{:.0}%", value * 100.0).into()),
-        )
+        .child(crate::gauge::Gauge::new(used, projected, color, cx).render())
         .child(
             v_flex()
                 .absolute()
                 .inset_0()
                 .items_center()
                 .justify_center()
-                .child(div().text_2xl().font_semibold().child(format!("{:.0}%", used * 100.0)))
-                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("used")),
-        );
+                .child(
+                    h_flex()
+                        .items_baseline()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_size(rems(2.75))
+                                .line_height(rems(3.))
+                                .font_weight(FontWeight::BOLD)
+                                .child(format!("{:.0}", used * 100.0)),
+                        )
+                        .child(div().text_xl().font_semibold().text_color(muted).child("%")),
+                )
+                .child(div().text_sm().text_color(muted).child("used")),
+        )
+        .when_some(pace, |this, pace| {
+            this.child(
+                div()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .text_center()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(pace),
+            )
+        });
     let takeaway = pool_takeaway(1.0 - used);
     let title = if metric.label().to_lowercase().contains("window") {
         metric.label().to_owned()
     } else {
         format!("{} window", metric.label())
     };
-    Card::new(title, window_period(metric, now), donut)
+    let mut caption = reset_caption(metric, now);
+    if let Some(credits) = displaced_credits(account) {
+        caption = if caption.is_empty() {
+            credits
+        } else {
+            format!("{caption} · {credits}")
+        };
+    }
+    Card::new(title, window_period(metric, now), ring)
         .takeaway(takeaway)
-        .caption(reset_caption(metric, now))
+        .caption(caption)
+}
+
+/// The metric for the second card: the one after the headline that raises the status when it has a share of a pool
+/// (so Cursor's on-demand spend stays on screen), otherwise the headline's share, otherwise the most pressing share
+/// further down (GitHub Billing lists its allowances after two uncapped spends) (#174). Only when no metric has a
+/// share is it whatever the second one is: credits, a balance, a spend with no limit.
+fn share_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
+    let primary = account.primary()?;
+    let secondary = secondary_metric(account, now);
+    let has_share = |metric: &Metric| metric.used_fraction().is_some();
+    secondary
+        .filter(|metric| has_share(metric))
+        .or_else(|| primary.used_fraction().map(|_| primary))
+        .or_else(|| most_severe_after_primary(account, now, has_share))
+        .or(secondary)
+        .or(Some(primary))
+}
+
+/// The credits line for the ring's caption when the share took the card (#174): the credits after the headline,
+/// wherever the provider lists them (Codex puts both windows before them). Credits that lead the account (#150)
+/// already have the first card, so they get no line.
+fn displaced_credits(account: &AccountSnapshot) -> Option<String> {
+    account.metrics().iter().skip(1).find_map(|metric| match metric {
+        Metric::Credits {
+            balance: Some(balance), ..
+        } => Some(format!("{} credits left", codexbar_core::format_credits(*balance))),
+        Metric::Credits { balance: None, .. } => Some("Unlimited credits".to_owned()),
+        _ => None,
+    })
 }
 
 /// Requests by hour when the provider reports them, otherwise daily pressure as bars.
@@ -501,8 +564,6 @@ fn no_history(cx: &App) -> impl IntoElement {
         .child("History builds up as CodexBar refreshes")
 }
 
-/// The metric for the second card: the most severe one after the primary, so whatever raises the account's status
-/// (such as Cursor's on-demand spend) is on screen. Ties keep provider order, so it is usually the second metric.
 /// How much of the remembered starting balance the credits have used (#150): "63% of 50,000 used".
 fn credit_spend(metric: &Metric) -> Option<String> {
     let Metric::Credits { start: Some(start), .. } = metric else {
@@ -549,12 +610,24 @@ fn credits_card(metric: &Metric, balance: Option<f64>, cx: &App) -> Card {
     Card::new(metric.label().to_owned(), "Credits pool", body).takeaway(takeaway)
 }
 
+/// The most severe metric after the primary, so whatever raises the account's status (such as Cursor's on-demand
+/// spend) is on screen. Ties keep provider order, so it is usually the second metric.
 fn secondary_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
+    most_severe_after_primary(account, now, |_| true)
+}
+
+/// The most severe of the metrics after the primary that `keep` accepts; ties keep provider order.
+fn most_severe_after_primary(
+    account: &AccountSnapshot,
+    now: DateTime<Utc>,
+    keep: impl Fn(&Metric) -> bool,
+) -> Option<&Metric> {
     account
         .metrics()
         .iter()
         .skip(1)
         .enumerate()
+        .filter(|(_, metric)| keep(metric))
         .max_by(|(a_ix, a), (b_ix, b)| {
             let severity = |metric: &Metric| codexbar_core::assess(metric, now).severity();
             severity(a).cmp(&severity(b)).then(b_ix.cmp(a_ix))
@@ -670,6 +743,75 @@ mod tests {
         );
         let urgent = account(1980);
         assert_eq!(secondary_metric(&urgent, now()).unwrap().label(), "On-demand");
+    }
+
+    #[test]
+    fn the_share_leads_the_second_card_and_displaced_credits_keep_a_line() {
+        use codexbar_core::{AccountId, Provider};
+        let credits = |balance: f64| Metric::Credits {
+            label: "Credits".into(),
+            balance: Some(balance),
+            start: None,
+        };
+        let account = |metrics| AccountSnapshot::new(AccountId::new("codex"), Provider::Codex, metrics, now());
+
+        // A Pro account mid-week (#174): the weekly share takes the card, and the credits keep a caption line.
+        let pro = account(vec![window(0.59, 0.02), credits(55_234.7)]);
+        assert_eq!(share_metric(&pro, now()).unwrap().label(), "Included usage");
+        assert_eq!(displaced_credits(&pro).as_deref(), Some("55,234.70 credits left"));
+
+        // Codex lists both windows before the credits: the ring shows the second window, the credits keep the line.
+        let three = account(vec![window(0.91, 0.2), window(0.47, 0.01), credits(55_234.7)]);
+        assert_eq!(share_metric(&three, now()).unwrap().label(), "Included usage");
+        assert_eq!(displaced_credits(&three).as_deref(), Some("55,234.70 credits left"));
+        let unlimited = account(vec![
+            window(0.3, 0.01),
+            Metric::Credits {
+                label: "Credits".into(),
+                balance: None,
+                start: None,
+            },
+        ]);
+        assert_eq!(displaced_credits(&unlimited).as_deref(), Some("Unlimited credits"));
+
+        // With the window used up the credits lead (#150) and have the first card, so the ring gets no line.
+        let used_up = account(vec![window(1.0, 0.0), credits(18_400.0)]).with_credits_placed();
+        assert!(matches!(used_up.primary(), Some(Metric::Credits { .. })));
+        assert_eq!(share_metric(&used_up, now()).unwrap().label(), "Included usage");
+        assert_eq!(displaced_credits(&used_up), None);
+
+        // Credits alone keep their card.
+        let only = account(vec![credits(10.0)]);
+        assert!(matches!(share_metric(&only, now()), Some(Metric::Credits { .. })));
+        assert_eq!(displaced_credits(&only), None);
+
+        // GitHub Billing: two uncapped spends lead, and the allowance after them is the share the ring shows.
+        use codexbar_core::Money;
+        let spend = |label: &str| Metric::Spend {
+            label: label.into(),
+            spent: Money::from_cents(2389),
+            limit: None,
+            resets_at: None,
+            pace: None,
+        };
+        let billing = account(vec![
+            spend("Net spend"),
+            spend("Gross charges"),
+            Metric::Quota {
+                label: "Actions minutes".into(),
+                used: 600,
+                limit: 2000,
+                resets_at: now() + Duration::days(10),
+                pace: None,
+            },
+        ]);
+        assert_eq!(share_metric(&billing, now()).unwrap().label(), "Actions minutes");
+        let uncapped = account(vec![spend("Net spend"), spend("Gross charges")]);
+        assert_eq!(
+            share_metric(&uncapped, now()).unwrap().label(),
+            "Gross charges",
+            "no share anywhere: the second metric keeps the card"
+        );
     }
 
     #[test]

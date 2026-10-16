@@ -65,8 +65,9 @@ fn captures() {
         crate::package::StartupSetting::init(cx);
     });
     let mut dashboard = None;
+    // Tall enough for the demo's rows and the focus cards under them (#174); 960 cut the cards off.
     let handle = cx
-        .open_window(size(px(1440.), px(960.)), |window, cx| {
+        .open_window(size(px(1440.), px(1400.)), |window, cx| {
             let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
             dashboard = Some(view.clone());
             cx.new(|cx| Root::new(view, window, cx))

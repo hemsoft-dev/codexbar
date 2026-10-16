@@ -457,6 +457,35 @@ fn a_used_up_window_with_credits_shows_the_credits_with_no_pill(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+fn the_share_ring_leads_the_second_card(cx: &mut TestAppContext) {
+    use crate::handoff::FocusRequest;
+    let settings = TempSettings::new("share-ring", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let focus = |cx: &mut TestAppContext, account: &str| {
+        let request = FocusRequest {
+            account: account.into(),
+            metric: None,
+        };
+        cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+
+    // The personal account's 5-hour window leads, so the ring shows the weekly share after it, with its pace (#174).
+    focus(cx, "codex-personal");
+    let ring = label(cx, handle, "focus-share").unwrap();
+    assert!(
+        ring.starts_with("Weekly: 47% used, on pace for ") && ring.ends_with("% by the reset"),
+        "{ring}"
+    );
+
+    // The team account's credits lead (#150); the ring shows the used-up weekly window, with no pace to project.
+    focus(cx, "codex-team");
+    assert_eq!(label(cx, handle, "focus-share").as_deref(), Some("Weekly: 100% used"));
+}
+
+#[gpui_kit::test]
 fn a_used_up_window_without_credits_is_blocked_with_no_pill(cx: &mut TestAppContext) {
     let settings = TempSettings::new("credits-none", "{}");
     let (handle, _) = open_dashboard(cx, &settings);
