@@ -15,6 +15,7 @@ use codexbar_providers::greptile::GreptileProvider;
 use codexbar_providers::grok::{GrokProvider, SystemGrokCli};
 use codexbar_providers::opencode::OpenCodeProvider;
 use codexbar_providers::opencode_console::OpenCodeConsoleProvider;
+use codexbar_providers::x_subscription::XSubscriptionProvider;
 use codexbar_providers::{SystemCommandRunner, UreqClient, UsageProvider};
 use codexbar_store::settings::{AccountRecord, names};
 
@@ -104,7 +105,33 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         providers.push(Arc::new(provider));
     }
 
+    // X Subscription (#172): the Grok CLI's own sign-in for the SuperGrok limit and credits, and the Cursor app's own
+    // sign-in for the Grok Bot limit.
+    let x_subscription = enabled_accounts(hub, names::X_SUBSCRIPTION);
+    let x_subscription_homes: Vec<_> = x_subscription
+        .iter()
+        .map(|account| crate::grok_sign_in::home(hub.dir(), account))
+        .collect();
+    for account in x_subscription {
+        let grok = GrokProvider::new(
+            UreqClient::without_redirects(),
+            Arc::new(SystemGrokCli),
+            crate::grok_sign_in::home(hub.dir(), &account),
+            None,
+            account.id.clone(),
+            account.label.clone(),
+        );
+        providers.push(Arc::new(XSubscriptionProvider::new(
+            grok,
+            UreqClient::without_redirects(),
+            cursor::default_auth_path(),
+            account.id.clone(),
+            account.label.clone(),
+        )));
+    }
+
     // Grok (#108): each account reads its Grok CLI home; one CodexBar signed in is bound to the xAI account it holds.
+    // One whose sign-in an X Subscription account already reads points there instead of showing the pool twice.
     for account in enabled_accounts(hub, names::GROK) {
         let home = crate::grok_sign_in::home(hub.dir(), &account);
         let subject = if crate::grok_sign_in::is_managed(&account) {
@@ -112,14 +139,20 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         } else {
             None
         };
-        providers.push(Arc::new(GrokProvider::new(
+        let shown_elsewhere = x_subscription_homes.contains(&home);
+        let provider = GrokProvider::new(
             UreqClient::without_redirects(),
             Arc::new(SystemGrokCli),
             home,
             subject,
             account.id.clone(),
             account.label.clone(),
-        )));
+        );
+        providers.push(Arc::new(if shown_elsewhere {
+            provider.shown_on_x_subscription()
+        } else {
+            provider
+        }));
     }
 
     // GitHub Billing (#104): each account with the token CodexBar keeps for it, reporting under its own id.

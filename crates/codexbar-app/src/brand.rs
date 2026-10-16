@@ -34,6 +34,7 @@ pub fn brand(provider: Provider) -> Brand {
         Provider::GitHubBilling => 0x1F2328,
         Provider::Gemini => 0x3186FF,
         Provider::Grok => 0x2B2B2B,
+        Provider::XSubscription => 0x0F1419,
     };
     Brand {
         accent,
@@ -56,6 +57,7 @@ pub fn from_settings_name(name: &str) -> Option<Provider> {
         names::GITHUB_BILLING => Provider::GitHubBilling,
         names::GEMINI => Provider::Gemini,
         names::GROK => Provider::Grok,
+        names::X_SUBSCRIPTION => Provider::XSubscription,
         _ => return None,
     })
 }

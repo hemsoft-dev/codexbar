@@ -314,6 +314,8 @@ pub struct GrokProvider<H: HttpClient> {
     subject: Option<String>,
     account: String,
     label: String,
+    /// Set when an X Subscription account (#172) reads the same Grok CLI home and shows its usage instead.
+    shown_on_x_subscription: bool,
 }
 
 impl<H: HttpClient> GrokProvider<H> {
@@ -332,7 +334,15 @@ impl<H: HttpClient> GrokProvider<H> {
             subject,
             account: account.into(),
             label: label.into(),
+            shown_on_x_subscription: false,
         }
+    }
+
+    /// Points the card at the X Subscription account that reads the same sign-in, instead of a second copy of its
+    /// usage (#172).
+    pub fn shown_on_x_subscription(mut self) -> Self {
+        self.shown_on_x_subscription = true;
+        self
     }
 
     fn auth(&self) -> Result<GrokAuth, ProviderError> {
@@ -355,7 +365,9 @@ impl<H: HttpClient> GrokProvider<H> {
         )
     }
 
-    fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
+    /// The weekly pool, Extra Usage Credits and plan, read with the CLI's sign-in and renewed through the CLI when
+    /// needed.
+    pub fn usage(&self, now: DateTime<Utc>) -> Result<GrokUsage, ProviderError> {
         let mut auth = self.auth()?;
         if auth.expires_at.is_some_and(|at| at - now <= RENEW_MARGIN) && may_renew(&self.home) {
             self.cli.renew(&self.home);
@@ -379,10 +391,20 @@ impl<H: HttpClient> GrokProvider<H> {
             .ok()
             .filter(|r| r.status == 200)
             .and_then(|r| parse_plan(&r.body));
-        let usage =
-            parse_billing(&billing.body, plan.as_deref(), now).map_err(|UnknownBilling| ProviderError::Unexpected {
-                detail: "Grok billing in an unknown shape",
-            })?;
+        parse_billing(&billing.body, plan.as_deref(), now).map_err(|UnknownBilling| ProviderError::Unexpected {
+            detail: "Grok billing in an unknown shape",
+        })
+    }
+
+    fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
+        let usage = if self.shown_on_x_subscription {
+            GrokUsage {
+                metrics: Vec::new(),
+                messages: vec!["Shown on the X Subscription card, which reads the same Grok sign-in.".to_owned()],
+            }
+        } else {
+            self.usage(now)?
+        };
         let mut account =
             AccountSnapshot::new(AccountId::new(self.account.clone()), Provider::Grok, usage.metrics, now);
         if !self.label.trim().is_empty() {
@@ -646,6 +668,25 @@ mod tests {
         assert_eq!(account.display_name(), "Grok · Me");
         assert_eq!(account.metrics()[0].used_fraction(), Some(0.1));
         assert_eq!(renewer.1.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_grok_account_shown_on_the_x_subscription_points_there_without_a_request() {
+        let home = Home::with("x-subscription", AUTH);
+        let proxy = Proxy(Mutex::new(Vec::new()), Mutex::new(Vec::new()));
+        let provider = GrokProvider::new(
+            proxy,
+            Arc::new(Renewer(home.0.clone(), AtomicUsize::new(0))),
+            home.0.clone(),
+            None,
+            "gk-1",
+            "Me",
+        )
+        .shown_on_x_subscription();
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert!(account.metrics().is_empty(), "no second copy of the weekly pool");
+        assert!(account.messages()[0].starts_with("Shown on the X Subscription card"));
+        assert!(provider.http.1.lock().unwrap().is_empty());
     }
 
     #[test]

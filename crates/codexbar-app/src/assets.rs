@@ -19,10 +19,11 @@ pub fn logo_path(provider: Provider) -> &'static str {
         Provider::GitHubBilling => "brand/github.svg",
         Provider::Gemini => "brand/gemini.svg",
         Provider::Grok => "brand/grok.svg",
+        Provider::XSubscription => "brand/xai.svg",
     }
 }
 
-const LOGOS: [(&str, &[u8]); 11] = [
+const LOGOS: [(&str, &[u8]); 12] = [
     ("brand/openai.svg", include_bytes!("../assets/brand/openai.svg")),
     ("brand/claude.svg", include_bytes!("../assets/brand/claude.svg")),
     (
@@ -37,6 +38,7 @@ const LOGOS: [(&str, &[u8]); 11] = [
     ("brand/github.svg", include_bytes!("../assets/brand/github.svg")),
     ("brand/gemini.svg", include_bytes!("../assets/brand/gemini.svg")),
     ("brand/grok.svg", include_bytes!("../assets/brand/grok.svg")),
+    ("brand/xai.svg", include_bytes!("../assets/brand/xai.svg")),
 ];
 
 pub struct Assets;

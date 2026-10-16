@@ -28,7 +28,7 @@ pub struct ProviderInfo {
     pub multi_account: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 12] = [
+pub const PROVIDERS: [ProviderInfo; 13] = [
     ProviderInfo {
         id: names::CODEX,
         display: "ChatGPT · Codex",
@@ -167,11 +167,24 @@ pub const PROVIDERS: [ProviderInfo; 12] = [
         display: "Grok",
         sign_in: "Experimental. Automatic uses the Grok CLI's own sign-in (`grok`). OAuth signs an account in through \
                   the Grok CLI in a folder of its own, so several xAI accounts can be added. Shows a paid plan's \
-                  weekly usage and Extra Usage Credits; not API or Cursor Grok Bot spending.",
+                  weekly usage and Extra Usage Credits; not API or Cursor Grok Bot spending. On The X Subscription, \
+                  add an X Subscription account instead.",
         secret: None,
         default_method: AuthMethod::Automatic,
         setup_method: AuthMethod::Automatic,
         multi_account: true,
+    },
+    ProviderInfo {
+        id: names::X_SUBSCRIPTION,
+        display: "X Subscription",
+        sign_in: "Experimental. Grok, Grok Bot and Cursor as one plan. Shows what Grok's Settings > Usage shows: the \
+                  weekly SuperGrok limit and Extra Usage Credits through the Grok CLI's own sign-in (`grok login`), and \
+                  the weekly Grok Bot limit through the Cursor app's own sign-in. A Grok account on the same sign-in \
+                  points here instead of showing the pool twice.",
+        secret: None,
+        default_method: AuthMethod::Automatic,
+        setup_method: AuthMethod::Automatic,
+        multi_account: false,
     },
 ];
 

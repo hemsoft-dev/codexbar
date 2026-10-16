@@ -77,6 +77,15 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage");
 
+    // #172: the X Subscription card, with its two weekly limits and the credits.
+    let request = crate::handoff::FocusRequest {
+        account: "x-subscription".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "usage-x-subscription");
+
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::History, cx)));
     cx.run_until_parked();
     save(&mut cx, handle, &out, "history");
@@ -94,5 +103,19 @@ fn captures() {
         cx.run_until_parked();
         save(&mut cx, handle, &out, &format!("settings-{page}"));
     }
+    // The X Subscription and Grok entries on the Accounts page.
+    let x_subscription = crate::catalog::PROVIDERS
+        .iter()
+        .position(|info| info.id == codexbar_store::settings::names::X_SUBSCRIPTION)
+        .unwrap();
+    for entry in ["0-1".to_owned(), format!("0-1-{x_subscription}")] {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("settings-sidebar").click(entry, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    save(&mut cx, handle, &out, "settings-accounts-x-subscription");
     let _ = std::fs::remove_dir_all(&settings);
 }

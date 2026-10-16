@@ -2224,10 +2224,11 @@ fn reset_accounts_asks_first_then_removes_accounts_and_keys(cx: &mut TestAppCont
         .map(|a| a.id.clone())
         .collect();
     assert_eq!(ids.len(), 2);
-    // Reset is the last group on the Accounts page; its sidebar entry scrolls it into view.
+    // Reset is the last group on the Accounts page, after one per provider; its sidebar entry scrolls it into view.
+    let reset_entry = format!("0-1-{}", crate::catalog::PROVIDERS.len());
     let show_reset = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| {
-            window.within("settings-sidebar").click("0-1-8", cx)
+            window.within("settings-sidebar").click(reset_entry.clone(), cx)
         })
         .unwrap();
         cx.run_until_parked();

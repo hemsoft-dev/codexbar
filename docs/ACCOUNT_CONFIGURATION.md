@@ -13,7 +13,7 @@ account in again with another identity replaces it without asking (see
 | Field | Meaning |
 | --- | --- |
 | `id` | Stable id (32 hex digits for accounts CodexBar creates) |
-| `providerId` | `Codex`, `Claude`, `Copilot`, `Cursor`, `OpenRouter`, `OpenCodeGo`, `OpenCodeZen`, `Moonshot`, `Greptile`, `GitHubBilling`, `Gemini` or `Grok` |
+| `providerId` | `Codex`, `Claude`, `Copilot`, `Cursor`, `OpenRouter`, `OpenCodeGo`, `OpenCodeZen`, `Moonshot`, `Greptile`, `GitHubBilling`, `Gemini`, `Grok` or `XSubscription` |
 | `displayLabel` | The account's name |
 | `enabled` | Whether it is fetched and shown |
 | `authenticationMethod` | `Automatic`, `ApiKey`, `CommandLine`, `OAuth` or `BrowserSession` (see below) |
@@ -41,6 +41,7 @@ the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.m
 | OpenRouter, Moonshot, Greptile | API key (or the environment variable) | |
 | GitHub Billing | | OAuth: the GitHub CLI's device sign-in, token kept by CodexBar, apart from Copilot |
 | Grok | Automatic (the Grok CLI's own `~/.grok` or `GROK_HOME`) | OAuth: its own Grok CLI home, through `grok login` (experimental) |
+| X Subscription | Automatic (the Grok CLI's own sign-in and the Cursor app's) | (experimental; see [X_SUBSCRIPTION.md](X_SUBSCRIPTION.md)) |
 | Gemini | | Browser session: a temporary Edge or Chrome profile, two Google session cookies kept by CodexBar (experimental) |
 | OpenCode Go / Zen | Browser session (a copied dashboard cookie) | OAuth (OpenCode Go): OpenCode's device approval in the browser, sign-in kept by CodexBar |
 
