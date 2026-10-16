@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider};
 use serde_json::Value;
 
@@ -54,7 +54,12 @@ pub fn parse_grok_bot(body: &str, now: DateTime<Utc>) -> GrokBotUsage {
     if flag("usesPooledEnterpriseAllowance") == Some(true) {
         return unavailable("Grok Bot uses the team's pooled allowance, so there's no personal weekly limit.");
     }
-    if flag("hasNonZeroIncludedLimit") == Some(false) || flag("includedLimitZero") == Some(true) {
+    // `includedLimitZero` is the current flag and decides when present; the older `hasNonZeroIncludedLimit` only stands
+    // in when it's absent, as in Cursor's own mapping.
+    let has_allowance = flag("includedLimitZero")
+        .map(|zero| !zero)
+        .or_else(|| flag("hasNonZeroIncludedLimit"));
+    if has_allowance == Some(false) {
         return unavailable("This plan includes no Grok Bot allowance.");
     }
     let used = match status.get("usagePercent") {
@@ -67,9 +72,9 @@ pub fn parse_grok_bot(body: &str, now: DateTime<Utc>) -> GrokBotUsage {
     let Some(resets_at) = instant(status.get("nextResetTimestampUtc")).filter(|at| now < *at) else {
         return unavailable("Cursor didn't report when the Grok Bot week resets.");
     };
-    let pace = instant(status.get("currentPeriodStart"))
-        .filter(|start| *start <= now)
-        .and_then(|start| elapsed_pace(used, start, resets_at, now));
+    // Paid Grok Bot grants run a fixed seven-day week; `currentPeriodStart` can fall mid-week or be absent, so the pace
+    // runs from a week before the reset.
+    let pace = elapsed_pace(used, resets_at - Duration::days(7), resets_at, now);
     GrokBotUsage {
         metric: Some(Metric::Window {
             label: GROK_BOT_LABEL.into(),
@@ -264,6 +269,38 @@ mod tests {
             assert!(usage.metric.is_none() && usage.message.is_some(), "{to}");
         }
         assert!(parse_grok_bot("[]", now()).metric.is_none());
+    }
+
+    #[test]
+    fn grok_bot_included_limit_zero_decides_over_the_older_flag() {
+        let stale = SAND.replace(
+            r#""hasNonZeroIncludedLimit":true"#,
+            r#""hasNonZeroIncludedLimit":false,"includedLimitZero":false"#,
+        );
+        assert!(
+            parse_grok_bot(&stale, now()).metric.is_some(),
+            "a stale legacy flag doesn't hide the meter"
+        );
+        let zero = SAND.replace(
+            r#""hasNonZeroIncludedLimit":true"#,
+            r#""hasNonZeroIncludedLimit":true,"includedLimitZero":true"#,
+        );
+        assert!(parse_grok_bot(&zero, now()).metric.is_none());
+    }
+
+    #[test]
+    fn grok_bot_pace_runs_over_the_seven_day_week_before_the_reset() {
+        let pace_of = |body: &str| match parse_grok_bot(body, now()).metric {
+            Some(Metric::Window { pace, .. }) => pace,
+            other => panic!("no window: {other:?}"),
+        };
+        let week = pace_of(SAND);
+        assert!(week.is_some());
+        // A mid-week or missing period start changes nothing.
+        let mid_week = SAND.replace("2026-10-09T21:10:41.281Z", "2026-10-15T00:00:00Z");
+        let absent = SAND.replace(r#""currentPeriodStart":"2026-10-09T21:10:41.281Z","#, "");
+        assert_eq!(pace_of(&mid_week), week);
+        assert_eq!(pace_of(&absent), week);
     }
 
     /// A temporary folder with a Grok CLI `auth.json` and a Cursor `auth.json`, removed when dropped.

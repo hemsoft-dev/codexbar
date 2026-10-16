@@ -27,8 +27,10 @@ Keychain item) the Grok CLI and Cursor keep, and renews the Grok sign-in through
   period only; an omitted percent is 0% only for a verified paid plan, and the card says so.
 - The Weekly Grok Bot limit takes `usagePercent` and `nextResetTimestampUtc`. An explicit zero is reported usage. A
   missing, `null`, negative or malformed percent, a missing or passed reset, a pooled team allowance
-  (`usesPooledEnterpriseAllowance`) or a plan without an included allowance (`hasNonZeroIncludedLimit: false`,
-  `includedLimitZero: true`) shows no meter and says why.
+  (`usesPooledEnterpriseAllowance`) or a plan without an included allowance shows no meter and says why.
+  `includedLimitZero` decides the allowance when present; the older `hasNonZeroIncludedLimit` only when it's absent.
+- Grok Bot grants run a fixed seven-day week, and `currentPeriodStart` can fall mid-week, so its pace runs from seven
+  days before the reset.
 - Without the Cursor sign-in, or when Cursor refuses it, the card keeps the Grok metrics and says why Grok Bot is
   missing. Without the Grok sign-in the account shows a sign-in error.
 - A Grok account that reads the same Grok CLI sign-in points to the X Subscription card instead of showing the weekly
@@ -36,8 +38,9 @@ Keychain item) the Grok CLI and Cursor keep, and renews the Grok sign-in through
 
 ## Not covered yet
 
-- Only the Automatic sign-in (the CLIs' own sign-ins on this computer). A separate X Subscription sign-in per account
-  isn't offered yet.
+- Only the Automatic sign-in (the CLIs' own sign-ins on this computer), so there is one X Subscription account.
+  Settings refuses another method or a second account. A separate X Subscription sign-in per account isn't offered
+  yet.
 - The live shape was read on 2026-10-16 from an account that hasn't switched to The X Subscription (SuperGrok and
   Cursor Pro, with Cursor offering "See Unified Plans"). How a switched account's Cursor and Grok responses change
   isn't verified. A comparison on a switched account is left to its owner.

@@ -106,8 +106,13 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     }
 
     // X Subscription (#172): the Grok CLI's own sign-in for the SuperGrok limit and credits, and the Cursor app's own
-    // sign-in for the Grok Bot limit.
-    let x_subscription = enabled_accounts(hub, names::X_SUBSCRIPTION);
+    // sign-in for the Grok Bot limit. Those sign-ins are machine-wide, so only one Automatic account reads them; Settings
+    // refuses others, and one edited into the file by hand is ignored rather than shown twice.
+    let x_subscription: Vec<AccountRecord> = enabled_accounts(hub, names::X_SUBSCRIPTION)
+        .into_iter()
+        .filter(|account| account.method == codexbar_store::settings::AuthMethod::Automatic)
+        .take(1)
+        .collect();
     let x_subscription_homes: Vec<_> = x_subscription
         .iter()
         .map(|account| crate::grok_sign_in::home(hub.dir(), account))

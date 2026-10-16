@@ -5509,3 +5509,31 @@ fn each_greptile_account_uses_its_own_saved_key_over_the_environment(cx: &mut Te
         codexbar_store::credentials::SecretSource::CredentialManager
     ));
 }
+
+#[gpui_kit::test]
+fn an_x_subscription_account_saves_only_with_automatic(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("x-subscription-automatic", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let entry = crate::catalog::PROVIDERS
+        .iter()
+        .position(|info| info.id == codexbar_store::settings::names::X_SUBSCRIPTION)
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click(format!("0-1-{entry}"), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, "add-XSubscription");
+    // OAuth: the open list starts on Automatic, so the first Down stays there.
+    press(cx, handle, "tab");
+    for _ in 0..4 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("An X Subscription account uses the Grok CLI's and the Cursor app's own sign-ins: choose Automatic.")
+    );
+    assert!(saved_settings(&settings).accounts().is_empty());
+}
