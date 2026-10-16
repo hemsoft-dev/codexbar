@@ -351,6 +351,35 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         .with_trend(vec![
             0.02, 0.04, 0.05, 0.07, 0.1, 0.12, 0.13, 0.15, 0.18, 0.2, 0.21, 0.23, 0.25, 0.27,
         ]),
+        // #172: the X Subscription's two weekly limits keep their own resets, apart from the credits.
+        AccountSnapshot::new(
+            AccountId::new("x-subscription"),
+            Provider::XSubscription,
+            vec![
+                Metric::Window {
+                    label: "Weekly SuperGrok limit".into(),
+                    used: 0.12,
+                    resets_at: in_days(6),
+                    pace: None,
+                },
+                Metric::Window {
+                    label: "Weekly Grok Bot limit".into(),
+                    used: 0.58,
+                    resets_at: in_days(2),
+                    pace: None,
+                },
+                Metric::Balance {
+                    label: "Extra usage credits".into(),
+                    remaining: Money::from_cents(0),
+                    burn_per_day: None,
+                },
+            ],
+            fetched,
+        )
+        .with_label("Personal")
+        .with_trend(vec![
+            0.2, 0.25, 0.3, 0.35, 0.4, 0.05, 0.1, 0.15, 0.2, 0.3, 0.38, 0.45, 0.52, 0.58,
+        ]),
     ]
 }
 
@@ -436,6 +465,7 @@ mod tests {
                 "Cursor",
                 "OpenRouter",
                 "ChatGPT · Codex (team)",
+                "X Subscription · Personal",
                 "Gemini · Personal",
                 "GitHub Billing · HemSoft",
                 "Copilot · HemSoft",

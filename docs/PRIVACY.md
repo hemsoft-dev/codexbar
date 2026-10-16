@@ -8,7 +8,7 @@ sign-in or key you gave it, and to nothing else.
 
 CodexBar sends requests only to providers that are on and have a sign-in or key
 to use. On a first start, before any account is set up, every provider except
-Moonshot, Greptile, GitHub Billing, Gemini and Grok is on: one already signed in on this PC (the Codex CLI, Claude Code, the
+Moonshot, Greptile, GitHub Billing, Gemini, Grok and X Subscription is on: one already signed in on this PC (the Codex CLI, Claude Code, the
 Cursor app, the GitHub CLI) is fetched right away, and one without a sign-in or
 key makes no request. To stop one, add an account for it in Settings > Accounts
 (the provider's own sign-in, Automatic) and switch that account off.
@@ -23,6 +23,7 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
 | Greptile | `https://api.greptile.com/mcp` (only the read-only `list_code_reviews` tool) | Your organization API key |
 | Grok | `https://cli-chat-proxy.grok.com/v1/billing` and `…/v1/settings` (its plan); `https://auth.x.ai` userinfo once at sign-in | The Grok CLI's sign-in (`auth.json` in the account's Grok home) |
+| X Subscription | The Grok endpoints above, with the Grok CLI's sign-in; `https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` (the Grok Bot limit), with the Cursor sign-in | Each sign-in only on its own service: the Grok CLI's `auth.json`, the Cursor sign-in (`auth.json`) |
 | Gemini | `https://gemini.google.com/usage` and `https://gemini.google.com/_/BardChatUi/data/batchexecute` (the usage RPC only) | Two Google session cookies (`__Secure-1PSID`, `__Secure-1PSIDTS`) kept by CodexBar |
 | GitHub Billing | `https://api.github.com/user`; the owner's `…/settings/billing/usage/summary` and `…/settings/billing/usage`; for an organization `…/orgs/{org}` (its plan) and `…/settings/billing/budgets`; `…/repos/{owner}/{repo}` for repositories in this month's Actions usage (their visibility, remembered for six hours) | The account's own GitHub CLI token, kept by CodexBar |
 | OpenCode Go / Zen | OAuth accounts: `https://opencode.ai/console/api/go/status` and `…/console/api/billing/status`; cookie accounts: `https://opencode.ai/workspace/…` | The account's OpenCode sign-in (OAuth), or your dashboard auth cookie |

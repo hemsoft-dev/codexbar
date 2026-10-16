@@ -5,6 +5,10 @@ A Grok account (#108) shows the consumer Grok usage of a paid plan: the shared
 service. It is **experimental**: that service is xAI's first-party CLI contract,
 not a published API. Grok is off until a Grok account is added.
 
+On The X Subscription, add an [X Subscription](X_SUBSCRIPTION.md) account instead: it shows this weekly pool and
+the credits together with the Grok Bot limit. A Grok account on the same Grok CLI sign-in then points there instead
+of showing the pool twice.
+
 ## Signing in
 
 - **Automatic** reads the Grok CLI's own sign-in (`GROK_HOME`, or `~/.grok`).

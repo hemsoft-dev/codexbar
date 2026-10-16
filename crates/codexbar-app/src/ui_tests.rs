@@ -2224,10 +2224,11 @@ fn reset_accounts_asks_first_then_removes_accounts_and_keys(cx: &mut TestAppCont
         .map(|a| a.id.clone())
         .collect();
     assert_eq!(ids.len(), 2);
-    // Reset is the last group on the Accounts page; its sidebar entry scrolls it into view.
+    // Reset is the last group on the Accounts page, after one per provider; its sidebar entry scrolls it into view.
+    let reset_entry = format!("0-1-{}", crate::catalog::PROVIDERS.len());
     let show_reset = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| {
-            window.within("settings-sidebar").click("0-1-8", cx)
+            window.within("settings-sidebar").click(reset_entry.clone(), cx)
         })
         .unwrap();
         cx.run_until_parked();
@@ -5507,4 +5508,53 @@ fn each_greptile_account_uses_its_own_saved_key_over_the_environment(cx: &mut Te
         resolved[0].1,
         codexbar_store::credentials::SecretSource::CredentialManager
     ));
+}
+
+#[gpui_kit::test]
+fn an_x_subscription_account_saves_only_with_automatic(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("x-subscription-automatic", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let entry = crate::catalog::PROVIDERS
+        .iter()
+        .position(|info| info.id == codexbar_store::settings::names::X_SUBSCRIPTION)
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click(format!("0-1-{entry}"), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, "add-XSubscription");
+    // OAuth: the open list starts on Automatic, so the first Down stays there.
+    press(cx, handle, "tab");
+    for _ in 0..4 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("An X Subscription account uses the Grok CLI's and the Cursor app's own sign-ins: choose Automatic.")
+    );
+    assert!(saved_settings(&settings).accounts().is_empty());
+}
+
+#[gpui_kit::test]
+fn one_automatic_x_subscription_account_runs_and_owns_its_history(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "x-subscription-owned",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "xs-1", "providerId": "XSubscription", "displayLabel": "Me", "enabled": true,
+              "authenticationMethod": "Automatic" },
+            { "id": "xs-2", "providerId": "XSubscription", "displayLabel": "Again", "enabled": true,
+              "authenticationMethod": "Automatic" },
+            { "id": "xs-3", "providerId": "XSubscription", "displayLabel": "OAuth", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let x: Vec<_> = adapters.iter().filter(|a| a.name() == "X Subscription").collect();
+    assert_eq!(x.len(), 1, "the machine-wide sign-ins are read once");
+    assert_eq!(x[0].account_id(), Some("xs-1"));
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("xs-1").map(String::as_str), Some("xs-1"));
 }

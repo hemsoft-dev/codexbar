@@ -46,9 +46,11 @@ pub mod names {
     pub const GITHUB_BILLING: &str = "GitHubBilling";
     pub const GEMINI: &str = "Gemini";
     pub const GROK: &str = "Grok";
+    /// The X Subscription (#172): Grok, Grok Bot and Cursor sold as one plan.
+    pub const X_SUBSCRIPTION: &str = "XSubscription";
 
     /// Every provider: the WPF enum's order, then the Rust-only ones.
-    pub const ALL: [&str; 12] = [
+    pub const ALL: [&str; 13] = [
         OPENROUTER,
         COPILOT,
         CLAUDE,
@@ -61,6 +63,7 @@ pub mod names {
         GITHUB_BILLING,
         GEMINI,
         GROK,
+        X_SUBSCRIPTION,
     ];
 }
 
@@ -363,7 +366,7 @@ impl Settings {
     pub fn is_enabled(&self, provider: &str) -> bool {
         if matches!(
             provider,
-            names::GREPTILE | names::GITHUB_BILLING | names::GEMINI | names::GROK
+            names::GREPTILE | names::GITHUB_BILLING | names::GEMINI | names::GROK | names::X_SUBSCRIPTION
         ) && self.accounts_for(provider).next().is_none()
         {
             return false;

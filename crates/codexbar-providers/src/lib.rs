@@ -28,6 +28,7 @@ pub mod opencode;
 pub mod opencode_console;
 mod pace;
 pub mod platform;
+pub mod x_subscription;
 
 pub use command::{CommandError, CommandOutput, CommandRunner, SystemCommandRunner};
 pub use error::ProviderError;

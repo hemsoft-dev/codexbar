@@ -662,6 +662,25 @@ pub fn focus_and_select(field: &Entity<InputState>, window: &mut Window, cx: &mu
 }
 
 /// Validates and saves the dialog. Returns false (keeping the dialog open) on any failure.
+/// Why an X Subscription account can't be saved, if it can't (#172): it reads this computer's one Grok CLI and Cursor
+/// sign-in, so it is Automatic, and there is one. `editing` is the account being edited, if any.
+fn x_subscription_refusal(
+    method: AuthMethod,
+    editing: Option<&str>,
+    accounts: &[AccountRecord],
+) -> Option<&'static str> {
+    if method != AuthMethod::Automatic {
+        Some("An X Subscription account uses the Grok CLI's and the Cursor app's own sign-ins: choose Automatic.")
+    } else if accounts
+        .iter()
+        .any(|other| other.provider == names::X_SUBSCRIPTION && Some(other.id.as_str()) != editing)
+    {
+        Some("There is already an X Subscription account; it reads this computer's Grok and Cursor sign-ins.")
+    } else {
+        None
+    }
+}
+
 fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mut Window, cx: &mut App) -> bool {
     let provider_ix = form.providers.read(cx).selected_index(cx).map_or(0, |ix| ix.row);
     let info = &PROVIDERS[provider_ix.min(PROVIDERS.len() - 1)];
@@ -699,6 +718,18 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             }
         },
     };
+
+    if info.id == names::X_SUBSCRIPTION
+        && let Some(error) = x_subscription_refusal(
+            method,
+            existing.as_ref().map(|record| record.id.as_str()),
+            SettingsHub::global(cx).settings().accounts(),
+        )
+    {
+        *form.error.borrow_mut() = Some(error.into());
+        window.refresh();
+        return false;
+    }
 
     let previous = existing.clone();
     let mut record = existing.unwrap_or_else(|| AccountRecord::new(info.id, &label, method));
@@ -1352,4 +1383,37 @@ fn about_page() -> SettingPage {
             }),
         ));
     SettingPage::new("About").icon(IconName::Info).group(group)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_x_subscription_account_is_automatic_and_only_one() {
+        let first = AccountRecord::new(names::X_SUBSCRIPTION, "Me", AuthMethod::Automatic);
+        let grok = AccountRecord::new(names::GROK, "Me", AuthMethod::Automatic);
+        assert_eq!(
+            x_subscription_refusal(AuthMethod::Automatic, None, std::slice::from_ref(&grok)),
+            None
+        );
+        for method in [
+            AuthMethod::OAuth,
+            AuthMethod::ApiKey,
+            AuthMethod::CommandLine,
+            AuthMethod::BrowserSession,
+        ] {
+            assert!(x_subscription_refusal(method, None, &[]).is_some(), "{method:?}");
+        }
+        let accounts = [grok, first.clone()];
+        assert!(
+            x_subscription_refusal(AuthMethod::Automatic, None, &accounts).is_some(),
+            "a second one is refused"
+        );
+        assert_eq!(
+            x_subscription_refusal(AuthMethod::Automatic, Some(&first.id), &accounts),
+            None,
+            "the one there can still be edited"
+        );
+    }
 }

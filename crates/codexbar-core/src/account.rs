@@ -19,6 +19,7 @@ pub enum Provider {
     GitHubBilling,
     Gemini,
     Grok,
+    XSubscription,
 }
 
 impl Provider {
@@ -36,10 +37,11 @@ impl Provider {
             Self::GitHubBilling => "GitHub Billing",
             Self::Gemini => "Gemini",
             Self::Grok => "Grok",
+            Self::XSubscription => "X Subscription",
         }
     }
 
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Codex,
         Self::Claude,
         Self::Copilot,
@@ -51,6 +53,7 @@ impl Provider {
         Self::GitHubBilling,
         Self::Gemini,
         Self::Grok,
+        Self::XSubscription,
     ];
 
     /// A stable key for storage; unlike the display name it never changes with wording.
@@ -67,6 +70,7 @@ impl Provider {
             Self::GitHubBilling => "github-billing",
             Self::Gemini => "gemini",
             Self::Grok => "grok",
+            Self::XSubscription => "x-subscription",
         }
     }
 
