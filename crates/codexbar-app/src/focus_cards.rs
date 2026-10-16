@@ -377,7 +377,7 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         format!("{} window", metric.label())
     };
     let mut caption = reset_caption(metric, now);
-    if let Some(credits) = displaced_credits(account, now) {
+    if let Some(credits) = displaced_credits(account) {
         caption = if caption.is_empty() {
             credits
         } else {
@@ -402,16 +402,17 @@ fn share_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric
         .or(Some(primary))
 }
 
-/// The credits line for the ring's caption when they are the second metric and the share took the card (#174).
-/// Credits that lead the account (#150) already have the first card, so they get no line.
-fn displaced_credits(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
-    match secondary_metric(account, now)? {
+/// The credits line for the ring's caption when the share took the card (#174): the credits after the headline,
+/// wherever the provider lists them (Codex puts both windows before them). Credits that lead the account (#150)
+/// already have the first card, so they get no line.
+fn displaced_credits(account: &AccountSnapshot) -> Option<String> {
+    account.metrics().iter().skip(1).find_map(|metric| match metric {
         Metric::Credits {
             balance: Some(balance), ..
         } => Some(format!("{} credits left", codexbar_core::format_credits(*balance))),
         Metric::Credits { balance: None, .. } => Some("Unlimited credits".to_owned()),
         _ => None,
-    }
+    })
 }
 
 /// Requests by hour when the provider reports them, otherwise daily pressure as bars.
@@ -744,21 +745,32 @@ mod tests {
         // A Pro account mid-week (#174): the weekly share takes the card, and the credits keep a caption line.
         let pro = account(vec![window(0.59, 0.02), credits(55_234.7)]);
         assert_eq!(share_metric(&pro, now()).unwrap().label(), "Included usage");
-        assert_eq!(
-            displaced_credits(&pro, now()).as_deref(),
-            Some("55,234.70 credits left")
-        );
+        assert_eq!(displaced_credits(&pro).as_deref(), Some("55,234.70 credits left"));
+
+        // Codex lists both windows before the credits: the ring shows the second window, the credits keep the line.
+        let three = account(vec![window(0.91, 0.2), window(0.47, 0.01), credits(55_234.7)]);
+        assert_eq!(share_metric(&three, now()).unwrap().label(), "Included usage");
+        assert_eq!(displaced_credits(&three).as_deref(), Some("55,234.70 credits left"));
+        let unlimited = account(vec![
+            window(0.3, 0.01),
+            Metric::Credits {
+                label: "Credits".into(),
+                balance: None,
+                start: None,
+            },
+        ]);
+        assert_eq!(displaced_credits(&unlimited).as_deref(), Some("Unlimited credits"));
 
         // With the window used up the credits lead (#150) and have the first card, so the ring gets no line.
         let used_up = account(vec![window(1.0, 0.0), credits(18_400.0)]).with_credits_placed();
         assert!(matches!(used_up.primary(), Some(Metric::Credits { .. })));
         assert_eq!(share_metric(&used_up, now()).unwrap().label(), "Included usage");
-        assert_eq!(displaced_credits(&used_up, now()), None);
+        assert_eq!(displaced_credits(&used_up), None);
 
         // Credits alone keep their card.
         let only = account(vec![credits(10.0)]);
         assert!(matches!(share_metric(&only, now()), Some(Metric::Credits { .. })));
-        assert_eq!(displaced_credits(&only, now()), None);
+        assert_eq!(displaced_credits(&only), None);
     }
 
     #[test]
