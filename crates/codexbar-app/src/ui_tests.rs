@@ -5537,3 +5537,24 @@ fn an_x_subscription_account_saves_only_with_automatic(cx: &mut TestAppContext) 
     );
     assert!(saved_settings(&settings).accounts().is_empty());
 }
+
+#[gpui_kit::test]
+fn one_automatic_x_subscription_account_runs_and_owns_its_history(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "x-subscription-owned",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "xs-1", "providerId": "XSubscription", "displayLabel": "Me", "enabled": true,
+              "authenticationMethod": "Automatic" },
+            { "id": "xs-2", "providerId": "XSubscription", "displayLabel": "Again", "enabled": true,
+              "authenticationMethod": "Automatic" },
+            { "id": "xs-3", "providerId": "XSubscription", "displayLabel": "OAuth", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let x: Vec<_> = adapters.iter().filter(|a| a.name() == "X Subscription").collect();
+    assert_eq!(x.len(), 1, "the machine-wide sign-ins are read once");
+    assert_eq!(x[0].account_id(), Some("xs-1"));
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("xs-1").map(String::as_str), Some("xs-1"));
+}

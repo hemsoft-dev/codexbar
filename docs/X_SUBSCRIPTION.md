@@ -31,6 +31,11 @@ Keychain item) the Grok CLI and Cursor keep, and renews the Grok sign-in through
   `includedLimitZero` decides the allowance when present; the older `hasNonZeroIncludedLimit` only when it's absent.
 - Grok Bot grants run a fixed seven-day week, and `currentPeriodStart` can fall mid-week, so its pace runs from seven
   days before the reset.
+- An active Grok Bot trial (no included allowance, a future `sandTrialExpiresAt`) shows as **Grok Bot trial**, dated
+  when the trial ends, with no weekly pace.
+- The Grok CLI and Cursor keep separate sign-ins, and The X Subscription links accounts whatever their email, so
+  CodexBar can't prove the Cursor sign-in belongs to the same plan. The card says that the Grok Bot limit is the
+  Cursor sign-in's on this computer rather than hide it.
 - Without the Cursor sign-in, or when Cursor refuses it, the card keeps the Grok metrics and says why Grok Bot is
   missing. Without the Grok sign-in the account shows a sign-in error.
 - A Grok account that reads the same Grok CLI sign-in points to the X Subscription card instead of showing the weekly

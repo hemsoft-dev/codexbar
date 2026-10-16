@@ -23,6 +23,12 @@ const SAND_USAGE: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/Ge
 
 pub const SUPERGROK_LABEL: &str = "Weekly SuperGrok limit";
 pub const GROK_BOT_LABEL: &str = "Weekly Grok Bot limit";
+pub const GROK_BOT_TRIAL_LABEL: &str = "Grok Bot trial";
+/// The Cursor and Grok CLI sign-ins are separate stores, and The X Subscription links accounts whatever their email
+/// (xAI's unify guide), so nothing here proves they're the same account; the card says where the Grok Bot limit came
+/// from.
+const UNVERIFIED_LINK: &str = "The Grok Bot limit is the Cursor sign-in's on this computer; CodexBar can't confirm \
+                               it's linked to this xAI account.";
 
 /// What Cursor says about the Grok Bot allowance: a metric when it reports one, and why not otherwise.
 #[derive(Debug, Default, PartialEq)]
@@ -59,7 +65,11 @@ pub fn parse_grok_bot(body: &str, now: DateTime<Utc>) -> GrokBotUsage {
     let has_allowance = flag("includedLimitZero")
         .map(|zero| !zero)
         .or_else(|| flag("hasNonZeroIncludedLimit"));
-    if has_allowance == Some(false) {
+    // An active trial reports no included allowance, but its usage counts until the trial ends (Cursor's own mapping).
+    let trial_ends = instant(status.get("sandTrialExpiresAt"))
+        .filter(|end| now < *end)
+        .filter(|_| has_allowance != Some(true));
+    if has_allowance == Some(false) && trial_ends.is_none() {
         return unavailable("This plan includes no Grok Bot allowance.");
     }
     let used = match status.get("usagePercent") {
@@ -69,6 +79,18 @@ pub fn parse_grok_bot(body: &str, now: DateTime<Utc>) -> GrokBotUsage {
             None => return unavailable("Cursor's Grok Bot usage is malformed."),
         },
     };
+    if let Some(ends) = trial_ends {
+        // A trial has no weekly reset; its date is when the trial ends.
+        return GrokBotUsage {
+            metric: Some(Metric::Window {
+                label: GROK_BOT_TRIAL_LABEL.into(),
+                used,
+                resets_at: ends,
+                pace: None,
+            }),
+            message: Some("The Grok Bot trial doesn't reset weekly; its date is when the trial ends.".to_owned()),
+        };
+    }
     let Some(resets_at) = instant(status.get("nextResetTimestampUtc")).filter(|at| now < *at) else {
         return unavailable("Cursor didn't report when the Grok Bot week resets.");
     };
@@ -154,6 +176,7 @@ impl<H: HttpClient> XSubscriptionProvider<H> {
                 other => rest.push(other),
             }
         }
+        let link = bot.metric.as_ref().map(|_| UNVERIFIED_LINK.to_owned());
         metrics.extend(bot.metric);
         metrics.extend(rest);
         let mut account = AccountSnapshot::new(
@@ -169,6 +192,7 @@ impl<H: HttpClient> XSubscriptionProvider<H> {
             .messages
             .into_iter()
             .chain(bot.message)
+            .chain(link)
             .fold(account, AccountSnapshot::with_message))
     }
 }
@@ -289,6 +313,35 @@ mod tests {
     }
 
     #[test]
+    fn an_active_grok_bot_trial_shows_until_it_ends() {
+        // The upstream trial shape: no included allowance, a trial expiry ahead.
+        let trial = SAND.replace(
+            r#""hasNonZeroIncludedLimit":true"#,
+            r#""hasNonZeroIncludedLimit":false,"includedLimitZero":true,"sandTrialExpiresAt":"2026-10-20T00:00:00Z""#,
+        );
+        let usage = parse_grok_bot(&trial, now());
+        match usage.metric {
+            Some(Metric::Window {
+                ref label,
+                resets_at,
+                pace,
+                ..
+            }) => {
+                assert_eq!(label, GROK_BOT_TRIAL_LABEL);
+                assert_eq!(resets_at, "2026-10-20T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
+                assert_eq!(pace, None, "a trial has no weekly pace");
+            }
+            ref other => panic!("no trial meter: {other:?}"),
+        }
+        assert!(usage.message.unwrap().contains("trial ends"));
+        let ended = trial.replace("2026-10-20T00:00:00Z", "2026-10-15T00:00:00Z");
+        assert!(
+            parse_grok_bot(&ended, now()).metric.is_none(),
+            "an ended trial is no allowance"
+        );
+    }
+
+    #[test]
     fn grok_bot_pace_runs_over_the_seven_day_week_before_the_reset() {
         let pace_of = |body: &str| match parse_grok_bot(body, now()).metric {
             Some(Metric::Window { pace, .. }) => pace,
@@ -397,6 +450,10 @@ mod tests {
         assert_eq!(account.metrics()[0].resets_at(), "2026-10-22T16:32:13Z".parse().ok());
         assert_eq!(account.metrics()[2].used_display(), "$0.00 left");
         assert!(account.messages().iter().any(|m| m == "Plan: SuperGrok."));
+        assert!(
+            account.messages().iter().any(|m| m == UNVERIFIED_LINK),
+            "the card says the Grok Bot limit's sign-in isn't proven to be this account's"
+        );
         // Each token goes only to its own service.
         let seen = seen.lock().unwrap();
         assert!(seen.iter().all(|line| {

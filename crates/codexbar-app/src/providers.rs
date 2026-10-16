@@ -380,7 +380,8 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
                 | names::GREPTILE
                 | names::GITHUB_BILLING
                 | names::GEMINI
-                | names::GROK => record.id.clone(),
+                | names::GROK
+                | names::X_SUBSCRIPTION => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,
