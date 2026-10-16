@@ -32,7 +32,9 @@ no new request, permission or sign-in step. The iOS app reads the same contract
   ranks or labels the account as blocked.
 - **The windows are below 100%**: the windows stay the headline, and the credits
   are a secondary metric in the focused account's metric list and in the
-  widgets.
+  widgets. The focused account's middle card shows the window's share as a ring
+  gauge, with the credits as a line in its caption ("55,234.70 credits left"),
+  never as the card's number (#174).
 - **No credits left** (a zero balance, or none reported): the used-up window
   blocks the account as before.
 

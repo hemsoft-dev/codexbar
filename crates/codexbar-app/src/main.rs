@@ -13,6 +13,7 @@ mod codex_sign_in;
 mod cursor_sign_in;
 mod dashboard;
 mod focus_cards;
+mod gauge;
 mod gemini_sign_in;
 mod github_sign_in;
 mod grok_sign_in;
