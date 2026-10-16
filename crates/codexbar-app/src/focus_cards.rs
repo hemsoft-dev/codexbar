@@ -328,18 +328,18 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         Some(pace) => format!("{}: {:.0}% used, {pace} by the reset", metric.label(), used * 100.0),
         None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
     };
-    let ring = div()
-        .id("focus-share")
-        .role(Role::Note)
-        .test_support()
-        .aria_label(spoken)
+    // A fixed square, centered in the card, so the number and the pace sit on the ring's geometry (#176): the ring's
+    // center is `DROP_REMS` below the square's, and the pace goes in the opening.
+    let square = div()
         .relative()
-        .size_full()
+        .flex_shrink_0()
+        .size(rems(crate::gauge::SIZE_REMS))
         .child(crate::gauge::Gauge::new(used, projected, color, cx).render())
         .child(
             v_flex()
                 .absolute()
                 .inset_0()
+                .pt(rems(2. * crate::gauge::DROP_REMS))
                 .items_center()
                 .justify_center()
                 .child(
@@ -361,7 +361,7 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             this.child(
                 div()
                     .absolute()
-                    .bottom_0()
+                    .top(rems(crate::gauge::PACE_TOP_REMS))
                     .left_0()
                     .right_0()
                     .text_center()
@@ -370,6 +370,16 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
                     .child(pace),
             )
         });
+    let ring = div()
+        .id("focus-share")
+        .role(Role::Note)
+        .test_support()
+        .aria_label(spoken)
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(square);
     let takeaway = pool_takeaway(1.0 - used);
     let title = if metric.label().to_lowercase().contains("window") {
         metric.label().to_owned()

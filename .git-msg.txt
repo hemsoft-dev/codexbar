@@ -1,0 +1,5 @@
+fix: center the ring's number and pace on the ring's own geometry (#176)
+
+The number sat on the chart box's center, below a three-quarter ring's visual center, and the pace fell under the ring. The ring now has a fixed size in rems, is drawn dropped so the arc's extent is centered, and the card pads the number down to the ring's center and places the pace in the opening.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
