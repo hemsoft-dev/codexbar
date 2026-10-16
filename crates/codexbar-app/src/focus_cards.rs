@@ -390,14 +390,17 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
 }
 
 /// The metric for the second card: the one after the headline that raises the status when it has a share of a pool
-/// (so Cursor's on-demand spend stays on screen), otherwise the headline's share (#174), and only when no metric has a
-/// share whatever the second one is: credits, a balance, a spend with no limit.
+/// (so Cursor's on-demand spend stays on screen), otherwise the headline's share, otherwise the most pressing share
+/// further down (GitHub Billing lists its allowances after two uncapped spends) (#174). Only when no metric has a
+/// share is it whatever the second one is: credits, a balance, a spend with no limit.
 fn share_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
     let primary = account.primary()?;
     let secondary = secondary_metric(account, now);
+    let has_share = |metric: &Metric| metric.used_fraction().is_some();
     secondary
-        .filter(|metric| metric.used_fraction().is_some())
+        .filter(|metric| has_share(metric))
         .or_else(|| primary.used_fraction().map(|_| primary))
+        .or_else(|| most_severe_after_primary(account, now, has_share))
         .or(secondary)
         .or(Some(primary))
 }
@@ -610,11 +613,21 @@ fn credits_card(metric: &Metric, balance: Option<f64>, cx: &App) -> Card {
 /// The most severe metric after the primary, so whatever raises the account's status (such as Cursor's on-demand
 /// spend) is on screen. Ties keep provider order, so it is usually the second metric.
 fn secondary_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
+    most_severe_after_primary(account, now, |_| true)
+}
+
+/// The most severe of the metrics after the primary that `keep` accepts; ties keep provider order.
+fn most_severe_after_primary(
+    account: &AccountSnapshot,
+    now: DateTime<Utc>,
+    keep: impl Fn(&Metric) -> bool,
+) -> Option<&Metric> {
     account
         .metrics()
         .iter()
         .skip(1)
         .enumerate()
+        .filter(|(_, metric)| keep(metric))
         .max_by(|(a_ix, a), (b_ix, b)| {
             let severity = |metric: &Metric| codexbar_core::assess(metric, now).severity();
             severity(a).cmp(&severity(b)).then(b_ix.cmp(a_ix))
@@ -771,6 +784,34 @@ mod tests {
         let only = account(vec![credits(10.0)]);
         assert!(matches!(share_metric(&only, now()), Some(Metric::Credits { .. })));
         assert_eq!(displaced_credits(&only), None);
+
+        // GitHub Billing: two uncapped spends lead, and the allowance after them is the share the ring shows.
+        use codexbar_core::Money;
+        let spend = |label: &str| Metric::Spend {
+            label: label.into(),
+            spent: Money::from_cents(2389),
+            limit: None,
+            resets_at: None,
+            pace: None,
+        };
+        let billing = account(vec![
+            spend("Net spend"),
+            spend("Gross charges"),
+            Metric::Quota {
+                label: "Actions minutes".into(),
+                used: 600,
+                limit: 2000,
+                resets_at: now() + Duration::days(10),
+                pace: None,
+            },
+        ]);
+        assert_eq!(share_metric(&billing, now()).unwrap().label(), "Actions minutes");
+        let uncapped = account(vec![spend("Net spend"), spend("Gross charges")]);
+        assert_eq!(
+            share_metric(&uncapped, now()).unwrap().label(),
+            "Gross charges",
+            "no share anywhere: the second metric keeps the card"
+        );
     }
 
     #[test]
