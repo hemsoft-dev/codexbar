@@ -1,17 +1,19 @@
 //! A three-quarter ring for a window's share of its pool (#174). The used arc is drawn in the status color with a
 //! soft glow and a rounded head, the share projected by the reset runs on behind it in the same color faded, and
-//! notches mark each quarter. The opening at the bottom holds the pace. The number itself is laid over the ring by the
-//! card, so it stays text.
+//! notches mark each quarter. The number sits on the ring's center and the pace in the ring's opening.
 //!
-//! The ring has a fixed size in rems so the card can place the number and the pace on the ring's own geometry (#176):
-//! a three-quarter ring's arc reaches `0.707 × radius` below its center, so the ring is drawn [`DROP_REMS`] below the
-//! box's center to center the arc's extent, and the number goes on the ring's center, not the box's.
+//! Everything is painted from the box the ring gets, so it fits any card at any zoom (#176): the ring takes the
+//! smaller side, the text scales with the radius, and a three-quarter ring's arc reaches only `0.707 × radius` below
+//! its center, so the ring is drawn a little below the box's center to center the arc's extent.
 
 use std::f32::consts::{FRAC_1_SQRT_2, PI};
 
 use gpui_kit::base::plot::shape::{Arc, ArcData};
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::{App, Bounds, Hsla, IntoElement, Pixels, Styled as _, Window, canvas, point, px, size};
+use gpui_kit::{
+    App, Bounds, FontWeight, Hsla, IntoElement, Pixels, ShapedLine, SharedString, Styled as _, TextAlign, TextRun,
+    Window, canvas, point, px, size,
+};
 
 /// Where the ring starts, clockwise from the top: the bottom left, so the opening sits at the bottom.
 const START: f32 = 1.25 * PI;
@@ -23,70 +25,129 @@ const NOTCHES: [f32; 3] = [0.25, 0.5, 0.75];
 const NOTCH_HALF_WIDTH: f32 = 0.003;
 /// How far the glow reaches past the ring, in pixels.
 const GLOW: f32 = 5.;
-/// The square the ring is drawn in, in rems; the card gives the ring a box of this size.
-pub const SIZE_REMS: f32 = 14.;
-/// Space between the ring and the edge of its box, in rems: the glow and the head need it.
-const MARGIN_REMS: f32 = 0.45;
-/// The ring's outer radius, in rems.
-const RADIUS_REMS: f32 = SIZE_REMS / 2. - MARGIN_REMS;
 /// How far below the box's center the ring's center sits, as a share of the radius: half of what the opening
 /// leaves empty at the bottom (`radius - 0.707 × radius`), so the arc's extent is centered.
 const DROP_FRACTION: f32 = (1. - FRAC_1_SQRT_2) / 2.;
-/// How far below the box's center the ring's center sits, in rems. Center the number on the ring by padding the
-/// overlay's top by twice this.
-pub const DROP_REMS: f32 = DROP_FRACTION * RADIUS_REMS;
-/// Where the pace line's top goes, in rems from the box's top: between the two ends of the arc, in the opening.
-pub const PACE_TOP_REMS: f32 = SIZE_REMS / 2. + DROP_REMS + 0.6 * RADIUS_REMS;
+/// Line height as a share of the font size, for every line the ring paints.
+const LINE_HEIGHT: f32 = 1.2;
 
-/// The ring's shares and colors, resolved once from the theme.
+/// The ring's shares, text and colors, resolved once from the theme.
 pub struct Gauge {
     used: f32,
     projected: Option<f32>,
+    number: SharedString,
+    pace: Option<SharedString>,
     color: Hsla,
     track: Hsla,
     /// The card's background, for the notches and the head's center.
     cut: Hsla,
+    foreground: Hsla,
+    muted: Hsla,
+}
+
+/// Where everything goes in a box, in pixels from the box's origin.
+#[derive(Debug, PartialEq)]
+struct Geometry {
+    radius: f32,
+    ring: f32,
+    center_x: f32,
+    center_y: f32,
+    number_size: f32,
+    label_size: f32,
+    pace_size: f32,
+}
+
+impl Geometry {
+    /// The ring that fits a box, or `None` when the box is too small to draw one.
+    fn fit(width: f32, height: f32) -> Option<Self> {
+        let side = width.min(height);
+        // Room for the glow and the head past the ring.
+        let margin = (side * 0.06).max(GLOW + 2.);
+        let radius = side / 2. - margin;
+        if radius < 12. {
+            return None;
+        }
+        Some(Self {
+            radius,
+            ring: (radius * 0.16).clamp(8., 20.),
+            center_x: width / 2.,
+            center_y: height / 2. + DROP_FRACTION * radius,
+            number_size: (radius * 0.44).max(14.),
+            label_size: (radius * 0.14).max(9.),
+            pace_size: (radius * 0.12).max(9.),
+        })
+    }
+
+    /// The top of the pace line: in the opening, between the arc's two ends.
+    fn pace_top(&self) -> f32 {
+        self.center_y + 0.6 * self.radius
+    }
 }
 
 impl Gauge {
     /// `used` and `projected` are shares of the pool, clamped to the ring. A projection no further than what is
-    /// used draws nothing.
-    pub fn new(used: f64, projected: Option<f64>, color: Hsla, cx: &App) -> Self {
+    /// used draws nothing. `number` is the text in the middle, without its percent sign.
+    pub fn new(used: f64, projected: Option<f64>, number: impl Into<SharedString>, color: Hsla, cx: &App) -> Self {
         let (used, projected) = shares(used, projected);
         Self {
             used,
             projected,
+            number: number.into(),
+            pace: None,
             color,
             track: cx.theme().muted,
             cut: cx.theme().group_box,
+            foreground: cx.theme().foreground,
+            muted: cx.theme().muted_foreground,
         }
     }
 
-    /// The ring, filling its box: give it a square of [`SIZE_REMS`] so the geometry constants hold.
+    /// The line in the ring's opening, such as "on pace for 97%".
+    pub fn pace(mut self, pace: Option<impl Into<SharedString>>) -> Self {
+        self.pace = pace.map(Into::into);
+        self
+    }
+
+    /// The ring, filling its box.
     pub fn render(self) -> impl IntoElement {
-        canvas(|_, _, _| {}, move |bounds, _, window, _| self.paint(bounds, window)).size_full()
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, cx| self.paint(bounds, window, cx),
+        )
+        .size_full()
     }
 
-    fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window) {
-        let width = bounds.size.width.as_f32();
-        let height = bounds.size.height.as_f32();
-        let radius = width.min(height) / 2. - MARGIN_REMS * window.rem_size().as_f32();
-        if radius < 12. {
+    fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        let Some(geometry) = Geometry::fit(bounds.size.width.as_f32(), bounds.size.height.as_f32()) else {
             return;
-        }
-        // The arcs center on their bounds, so a box dropped by `DROP_FRACTION × radius` centers the arc's extent.
-        let bounds = Bounds::new(
-            point(bounds.origin.x, bounds.origin.y + px(DROP_FRACTION * radius)),
-            bounds.size,
-        );
-        let ring = (radius * 0.16).clamp(8., 20.);
+        };
+        self.paint_ring(&bounds, &geometry, window);
+        self.paint_text(&bounds, &geometry, window, cx);
+    }
+
+    fn paint_ring(&self, bounds: &Bounds<Pixels>, geometry: &Geometry, window: &mut Window) {
+        let Geometry {
+            radius,
+            ring,
+            center_x,
+            center_y,
+            ..
+        } = *geometry;
         let (inner, outer) = (radius - ring, radius);
+        // The arcs center on their bounds, so give them a box centered on the ring's center.
+        let ring_box = Bounds::new(
+            point(
+                bounds.origin.x + px(center_x - radius),
+                bounds.origin.y + px(center_y - radius),
+            ),
+            size(px(radius * 2.), px(radius * 2.)),
+        );
         let arc = |inner: f32, outer: f32, from: f32, to: f32, color: Hsla, window: &mut Window| {
             let data = ArcData::new(&(), 0, 1., START + from * SWEEP, START + to * SWEEP);
             Arc::new()
                 .inner_radius(inner)
                 .outer_radius(outer)
-                .paint(&data, color, &bounds, window);
+                .paint(&data, color, &ring_box, window);
         };
 
         if self.used > 0. {
@@ -122,8 +183,8 @@ impl Gauge {
             let angle = START + self.used * SWEEP;
             let middle = (inner + outer) / 2.;
             let center = point(
-                bounds.origin.x + px(width / 2. + middle * angle.sin()),
-                bounds.origin.y + px(height / 2. - middle * angle.cos()),
+                bounds.origin.x + px(center_x + middle * angle.sin()),
+                bounds.origin.y + px(center_y - middle * angle.cos()),
             );
             let dot = |radius: f32, color: Hsla, window: &mut Window| {
                 let data = ArcData::new(&(), 0, 1., 0., 2. * PI);
@@ -137,6 +198,95 @@ impl Gauge {
             dot((ring / 2. - 3.).max(2.), self.cut, window);
         }
     }
+
+    /// The number with its percent sign on the ring's center, "used" under it, and the pace in the opening.
+    fn paint_text(&self, bounds: &Bounds<Pixels>, geometry: &Geometry, window: &mut Window, cx: &mut App) {
+        let Geometry {
+            center_x,
+            center_y,
+            number_size,
+            label_size,
+            pace_size,
+            ..
+        } = *geometry;
+        let number = shape(&self.number, number_size, FontWeight::BOLD, self.foreground, window);
+        let percent_size = number_size * 0.42;
+        let percent = shape("%", percent_size, FontWeight::SEMIBOLD, self.muted, window);
+        let used = shape("used", label_size, FontWeight::NORMAL, self.muted, window);
+
+        // The number line and the "used" line together are centered on the ring's center.
+        let number_height = number_size * LINE_HEIGHT;
+        let used_height = label_size * LINE_HEIGHT;
+        let number_top = center_y - (number_height + used_height) / 2.;
+        let used_top = number_top + number_height;
+        let gap = percent_size * 0.15;
+        let width = number.width().as_f32() + gap + percent.width().as_f32();
+        let left = center_x - width / 2.;
+        // The percent sign shares the number's baseline.
+        let percent_top =
+            number_top + (baseline(&number, number_height) - baseline(&percent, percent_size * LINE_HEIGHT));
+
+        let at = |x: f32, y: f32| point(bounds.origin.x + px(x), bounds.origin.y + px(y));
+        let _ = number.paint(
+            at(left, number_top),
+            px(number_height),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        let _ = percent.paint(
+            at(left + number.width().as_f32() + gap, percent_top),
+            px(percent_size * LINE_HEIGHT),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        let _ = used.paint(
+            at(center_x - used.width().as_f32() / 2., used_top),
+            px(used_height),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        if let Some(pace) = &self.pace {
+            let pace = shape(pace, pace_size, FontWeight::NORMAL, self.muted, window);
+            let _ = pace.paint(
+                at(center_x - pace.width().as_f32() / 2., geometry.pace_top()),
+                px(pace_size * LINE_HEIGHT),
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+        }
+    }
+}
+
+/// One line of text in the window's font at `size` and `weight`.
+fn shape(text: &str, size: f32, weight: FontWeight, color: Hsla, window: &mut Window) -> ShapedLine {
+    let mut font = window.text_style().font();
+    font.weight = weight;
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(SharedString::from(text.to_owned()), px(size), &[run], None)
+}
+
+/// Where a line's baseline falls below its top when painted at `line_height`: the glyph box is centered in the line.
+fn baseline(line: &ShapedLine, line_height: f32) -> f32 {
+    let ascent = line.ascent.as_f32();
+    let descent = line.descent.as_f32();
+    (line_height - ascent - descent) / 2. + ascent
 }
 
 /// The shares the ring draws: both clamped to it, and the projection kept only past what is used.
@@ -165,24 +315,34 @@ mod tests {
     }
 
     #[test]
-    fn the_number_and_the_pace_sit_on_the_rings_geometry() {
-        // The ring's center is below the box's center by half the empty part of the bottom, and the pace line sits
-        // between the arc's two ends, inside the box. All constants, so the checks run when the test compiles.
-        const CENTER: f32 = SIZE_REMS / 2. + DROP_REMS;
-        const ARC_ENDS_OUTER: f32 = CENTER + FRAC_1_SQRT_2 * RADIUS_REMS;
-        const ARC_TOP: f32 = CENTER - RADIUS_REMS;
-        const {
+    fn the_ring_fits_its_box_whatever_its_shape() {
+        // The arc's extent is centered in the box and the pace line fits inside it, in a wide box, a tall box, a
+        // small one and a zoomed-in one.
+        for (width, height) in [(400., 240.), (240., 400.), (120., 120.), (300., 900.)] {
+            let g = Geometry::fit(width, height).unwrap();
+            let arc_top = g.center_y - g.radius;
+            let arc_bottom = g.center_y + FRAC_1_SQRT_2 * g.radius;
             assert!(
-                (ARC_TOP - (SIZE_REMS - ARC_ENDS_OUTER)).abs() < 0.01,
-                "the arc's extent is centered"
-            )
-        };
-        const {
+                arc_top >= 0. && g.center_x - g.radius >= 0.,
+                "{width}x{height}: inside the box"
+            );
             assert!(
-                PACE_TOP_REMS > CENTER + FRAC_1_SQRT_2 * (RADIUS_REMS - 1.3),
-                "below the inner ends"
-            )
-        };
-        const { assert!(PACE_TOP_REMS + 1.2 < SIZE_REMS, "a line of small text fits in the box") };
+                (arc_top - (height - arc_bottom)).abs() < 0.01,
+                "{width}x{height}: the arc's extent is centered"
+            );
+            assert!(
+                g.pace_top() + g.pace_size * LINE_HEIGHT <= height,
+                "{width}x{height}: the pace line fits"
+            );
+            assert!(
+                g.pace_top() > g.center_y + 0.5 * g.radius,
+                "{width}x{height}: by the opening"
+            );
+            assert!(
+                g.number_size * LINE_HEIGHT < 2. * (g.radius - g.ring),
+                "{width}x{height}: the number is inside the ring"
+            );
+        }
+        assert_eq!(Geometry::fit(30., 30.), None, "too small to draw");
     }
 }
