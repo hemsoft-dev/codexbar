@@ -1683,6 +1683,120 @@ fn move_down_reorders_the_focused_account_within_its_group(cx: &mut TestAppConte
     assert_eq!(saved.layout().order(), ["claude-1".to_owned(), "codex".to_owned()]);
 }
 
+/// Drags one element's center to another's: press, eight moves with the button held, release.
+fn drag(
+    cx: &mut TestAppContext,
+    handle: AnyWindowHandle,
+    from: impl Into<gpui_kit::ElementId>,
+    to: impl Into<gpui_kit::ElementId>,
+) {
+    let (from, to) = (from.into(), to.into());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.drag_to(from, to, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn dragging_a_row_reorders_the_account_and_saves_the_order(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("drag-rows", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), MANUAL_ORDER).unwrap();
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![
+            FakeProvider::new(Provider::Codex, "codex", Some(0.5)),
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.2)),
+            FakeProvider::new(Provider::Cursor, "cursor", Some(0.4)),
+        ],
+    );
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), ["codex", "claude-1", "cursor"]);
+    let handle = cx.windows()[0];
+    // Released on the lower half of the last row: the account goes after it (#178).
+    drag(cx, handle, ("row", 0usize), ("row", 2usize));
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "cursor", "codex"]);
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert_eq!(
+        saved.layout().order(),
+        ["claude-1".to_owned(), "cursor".to_owned(), "codex".to_owned()]
+    );
+    // A plain click still focuses the row.
+    click(cx, handle, ("row", 1usize));
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).selected_id()).as_deref(),
+        Some("cursor")
+    );
+}
+
+#[gpui_kit::test]
+fn dragging_a_row_in_smart_order_switches_to_manual(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("drag-smart", "{}");
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![
+            FakeProvider::new(Provider::Codex, "codex", Some(0.2)),
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.97)),
+            FakeProvider::new(Provider::Cursor, "cursor", Some(0.85)),
+        ],
+    );
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "cursor", "codex"], "Smart");
+    let handle = cx.windows()[0];
+    // Released on the lower half of the first row: before the second. Smart order would hide the move, so the
+    // drop switches to Manual and the order it saves is the one shown.
+    drag(cx, handle, ("row", 2usize), ("row", 0usize));
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex", "cursor"]);
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert_eq!(saved.layout().mode(), codexbar_core::layout::OrderMode::Manual);
+    assert_eq!(
+        saved.layout().order(),
+        ["claude-1".to_owned(), "codex".to_owned(), "cursor".to_owned()]
+    );
+}
+
+#[gpui_kit::test]
+fn a_row_cannot_be_dropped_inside_another_group(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("drag-groups", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), MANUAL_ORDER).unwrap();
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![
+            FakeProvider::new(Provider::Cursor, "cursor", Some(0.9)),
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.2)),
+            FakeProvider::new(Provider::Codex, "codex", Some(0.5)),
+        ],
+    );
+    cx.run_until_parked();
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
+            let work = layout.create_group("Work")?;
+            layout.assign("cursor", Some(&work))?;
+            layout.assign("codex", Some(&work))
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        shown_ids(cx, &dashboard),
+        ["codex", "cursor", "claude-1"],
+        "Work, then Ungrouped"
+    );
+    let handle = cx.windows()[0];
+    // The gap between the two Work accounts is inside another group for claude-1: refused, nothing saved.
+    drag(cx, handle, ("row", 2usize), ("row", 0usize));
+    assert_eq!(shown_ids(cx, &dashboard), ["codex", "cursor", "claude-1"]);
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert!(saved.layout().order().is_empty(), "{:?}", saved.layout().order());
+    // The gap under the last Work account is the end of Work for a Work account, even with Ungrouped below it.
+    drag(cx, handle, ("row", 0usize), ("row", 1usize));
+    assert_eq!(shown_ids(cx, &dashboard), ["cursor", "codex", "claude-1"]);
+}
+
 #[gpui_kit::test]
 fn smart_order_puts_urgent_accounts_first_and_manual_comes_back(cx: &mut TestAppContext) {
     let settings = TempSettings::new("smart-order", "{}");

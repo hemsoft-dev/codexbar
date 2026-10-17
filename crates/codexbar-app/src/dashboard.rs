@@ -105,7 +105,7 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
 gpui_kit::actions!(codexbar_table, [LeaveTableForward, LeaveTableBackward]);
 
 /// Placeholder rows for configured providers that haven't returned anything yet.
-const PLACEHOLDER_PREFIX: &str = "pending:";
+pub(crate) const PLACEHOLDER_PREFIX: &str = "pending:";
 
 /// One adapter's outcome: its provider name, the configured account it serves (if just one) and that account's
 /// label, and the result.
@@ -1053,8 +1053,12 @@ impl Dashboard {
         self.history_view.update(cx, |view, cx| {
             view.set_accounts(accounts.clone(), preferred.as_ref(), cx);
         });
+        // Rows drag to a new place (#178) unless the preferences can't be saved.
+        let draggable = !crate::prefs_hub::PrefsHub::is_read_only(cx);
         self.table.update(cx, |table, cx| {
-            *table.delegate_mut() = AccountTable::new(accounts, now, compact, states).with_groups(groups);
+            *table.delegate_mut() = AccountTable::new(accounts, now, compact, states)
+                .with_groups(groups)
+                .draggable(draggable);
             table.refresh(cx);
             if table.delegate().row(selected_ix).is_some() {
                 table.set_selected_row(selected_ix, cx);
@@ -1462,8 +1466,8 @@ impl Dashboard {
                     })),
             )
             .child(match mode {
-                OrderMode::Smart => "Most urgent first within each group",
-                OrderMode::Manual => "Your order; use Move up and Move down on an account",
+                OrderMode::Smart => "Most urgent first within each group; drag a row to switch to your own order",
+                OrderMode::Manual => "Your order; drag a row, or use Move up and Move down on an account",
             })
     }
 

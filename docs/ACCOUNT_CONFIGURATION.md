@@ -73,4 +73,6 @@ than its credentials.
 - API keys an older CodexBar kept in the file are moved to Credential Manager at
   startup; a key that can't be moved stays usable and is tried again next time.
 - Settings that only the Rust app uses (groups, order, appearance, alerts) are in
-  `dashboard.json`.
+  `dashboard.json`. The manual order changes by dragging a row in the Usage
+  table to a new place in its group, or with Move up / Move down on the focused
+  account. A drag while Order is Smart switches it to Manual, so the drop shows.

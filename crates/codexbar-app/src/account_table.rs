@@ -12,13 +12,39 @@ use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::{
-    Context, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, linear_color_stop, linear_gradient, rems,
+    App, AppContext as _, Context, Div, DragMoveEvent, ElementId, EntityId, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window,
+    div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::history_view::{ValueKind, describe};
 use crate::prefs_hub::PrefsHub;
 use gpui_kit::TestSupportExt as _;
+
+/// A row being dragged to a new place (#178): the preview under the pointer, and what the drop needs.
+#[derive(Clone)]
+struct DragRow {
+    /// The table the row came from, so another table's rows can't be dropped here.
+    table: EntityId,
+    account: String,
+    label: SharedString,
+}
+
+impl Render for DragRow {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .text_sm()
+            .border_1()
+            .border_color(cx.theme().border)
+            .shadow_md()
+            .child(self.label.clone())
+    }
+}
 
 use crate::status::{severity_color, severity_dot_color, severity_tag};
 use crate::zoom::scaled;
@@ -73,6 +99,10 @@ pub struct AccountTable {
     states: States,
     /// Group names by account id (#89); rows arrive grouped, and the name shows beside the account.
     groups: HashMap<String, String>,
+    /// Rows can be dragged to a new place in their group (#178); off while the preferences file is read-only.
+    draggable: bool,
+    /// While a row is dragged over the table: the gap it would drop into, as the index of the row below the gap.
+    drop_gap: Option<usize>,
 }
 
 impl AccountTable {
@@ -83,12 +113,58 @@ impl AccountTable {
             compact,
             states,
             groups: HashMap::new(),
+            draggable: false,
+            drop_gap: None,
         }
     }
 
     pub fn with_groups(mut self, groups: HashMap<String, String>) -> Self {
         self.groups = groups;
         self
+    }
+
+    /// Lets rows be dragged to a new place in their group (#178).
+    pub fn draggable(mut self, draggable: bool) -> Self {
+        self.draggable = draggable;
+        self
+    }
+
+    /// Whether two accounts share a group: both in the same one, or both ungrouped.
+    fn same_group(&self, a: &str, b: &str) -> bool {
+        self.groups.get(a) == self.groups.get(b)
+    }
+
+    /// What dropping `account` into `gap` means: `Some(Some(id))` to go before `id`, `Some(None)` to go last in its
+    /// group, `None` when the gap lies inside another group. The gap sits between rows `gap - 1` and `gap`: the row
+    /// below it decides when it shares the group, otherwise the row above does at the end of the group.
+    fn drop_target(&self, account: &str, gap: usize) -> Option<Option<String>> {
+        let id = |ix: usize| self.rows.get(ix).map(|row| row.id().as_str().to_owned());
+        if let Some(below) = id(gap)
+            && self.same_group(account, &below)
+        {
+            return Some(Some(below));
+        }
+        if let Some(above) = gap.checked_sub(1).and_then(id)
+            && self.same_group(account, &above)
+        {
+            return Some(None);
+        }
+        None
+    }
+
+    /// Applies a drop of `account` into `gap` (#178): the manual order takes it, and Smart order gives way to Manual
+    /// so the change shows. A gap inside another group is refused.
+    fn drop(&self, account: &str, gap: usize, cx: &mut App) {
+        use codexbar_core::layout::{LayoutError, OrderMode};
+        let Some(before) = self.drop_target(account, gap) else {
+            return;
+        };
+        let ids: Vec<String> = self.rows.iter().map(|row| row.id().as_str().to_owned()).collect();
+        let account = account.to_owned();
+        let _ = PrefsHub::update_layout(cx, move |layout| {
+            layout.set_mode(OrderMode::Manual);
+            Ok::<_, LayoutError>(layout.place_account(&account, before.as_deref(), &ids))
+        });
     }
 
     pub fn set_compact(&mut self, compact: Compact) {
@@ -108,6 +184,72 @@ impl AccountTable {
 impl TableDelegate for AccountTable {
     fn columns_count(&self, _: &gpui_kit::App) -> usize {
         COLUMNS.len()
+    }
+
+    /// The row itself: draggable to a new place in its group (#178), with a line in the gap a drop would take.
+    fn render_tr(&mut self, row_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> Stateful<Div> {
+        let tr = div().id(("row", row_ix));
+        if !cx.has_active_drag() {
+            self.drop_gap = None;
+        }
+        let Some(row) = self.rows.get(row_ix).filter(|_| self.draggable) else {
+            return tr;
+        };
+        let account = row.id().as_str().to_owned();
+        // A placeholder takes its real id once the first fetch succeeds, so a move made under it would be lost.
+        if account.starts_with(crate::dashboard::PLACEHOLDER_PREFIX) {
+            return tr;
+        }
+        let last = row_ix + 1 == self.rows.len();
+        let indicator = match self.drop_gap {
+            Some(gap) if gap == row_ix => Some(false),
+            Some(gap) if last && gap == row_ix + 1 => Some(true),
+            _ => None,
+        };
+        let drag = DragRow {
+            table: cx.entity_id(),
+            account,
+            label: row.display_name().into(),
+        };
+        let accent = cx.theme().primary;
+        tr.relative()
+            .cursor_grab()
+            .on_drag(drag, |drag, _, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| drag.clone())
+            })
+            .on_drag_move(cx.listener(move |table, event: &DragMoveEvent<DragRow>, _, cx| {
+                if event.drag(cx).table != cx.entity_id() || !event.bounds.contains(&event.event.position) {
+                    return;
+                }
+                let top_half = event.event.position.y < event.bounds.origin.y + event.bounds.size.height / 2.;
+                let gap = Some(if top_half { row_ix } else { row_ix + 1 });
+                if table.delegate().drop_gap != gap {
+                    table.delegate_mut().drop_gap = gap;
+                    cx.notify();
+                }
+            }))
+            .on_drop(cx.listener(|table, drag: &DragRow, _, cx| {
+                let gap = table.delegate_mut().drop_gap.take();
+                if drag.table != cx.entity_id() {
+                    return;
+                }
+                if let Some(gap) = gap {
+                    table.delegate().drop(&drag.account, gap, cx);
+                }
+                cx.notify();
+            }))
+            .when_some(indicator, |this, bottom| {
+                this.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .bg(accent)
+                        .map(|this| if bottom { this.bottom_0() } else { this.top_0() }),
+                )
+            })
     }
 
     fn rows_count(&self, _: &gpui_kit::App) -> usize {
