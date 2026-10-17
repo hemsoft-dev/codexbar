@@ -45,9 +45,13 @@ pub struct Gauge {
     muted: Hsla,
 }
 
+/// The smallest ring worth drawing, in pixels. Below it the box keeps the number alone (#176).
+const MIN_RADIUS: f32 = 12.;
+
 /// Where everything goes in a box, in pixels from the box's origin.
 #[derive(Debug, PartialEq)]
 struct Geometry {
+    height: f32,
     radius: f32,
     ring: f32,
     center_x: f32,
@@ -58,29 +62,38 @@ struct Geometry {
 }
 
 impl Geometry {
-    /// The ring that fits a box, or `None` when the box is too small to draw one.
-    fn fit(width: f32, height: f32) -> Option<Self> {
+    /// The ring that fits a box. A box too small for a ring still places the number, at its smallest, on the box's
+    /// center, so the card never loses its value at extreme zoom.
+    fn fit(width: f32, height: f32) -> Self {
         let side = width.min(height);
         // Room for the glow and the head past the ring.
         let margin = (side * 0.06).max(GLOW + 2.);
-        let radius = side / 2. - margin;
-        if radius < 12. {
-            return None;
-        }
-        Some(Self {
+        let radius = (side / 2. - margin).max(0.);
+        let draws_ring = radius >= MIN_RADIUS;
+        Self {
+            height,
             radius,
             ring: (radius * 0.16).clamp(8., 20.),
             center_x: width / 2.,
-            center_y: height / 2. + DROP_FRACTION * radius,
+            center_y: height / 2. + if draws_ring { DROP_FRACTION * radius } else { 0. },
             number_size: (radius * 0.44).max(14.),
             label_size: (radius * 0.14).max(9.),
             pace_size: (radius * 0.12).max(9.),
-        })
+        }
+    }
+
+    fn draws_ring(&self) -> bool {
+        self.radius >= MIN_RADIUS
     }
 
     /// The top of the pace line: in the opening, between the arc's two ends.
     fn pace_top(&self) -> f32 {
         self.center_y + 0.6 * self.radius
+    }
+
+    /// Whether the pace line has a ring to sit in and room in the box; otherwise it is left out.
+    fn draws_pace(&self) -> bool {
+        self.draws_ring() && self.pace_top() + self.pace_size * LINE_HEIGHT <= self.height
     }
 }
 
@@ -118,10 +131,10 @@ impl Gauge {
     }
 
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-        let Some(geometry) = Geometry::fit(bounds.size.width.as_f32(), bounds.size.height.as_f32()) else {
-            return;
-        };
-        self.paint_ring(&bounds, &geometry, window);
+        let geometry = Geometry::fit(bounds.size.width.as_f32(), bounds.size.height.as_f32());
+        if geometry.draws_ring() {
+            self.paint_ring(&bounds, &geometry, window);
+        }
         self.paint_text(&bounds, &geometry, window, cx);
     }
 
@@ -251,7 +264,7 @@ impl Gauge {
             window,
             cx,
         );
-        if let Some(pace) = &self.pace {
+        if let Some(pace) = self.pace.as_ref().filter(|_| geometry.draws_pace()) {
             let pace = shape(pace, pace_size, FontWeight::NORMAL, self.muted, window);
             let _ = pace.paint(
                 at(center_x - pace.width().as_f32() / 2., geometry.pace_top()),
@@ -319,7 +332,8 @@ mod tests {
         // The arc's extent is centered in the box and the pace line fits inside it, in a wide box, a tall box, a
         // small one and a zoomed-in one.
         for (width, height) in [(400., 240.), (240., 400.), (120., 120.), (300., 900.)] {
-            let g = Geometry::fit(width, height).unwrap();
+            let g = Geometry::fit(width, height);
+            assert!(g.draws_ring() && g.draws_pace(), "{width}x{height}: ring and pace");
             let arc_top = g.center_y - g.radius;
             let arc_bottom = g.center_y + FRAC_1_SQRT_2 * g.radius;
             assert!(
@@ -343,6 +357,15 @@ mod tests {
                 "{width}x{height}: the number is inside the ring"
             );
         }
-        assert_eq!(Geometry::fit(30., 30.), None, "too small to draw");
+    }
+
+    #[test]
+    fn a_box_too_small_for_the_ring_keeps_the_number_on_its_center() {
+        // At extreme zoom the card can leave the ring a sliver of a box (#176): no ring, no pace, but the number at
+        // its smallest size on the box's center.
+        let g = Geometry::fit(30., 30.);
+        assert!(!g.draws_ring() && !g.draws_pace());
+        assert_eq!((g.center_x, g.center_y), (15., 15.));
+        assert_eq!((g.number_size, g.label_size), (14., 9.));
     }
 }
