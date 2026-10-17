@@ -450,7 +450,9 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .collect();
     let kind = trend_kind(account);
     let counted = counted_name(account);
-    let high = days.iter().map(|(_, value)| *value).fold(0.0, f64::max);
+    let values: Vec<f64> = days.iter().map(|(_, value)| *value).collect();
+    let (low, high) = day_domain(&values, kind);
+    let ticks = day_ticks(&values, kind);
     let spoken = format!(
         "Usage by day: {}",
         days.iter()
@@ -458,8 +460,9 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    // A smooth line through the week's points, one marker per day, in the headline's unit (#180). A fraction keeps
-    // the 0–100% axis; a count, credits or money gets headroom over its highest day.
+    // A smooth line through the week's points, one marker per day, in the headline's unit (#180). The axis is pinned
+    // to the unit's range so its ticks stay round; the pixel padding leaves the natural curve room to swing past the
+    // highest and lowest points, which it does around a sharp change, instead of being clipped at the edge.
     let chart = LineChart::new(days)
         .id("focus-days")
         .x(|(label, _)| label.clone())
@@ -467,10 +470,10 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .stroke(color)
         .natural()
         .dot()
-        .y_domain(0.0, if counted.is_some() { (high * 1.15).max(1.0) } else { 1.0 })
-        .y_padding(0., 0.)
+        .y_domain(low, high)
+        .y_padding(CURVE_ROOM, CURVE_ROOM)
         .y_axis(true)
-        .y_tick_count(4)
+        .y_tick_count(ticks)
         .y_tick_format(move |value| kind.value(value))
         .tooltip_value(move |_, value| kind.value(value).into())
         .name(counted.clone().unwrap_or_else(|| "Pressure".into()));
@@ -484,6 +487,32 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
     Card::new("Usage by day", "Last 7 days", plot)
         .takeaway(day_takeaway(trend, kind, on_credits(account)))
         .caption(day_caption(counted.as_deref()))
+}
+
+/// Pixels kept clear above and below the day line's pinned range, so a natural curve's swing past a point stays in
+/// view (#180).
+const CURVE_ROOM: f32 = 16.;
+
+/// The day line's axis range: a share is pinned to 0–100%; a count, credits or money runs from zero (or below the
+/// week's lowest value, for a balance gone negative, #104) to 15% over its highest day, never flat.
+fn day_domain(values: &[f64], kind: ValueKind) -> (f64, f64) {
+    if kind == ValueKind::Percent {
+        return (0.0, 1.0);
+    }
+    let low = values.iter().copied().fold(0.0, f64::min);
+    let high = values.iter().copied().fold(0.0, f64::max);
+    let low = if low < 0.0 { low * 1.15 } else { 0.0 };
+    (low, (high * 1.15).max(low + 1.0))
+}
+
+/// How many ticks the day line's axis gets: four, but no more than a whole-number count can label distinctly, so a
+/// week of one or two activities never reads "0, 1, 1, 2".
+fn day_ticks(values: &[f64], kind: ValueKind) -> usize {
+    if !matches!(kind, ValueKind::Count | ValueKind::Credits) {
+        return 4;
+    }
+    let high = values.iter().copied().fold(0.0, f64::max);
+    (high.ceil() as usize + 1).clamp(2, 4)
 }
 
 /// How yesterday compares: "Up 12% since yesterday" for a share, "Down $2.50 since yesterday" for an amount (#103,
@@ -863,6 +892,37 @@ mod tests {
         assert_eq!(day_takeaway(&[0.4], ValueKind::Percent, false), "Flat since yesterday");
         assert_eq!(day_caption(None), "Share of the tightest limit");
         assert_eq!(day_caption(Some("Credits left")), "Credits left at the end of each day");
+    }
+
+    #[test]
+    fn the_day_axis_fits_the_unit_and_labels_whole_counts() {
+        use codexbar_core::Currency;
+        let usd = ValueKind::Money(Currency::Usd);
+        assert_eq!(
+            day_domain(&[0.2, 1.0], ValueKind::Percent),
+            (0.0, 1.0),
+            "a share stays pinned"
+        );
+        assert_eq!(day_domain(&[0.0, 0.0], ValueKind::Count), (0.0, 1.0), "never flat");
+        assert_eq!(
+            day_domain(&[10.0, 20.0], ValueKind::Credits),
+            (0.0, 23.0),
+            "headroom over the week"
+        );
+        // A balance that went negative (#104) keeps its points on the plot.
+        let (low, high) = day_domain(&[-4.0, -2.0], usd);
+        assert!(
+            (low - -4.6).abs() < 1e-9 && high == 0.0,
+            "all negative keeps the zero line: {low} {high}"
+        );
+        let (low, high) = day_domain(&[-4.0, 6.0], usd);
+        assert!((low - -4.6).abs() < 1e-9 && (high - 6.9).abs() < 1e-9, "{low} {high}");
+        assert_eq!(day_ticks(&[0.0, 1.0], ValueKind::Count), 2);
+        assert_eq!(day_ticks(&[2.0, 1.0], ValueKind::Count), 3);
+        assert_eq!(day_ticks(&[37.0], ValueKind::Count), 4);
+        assert_eq!(day_ticks(&[1.0], ValueKind::Credits), 2);
+        assert_eq!(day_ticks(&[0.5, 1.0], ValueKind::Percent), 4);
+        assert_eq!(day_ticks(&[1.0], usd), 4);
     }
 
     #[test]
