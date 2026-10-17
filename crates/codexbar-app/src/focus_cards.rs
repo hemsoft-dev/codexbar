@@ -452,7 +452,7 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
     let counted = counted_name(account);
     let values: Vec<f64> = days.iter().map(|(_, value)| *value).collect();
     let (low, high) = day_domain(&values, kind);
-    let ticks = day_ticks(&values, kind);
+    let ticks = day_ticks((low, high), kind);
     let spoken = format!(
         "Usage by day: {}",
         days.iter()
@@ -505,14 +505,19 @@ fn day_domain(values: &[f64], kind: ValueKind) -> (f64, f64) {
     (low, (high * 1.15).max(low + 1.0))
 }
 
-/// How many ticks the day line's axis gets: four, but no more than a whole-number count can label distinctly, so a
-/// week of one or two activities never reads "0, 1, 1, 2".
-fn day_ticks(values: &[f64], kind: ValueKind) -> usize {
-    if !matches!(kind, ValueKind::Count | ValueKind::Credits) {
-        return 4;
-    }
-    let high = values.iter().copied().fold(0.0, f64::max);
-    (high.ceil() as usize + 1).clamp(2, 4)
+/// How many ticks the day line's axis gets: four when the unit's formatting tells them apart, otherwise the most
+/// that still read distinctly, down to two. Ticks sit evenly over `low..=high` before formatting, so a week of one
+/// or two activities, or of credits down to a fraction, never reads "0, 1, 1, 2".
+fn day_ticks((low, high): (f64, f64), kind: ValueKind) -> usize {
+    (2..=4)
+        .rev()
+        .find(|count| {
+            let labels: Vec<String> = (0..*count)
+                .map(|ix| kind.value(low + (high - low) * ix as f64 / (count - 1) as f64))
+                .collect();
+            labels.iter().collect::<std::collections::HashSet<_>>().len() == labels.len()
+        })
+        .unwrap_or(2)
 }
 
 /// How yesterday compares: "Up 12% since yesterday" for a share, "Down $2.50 since yesterday" for an amount (#103,
@@ -917,12 +922,16 @@ mod tests {
         );
         let (low, high) = day_domain(&[-4.0, 6.0], usd);
         assert!((low - -4.6).abs() < 1e-9 && (high - 6.9).abs() < 1e-9, "{low} {high}");
-        assert_eq!(day_ticks(&[0.0, 1.0], ValueKind::Count), 2);
-        assert_eq!(day_ticks(&[2.0, 1.0], ValueKind::Count), 3);
-        assert_eq!(day_ticks(&[37.0], ValueKind::Count), 4);
-        assert_eq!(day_ticks(&[1.0], ValueKind::Credits), 2);
-        assert_eq!(day_ticks(&[0.5, 1.0], ValueKind::Percent), 4);
-        assert_eq!(day_ticks(&[1.0], usd), 4);
+        // Ticks are as many as the unit's formatting tells apart: whole counts, credits down to a fraction, money.
+        let ticks = |values: &[f64], kind: ValueKind| day_ticks(day_domain(values, kind), kind);
+        assert_eq!(ticks(&[0.0, 1.0], ValueKind::Count), 2);
+        assert_eq!(ticks(&[2.0, 1.0], ValueKind::Count), 3);
+        assert_eq!(ticks(&[37.0], ValueKind::Count), 4);
+        assert_eq!(ticks(&[1.0], ValueKind::Credits), 2);
+        assert_eq!(ticks(&[1.1], ValueKind::Credits), 2, "0, 1, 1 would repeat");
+        assert_eq!(ticks(&[36_800.0], ValueKind::Credits), 4);
+        assert_eq!(ticks(&[0.5, 1.0], ValueKind::Percent), 4);
+        assert_eq!(ticks(&[1.0], usd), 4);
     }
 
     #[test]
