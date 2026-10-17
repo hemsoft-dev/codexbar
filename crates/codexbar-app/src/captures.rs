@@ -10,7 +10,10 @@ use std::sync::Arc;
 use codexbar_store::credentials::MemoryCredentialStore;
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, AppContext as _, HeadlessAppContext, px, size};
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, HeadlessAppContext, InputEvent as _, Modifiers, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, point, px, size,
+};
 
 use crate::dashboard::{Dashboard, DashboardView, DataSource};
 use crate::notifications::RecordingNotifier;
@@ -77,6 +80,75 @@ fn captures() {
     let dashboard = dashboard.unwrap();
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage");
+
+    // #178: a row dragged to a new place. Manual order first; then the first row is pressed, carried to the lower
+    // half of the third row (frames along the way show the preview and the gap line), and released.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("order-mode", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "drag-0-manual");
+    let (from, to) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find(("row", 0usize)).bounds();
+            let to = window.find(("row", 2usize)).bounds();
+            (from.center(), point(to.center().x, to.origin.y + to.size.height * 0.75))
+        })
+        .unwrap();
+    let modifiers = Modifiers::default();
+    let mouse = |cx: &mut HeadlessAppContext, event: gpui_kit::PlatformInput| {
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(event, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let along = |fraction: f32| -> Point<Pixels> {
+        point(from.x + (to.x - from.x) * fraction, from.y + (to.y - from.y) * fraction)
+    };
+    mouse(
+        &mut cx,
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }
+        .to_platform_input(),
+    );
+    for step in 1..=4 {
+        mouse(
+            &mut cx,
+            MouseMoveEvent {
+                position: along(step as f32 / 4.),
+                pressed_button: Some(MouseButton::Left),
+                modifiers,
+            }
+            .to_platform_input(),
+        );
+        save(&mut cx, handle, &out, &format!("drag-{step}-moving"));
+    }
+    mouse(
+        &mut cx,
+        MouseUpEvent {
+            button: MouseButton::Left,
+            position: to,
+            modifiers,
+            click_count: 1,
+        }
+        .to_platform_input(),
+    );
+    save(&mut cx, handle, &out, "drag-5-dropped");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "drag-5-dropped-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.run_until_parked();
 
     // #172: the X Subscription card, with its two weekly limits and the credits.
     let request = crate::handoff::FocusRequest {
