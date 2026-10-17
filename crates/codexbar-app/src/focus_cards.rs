@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Local, Utc};
 use codexbar_core::{AccountSnapshot, Metric, Severity, format};
-use gpui_kit::component::chart::{AreaChart, BarChart};
+use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
     AnyElement, App, Background, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
@@ -428,13 +428,21 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
             ));
     }
 
+    use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     let trend = account.trend();
     if trend.len() < 2 {
-        return Card::new("Usage by day", "Last 7 days", no_history(cx))
+        let empty = div()
+            .id("focus-days-empty")
+            .role(Role::Note)
+            .test_support()
+            .aria_label("No daily usage yet; it appears once history is stored")
+            .size_full()
+            .child(no_history(cx));
+        return Card::new("Usage by day", "Last 7 days", empty)
             .takeaway("No history yet")
             .caption("Daily usage appears once history is stored");
     }
-    let bars: Vec<(SharedString, f64)> = trend
+    let days: Vec<(SharedString, f64)> = trend
         .iter()
         .enumerate()
         .skip(trend.len().saturating_sub(7))
@@ -442,21 +450,84 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .collect();
     let kind = trend_kind(account);
     let counted = counted_name(account);
-    let chart = BarChart::new(bars)
+    let values: Vec<f64> = days.iter().map(|(_, value)| *value).collect();
+    let (low, high) = day_domain(&values, kind);
+    let ticks = day_ticks((low, high), kind);
+    let spoken = format!(
+        "Usage by day: {}",
+        days.iter()
+            .map(|(day, value)| format!("{day} {}", kind.value(*value)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    // A smooth line through the week's points, one marker per day, in the headline's unit (#180). The axis is pinned
+    // to the unit's range with no pixel padding, so its ticks read 0, 33, 67, 100%: the chart spaces ticks over the
+    // padded extent, and padding made them read -8% and 108%. The price is that a natural curve's swing past 0% or
+    // 100% around a sharp change, such as a reset, is clipped flat at the plot's edge for a few pixels.
+    let chart = LineChart::new(days)
         .id("focus-days")
-        .band(|(label, _)| label.clone())
-        .value(|(_, value)| *value)
-        .fill(bar_fill)
-        .value_tick_format(move |value| kind.value(value))
+        .x(|(label, _)| label.clone())
+        .y(|(_, value)| *value)
+        .stroke(color)
+        .natural()
+        .dot()
+        .y_domain(low, high)
+        .y_padding(0., 0.)
+        .y_axis(true)
+        .y_tick_count(ticks)
+        .y_tick_format(move |value| kind.value(value))
+        .tooltip_value(move |_, value| kind.value(value).into())
         .name(counted.clone().unwrap_or_else(|| "Pressure".into()));
+    let plot = div()
+        .id("focus-days-plot")
+        .role(Role::Note)
+        .test_support()
+        .aria_label(spoken)
+        .size_full()
+        .child(chart);
+    Card::new("Usage by day", "Last 7 days", plot)
+        .takeaway(day_takeaway(trend, kind, on_credits(account)))
+        .caption(day_caption(counted.as_deref()))
+}
+
+/// The day line's axis range: a share is pinned to 0–100%; a count, credits or money runs from zero (or below the
+/// week's lowest value, for a balance gone negative, #104) to 15% over its highest day, never flat.
+fn day_domain(values: &[f64], kind: ValueKind) -> (f64, f64) {
+    if kind == ValueKind::Percent {
+        return (0.0, 1.0);
+    }
+    let low = values.iter().copied().fold(0.0, f64::min);
+    let high = values.iter().copied().fold(0.0, f64::max);
+    let low = if low < 0.0 { low * 1.15 } else { 0.0 };
+    (low, (high * 1.15).max(low + 1.0))
+}
+
+/// How many ticks the day line's axis gets: four when the unit's formatting tells them apart, otherwise the most
+/// that still read distinctly, down to two. Ticks sit evenly over `low..=high` before formatting, so a week of one
+/// or two activities, or of credits down to a fraction, never reads "0, 1, 1, 2".
+fn day_ticks((low, high): (f64, f64), kind: ValueKind) -> usize {
+    (2..=4)
+        .rev()
+        .find(|count| {
+            let labels: Vec<String> = (0..*count)
+                .map(|ix| kind.value(low + (high - low) * ix as f64 / (count - 1) as f64))
+                .collect();
+            labels.iter().collect::<std::collections::HashSet<_>>().len() == labels.len()
+        })
+        .unwrap_or(2)
+}
+
+/// How yesterday compares: "Up 12% since yesterday" for a share, "Down $2.50 since yesterday" for an amount (#103,
+/// #104), "Flat since yesterday", or "Topped up since yesterday" for credits that came back from zero (#150).
+fn day_takeaway(trend: &[f64], kind: ValueKind, on_credits: bool) -> String {
     let change = match trend {
         [.., before, last] if *before > 0.0 => (last - before) / before * 100.0,
         _ => 0.0,
     };
-    let topped_up = on_credits(account) && matches!(trend, [.., before, last] if *before <= 0.0 && *last > 0.0);
+    let topped_up = on_credits && matches!(trend, [.., before, last] if *before <= 0.0 && *last > 0.0);
     // A count (#103) or money (#104) changes by an amount, not a share.
     let by_amount = matches!(kind, ValueKind::Count | ValueKind::Money(_));
-    let takeaway = if topped_up {
+    if topped_up {
         // From zero there is no percentage to give (#150).
         "Topped up since yesterday".to_owned()
     } else if let (true, [.., before, last]) = (by_amount, trend) {
@@ -478,14 +549,15 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
             if change > 0.0 { "Up" } else { "Down" },
             change.abs()
         )
-    };
-    let caption = match counted {
+    }
+}
+
+/// What the day card's points are: the share of the tightest limit, or the counted headline at each day's end.
+fn day_caption(counted: Option<&str>) -> String {
+    match counted {
         Some(name) => format!("{name} at the end of each day"),
         None => "Share of the tightest limit".to_owned(),
-    };
-    Card::new("Usage by day", "Last 7 days", chart)
-        .takeaway(takeaway)
-        .caption(caption)
+    }
 }
 
 /// True when the account's headline is its credits (#150), so its trend is a count of credits left.
@@ -790,6 +862,73 @@ mod tests {
             "On pace for about 70% by the reset"
         );
         assert!(pace_takeaway(&window(0.4, 0.1), now()).starts_with("Hits the included usage limit in ~"));
+    }
+
+    #[test]
+    fn the_day_card_says_how_yesterday_compares_in_the_headlines_unit() {
+        use codexbar_core::Currency;
+        assert_eq!(
+            day_takeaway(&[0.5, 0.6], ValueKind::Percent, false),
+            "Up 20% since yesterday"
+        );
+        assert_eq!(
+            day_takeaway(&[0.6, 0.6], ValueKind::Percent, false),
+            "Flat since yesterday"
+        );
+        assert_eq!(
+            day_takeaway(&[3.0, 5.0], ValueKind::Count, false),
+            "Up 2 since yesterday"
+        );
+        assert_eq!(
+            day_takeaway(&[10.0, 7.5], ValueKind::Money(Currency::Usd), false),
+            "Down $2.50 since yesterday"
+        );
+        assert_eq!(
+            day_takeaway(&[0.0, 500.0], ValueKind::Credits, true),
+            "Topped up since yesterday"
+        );
+        assert_eq!(
+            day_takeaway(&[500.0, 400.0], ValueKind::Credits, true),
+            "Down 20% since yesterday"
+        );
+        assert_eq!(day_takeaway(&[0.4], ValueKind::Percent, false), "Flat since yesterday");
+        assert_eq!(day_caption(None), "Share of the tightest limit");
+        assert_eq!(day_caption(Some("Credits left")), "Credits left at the end of each day");
+    }
+
+    #[test]
+    fn the_day_axis_fits_the_unit_and_labels_whole_counts() {
+        use codexbar_core::Currency;
+        let usd = ValueKind::Money(Currency::Usd);
+        assert_eq!(
+            day_domain(&[0.2, 1.0], ValueKind::Percent),
+            (0.0, 1.0),
+            "a share stays pinned"
+        );
+        assert_eq!(day_domain(&[0.0, 0.0], ValueKind::Count), (0.0, 1.0), "never flat");
+        assert_eq!(
+            day_domain(&[10.0, 20.0], ValueKind::Credits),
+            (0.0, 23.0),
+            "headroom over the week"
+        );
+        // A balance that went negative (#104) keeps its points on the plot.
+        let (low, high) = day_domain(&[-4.0, -2.0], usd);
+        assert!(
+            (low - -4.6).abs() < 1e-9 && high == 0.0,
+            "all negative keeps the zero line: {low} {high}"
+        );
+        let (low, high) = day_domain(&[-4.0, 6.0], usd);
+        assert!((low - -4.6).abs() < 1e-9 && (high - 6.9).abs() < 1e-9, "{low} {high}");
+        // Ticks are as many as the unit's formatting tells apart: whole counts, credits down to a fraction, money.
+        let ticks = |values: &[f64], kind: ValueKind| day_ticks(day_domain(values, kind), kind);
+        assert_eq!(ticks(&[0.0, 1.0], ValueKind::Count), 2);
+        assert_eq!(ticks(&[2.0, 1.0], ValueKind::Count), 3);
+        assert_eq!(ticks(&[37.0], ValueKind::Count), 4);
+        assert_eq!(ticks(&[1.0], ValueKind::Credits), 2);
+        assert_eq!(ticks(&[1.1], ValueKind::Credits), 2, "0, 1, 1 would repeat");
+        assert_eq!(ticks(&[36_800.0], ValueKind::Credits), 4);
+        assert_eq!(ticks(&[0.5, 1.0], ValueKind::Percent), 4);
+        assert_eq!(ticks(&[1.0], usd), 4);
     }
 
     #[test]
