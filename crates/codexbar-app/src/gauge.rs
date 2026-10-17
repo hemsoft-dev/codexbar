@@ -45,8 +45,9 @@ pub struct Gauge {
     muted: Hsla,
 }
 
-/// The smallest ring worth drawing, in pixels. Below it the box keeps the number alone (#176).
-const MIN_RADIUS: f32 = 12.;
+/// The smallest ring worth drawing, in pixels: its center (the radius less the 8px band) must hold the smallest
+/// number, "100" with its percent sign at 14px, about 36px wide. Below it the box keeps the number alone (#176).
+const MIN_RADIUS: f32 = 28.;
 
 /// Where everything goes in a box, in pixels from the box's origin.
 #[derive(Debug, PartialEq)]
@@ -367,5 +368,12 @@ mod tests {
         assert!(!g.draws_ring() && !g.draws_pace());
         assert_eq!((g.center_x, g.center_y), (15., 15.));
         assert_eq!((g.number_size, g.label_size), (14., 9.));
+
+        // The smallest ring drawn still has room in its center for "100%" at the smallest size, and a box a little
+        // narrower draws none rather than a ring over the number.
+        let smallest = Geometry::fit(2. * (MIN_RADIUS + GLOW + 2.), 400.);
+        assert!(smallest.draws_ring(), "{smallest:?}");
+        assert!(2. * (smallest.radius - smallest.ring) >= 40., "{smallest:?}");
+        assert!(!Geometry::fit(2. * (MIN_RADIUS + GLOW + 1.), 400.).draws_ring());
     }
 }
