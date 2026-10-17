@@ -1744,17 +1744,27 @@ fn dragging_a_row_in_smart_order_switches_to_manual(cx: &mut TestAppContext) {
         ],
     );
     cx.run_until_parked();
+    // A saved manual order that Smart doesn't show: codex, cursor, claude-1.
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
+            let ids = ["codex", "claude-1", "cursor"].map(String::from);
+            layout.move_account("claude-1", 1, &ids);
+            Ok::<_, codexbar_core::layout::LayoutError>(())
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
     assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "cursor", "codex"], "Smart");
     let handle = cx.windows()[0];
-    // Released on the lower half of the first row: before the second. Smart order would hide the move, so the
-    // drop switches to Manual and the order it saves is the one shown.
-    drag(cx, handle, ("row", 2usize), ("row", 0usize));
-    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex", "cursor"]);
+    // Released on the lower half of the last row: after it, in the order the screen showed, not the stale manual
+    // order. Smart order would hide the move, so the drop switches to Manual and saves the order shown.
+    drag(cx, handle, ("row", 0usize), ("row", 2usize));
+    assert_eq!(shown_ids(cx, &dashboard), ["cursor", "codex", "claude-1"]);
     let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
     assert_eq!(saved.layout().mode(), codexbar_core::layout::OrderMode::Manual);
     assert_eq!(
         saved.layout().order(),
-        ["claude-1".to_owned(), "codex".to_owned(), "cursor".to_owned()]
+        ["cursor".to_owned(), "codex".to_owned(), "claude-1".to_owned()]
     );
 }
 

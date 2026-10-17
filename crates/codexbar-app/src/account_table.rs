@@ -13,8 +13,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::{
     App, AppContext as _, Context, Div, DragMoveEvent, ElementId, EntityId, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window,
-    div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, rems,
+    ParentElement as _, Pixels, Point, Render, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Window, div, linear_color_stop, linear_gradient, prelude::FluentBuilder as _, px, rems,
 };
 
 use crate::history_view::{ValueKind, describe};
@@ -28,21 +28,26 @@ struct DragRow {
     table: EntityId,
     account: String,
     label: SharedString,
+    /// Where in the row the pointer grabbed it. GPUI draws the preview at the pointer less this offset, so the
+    /// preview is pushed back by it to sit under the pointer wherever the row was grabbed.
+    grab: Point<Pixels>,
 }
 
 impl Render for DragRow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px_3()
-            .py_1()
-            .rounded(cx.theme().radius)
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .text_sm()
-            .border_1()
-            .border_color(cx.theme().border)
-            .shadow_md()
-            .child(self.label.clone())
+        div().pl(self.grab.x - px(12.)).pt(self.grab.y - px(14.)).child(
+            div()
+                .px_3()
+                .py_1()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().background)
+                .text_color(cx.theme().foreground)
+                .text_sm()
+                .border_1()
+                .border_color(cx.theme().border)
+                .shadow_md()
+                .child(self.label.clone()),
+        )
     }
 }
 
@@ -152,14 +157,28 @@ impl AccountTable {
         None
     }
 
-    /// Applies a drop of `account` into `gap` (#178): the manual order takes it, and Smart order gives way to Manual
-    /// so the change shows. A gap inside another group is refused.
+    /// True for a `pending:` row, which takes its real id once the first fetch succeeds: it is never dragged, never a
+    /// drop target, and never written into the saved order.
+    fn is_placeholder(id: &str) -> bool {
+        id.starts_with(crate::dashboard::PLACEHOLDER_PREFIX)
+    }
+
+    /// Applies a drop of `account` into `gap` (#178): the manual order takes it, starting from the order shown, and
+    /// Smart order gives way to Manual so the change shows. A gap inside another group is refused.
     fn drop(&self, account: &str, gap: usize, cx: &mut App) {
         use codexbar_core::layout::{LayoutError, OrderMode};
         let Some(before) = self.drop_target(account, gap) else {
             return;
         };
-        let ids: Vec<String> = self.rows.iter().map(|row| row.id().as_str().to_owned()).collect();
+        if before.as_deref().is_some_and(Self::is_placeholder) {
+            return;
+        }
+        let ids: Vec<String> = self
+            .rows
+            .iter()
+            .map(|row| row.id().as_str().to_owned())
+            .filter(|id| !Self::is_placeholder(id))
+            .collect();
         let account = account.to_owned();
         let _ = PrefsHub::update_layout(cx, move |layout| {
             layout.set_mode(OrderMode::Manual);
@@ -196,8 +215,7 @@ impl TableDelegate for AccountTable {
             return tr;
         };
         let account = row.id().as_str().to_owned();
-        // A placeholder takes its real id once the first fetch succeeds, so a move made under it would be lost.
-        if account.starts_with(crate::dashboard::PLACEHOLDER_PREFIX) {
+        if Self::is_placeholder(&account) {
             return tr;
         }
         let last = row_ix + 1 == self.rows.len();
@@ -210,20 +228,30 @@ impl TableDelegate for AccountTable {
             table: cx.entity_id(),
             account,
             label: row.display_name().into(),
+            grab: Point::default(),
         };
         let accent = cx.theme().primary;
         tr.relative()
             .cursor_grab()
-            .on_drag(drag, |drag, _, _, cx| {
+            .on_drag(drag, |drag, grab, _, cx| {
                 cx.stop_propagation();
-                cx.new(|_| drag.clone())
+                let drag = DragRow { grab, ..drag.clone() };
+                cx.new(|_| drag)
             })
             .on_drag_move(cx.listener(move |table, event: &DragMoveEvent<DragRow>, _, cx| {
-                if event.drag(cx).table != cx.entity_id() || !event.bounds.contains(&event.event.position) {
+                let drag = event.drag(cx);
+                if drag.table != cx.entity_id() || !event.bounds.contains(&event.event.position) {
                     return;
                 }
                 let top_half = event.event.position.y < event.bounds.origin.y + event.bounds.size.height / 2.;
-                let gap = Some(if top_half { row_ix } else { row_ix + 1 });
+                let gap = if top_half { row_ix } else { row_ix + 1 };
+                // Only a gap the drop would take gets the line; a gap inside another group shows nothing.
+                let gap = Some(gap).filter(|gap| {
+                    table
+                        .delegate()
+                        .drop_target(&drag.account, *gap)
+                        .is_some_and(|before| !before.as_deref().is_some_and(Self::is_placeholder))
+                });
                 if table.delegate().drop_gap != gap {
                     table.delegate_mut().drop_gap = gap;
                     cx.notify();

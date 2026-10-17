@@ -364,8 +364,10 @@ impl Layout {
     }
 
     /// Puts `account` before `before` within its group, or last in its group when `before` is `None` (#178): a
-    /// dropped row. Nothing changes, and false comes back, when either account is unknown, `before` is in another
-    /// group, or the place is where the account already is.
+    /// dropped row. `accounts` is the order the rows are shown in, which the group's new order starts from: under
+    /// Smart order that differs from the manual order, and the drop means what the screen showed. Nothing changes,
+    /// and false comes back, when either account is unknown, `before` is in another group, or the place is where the
+    /// account already is.
     pub fn place_account(&mut self, account: &str, before: Option<&str>, accounts: &[String]) -> bool {
         let mut sections = self.arrange(accounts);
         let Some(section) = sections
@@ -374,6 +376,9 @@ impl Layout {
         else {
             return false;
         };
+        section
+            .accounts
+            .sort_by_key(|id| accounts.iter().position(|shown| shown == id));
         let Some(from) = section.accounts.iter().position(|id| id == account) else {
             return false;
         };
@@ -545,30 +550,45 @@ mod tests {
             layout.assign(id, Some(&work)).unwrap();
         }
         let accounts = ids(&["a", "b", "c", "x", "y"]);
-        assert!(layout.place_account("c", Some("a"), &accounts));
+        // Under Manual order the rows are shown as the layout arranges them.
+        let shown = |layout: &Layout| -> Vec<String> {
+            layout
+                .arrange(&accounts)
+                .into_iter()
+                .flat_map(|section| section.accounts)
+                .collect()
+        };
+        assert!(layout.place_account("c", Some("a"), &shown(&layout)));
         assert_eq!(
             shape(&layout.arrange(&accounts)),
             vec![(Some("Work"), vec!["c", "a", "b"]), (None, vec!["x", "y"])]
         );
-        assert!(layout.place_account("c", None, &accounts), "to the end of its group");
+        assert!(
+            layout.place_account("c", None, &shown(&layout)),
+            "to the end of its group"
+        );
         let settled = vec![(Some("Work"), vec!["a", "b", "c"]), (None, vec!["x", "y"])];
         assert_eq!(shape(&layout.arrange(&accounts)), settled);
         // Drops that would change nothing, or cross into another group, are refused and leave the order alone.
-        assert!(!layout.place_account("c", None, &accounts), "already last");
-        assert!(
-            !layout.place_account("a", Some("b"), &accounts),
-            "already right before b"
+        let rows = shown(&layout);
+        assert!(!layout.place_account("c", None, &rows), "already last");
+        assert!(!layout.place_account("a", Some("b"), &rows), "already right before b");
+        assert!(!layout.place_account("a", Some("a"), &rows), "onto itself");
+        assert!(!layout.place_account("a", Some("x"), &rows), "x is in another group");
+        assert!(!layout.place_account("a", Some("nope"), &rows), "unknown target");
+        assert!(!layout.place_account("nope", None, &rows), "unknown account");
+        assert_eq!(shape(&layout.arrange(&accounts)), settled);
+        // The drop means what the screen showed: with Smart order showing Work as c, b, a, dropping a before b gives
+        // c, a, b, not a move within the stale manual order a, b, c.
+        assert!(layout.place_account("a", Some("b"), &ids(&["c", "b", "a", "x", "y"])));
+        assert_eq!(
+            shape(&layout.arrange(&accounts)),
+            vec![(Some("Work"), vec!["c", "a", "b"]), (None, vec!["x", "y"])]
         );
-        assert!(!layout.place_account("a", Some("a"), &accounts), "onto itself");
-        assert!(
-            !layout.place_account("a", Some("x"), &accounts),
-            "x is in another group"
-        );
-        assert!(!layout.place_account("a", Some("nope"), &accounts), "unknown target");
-        assert!(!layout.place_account("nope", None, &accounts), "unknown account");
+        assert!(layout.place_account("c", None, &shown(&layout)));
         assert_eq!(shape(&layout.arrange(&accounts)), settled);
         // Ungrouped accounts drop the same way, and accounts the order didn't know keep following (#89).
-        assert!(layout.place_account("y", Some("x"), &accounts));
+        assert!(layout.place_account("y", Some("x"), &shown(&layout)));
         let more = ids(&["new", "a", "b", "c", "x", "y"]);
         assert_eq!(
             shape(&layout.arrange(&more)),
