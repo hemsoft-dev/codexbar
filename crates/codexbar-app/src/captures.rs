@@ -158,6 +158,21 @@ fn captures() {
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage-x-subscription");
+    // #180: the Usage by day line, on a share headline (above, percent axis) and on the team account's credits
+    // headline (count axis), in both appearances.
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "usage-x-subscription-dark");
+    let request = crate::handoff::FocusRequest {
+        account: "codex-team".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "usage-codex-team-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "usage-codex-team");
 
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::History, cx)));
     cx.run_until_parked();

@@ -457,6 +457,49 @@ fn a_used_up_window_with_credits_shows_the_credits_with_no_pill(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+fn the_day_card_plots_the_week_as_a_line_or_says_there_is_no_history(cx: &mut TestAppContext) {
+    use crate::handoff::FocusRequest;
+    let settings = TempSettings::new("day-line", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    // The X Subscription demo account has no requests by hour, so its third card is Usage by day (#180): a line
+    // through seven marked points in the headline's unit.
+    let request = FocusRequest {
+        account: "x-subscription".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let plot = label(cx, handle, "focus-days-plot").unwrap();
+    assert!(plot.starts_with("Usage by day: "), "{plot}");
+    assert_eq!(plot.matches(", ").count(), 6, "seven days: {plot}");
+    assert!(plot.ends_with('%'), "a share headline reads in percent: {plot}");
+    assert!(label(cx, handle, "focus-days-empty").is_none());
+}
+
+#[gpui_kit::test]
+fn the_day_card_keeps_its_empty_state_until_history_exists(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("day-line-empty", "{}");
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![FakeProvider::new(Provider::Codex, "codex", Some(0.5))],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(shown_ids(cx, &dashboard), ["codex"]);
+    // One fetch is one stored point; the card needs two days before it plots.
+    assert_eq!(
+        label(cx, handle, "focus-days-empty").as_deref(),
+        Some("No daily usage yet; it appears once history is stored")
+    );
+    assert!(label(cx, handle, "focus-days-plot").is_none());
+}
+
+#[gpui_kit::test]
 fn the_share_ring_leads_the_second_card(cx: &mut TestAppContext) {
     use crate::handoff::FocusRequest;
     let settings = TempSettings::new("share-ring", "{}");
