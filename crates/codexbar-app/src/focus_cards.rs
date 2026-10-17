@@ -461,8 +461,9 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
             .join(", ")
     );
     // A smooth line through the week's points, one marker per day, in the headline's unit (#180). The axis is pinned
-    // to the unit's range so its ticks stay round; the pixel padding leaves the natural curve room to swing past the
-    // highest and lowest points, which it does around a sharp change, instead of being clipped at the edge.
+    // to the unit's range with no pixel padding, so its ticks read 0, 33, 67, 100%: the chart spaces ticks over the
+    // padded extent, and padding made them read -8% and 108%. The price is that a natural curve's swing past 0% or
+    // 100% around a sharp change, such as a reset, is clipped flat at the plot's edge for a few pixels.
     let chart = LineChart::new(days)
         .id("focus-days")
         .x(|(label, _)| label.clone())
@@ -471,7 +472,7 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .natural()
         .dot()
         .y_domain(low, high)
-        .y_padding(CURVE_ROOM, CURVE_ROOM)
+        .y_padding(0., 0.)
         .y_axis(true)
         .y_tick_count(ticks)
         .y_tick_format(move |value| kind.value(value))
@@ -488,10 +489,6 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .takeaway(day_takeaway(trend, kind, on_credits(account)))
         .caption(day_caption(counted.as_deref()))
 }
-
-/// Pixels kept clear above and below the day line's pinned range, so a natural curve's swing past a point stays in
-/// view (#180).
-const CURVE_ROOM: f32 = 16.;
 
 /// The day line's axis range: a share is pinned to 0–100%; a count, credits or money runs from zero (or below the
 /// week's lowest value, for a balance gone negative, #104) to 15% over its highest day, never flat.
