@@ -6,8 +6,8 @@ use codexbar_core::{AccountSnapshot, Metric, Severity, format};
 use gpui_kit::component::chart::{AreaChart, BarChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, Background, FontWeight, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
-    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, rems,
+    AnyElement, App, Background, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
 };
 
 use crate::history_view::ValueKind;
@@ -320,7 +320,6 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
     };
 
     // The number leads (#174): large in the ring, with the pace in the ring's opening and the reset in the caption.
-    let muted = cx.theme().muted_foreground;
     let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
     let projected = metric.projected_at_reset(now);
     let pace = projected.map(|projected| format!("on pace for {:.0}%", projected * 100.0));
@@ -328,48 +327,18 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         Some(pace) => format!("{}: {:.0}% used, {pace} by the reset", metric.label(), used * 100.0),
         None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
     };
+    // The ring paints its number and pace itself, on its own geometry, so it fits any card width and zoom (#176).
     let ring = div()
         .id("focus-share")
         .role(Role::Note)
         .test_support()
         .aria_label(spoken)
-        .relative()
         .size_full()
-        .child(crate::gauge::Gauge::new(used, projected, color, cx).render())
         .child(
-            v_flex()
-                .absolute()
-                .inset_0()
-                .items_center()
-                .justify_center()
-                .child(
-                    h_flex()
-                        .items_baseline()
-                        .gap_0p5()
-                        .child(
-                            div()
-                                .text_size(rems(2.75))
-                                .line_height(rems(3.))
-                                .font_weight(FontWeight::BOLD)
-                                .child(format!("{:.0}", used * 100.0)),
-                        )
-                        .child(div().text_xl().font_semibold().text_color(muted).child("%")),
-                )
-                .child(div().text_sm().text_color(muted).child("used")),
-        )
-        .when_some(pace, |this, pace| {
-            this.child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .text_center()
-                    .text_xs()
-                    .text_color(muted)
-                    .child(pace),
-            )
-        });
+            crate::gauge::Gauge::new(used, projected, format!("{:.0}", used * 100.0), color, cx)
+                .pace(pace)
+                .render(),
+        );
     let takeaway = pool_takeaway(1.0 - used);
     let title = if metric.label().to_lowercase().contains("window") {
         metric.label().to_owned()
