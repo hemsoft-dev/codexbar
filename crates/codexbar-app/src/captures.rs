@@ -213,9 +213,14 @@ fn captures() {
             (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
         })
     });
+    // The page is still scrolled to the X Subscription group; its OpenRouter entry scrolls to the OpenRouter group.
+    let openrouter = crate::catalog::PROVIDERS
+        .iter()
+        .position(|info| info.id == codexbar_store::settings::names::OPENROUTER)
+        .unwrap();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.within("settings-sidebar").click("0-1", cx)
+        window.within("settings-sidebar").click(format!("0-1-{openrouter}"), cx)
     })
     .unwrap();
     cx.run_until_parked();
