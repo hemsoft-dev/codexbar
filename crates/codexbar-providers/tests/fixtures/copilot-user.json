@@ -1,0 +1,11 @@
+{
+  "login": "HemSoft",
+  "copilot_plan": "individual_pro",
+  "quota_reset_date": "2026-11-01",
+  "quota_reset_date_utc": "2026-11-01T00:00:00.000Z",
+  "quota_snapshots": {
+    "chat": { "entitlement": 0, "remaining": 0, "unlimited": true, "overage_count": 0, "overage_permitted": false, "percent_remaining": 100.0, "quota_id": "chat" },
+    "completions": { "entitlement": 0, "remaining": 0, "unlimited": true, "overage_count": 0, "overage_permitted": false, "percent_remaining": 100.0, "quota_id": "completions" },
+    "premium_interactions": { "entitlement": 1500, "remaining": 216, "unlimited": false, "overage_count": 0, "overage_permitted": true, "percent_remaining": 14.4, "quota_id": "premium_interactions" }
+  }
+}

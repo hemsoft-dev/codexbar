@@ -1,0 +1,123 @@
+{
+  "regions": [
+    {
+      "id": "titlebar",
+      "kind": "chrome",
+      "grid": "A0:J0",
+      "note": "slim navy title strip with bottom hairline"
+    },
+    {
+      "id": "wordmark",
+      "kind": "text",
+      "grid": "A0:A0",
+      "note": "cyan app-icon logo and CodexBar wordmark, semibold"
+    },
+    {
+      "id": "view-tabs",
+      "kind": "control",
+      "grid": "B0:D0",
+      "note": "Usage (selected, cyan underline, raised panel), Spend, History tabs"
+    },
+    {
+      "id": "window-actions",
+      "kind": "control",
+      "grid": "I0:J0",
+      "note": "Updated 14s ago, refresh icon, divider, close X"
+    },
+    {
+      "id": "rail-search",
+      "kind": "control",
+      "grid": "A0:A1",
+      "note": "Ctrl+K Search accounts box with 1px border"
+    },
+    {
+      "id": "rail-nav",
+      "kind": "control",
+      "grid": "A1:B4",
+      "note": "rail views Usage (selected, cyan left edge, raised), Spend, History, Accounts, Settings with line icons"
+    },
+    {
+      "id": "table-header",
+      "kind": "text",
+      "grid": "B0:J0",
+      "note": "column headers Account, Limit, Used, %, Progress, Resets, 7-day trend with sort carets"
+    },
+    {
+      "id": "table-accounts",
+      "kind": "text",
+      "grid": "B1:D4",
+      "note": "status dots, account names and status pills Limit soon (red), At risk (amber), Watch (amber)"
+    },
+    {
+      "id": "table-metrics",
+      "kind": "text",
+      "grid": "E1:F4",
+      "note": "limit names and used values columns"
+    },
+    {
+      "id": "table-progress",
+      "kind": "control",
+      "grid": "G1:H4",
+      "note": "percent and thin rounded progress bars red, amber, cyan on dark track",
+      "codeDrawn": true
+    },
+    {
+      "id": "table-trend",
+      "kind": "control",
+      "grid": "I1:J4",
+      "note": "reset times and cyan area sparklines",
+      "codeDrawn": true
+    },
+    {
+      "id": "focus-heading",
+      "kind": "text",
+      "grid": "B5:E5",
+      "note": "ChatGPT \u00c2\u00b7 Codex (personal) heading with red dot and Limit soon pill"
+    },
+    {
+      "id": "card-area",
+      "kind": "chrome",
+      "grid": "B5:F8",
+      "note": "5-hour window usage card: dot legend, smooth two-series cyan area chart with gradient fill drawn from data",
+      "codeDrawn": true
+    },
+    {
+      "id": "card-donut",
+      "kind": "chrome",
+      "grid": "F5:H8",
+      "note": "Weekly window card: cyan donut with 47% used centre",
+      "codeDrawn": true
+    },
+    {
+      "id": "card-bars",
+      "kind": "chrome",
+      "grid": "H5:J8",
+      "note": "Requests by hour card: cyan rounded-top bar chart",
+      "codeDrawn": true
+    },
+    {
+      "id": "area-takeaway",
+      "kind": "text",
+      "grid": "B8:E8",
+      "note": "warning icon, takeaway Hits the 5-hour limit in ~25 min at this pace, caption Resets in 38m"
+    },
+    {
+      "id": "donut-takeaway",
+      "kind": "text",
+      "grid": "F8:H8",
+      "note": "Half the weekly pool left, caption Resets Thu 09:00"
+    },
+    {
+      "id": "bars-takeaway",
+      "kind": "text",
+      "grid": "H8:J8",
+      "note": "Peak at 14:00, caption 2,841 requests today"
+    },
+    {
+      "id": "footer",
+      "kind": "text",
+      "grid": "B9:E9",
+      "note": "8 accounts \u00c2\u00b7 2 need attention (amber) \u00c2\u00b7 next refresh 1:46"
+    }
+  ]
+}

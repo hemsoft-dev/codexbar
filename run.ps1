@@ -1,55 +1,70 @@
-# Launch CodexBar in the system tray.
+# Build CodexBar (Rust) and launch it in the system tray.
 $ErrorActionPreference = 'Stop'
 
-$projectDir = Join-Path $PSScriptRoot 'src\CodexBar.App'
-$project = Join-Path $projectDir 'CodexBar.App.csproj'
-$artifactsRoot = Join-Path $env:LOCALAPPDATA 'CodexBar\launcher-artifacts'
-$artifactsDir = Join-Path $artifactsRoot 'current'
+$installDir = Join-Path $env:LOCALAPPDATA 'CodexBar\bin'
+$installedExe = Join-Path $installDir 'codexbar.exe'
 $defaultGitHubConfigDir = Join-Path $env:USERPROFILE '.gh-work'
 
-# Kill any existing instance so the DLL isn't locked during build.
-$existingProcesses = @(Get-Process -Name 'CodexBar.App' -ErrorAction SilentlyContinue)
+# Build first, so a failed build leaves the running instance alone. Cargo reports where it wrote the executable, which
+# follows any configured target directory or target triple.
+Write-Information 'Building CodexBar...' -InformationAction Continue
+$builtExe = $null
+Push-Location $PSScriptRoot
+try {
+    cargo build --release --locked -p codexbar-app --message-format=json-render-diagnostics | ForEach-Object {
+        try { $message = $_ | ConvertFrom-Json } catch { return }
+        if ($message.reason -eq 'compiler-artifact' -and $message.target.name -eq 'codexbar' -and $message.executable) {
+            $builtExe = $message.executable
+        }
+    }
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    Pop-Location
+}
+if (-not $builtExe) {
+    throw 'Cargo did not report the codexbar executable.'
+}
+
+# Stop the running app, and the retired WPF app, so only one tray icon remains and the copy isn't locked. Demo
+# instances (--demo) and other users' instances are left running; each has its own single-instance lock.
+$currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$existingProcesses = @(
+    Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe' OR Name = 'CodexBar.App.exe'" |
+        Where-Object { $_.CommandLine -notmatch '(^|\s)--demo(\s|$)' } |
+        Where-Object { (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid).Sid -eq $currentUserSid } |
+        ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
+)
 if ($existingProcesses.Count -gt 0) {
     $existingProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
-    $existingProcesses | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    $existingProcesses | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
 }
 
-# Clear stale WPF temp projects so directory-based tooling stays unambiguous.
-Get-ChildItem -LiteralPath $projectDir -Filter '*_wpftmp.csproj' -File |
-    Remove-Item -Force
-
-New-Item -ItemType Directory -Path $artifactsRoot -Force | Out-Null
-
-# Clean up older timestamped launcher builds without failing the launch if Windows still has a handle open.
-Get-ChildItem -LiteralPath $artifactsRoot -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -ne $artifactsDir } |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -Skip 2 |
-    ForEach-Object {
-        Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+# Run a copy, so the next build can replace the built executable while CodexBar is running. Windows can hold the old
+# file for a moment after the process exits (or while it is scanned), so the copy is retried for a few seconds.
+New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+for ($attempt = 1; ; $attempt++) {
+    try {
+        Copy-Item -LiteralPath $builtExe -Destination $installedExe -Force -ErrorAction Stop
+        break
     }
-
-if (Test-Path -LiteralPath $artifactsDir) {
-    Remove-Item -LiteralPath $artifactsDir -Recurse -Force -ErrorAction SilentlyContinue
+    catch [System.IO.IOException] {
+        if ($attempt -ge 20) { throw }
+        Start-Sleep -Milliseconds 500
+    }
 }
 
-# Build so errors are visible in the terminal.
-Write-Information 'Building CodexBar...' -InformationAction Continue
-dotnet build $project --verbosity quiet --artifacts-path $artifactsDir /nr:false /p:UseSharedCompilation=false
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-# Launch detached; the app lives in the system tray, not the terminal.
-$exe = Get-ChildItem -LiteralPath $artifactsDir -Filter 'CodexBar.App.exe' -Recurse -File |
-    Select-Object -First 1 -ExpandProperty FullName
-if (-not $exe) {
-    throw "Could not find CodexBar.App.exe under $artifactsDir."
+# The WPF app's "Start with Windows" wrote a CodexBar value to the Run key. Keep that choice, pointed at this app.
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if (Get-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -ErrorAction SilentlyContinue) {
+    Set-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -Value "`"$installedExe`""
 }
 
-$processStartInfo = [System.Diagnostics.ProcessStartInfo]::new($exe)
+$processStartInfo = [System.Diagnostics.ProcessStartInfo]::new($installedExe)
 $processStartInfo.UseShellExecute = $false
-$processStartInfo.WorkingDirectory = Split-Path -Parent $exe
+$processStartInfo.WorkingDirectory = $installDir
 
-# Keep terminal-specific GitHub auth overrides from leaking into CodexBar refreshes.
+# Keep terminal-specific GitHub auth overrides from leaking into CodexBar's gh calls.
 @(
     'GH_TOKEN',
     'GITHUB_TOKEN',

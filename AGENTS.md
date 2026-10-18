@@ -17,13 +17,17 @@ workflows without an explicit maintainer request.
 
 ## Quality Gates
 
-All changes must pass these gates before merge:
+The Rust app (`crates/`) is the product; the C# / WPF app under `src/` is retired (2026-10-09). All changes must pass
+these gates before merge (the pre-commit hook and CI run them):
 
-1. **Build** — `dotnet build` with zero warnings
-2. **Format** — `dotnet format --verify-no-changes` clean
-3. **Tests** — `dotnet test` all green
-4. **Coverage** — line ≥ current threshold (ratchet up over time)
-5. **Security** — `dotnet list package --vulnerable` clean
+1. **Format** — `cargo fmt --all --check` clean
+2. **Lint** — `cargo clippy --workspace --all-targets --locked -- -D warnings` clean
+3. **Tests** — `cargo test --workspace --locked` all green
+4. **Security** — the CI security scan clean
+
+Changes that touch `src/` must also pass the C# gates: `dotnet build` with zero warnings,
+`dotnet format --verify-no-changes`, `dotnet test`, coverage at or above the current threshold, and
+`dotnet list package --vulnerable` clean.
 
 ## Conventions
 

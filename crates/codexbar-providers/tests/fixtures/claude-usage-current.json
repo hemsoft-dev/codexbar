@@ -1,0 +1,23 @@
+{
+  "five_hour": null,
+  "seven_day": null,
+  "seven_day_opus": null,
+  "seven_day_sonnet": null,
+  "limits": [
+    { "kind": "session", "percent": 31, "resets_at": "2026-10-07T15:00:00+00:00", "is_active": true },
+    { "kind": "weekly_all", "group": "weekly", "percent": 58, "resets_at": "2026-10-10T08:00:00+00:00", "is_active": true },
+    {
+      "kind": "weekly_scoped", "group": "weekly", "percent": 74, "resets_at": "2026-10-10T08:00:00.838164+00:00",
+      "scope": { "model": { "id": null, "display_name": "Fable" } }, "is_active": true
+    },
+    { "kind": "something_new", "percent": 99, "resets_at": "2026-10-10T08:00:00+00:00" }
+  ],
+  "spend": {
+    "used": { "amount_minor": 1234, "currency": "SGD", "exponent": 2 },
+    "limit": { "amount_minor": 6000, "currency": "SGD", "exponent": 2 },
+    "percent": 20,
+    "enabled": true,
+    "balance": { "amount_minor": 10000, "currency": "SGD", "exponent": 2 },
+    "auto_reload": null
+  }
+}

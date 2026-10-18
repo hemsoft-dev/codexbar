@@ -1,20 +1,41 @@
 #!/bin/sh
 # CodexBar pre-commit hook
-# Runs quality gates before allowing commits
+# Runs the Rust app's quality gates before allowing a commit. The retired C# / WPF app's gates (format, build,
+# tests) run only when the commit touches its files, so its desktop UI Automation tests don't gate Rust work.
 
 set -e
 
 echo "🔍 Running pre-commit checks..."
 
-# Run format check
-echo "  → Checking code formatting..."
-dotnet format --verify-no-changes
+# The gates read the working tree, so they only check what is committed when every Rust input in it is staged: a file
+# changed again after staging, or a companion file left unstaged or untracked, would be checked in a state the commit
+# doesn't contain. Stage or stash those first.
+unstaged=$( (git diff --name-only -- '*.rs' '*Cargo.toml' 'Cargo.lock' 'rust-toolchain.toml';
+    git ls-files --others --exclude-standard -- '*.rs' '*Cargo.toml') | sort -u)
+if [ -n "$unstaged" ]; then
+    echo "✗ Rust files with changes that aren't staged; stage or stash them so the checks see what is committed:"
+    echo "$unstaged" | sed 's/^/    /'
+    exit 1
+fi
 
-# Build first, then run tests
-echo "  → Building..."
-dotnet build --no-restore
+echo "  → Checking Rust formatting..."
+cargo fmt --all --check
 
-echo "  → Running tests..."
-dotnet test --no-build
+echo "  → Running Clippy..."
+cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
+
+echo "  → Running Rust tests..."
+cargo test --workspace --locked --quiet
+
+if git diff --cached --name-only | grep -Eq '^src/|\.(cs|csproj|sln|slnx|props|targets|xaml)$|(^|/)(\.editorconfig|stylecop\.json|global\.json|nuget\.config)$'; then
+    echo "  → C# files changed: checking formatting..."
+    dotnet format --verify-no-changes
+
+    echo "  → Building..."
+    dotnet build --no-restore
+
+    echo "  → Running tests..."
+    dotnet test --no-build
+fi
 
 echo "✅ All pre-commit checks passed!"

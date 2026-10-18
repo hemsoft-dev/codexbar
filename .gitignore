@@ -75,3 +75,11 @@ artifacts/security/
 # Local Copilot metrics snapshots
 data/copilot-metrics*.json
 data/top10*.json
+/target
+
+# Rust
+
+# Impeccable scratch (prompts, Codex logs); mocks, spec and surface briefs stay tracked
+.impeccable/gen/
+.impeccable/review/diff/
+.impeccable/questions/

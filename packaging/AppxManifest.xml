@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The CodexBar MSIX package (#93) and its Windows widget provider (#94). package.ps1 fills in the version, the
+     signing certificate's subject and the Windows App Runtime version the widgets need. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 desktop com rescap">
+
+  <Identity Name="HemSoft.CodexBar" Publisher="{{PUBLISHER}}" Version="{{VERSION}}" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>CodexBar</DisplayName>
+    <PublisherDisplayName>HemSoft</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>AI coding usage for Codex, Claude, Copilot, Cursor and more, in the notification area.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    <!-- The widget provider's WidgetManager comes from the Windows App Runtime framework. -->
+    <PackageDependency Name="{{RUNTIME_NAME}}" MinVersion="{{RUNTIME_VERSION}}" Publisher="{{RUNTIME_PUBLISHER}}" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="CodexBar" Executable="codexbar.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="CodexBar"
+        Description="AI coding usage in the notification area"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- Windows starts this process for the Widgets board; see crates/codexbar-app/src/widgets. -->
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="codexbar.exe" Arguments="-RegisterProcessAsComServer" DisplayName="CodexBar widgets">
+              <com:Class Id="6a9b22c1-0ca4-41f3-911a-fd4724d8e0b2" DisplayName="CodexBar widget provider" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension Name="com.microsoft.windows.widgets" DisplayName="CodexBar" Id="CodexBar" PublicFolder="Public">
+            <uap3:Properties>
+              <WidgetProvider>
+                <ProviderIcons>
+                  <Icon Path="Assets\WidgetIcon.png" />
+                </ProviderIcons>
+                <Activation>
+                  <CreateInstance ClassId="6a9b22c1-0ca4-41f3-911a-fd4724d8e0b2" />
+                </Activation>
+                <Definitions>
+                  <Definition Id="CodexBar_Usage"
+                    DisplayName="CodexBar usage"
+                    Description="Usage and limits of your AI coding accounts, from CodexBar."
+                    AllowMultiple="true"
+                    IsCustomizable="true">
+                    <Capabilities>
+                      <Capability>
+                        <Size Name="small" />
+                      </Capability>
+                      <Capability>
+                        <Size Name="medium" />
+                      </Capability>
+                      <Capability>
+                        <Size Name="large" />
+                      </Capability>
+                    </Capabilities>
+                    <ThemeResources>
+                      <Icons>
+                        <Icon Path="Assets\WidgetIcon.png" />
+                      </Icons>
+                      <Screenshots>
+                        <Screenshot Path="Assets\WidgetScreenshot.png" DisplayAltText="CodexBar usage bars" />
+                      </Screenshots>
+                      <DarkMode />
+                      <LightMode />
+                    </ThemeResources>
+                  </Definition>
+                </Definitions>
+              </WidgetProvider>
+            </uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+        <!-- Start with Windows; off until turned on in Settings (or moved over from run.ps1's Run entry). -->
+        <desktop:Extension Category="windows.startupTask">
+          <desktop:StartupTask TaskId="CodexBarStartup" Enabled="false" DisplayName="CodexBar" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

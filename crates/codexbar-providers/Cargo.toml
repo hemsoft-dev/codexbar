@@ -1,0 +1,26 @@
+[package]
+name = "codexbar-providers"
+description = "CodexBar provider adapters: credentials, HTTP fetch and response parsing"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+codexbar-core.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+getrandom = "0.3"
+form_urlencoded = "1"
+unicode-normalization = "0.1.25"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

@@ -4,7 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, feat/rust-gpui-dashboard]
+
+# A newer push to the same pull request cancels the superseded run; pushes to main always finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   security-scan:
@@ -37,6 +42,43 @@ jobs:
         with:
           sarif_file: artifacts/security/gitleaks.sarif
           category: gitleaks
+
+  rust:
+    # The same gates on every platform CodexBar runs on (#161).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # GPUI's X11 and Wayland backends link these; the tray icon and the keyring speak D-Bus in pure Rust.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev
+
+      # rust-toolchain.toml pins stable with rustfmt and clippy; rustup installs it on first use.
+      - name: Install Rust toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format Check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Includes the headless UI integration tests (in-process gpui test windows; no desktop needed).
+      - name: Test
+        run: cargo test --workspace --locked
 
   build:
     runs-on: windows-latest

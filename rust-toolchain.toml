@@ -1,0 +1,4 @@
+[toolchain]
+# The host's own stable toolchain: MSVC on Windows (the rustup default there), Apple or GNU elsewhere (#161).
+channel = "stable"
+components = ["rustfmt", "clippy"]
