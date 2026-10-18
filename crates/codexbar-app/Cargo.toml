@@ -27,6 +27,10 @@ gpui-kit.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 
+# Compiles the executable's icon resource (build.rs, #182) with rc.exe from the Windows SDK.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
 windows-core.workspace = true

@@ -222,52 +222,15 @@ fn menu_bar_icon() -> anyhow::Result<Icon> {
     Ok(Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)?)
 }
 
-/// A 32x32 gold-on-black mark: three usage bars of falling length, echoing the app icon.
+/// The 32x32 mark (`crate::mark`), as the notification area shows it.
 #[cfg(any(not(target_os = "macos"), test))]
 fn brand_icon() -> anyhow::Result<Icon> {
-    const SIZE: usize = 32;
-    const BLACK: [u8; 4] = [0x0A, 0x0A, 0x0A, 0xFF];
-    const GOLD: [u8; 4] = [0xD4, 0xAF, 0x37, 0xFF];
-    const TRACK: [u8; 4] = [0x2A, 0x2A, 0x2A, 0xFF];
-    let bars = [(6, 26), (14, 20), (22, 14)];
-
-    let mut rgba = vec![0u8; SIZE * SIZE * 4];
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let corner = rounded_corner_cut(x, y, SIZE, 6);
-            let mut pixel = if corner { [0, 0, 0, 0] } else { BLACK };
-            for (top, end) in bars {
-                if (top..top + 4).contains(&y) && (5..27).contains(&x) {
-                    pixel = if x < end { GOLD } else { TRACK };
-                }
-            }
-            rgba[(y * SIZE + x) * 4..][..4].copy_from_slice(&pixel);
-        }
-    }
-    Ok(Icon::from_rgba(rgba, SIZE as u32, SIZE as u32)?)
-}
-
-/// Whether (x, y) falls outside a rounded square of the given corner radius.
-#[cfg(any(not(target_os = "macos"), test))]
-fn rounded_corner_cut(x: usize, y: usize, size: usize, radius: usize) -> bool {
-    let (x, y, r) = (x as f32 + 0.5, y as f32 + 0.5, radius as f32);
-    let max = size as f32;
-    let cx = x.clamp(r, max - r);
-    let cy = y.clamp(r, max - r);
-    (x - cx).powi(2) + (y - cy).powi(2) > r * r
+    Ok(Icon::from_rgba(crate::mark::rgba(32), 32, 32)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rounded_corner_cut_corners_transparent_center_opaque() {
-        assert!(rounded_corner_cut(0, 0, 32, 6));
-        assert!(rounded_corner_cut(31, 31, 32, 6));
-        assert!(!rounded_corner_cut(16, 16, 32, 6));
-        assert!(!rounded_corner_cut(0, 16, 32, 6));
-    }
 
     #[test]
     fn brand_icon_builds() {

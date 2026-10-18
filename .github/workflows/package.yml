@@ -11,6 +11,9 @@ on:
       - package-macos.sh
       - package-linux.sh
       - crates/codexbar-app/examples/**
+      # The shared icon drawing and the build script that embeds it (#182) feed every package's icon.
+      - crates/codexbar-app/src/mark.rs
+      - crates/codexbar-app/build.rs
       - Cargo.toml
       - Cargo.lock
       - crates/*/Cargo.toml

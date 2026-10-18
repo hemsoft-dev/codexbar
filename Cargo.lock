@@ -1055,6 +1055,7 @@ dependencies = [
  "codexbar-core",
  "codexbar-providers",
  "codexbar-store",
+ "embed-resource",
  "gpui-kit",
  "gpui-pre-platform",
  "image",
