@@ -5,7 +5,7 @@ name: Package
 # Also builds the macOS app and DMG and the Linux .deb, installs the .deb, and keeps both as artifacts (#167).
 on:
   pull_request:
-    branches: [main, feat/rust-gpui-dashboard]
+    branches: [main]
     paths:
       - package.ps1
       - package-macos.sh

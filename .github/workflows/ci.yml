@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main, feat/rust-gpui-dashboard]
+    branches: [main]
 
 # A newer push to the same pull request cancels the superseded run; pushes to main always finish.
 concurrency:

@@ -108,7 +108,7 @@ or from **Settings › About**. Rollback, other PCs and uninstall are covered in
 - **Roll back**: check out an earlier commit (`git checkout <commit>`) and run
   `.\run.ps1` again. Settings stay compatible: a file from a newer CodexBar is
   opened read-only rather than overwritten. To update again afterwards, switch
-  back to the branch you build from (`git switch feat/rust-gpui-dashboard` today)
+  back to the branch you build from (`git switch main`)
   before `git pull`, since a checked-out commit has no branch to pull into.
 - **Start with Windows**: `run.ps1` keeps an existing `CodexBar` entry in
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pointed at the installed
