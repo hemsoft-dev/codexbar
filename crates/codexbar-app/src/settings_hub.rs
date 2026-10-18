@@ -84,11 +84,6 @@ impl SettingsHub {
         cx.refresh_windows();
     }
 
-    /// Whether the environment variable `name` holds a value. Never the value.
-    pub fn environment_supplies(&self, name: &str) -> bool {
-        (self.environment)(name).is_some_and(|value| !value.trim().is_empty())
-    }
-
     /// Asks the dashboard to fetch again, after a sign-in changed what a provider can read.
     pub fn request_refresh(cx: &mut App) {
         cx.update_global(|hub: &mut Self, _| hub.refresh_requests += 1);
@@ -226,31 +221,51 @@ impl SettingsHub {
     /// moved from the settings file before the provider had accounts (kept under the implicit account and belonging
     /// to the provider's first account, #74), else the provider's environment variable, else the legacy plaintext key
     /// in the settings file (the first account's only, as in the WPF app). A variable thus only stands in for an
-    /// account with no saved key, and saving one makes it the key in use.
+    /// account with no saved key, and saving one makes it the key in use. When the store can't be read, no inherited
+    /// key is guessed at: the variable still works, otherwise the failure is reported with the legacy key, if any.
     pub fn secret_for(&self, account: &AccountRecord) -> (Option<String>, SecretSource) {
         let info = catalog::info(&account.provider);
         let Some(spec) = &info.secret else {
             return (None, SecretSource::Missing);
         };
         let store = self.credentials.as_ref();
-        if let Ok(Some(saved)) = codexbar_store::credentials::read_long(store, &account.id)
-            && !saved.trim().is_empty()
-        {
-            return (Some(saved), SecretSource::CredentialManager);
-        }
         let first = self.settings.accounts_for(info.id).next().map(|a| a.id.as_str());
         let is_first = first.is_none_or(|id| id == account.id);
-        let implicit = codexbar_store::settings::legacy_id(info.id, "");
-        if is_first
-            && account.id != implicit
-            && let Ok(Some(secret)) = store.read(&implicit)
-            && !secret.trim().is_empty()
-        {
-            return (Some(secret), SecretSource::CredentialManager);
-        }
         let legacy = is_first.then(|| self.settings.api_key(info.id)).flatten();
-        let env = (self.environment)(spec.env);
+        let env = (self.environment)(spec.env)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let unavailable = |err| match env.clone() {
+            Some(value) => (Some(value), SecretSource::Environment(spec.env)),
+            None => (legacy.clone(), SecretSource::StoreUnavailable(err)),
+        };
+        match codexbar_store::credentials::read_long(store, &account.id) {
+            Ok(Some(saved)) if !saved.trim().is_empty() => return (Some(saved), SecretSource::CredentialManager),
+            Ok(_) => {}
+            Err(err) => return unavailable(err),
+        }
+        let implicit = codexbar_store::settings::legacy_id(info.id, "");
+        if is_first && account.id != implicit {
+            match store.read(&implicit) {
+                Ok(Some(secret)) if !secret.trim().is_empty() => {
+                    return (Some(secret), SecretSource::CredentialManager);
+                }
+                Ok(_) => {}
+                Err(err) => return unavailable(err),
+            }
+        }
         resolve_secret(Some((spec.env, env)), store, &account.id, legacy)
+    }
+
+    /// Where an account's secret would come from if the dialog saved nothing for it: an existing account's current
+    /// source; for a new account, what the provider's first account inherits (#74) or the environment variable.
+    /// Never a secret.
+    pub fn prospective_secret_source(&self, provider: &str, existing: Option<&AccountRecord>) -> SecretSource {
+        let info = catalog::info(provider);
+        let prospective = existing
+            .cloned()
+            .unwrap_or_else(|| AccountRecord::new(info.id, "", info.setup_method));
+        self.secret_for(&prospective).1
     }
 }
 

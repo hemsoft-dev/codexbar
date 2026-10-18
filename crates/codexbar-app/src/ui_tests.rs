@@ -2438,6 +2438,59 @@ fn the_key_dialog_says_when_the_environment_variable_is_in_use(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn the_key_dialog_says_when_an_inherited_key_is_in_use(cx: &mut TestAppContext) {
+    // A key moved from the file before any account existed belongs to the first account added (#74), even with the
+    // variable set, and the dialog says an existing key is in use rather than naming the variable.
+    let settings = TempSettings::new("keys-inherited-dialog", PLAINTEXT_KEY);
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
+    click(cx, handle, "add-OpenRouter");
+    let hint = label(cx, handle, "account-secret-hint").expect("the hint under the key field");
+    assert_eq!(
+        hint,
+        format!(
+            "An existing api key is used for this account; one entered here replaces it, in {}.",
+            codexbar_store::credentials::STORE_NAME
+        )
+    );
+    assert!(!hint.contains("sk-or"), "never a key");
+    press(cx, handle, "escape");
+}
+
+#[gpui_kit::test]
+fn a_failing_store_never_falls_back_to_an_inherited_key(cx: &mut TestAppContext) {
+    use codexbar_store::credentials::SecretSource;
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-store-failing", "{}");
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::failing());
+    cx.run_until_parked();
+    let work = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(work.clone())))
+        .unwrap();
+    // Without the variable, the failure is reported; nothing is guessed.
+    cx.update(|cx| SettingsHub::use_environment(cx, |_| None));
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&work));
+    assert!(secret.is_none());
+    assert!(matches!(source, SecretSource::StoreUnavailable(_)), "{source:?}");
+    // With it, the variable still works while the store is down.
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&work));
+    assert!(secret.as_deref() == Some("sk-or-env"));
+    assert!(
+        matches!(source, SecretSource::Environment("OPENROUTER_API_KEY")),
+        "{source:?}"
+    );
+}
+
+#[gpui_kit::test]
 fn the_key_dialog_says_the_variable_only_fills_in_when_nothing_is_saved(cx: &mut TestAppContext) {
     let settings = TempSettings::new("keys-no-env-dialog", "{}");
     let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);

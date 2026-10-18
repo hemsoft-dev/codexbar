@@ -26,6 +26,7 @@ use crate::catalog::{self, PROVIDERS, SecretSpec};
 use crate::notifications::{Notifications, NotifierStatus};
 use crate::prefs_hub::PrefsHub;
 use crate::settings_hub::{SettingsHub, describe_source};
+use codexbar_store::credentials::SecretSource;
 
 /// Refresh choices required by #91, in minutes; 0 is Off.
 const REFRESH_CHOICES: [u64; 6] = [0, 1, 5, 15, 30, 60];
@@ -542,7 +543,8 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                         .child({
                             // Where the secret goes and what the variable does, also for screen readers; never
                             // the variable's value.
-                            let hint = secret_hint(spec, SettingsHub::global(cx).environment_supplies(spec.env));
+                            let hub = SettingsHub::global(cx);
+                            let hint = secret_hint(spec, &hub.prospective_secret_source(info.id, existing.as_ref()));
                             div()
                                 .id("account-secret-hint")
                                 .role(Role::Note)
@@ -687,20 +689,22 @@ fn x_subscription_refusal(
 
 /// Under the secret field: where a saved secret goes, and what the environment variable does. When the variable is set
 /// right now, the user is told that it is in use until a secret is saved here (#186). Never the value.
-fn secret_hint(spec: &SecretSpec, env_set: bool) -> String {
+fn secret_hint(spec: &SecretSpec, source: &SecretSource) -> String {
     let store = codexbar_store::credentials::STORE_NAME;
-    if env_set {
-        format!(
-            "{} is set in the environment and is used while this account has no saved {}. Saving one here, in \
-             {store}, replaces it for this account.",
-            spec.env,
-            spec.label.to_lowercase()
-        )
-    } else {
-        format!(
+    let label = spec.label.to_lowercase();
+    match source {
+        SecretSource::Environment(name) => format!(
+            "{name} is set in the environment and is used while this account has no saved {label}. Saving one here, \
+             in {store}, replaces it for this account."
+        ),
+        // Its own saved key, or the key the provider's first account inherits (#74).
+        SecretSource::CredentialManager | SecretSource::SettingsFile => {
+            format!("An existing {label} is used for this account; one entered here replaces it, in {store}.")
+        }
+        SecretSource::Missing | SecretSource::StoreUnavailable(_) => format!(
             "Saved in {store}. The {} environment variable is used only when none is saved.",
             spec.env
-        )
+        ),
     }
 }
 
