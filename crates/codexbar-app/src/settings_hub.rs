@@ -2,9 +2,7 @@
 
 use std::sync::Arc;
 
-use codexbar_store::credentials::{
-    CredentialStore, STORE_NAME, STORE_SHORT_NAME, SecretSource, SystemCredentialStore, resolve_secret,
-};
+use codexbar_store::credentials::{CredentialStore, STORE_NAME, STORE_SHORT_NAME, SecretSource, SystemCredentialStore};
 use codexbar_store::settings::{AccountRecord, Settings, SettingsError, legacy_id};
 use gpui_kit::{App, BorrowAppContext as _, Global, SharedString};
 
@@ -22,7 +20,12 @@ pub struct SettingsHub {
     revision: u64,
     /// Bumped when something outside the settings file changed what providers return (a sign-in, #78).
     refresh_requests: u64,
+    /// Reads an environment variable; tests supply their own values so they never depend on the host's (#186).
+    environment: EnvLookup,
 }
+
+/// Reads one environment variable by name.
+type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 impl Global for SettingsHub {}
 
@@ -67,7 +70,16 @@ impl SettingsHub {
             error,
             revision: 0,
             refresh_requests: 0,
+            environment: Arc::new(|name| std::env::var(name).ok()),
         });
+    }
+
+    /// Makes the hub read environment variables through `lookup` instead of the process environment, so a test can
+    /// set a provider's variable without touching the host's (which may hold a real key).
+    #[cfg(test)]
+    pub fn use_environment(cx: &mut App, lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static) {
+        cx.update_global(|hub: &mut Self, _| hub.environment = Arc::new(lookup));
+        cx.refresh_windows();
     }
 
     /// Asks the dashboard to fetch again, after a sign-in changed what a provider can read.
@@ -175,8 +187,6 @@ impl SettingsHub {
         }
     }
 
-    /// The secret an account will use and where it comes from. The legacy plaintext key belongs to the provider's
-    /// first account only, as in the WPF app.
     /// An account's browser sign-in tokens (#77), from Credential Manager. `Ok(None)` means signed out; an error
     /// means Credential Manager couldn't be read, which is not the same and mustn't prompt a new sign-in.
     #[allow(
@@ -205,33 +215,63 @@ impl SettingsHub {
         codexbar_store::credentials::write_long(self.credentials.as_ref(), account_id, &tokens.to_secret())
     }
 
+    /// The secret an account will use and where it comes from (#186): the key saved for the account, else a key
+    /// moved from the settings file before the provider had accounts (kept under the implicit account and belonging
+    /// to the provider's first account, #74), else the provider's environment variable, else the legacy plaintext key
+    /// in the settings file (the first account's only, as in the WPF app). A variable thus only stands in for an
+    /// account with no saved key, and saving one makes it the key in use. When the store can't be read, no inherited
+    /// key is guessed at: the variable still works, otherwise the failure is reported with the legacy key, if any.
     pub fn secret_for(&self, account: &AccountRecord) -> (Option<String>, SecretSource) {
         let info = catalog::info(&account.provider);
         let Some(spec) = &info.secret else {
             return (None, SecretSource::Missing);
         };
-        if spec.saved_first
-            && let Ok(Some(saved)) = codexbar_store::credentials::read_long(self.credentials.as_ref(), &account.id)
-            && !saved.trim().is_empty()
-        {
-            return (Some(saved), SecretSource::CredentialManager);
-        }
+        let store = self.credentials.as_ref();
         let first = self.settings.accounts_for(info.id).next().map(|a| a.id.as_str());
         let is_first = first.is_none_or(|id| id == account.id);
         let legacy = is_first.then(|| self.settings.api_key(info.id)).flatten();
-        let resolved = resolve_secret(Some(spec.env), self.credentials.as_ref(), &account.id, legacy);
-        // A key moved from the file before the provider had accounts (#74) is kept under its implicit account; the
-        // provider's first account goes on using it until a key is saved for that account.
-        let implicit = codexbar_store::settings::legacy_id(info.id, "");
-        if matches!(resolved.1, SecretSource::Missing)
-            && is_first
-            && account.id != implicit
-            && let Ok(Some(secret)) = self.credentials.read(&implicit)
-            && !secret.trim().is_empty()
-        {
-            return (Some(secret), SecretSource::CredentialManager);
+        let env = (self.environment)(spec.env)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let unavailable = |err| match env.clone() {
+            Some(value) => (Some(value), SecretSource::Environment(spec.env)),
+            None => (legacy.clone(), SecretSource::StoreUnavailable(err)),
+        };
+        match codexbar_store::credentials::read_long(store, &account.id) {
+            Ok(Some(saved)) if !saved.trim().is_empty() => return (Some(saved), SecretSource::CredentialManager),
+            Ok(_) => {}
+            Err(err) => return unavailable(err),
         }
-        resolved
+        let implicit = codexbar_store::settings::legacy_id(info.id, "");
+        if is_first && account.id != implicit {
+            match store.read(&implicit) {
+                Ok(Some(secret)) if !secret.trim().is_empty() => {
+                    return (Some(secret), SecretSource::CredentialManager);
+                }
+                Ok(_) => {}
+                Err(err) => return unavailable(err),
+            }
+        }
+        // Nothing saved for the account (an incomplete chunked secret counts as nothing): the variable, else the
+        // legacy plaintext key still in the settings file.
+        if let Some(value) = env {
+            return (Some(value), SecretSource::Environment(spec.env));
+        }
+        match legacy {
+            Some(secret) => (Some(secret), SecretSource::SettingsFile),
+            None => (None, SecretSource::Missing),
+        }
+    }
+
+    /// Where an account's secret would come from if the dialog saved nothing for it: an existing account's current
+    /// source; for a new account, what the provider's first account inherits (#74) or the environment variable.
+    /// Never a secret.
+    pub fn prospective_secret_source(&self, provider: &str, existing: Option<&AccountRecord>) -> SecretSource {
+        let info = catalog::info(provider);
+        let prospective = existing
+            .cloned()
+            .unwrap_or_else(|| AccountRecord::new(info.id, "", info.setup_method));
+        self.secret_for(&prospective).1
     }
 }
 

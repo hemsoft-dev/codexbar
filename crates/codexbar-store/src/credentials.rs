@@ -395,32 +395,6 @@ fn part_id(account_id: &str, generation: u64, ix: usize) -> String {
     format!("{account_id}#part{generation}.{ix}")
 }
 
-/// Resolves a secret: environment variable, then Credential Manager, then the legacy settings file.
-pub fn resolve_secret(
-    env: Option<&'static str>,
-    store: &dyn CredentialStore,
-    account_id: &str,
-    legacy: Option<String>,
-) -> (Option<String>, SecretSource) {
-    if let Some(name) = env
-        && let Some(value) = std::env::var(name)
-            .ok()
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty())
-    {
-        return (Some(value), SecretSource::Environment(name));
-    }
-    match store.read(account_id) {
-        Ok(Some(secret)) if !secret.trim().is_empty() => (Some(secret), SecretSource::CredentialManager),
-        Ok(_) => match legacy {
-            Some(secret) => (Some(secret), SecretSource::SettingsFile),
-            None => (None, SecretSource::Missing),
-        },
-        // A failed store still lets the legacy key work, but the status shows the failure.
-        Err(err) => (legacy, SecretSource::StoreUnavailable(err)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,35 +458,6 @@ mod tests {
         store.delete("a").unwrap();
         store.delete("a").unwrap();
         assert_eq!(store.read("a").unwrap(), None);
-    }
-
-    #[test]
-    fn resolve_secret_prefers_store_over_settings_file() {
-        let store = MemoryCredentialStore::default();
-        store.write("acct", "from-store").unwrap();
-        let (secret, source) = resolve_secret(None, &store, "acct", Some("from-file".into()));
-        assert_eq!(
-            (secret.as_deref(), source),
-            (Some("from-store"), SecretSource::CredentialManager)
-        );
-    }
-
-    #[test]
-    fn resolve_secret_falls_back_to_settings_file_then_missing() {
-        let store = MemoryCredentialStore::default();
-        let (secret, source) = resolve_secret(None, &store, "acct", Some("from-file".into()));
-        assert_eq!(
-            (secret.as_deref(), source),
-            (Some("from-file"), SecretSource::SettingsFile)
-        );
-        assert_eq!(resolve_secret(None, &store, "acct", None).1, SecretSource::Missing);
-    }
-
-    #[test]
-    fn resolve_secret_store_failure_is_distinct_from_missing() {
-        let (secret, source) = resolve_secret(None, &MemoryCredentialStore::failing(), "acct", Some("file".into()));
-        assert_eq!(secret.as_deref(), Some("file"));
-        assert!(matches!(source, SecretSource::StoreUnavailable(_)));
     }
 
     #[cfg(not(windows))]

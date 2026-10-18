@@ -6,12 +6,9 @@ use codexbar_store::settings::{AuthMethod, names};
 pub struct SecretSpec {
     /// Field label, e.g. "API key".
     pub label: &'static str,
-    /// Environment variable that overrides the stored secret.
+    /// Environment variable that stands in for an account with no saved secret. A saved secret always wins (#186),
+    /// as each Greptile key belongs to one organization (#103) and a key typed into Settings must be the one used.
     pub env: &'static str,
-    /// True when an account's saved secret wins over the environment variable, which then only stands in for an
-    /// account with none saved: each Greptile key belongs to one organization (#103), so one variable must not answer
-    /// for several accounts.
-    pub saved_first: bool,
 }
 
 pub struct ProviderInfo {
@@ -77,7 +74,6 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         secret: Some(SecretSpec {
             label: "API key",
             env: "OPENROUTER_API_KEY",
-            saved_first: false,
         }),
         default_method: AuthMethod::ApiKey,
         setup_method: AuthMethod::ApiKey,
@@ -92,7 +88,6 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         secret: Some(SecretSpec {
             label: "Dashboard auth cookie",
             env: "OPENCODE_GO_AUTH_COOKIE",
-            saved_first: false,
         }),
         default_method: AuthMethod::BrowserSession,
         setup_method: AuthMethod::OAuth,
@@ -106,7 +101,6 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         secret: Some(SecretSpec {
             label: "Dashboard auth cookie",
             env: "OPENCODE_ZEN_AUTH_COOKIE",
-            saved_first: false,
         }),
         default_method: AuthMethod::BrowserSession,
         setup_method: AuthMethod::BrowserSession,
@@ -119,7 +113,6 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         secret: Some(SecretSpec {
             label: "API key",
             env: "MOONSHOT_API_KEY",
-            saved_first: false,
         }),
         default_method: AuthMethod::ApiKey,
         setup_method: AuthMethod::ApiKey,
@@ -133,7 +126,6 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         secret: Some(SecretSpec {
             label: "Organization API key",
             env: "GREPTILE_API_KEY",
-            saved_first: true,
         }),
         default_method: AuthMethod::ApiKey,
         setup_method: AuthMethod::ApiKey,

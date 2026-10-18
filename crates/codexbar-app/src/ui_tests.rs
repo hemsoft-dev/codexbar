@@ -2358,13 +2358,176 @@ fn an_account_added_by_keyboard_is_saved_with_its_key(cx: &mut TestAppContext) {
         handle,
         Box::leak(format!("account-detail-{}", record.id).into_boxed_str()),
     );
-    // An OPENROUTER_API_KEY in the environment wins over the saved key, and the detail says so. Never the key.
-    let expected = if std::env::var_os("OPENROUTER_API_KEY").is_some() {
-        "API key · From the OPENROUTER_API_KEY environment variable"
-    } else {
-        &format!("API key · Saved in {}", codexbar_store::credentials::STORE_NAME)
-    };
-    assert_eq!(detail.as_deref(), Some(expected));
+    // The saved key wins even with OPENROUTER_API_KEY set (#186), and the detail says so. Never the key.
+    assert_eq!(
+        detail.as_deref(),
+        Some(format!("API key · Saved in {}", codexbar_store::credentials::STORE_NAME).as_str())
+    );
+}
+
+#[gpui_kit::test]
+fn a_saved_key_wins_over_the_environment_variable_which_fills_in_when_none_is_saved(cx: &mut TestAppContext) {
+    use codexbar_store::credentials::SecretSource;
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-env", "{}");
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
+    let work = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    let side = AccountRecord::new(names::OPENROUTER, "Side", AuthMethod::ApiKey);
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.upsert(work.clone())?;
+            settings.upsert(side.clone())
+        })
+    })
+    .unwrap();
+    cx.update(|cx| SettingsHub::global(cx).credentials().write(&work.id, "sk-or-saved"))
+        .unwrap();
+    let resolve =
+        |cx: &mut TestAppContext, record: &AccountRecord| cx.update(|cx| SettingsHub::global(cx).secret_for(record));
+    // Compared without printing: a failure must never put a secret in the test output.
+    let (secret, source) = resolve(cx, &work);
+    assert!(secret.as_deref() == Some("sk-or-saved"), "the saved key is used");
+    assert!(matches!(source, SecretSource::CredentialManager), "{source:?}");
+    let (secret, source) = resolve(cx, &side);
+    assert!(
+        secret.as_deref() == Some("sk-or-env"),
+        "the variable stands in for the account with no key"
+    );
+    assert!(
+        matches!(source, SecretSource::Environment("OPENROUTER_API_KEY")),
+        "{source:?}"
+    );
+    // Forgetting the saved key returns the account to the variable.
+    cx.update(|cx| SettingsHub::global(cx).credentials().delete(&work.id))
+        .unwrap();
+    let (secret, source) = resolve(cx, &work);
+    assert!(secret.as_deref() == Some("sk-or-env"));
+    assert!(matches!(source, SecretSource::Environment(_)), "{source:?}");
+    // Without the variable, the account with no key has nothing.
+    cx.update(|cx| SettingsHub::use_environment(cx, |_| None));
+    assert!(matches!(resolve(cx, &side).1, SecretSource::Missing));
+}
+
+#[gpui_kit::test]
+fn the_key_dialog_says_when_the_environment_variable_is_in_use(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("keys-env-dialog", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
+    click(cx, handle, "add-OpenRouter");
+    let hint = label(cx, handle, "account-secret-hint").expect("the hint under the key field");
+    assert_eq!(
+        hint,
+        format!(
+            "OPENROUTER_API_KEY is set in the environment and is used while this account has no saved api key. \
+             Saving one here, in {}, replaces it for this account.",
+            codexbar_store::credentials::STORE_NAME
+        )
+    );
+    assert!(!hint.contains("sk-or-env"), "never the value");
+    press(cx, handle, "escape");
+}
+
+#[gpui_kit::test]
+fn the_key_dialog_says_when_an_inherited_key_is_in_use(cx: &mut TestAppContext) {
+    // A key moved from the file before any account existed belongs to the first account added (#74), even with the
+    // variable set, and the dialog says an existing key is in use rather than naming the variable.
+    let settings = TempSettings::new("keys-inherited-dialog", PLAINTEXT_KEY);
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
+    click(cx, handle, "add-OpenRouter");
+    let hint = label(cx, handle, "account-secret-hint").expect("the hint under the key field");
+    assert_eq!(
+        hint,
+        format!(
+            "An existing api key is used for this account; one entered here replaces it, in {}.",
+            codexbar_store::credentials::STORE_NAME
+        )
+    );
+    assert!(!hint.contains("sk-or"), "never a key");
+    press(cx, handle, "escape");
+}
+
+#[gpui_kit::test]
+fn a_failing_store_never_falls_back_to_an_inherited_key(cx: &mut TestAppContext) {
+    use codexbar_store::credentials::SecretSource;
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-store-failing", "{}");
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::failing());
+    cx.run_until_parked();
+    let work = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(work.clone())))
+        .unwrap();
+    // Without the variable, the failure is reported; nothing is guessed.
+    cx.update(|cx| SettingsHub::use_environment(cx, |_| None));
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&work));
+    assert!(secret.is_none());
+    assert!(matches!(source, SecretSource::StoreUnavailable(_)), "{source:?}");
+    // With it, the variable still works while the store is down.
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&work));
+    assert!(secret.as_deref() == Some("sk-or-env"));
+    assert!(
+        matches!(source, SecretSource::Environment("OPENROUTER_API_KEY")),
+        "{source:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn an_incomplete_chunked_secret_counts_as_none_not_as_its_header(cx: &mut TestAppContext) {
+    use codexbar_store::credentials::SecretSource;
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-chunk-header", "{}");
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let go = AccountRecord::new(names::OPENCODE_GO, "Team", AuthMethod::BrowserSession);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(go.clone())))
+        .unwrap();
+    // A long cookie's header whose part entries are gone: not a secret, so nothing is sent or shown as saved.
+    cx.update(|cx| {
+        SettingsHub::global(cx)
+            .credentials()
+            .write(&go.id, "codexbar-parts:1:2")
+    })
+    .unwrap();
+    cx.update(|cx| SettingsHub::use_environment(cx, |_| None));
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&go));
+    assert!(secret.is_none(), "the header is never used as the cookie");
+    assert!(matches!(source, SecretSource::Missing), "{source:?}");
+}
+
+#[gpui_kit::test]
+fn the_key_dialog_says_the_variable_only_fills_in_when_nothing_is_saved(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("keys-no-env-dialog", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    cx.update(|cx| SettingsHub::use_environment(cx, |_| None));
+    click(cx, handle, "add-OpenRouter");
+    let hint = label(cx, handle, "account-secret-hint").expect("the hint under the key field");
+    assert_eq!(
+        hint,
+        format!(
+            "Saved in {}. The OPENROUTER_API_KEY environment variable is used only when none is saved.",
+            codexbar_store::credentials::STORE_NAME
+        )
+    );
+    press(cx, handle, "escape");
 }
 
 #[gpui_kit::test]
@@ -2713,10 +2876,12 @@ fn a_moved_key_still_works_after_the_first_account_is_added(cx: &mut TestAppCont
     let record = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
     cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(record.clone())))
         .unwrap();
-    // An OPENROUTER_API_KEY in the environment would win over every stored key; this case needs it unset.
-    if std::env::var_os("OPENROUTER_API_KEY").is_some() {
-        return;
-    }
+    // The moved key is a saved key, so it beats OPENROUTER_API_KEY too (#186).
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
     let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&record));
     // Compared without printing: a failure must never put a secret in the test output.
     assert!(secret.as_deref() == Some("sk-or-plaintext"), "the moved key is found");

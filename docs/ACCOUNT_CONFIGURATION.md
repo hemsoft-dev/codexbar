@@ -38,7 +38,7 @@ the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.m
 | Claude | OAuth or Automatic (`~/.claude`) | Browser session: its own Claude Code folder, through a Claude Code window |
 | Copilot | Automatic or Command line (the GitHub CLI's accounts; a username limits it to one) | OAuth: the GitHub CLI's device sign-in, token kept by CodexBar |
 | Cursor | Automatic (the Cursor app) | OAuth: its own folder, through the Cursor CLI |
-| OpenRouter, Moonshot, Greptile | API key (or the environment variable) | |
+| OpenRouter, Moonshot, Greptile | API key (the environment variable only while none is saved) | |
 | GitHub Billing | | OAuth: the GitHub CLI's device sign-in, token kept by CodexBar, apart from Copilot |
 | Grok | Automatic (the Grok CLI's own `~/.grok` or `GROK_HOME`) | OAuth: its own Grok CLI home, through `grok login` (experimental) |
 | X Subscription | Automatic (the Grok CLI's own sign-in and the Cursor app's) | (experimental; see [X_SUBSCRIPTION.md](X_SUBSCRIPTION.md)) |
