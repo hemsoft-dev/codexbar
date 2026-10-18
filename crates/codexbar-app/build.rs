@@ -8,7 +8,9 @@ mod mark;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/mark.rs");
-    println!("cargo:rerun-if-env-changed=RC");
+    for name in rc_override_names() {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         embed_windows_icon();
     }
@@ -25,34 +27,51 @@ fn embed_windows_icon() {
     let script = out.join("codexbar.rc");
     let quoted = ico.display().to_string().replace('\\', "\\\\");
     std::fs::write(&script, format!("1 ICON \"{quoted}\"\n")).expect("write the resource script");
-    // embed-resource's own search for rc.exe depends on registry keys that are stale on some machines (#182), so the
-    // compiler is located here and handed over through the RC variable it honours.
-    let rc = find_rc().unwrap_or_else(|searched| {
-        panic!(
-            "rc.exe (the resource compiler from the Windows SDK, installed with the Visual Studio Build Tools' \
-             \"Desktop development with C++\" workload) was not found. Set RC to its path. Looked for: {searched}"
-        )
-    });
-    // SAFETY: the build script is single-threaded here; nothing reads the environment concurrently.
-    unsafe { std::env::set_var("RC", &rc) };
+    // embed-resource's own search for rc.exe depends on registry keys that are stale on some machines (#184), so the
+    // usual places are tried here first and the find is handed over through the RC variable it honours. When they
+    // hold nothing, embed-resource still gets to follow the SDK's registration and Visual Studio's discovery, which
+    // cover SDKs installed elsewhere.
+    let (rc, searched) = match find_rc() {
+        Ok(rc) => {
+            // SAFETY: the build script is single-threaded here; nothing reads the environment concurrently.
+            unsafe { std::env::set_var("RC", &rc) };
+            (rc.display().to_string(), None)
+        }
+        Err(searched) => ("embed-resource's own search".to_owned(), Some(searched)),
+    };
     // A build whose resource compiler fails stops here rather than shipping without the icon.
     embed_resource::compile(&script, embed_resource::NONE)
         .manifest_required()
-        .unwrap_or_else(|err| panic!("compile the Windows icon resource with {}: {err}", rc.display()));
+        .unwrap_or_else(|err| {
+            let looked = searched
+                .map(|searched| format!(" Looked for: {searched}."))
+                .unwrap_or_default();
+            panic!(
+                "compile the Windows icon resource with {rc}: {err}. rc.exe comes with the Windows SDK (the Visual \
+                 Studio Build Tools' \"Desktop development with C++\" workload); set RC to its path.{looked}"
+            )
+        });
 }
 
-/// The resource compiler for this host: an `RC` override, else the newest Windows 10/11 SDK under either Program Files,
-/// else one on PATH. `Err` lists where it looked.
+/// The environment variables that name a resource compiler, in order of precedence: `RC_<host>`, the same with
+/// underscores, then `RC`.
+fn rc_override_names() -> [String; 3] {
+    let host = std::env::var("HOST").expect("cargo sets HOST");
+    [
+        format!("RC_{host}"),
+        format!("RC_{}", host.replace('-', "_")),
+        "RC".to_owned(),
+    ]
+}
+
+/// The resource compiler for this host from the usual places: an `RC` override, else the newest Windows 10/11 SDK under
+/// either Program Files, else one on PATH. `Err` lists where it looked.
 #[cfg(windows)]
 fn find_rc() -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
 
     let host = std::env::var("HOST").expect("cargo sets HOST");
-    for name in [
-        format!("RC_{host}"),
-        format!("RC_{}", host.replace('-', "_")),
-        "RC".to_owned(),
-    ] {
+    for name in rc_override_names() {
         if let Some(rc) = std::env::var_os(&name).map(PathBuf::from) {
             if rc.is_file() {
                 return Ok(rc);
