@@ -22,6 +22,7 @@ mod handoff;
 mod history_view;
 mod locale;
 mod managed;
+mod mark;
 mod notifications;
 mod opencode_sign_in;
 mod package;

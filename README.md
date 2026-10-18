@@ -37,7 +37,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 
 - Windows 10 or later
 - [Rust](https://www.rust-lang.org/tools/install) (the MSVC toolchain; `rust-toolchain.toml` pins stable)
-- Visual Studio Build Tools with the "Desktop development with C++" workload
+- Visual Studio Build Tools with the "Desktop development with C++" workload (its Windows SDK supplies `rc.exe`, which compiles the executable's icon)
 - Node.js 20 or later (required for `npm install` / pre-commit hook setup)
 
 CodexBar also runs on macOS and Linux ([#161](https://github.com/hemsoft-dev/codexbar/issues/161)), built from
