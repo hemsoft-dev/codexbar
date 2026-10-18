@@ -27,17 +27,20 @@ fn embed_windows_icon() {
     let script = out.join("codexbar.rc");
     let quoted = ico.display().to_string().replace('\\', "\\\\");
     std::fs::write(&script, format!("1 ICON \"{quoted}\"\n")).expect("write the resource script");
-    // embed-resource's own search for rc.exe depends on registry keys that are stale on some machines (#184), so the
-    // usual places are tried here first and the find is handed over through the RC variable it honours. When they
-    // hold nothing, embed-resource still gets to follow the SDK's registration and Visual Studio's discovery, which
-    // cover SDKs installed elsewhere.
-    let (rc, searched) = match find_rc() {
-        Ok(rc) => {
+    // embed-resource's own search for rc.exe depends on registry keys that are stale on some machines (#184), so for
+    // an MSVC target the usual places are tried here first and the find is handed over through the RC variable it
+    // honours. When they hold nothing, embed-resource still gets to follow the SDK's registration and Visual Studio's
+    // discovery, which cover SDKs installed elsewhere. A GNU target compiles its resources with windres, which
+    // embed-resource finds itself.
+    let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    let (rc, searched) = match msvc.then(find_rc) {
+        Some(Ok(rc)) => {
             // SAFETY: the build script is single-threaded here; nothing reads the environment concurrently.
             unsafe { std::env::set_var("RC", &rc) };
             (rc.display().to_string(), None)
         }
-        Err(searched) => ("embed-resource's own search".to_owned(), Some(searched)),
+        Some(Err(searched)) => ("embed-resource's own search".to_owned(), Some(searched)),
+        None => ("embed-resource's own search".to_owned(), None),
     };
     // A build whose resource compiler fails stops here rather than shipping without the icon.
     embed_resource::compile(&script, embed_resource::NONE)
@@ -53,19 +56,19 @@ fn embed_windows_icon() {
         });
 }
 
-/// The environment variables that name a resource compiler, in order of precedence: `RC_<host>`, the same with
-/// underscores, then `RC`.
+/// The environment variables that name a resource compiler, as embed-resource defines them and in its order of
+/// precedence: `RC_<target>`, the same with underscores, then `RC`.
 fn rc_override_names() -> [String; 3] {
-    let host = std::env::var("HOST").expect("cargo sets HOST");
+    let target = std::env::var("TARGET").expect("cargo sets TARGET");
     [
-        format!("RC_{host}"),
-        format!("RC_{}", host.replace('-', "_")),
+        format!("RC_{target}"),
+        format!("RC_{}", target.replace('-', "_")),
         "RC".to_owned(),
     ]
 }
 
-/// The resource compiler for this host from the usual places: an `RC` override, else the newest Windows 10/11 SDK under
-/// either Program Files, else one on PATH. `Err` lists where it looked.
+/// The MSVC resource compiler from the usual places: an `RC` override, else the newest Windows 10/11 SDK under either
+/// Program Files (the host's architecture, since the host runs it), else one on PATH. `Err` lists where it looked.
 #[cfg(windows)]
 fn find_rc() -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
