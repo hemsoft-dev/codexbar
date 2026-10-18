@@ -544,7 +544,12 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                             // Where the secret goes and what the variable does, also for screen readers; never
                             // the variable's value.
                             let hub = SettingsHub::global(cx);
-                            let hint = secret_hint(spec, &hub.prospective_secret_source(info.id, existing.as_ref()));
+                            // An account leaving OAuth for a cookie keeps nothing: its sign-in is replaced, not a
+                            // cookie that stays, so the hint speaks as for a new account.
+                            let kept = existing
+                                .as_ref()
+                                .filter(|account| oauth || account.method != AuthMethod::OAuth);
+                            let hint = secret_hint(spec, &hub.prospective_secret_source(info.id, kept));
                             div()
                                 .id("account-secret-hint")
                                 .role(Role::Note)

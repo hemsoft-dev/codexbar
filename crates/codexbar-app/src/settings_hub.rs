@@ -2,9 +2,7 @@
 
 use std::sync::Arc;
 
-use codexbar_store::credentials::{
-    CredentialStore, STORE_NAME, STORE_SHORT_NAME, SecretSource, SystemCredentialStore, resolve_secret,
-};
+use codexbar_store::credentials::{CredentialStore, STORE_NAME, STORE_SHORT_NAME, SecretSource, SystemCredentialStore};
 use codexbar_store::settings::{AccountRecord, Settings, SettingsError, legacy_id};
 use gpui_kit::{App, BorrowAppContext as _, Global, SharedString};
 
@@ -254,7 +252,15 @@ impl SettingsHub {
                 Err(err) => return unavailable(err),
             }
         }
-        resolve_secret(Some((spec.env, env)), store, &account.id, legacy)
+        // Nothing saved for the account (an incomplete chunked secret counts as nothing): the variable, else the
+        // legacy plaintext key still in the settings file.
+        if let Some(value) = env {
+            return (Some(value), SecretSource::Environment(spec.env));
+        }
+        match legacy {
+            Some(secret) => (Some(secret), SecretSource::SettingsFile),
+            None => (None, SecretSource::Missing),
+        }
     }
 
     /// Where an account's secret would come from if the dialog saved nothing for it: an existing account's current

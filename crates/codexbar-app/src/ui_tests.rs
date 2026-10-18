@@ -2491,6 +2491,29 @@ fn a_failing_store_never_falls_back_to_an_inherited_key(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
+fn an_incomplete_chunked_secret_counts_as_none_not_as_its_header(cx: &mut TestAppContext) {
+    use codexbar_store::credentials::SecretSource;
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-chunk-header", "{}");
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let go = AccountRecord::new(names::OPENCODE_GO, "Team", AuthMethod::BrowserSession);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(go.clone())))
+        .unwrap();
+    // A long cookie's header whose part entries are gone: not a secret, so nothing is sent or shown as saved.
+    cx.update(|cx| {
+        SettingsHub::global(cx)
+            .credentials()
+            .write(&go.id, "codexbar-parts:1:2")
+    })
+    .unwrap();
+    cx.update(|cx| SettingsHub::use_environment(cx, |_| None));
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&go));
+    assert!(secret.is_none(), "the header is never used as the cookie");
+    assert!(matches!(source, SecretSource::Missing), "{source:?}");
+}
+
+#[gpui_kit::test]
 fn the_key_dialog_says_the_variable_only_fills_in_when_nothing_is_saved(cx: &mut TestAppContext) {
     let settings = TempSettings::new("keys-no-env-dialog", "{}");
     let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);

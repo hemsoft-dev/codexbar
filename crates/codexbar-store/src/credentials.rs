@@ -395,31 +395,6 @@ fn part_id(account_id: &str, generation: u64, ix: usize) -> String {
     format!("{account_id}#part{generation}.{ix}")
 }
 
-/// Resolves a secret for an account with no key of its own: the environment variable (its name and the value the
-/// caller read for it), then Credential Manager, then the legacy settings file. The caller checks the account's
-/// saved key first (#186), so a variable only stands in for an account with none.
-pub fn resolve_secret(
-    env: Option<(&'static str, Option<String>)>,
-    store: &dyn CredentialStore,
-    account_id: &str,
-    legacy: Option<String>,
-) -> (Option<String>, SecretSource) {
-    if let Some((name, value)) = env
-        && let Some(value) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
-    {
-        return (Some(value), SecretSource::Environment(name));
-    }
-    match store.read(account_id) {
-        Ok(Some(secret)) if !secret.trim().is_empty() => (Some(secret), SecretSource::CredentialManager),
-        Ok(_) => match legacy {
-            Some(secret) => (Some(secret), SecretSource::SettingsFile),
-            None => (None, SecretSource::Missing),
-        },
-        // A failed store still lets the legacy key work, but the status shows the failure.
-        Err(err) => (legacy, SecretSource::StoreUnavailable(err)),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,57 +458,6 @@ mod tests {
         store.delete("a").unwrap();
         store.delete("a").unwrap();
         assert_eq!(store.read("a").unwrap(), None);
-    }
-
-    #[test]
-    fn resolve_secret_prefers_store_over_settings_file() {
-        let store = MemoryCredentialStore::default();
-        store.write("acct", "from-store").unwrap();
-        let (secret, source) = resolve_secret(None, &store, "acct", Some("from-file".into()));
-        assert_eq!(
-            (secret.as_deref(), source),
-            (Some("from-store"), SecretSource::CredentialManager)
-        );
-    }
-
-    #[test]
-    fn resolve_secret_falls_back_to_settings_file_then_missing() {
-        let store = MemoryCredentialStore::default();
-        let (secret, source) = resolve_secret(None, &store, "acct", Some("from-file".into()));
-        assert_eq!(
-            (secret.as_deref(), source),
-            (Some("from-file"), SecretSource::SettingsFile)
-        );
-        assert_eq!(resolve_secret(None, &store, "acct", None).1, SecretSource::Missing);
-    }
-
-    #[test]
-    fn resolve_secret_uses_the_environment_before_the_store_and_file() {
-        let store = MemoryCredentialStore::default();
-        store.write("acct", "from-store").unwrap();
-        let env = Some(("X_KEY", Some(" from-env ".to_owned())));
-        let (secret, source) = resolve_secret(env, &store, "acct", Some("from-file".into()));
-        assert_eq!(
-            (secret.as_deref(), source),
-            (Some("from-env"), SecretSource::Environment("X_KEY"))
-        );
-        // A blank variable is the same as none.
-        let blank = Some(("X_KEY", Some("  ".to_owned())));
-        assert_eq!(
-            resolve_secret(blank, &store, "acct", None).1,
-            SecretSource::CredentialManager
-        );
-        assert_eq!(
-            resolve_secret(Some(("X_KEY", None)), &store, "acct", None).1,
-            SecretSource::CredentialManager
-        );
-    }
-
-    #[test]
-    fn resolve_secret_store_failure_is_distinct_from_missing() {
-        let (secret, source) = resolve_secret(None, &MemoryCredentialStore::failing(), "acct", Some("file".into()));
-        assert_eq!(secret.as_deref(), Some("file"));
-        assert!(matches!(source, SecretSource::StoreUnavailable(_)));
     }
 
     #[cfg(not(windows))]
