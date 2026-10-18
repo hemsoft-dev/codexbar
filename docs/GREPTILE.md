@@ -10,9 +10,9 @@ CodexBar posts JSON-RPC `tools/call` requests to Greptile's MCP server
 (`https://api.greptile.com/mcp`) for one tool only: `list_code_reviews`, in
 pages of 100. It never calls a tool that starts a review, changes a repository
 or touches billing. The key is sent as a bearer token and kept in Windows
-Credential Manager under the account. A Greptile key belongs to one
-organization, so an account's saved key always wins; `GREPTILE_API_KEY` is used
-only for an account with no key saved.
+Credential Manager under the account. As for every API key, an account's saved
+key always wins; `GREPTILE_API_KEY` is used only for an account with no key
+saved, which matters here because a Greptile key belongs to one organization.
 
 Pages are read until a short page ends the history, up to an offset of 1,000;
 a full page is always followed, whatever its `total` says. Reviews are counted

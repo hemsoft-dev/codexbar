@@ -395,18 +395,17 @@ fn part_id(account_id: &str, generation: u64, ix: usize) -> String {
     format!("{account_id}#part{generation}.{ix}")
 }
 
-/// Resolves a secret: environment variable, then Credential Manager, then the legacy settings file.
+/// Resolves a secret for an account with no key of its own: the environment variable (its name and the value the
+/// caller read for it), then Credential Manager, then the legacy settings file. The caller checks the account's
+/// saved key first (#186), so a variable only stands in for an account with none.
 pub fn resolve_secret(
-    env: Option<&'static str>,
+    env: Option<(&'static str, Option<String>)>,
     store: &dyn CredentialStore,
     account_id: &str,
     legacy: Option<String>,
 ) -> (Option<String>, SecretSource) {
-    if let Some(name) = env
-        && let Some(value) = std::env::var(name)
-            .ok()
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty())
+    if let Some((name, value)) = env
+        && let Some(value) = value.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
     {
         return (Some(value), SecretSource::Environment(name));
     }
@@ -506,6 +505,28 @@ mod tests {
             (Some("from-file"), SecretSource::SettingsFile)
         );
         assert_eq!(resolve_secret(None, &store, "acct", None).1, SecretSource::Missing);
+    }
+
+    #[test]
+    fn resolve_secret_uses_the_environment_before_the_store_and_file() {
+        let store = MemoryCredentialStore::default();
+        store.write("acct", "from-store").unwrap();
+        let env = Some(("X_KEY", Some(" from-env ".to_owned())));
+        let (secret, source) = resolve_secret(env, &store, "acct", Some("from-file".into()));
+        assert_eq!(
+            (secret.as_deref(), source),
+            (Some("from-env"), SecretSource::Environment("X_KEY"))
+        );
+        // A blank variable is the same as none.
+        let blank = Some(("X_KEY", Some("  ".to_owned())));
+        assert_eq!(
+            resolve_secret(blank, &store, "acct", None).1,
+            SecretSource::CredentialManager
+        );
+        assert_eq!(
+            resolve_secret(Some(("X_KEY", None)), &store, "acct", None).1,
+            SecretSource::CredentialManager
+        );
     }
 
     #[test]

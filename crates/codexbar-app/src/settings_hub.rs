@@ -22,7 +22,12 @@ pub struct SettingsHub {
     revision: u64,
     /// Bumped when something outside the settings file changed what providers return (a sign-in, #78).
     refresh_requests: u64,
+    /// Reads an environment variable; tests supply their own values so they never depend on the host's (#186).
+    environment: EnvLookup,
 }
+
+/// Reads one environment variable by name.
+type EnvLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 impl Global for SettingsHub {}
 
@@ -67,7 +72,21 @@ impl SettingsHub {
             error,
             revision: 0,
             refresh_requests: 0,
+            environment: Arc::new(|name| std::env::var(name).ok()),
         });
+    }
+
+    /// Makes the hub read environment variables through `lookup` instead of the process environment, so a test can
+    /// set a provider's variable without touching the host's (which may hold a real key).
+    #[cfg(test)]
+    pub fn use_environment(cx: &mut App, lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static) {
+        cx.update_global(|hub: &mut Self, _| hub.environment = Arc::new(lookup));
+        cx.refresh_windows();
+    }
+
+    /// Whether the environment variable `name` holds a value. Never the value.
+    pub fn environment_supplies(&self, name: &str) -> bool {
+        (self.environment)(name).is_some_and(|value| !value.trim().is_empty())
     }
 
     /// Asks the dashboard to fetch again, after a sign-in changed what a provider can read.
@@ -175,8 +194,6 @@ impl SettingsHub {
         }
     }
 
-    /// The secret an account will use and where it comes from. The legacy plaintext key belongs to the provider's
-    /// first account only, as in the WPF app.
     /// An account's browser sign-in tokens (#77), from Credential Manager. `Ok(None)` means signed out; an error
     /// means Credential Manager couldn't be read, which is not the same and mustn't prompt a new sign-in.
     #[allow(
@@ -205,33 +222,35 @@ impl SettingsHub {
         codexbar_store::credentials::write_long(self.credentials.as_ref(), account_id, &tokens.to_secret())
     }
 
+    /// The secret an account will use and where it comes from (#186): the key saved for the account, else a key
+    /// moved from the settings file before the provider had accounts (kept under the implicit account and belonging
+    /// to the provider's first account, #74), else the provider's environment variable, else the legacy plaintext key
+    /// in the settings file (the first account's only, as in the WPF app). A variable thus only stands in for an
+    /// account with no saved key, and saving one makes it the key in use.
     pub fn secret_for(&self, account: &AccountRecord) -> (Option<String>, SecretSource) {
         let info = catalog::info(&account.provider);
         let Some(spec) = &info.secret else {
             return (None, SecretSource::Missing);
         };
-        if spec.saved_first
-            && let Ok(Some(saved)) = codexbar_store::credentials::read_long(self.credentials.as_ref(), &account.id)
+        let store = self.credentials.as_ref();
+        if let Ok(Some(saved)) = codexbar_store::credentials::read_long(store, &account.id)
             && !saved.trim().is_empty()
         {
             return (Some(saved), SecretSource::CredentialManager);
         }
         let first = self.settings.accounts_for(info.id).next().map(|a| a.id.as_str());
         let is_first = first.is_none_or(|id| id == account.id);
-        let legacy = is_first.then(|| self.settings.api_key(info.id)).flatten();
-        let resolved = resolve_secret(Some(spec.env), self.credentials.as_ref(), &account.id, legacy);
-        // A key moved from the file before the provider had accounts (#74) is kept under its implicit account; the
-        // provider's first account goes on using it until a key is saved for that account.
         let implicit = codexbar_store::settings::legacy_id(info.id, "");
-        if matches!(resolved.1, SecretSource::Missing)
-            && is_first
+        if is_first
             && account.id != implicit
-            && let Ok(Some(secret)) = self.credentials.read(&implicit)
+            && let Ok(Some(secret)) = store.read(&implicit)
             && !secret.trim().is_empty()
         {
             return (Some(secret), SecretSource::CredentialManager);
         }
-        resolved
+        let legacy = is_first.then(|| self.settings.api_key(info.id)).flatten();
+        let env = (self.environment)(spec.env);
+        resolve_secret(Some((spec.env, env)), store, &account.id, legacy)
     }
 }
 

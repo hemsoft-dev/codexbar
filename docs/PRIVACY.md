@@ -46,9 +46,10 @@ page, and confirms the approved user and workspace with the Console. See [OAUTH.
 ## Secrets
 
 - **API keys and cookies** you paste in Settings are stored in Windows
-  Credential Manager under `CodexBar:account:<id>`, not in a file. An
-  environment variable (`OPENROUTER_API_KEY`, `MOONSHOT_API_KEY`, …) takes
-  precedence over a stored key. Keys an older CodexBar left in its settings
+  Credential Manager under `CodexBar:account:<id>`, not in a file. A stored
+  key is the one used; an environment variable (`OPENROUTER_API_KEY`,
+  `MOONSHOT_API_KEY`, …) stands in only for an account with no stored key, and
+  the account's row in Settings says which is in use. Keys an older CodexBar left in its settings
   file are moved to Credential Manager at startup. If that move fails, the key
   stays in the file and in use, Settings says so, and the move is tried again
   at the next start.

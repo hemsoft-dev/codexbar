@@ -22,7 +22,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
-use crate::catalog::{self, PROVIDERS};
+use crate::catalog::{self, PROVIDERS, SecretSpec};
 use crate::notifications::{Notifications, NotifierStatus};
 use crate::prefs_hub::PrefsHub;
 use crate::settings_hub::{SettingsHub, describe_source};
@@ -539,15 +539,19 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                             spec.label,
                             Input::new(&form.secret).mask_toggle().into_any_element(),
                         ))
-                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!(
-                            "Saved in {}. {}",
-                            codexbar_store::credentials::STORE_NAME,
-                            if spec.saved_first {
-                                format!("The {} environment variable is used only when none is saved.", spec.env)
-                            } else {
-                                format!("The {} environment variable overrides it.", spec.env)
-                            }
-                        )))
+                        .child({
+                            // Where the secret goes and what the variable does, also for screen readers; never
+                            // the variable's value.
+                            let hint = secret_hint(spec, SettingsHub::global(cx).environment_supplies(spec.env));
+                            div()
+                                .id("account-secret-hint")
+                                .role(Role::Note)
+                                .test_support()
+                                .aria_label(hint.clone())
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(hint)
+                        })
                     })
                     .when(info.id == names::CODEX, |this| {
                         this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
@@ -678,6 +682,25 @@ fn x_subscription_refusal(
         Some("There is already an X Subscription account; it reads this computer's Grok and Cursor sign-ins.")
     } else {
         None
+    }
+}
+
+/// Under the secret field: where a saved secret goes, and what the environment variable does. When the variable is set
+/// right now, the user is told that it is in use until a secret is saved here (#186). Never the value.
+fn secret_hint(spec: &SecretSpec, env_set: bool) -> String {
+    let store = codexbar_store::credentials::STORE_NAME;
+    if env_set {
+        format!(
+            "{} is set in the environment and is used while this account has no saved {}. Saving one here, in \
+             {store}, replaces it for this account.",
+            spec.env,
+            spec.label.to_lowercase()
+        )
+    } else {
+        format!(
+            "Saved in {store}. The {} environment variable is used only when none is saved.",
+            spec.env
+        )
     }
 }
 

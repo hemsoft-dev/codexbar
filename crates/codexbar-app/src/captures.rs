@@ -205,5 +205,38 @@ fn captures() {
         cx.run_until_parked();
     }
     save(&mut cx, handle, &out, "settings-accounts-x-subscription");
+
+    // The Accounts page and the OpenRouter dialog with OPENROUTER_API_KEY set (#186): the saved key still leads the
+    // Work row, and the dialog says the variable is in use until a key is saved.
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |name| {
+            (name == "OPENROUTER_API_KEY").then(|| "sk-or-env".to_owned())
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("settings-sidebar").click("0-1", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "settings-accounts-env");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("add-OpenRouter", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "settings-add-openrouter-env");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "settings-add-openrouter-env-dark");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "settings-accounts-env-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
     let _ = std::fs::remove_dir_all(&settings);
 }
