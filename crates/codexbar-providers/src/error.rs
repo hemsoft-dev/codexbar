@@ -30,6 +30,15 @@ impl ProviderError {
             other => other.to_string(),
         }
     }
+
+    /// The sign-in or key is the problem (missing, expired, or rejected by the provider), so the fix is in Settings
+    /// rather than a retry (#188).
+    pub fn needs_sign_in(&self) -> bool {
+        matches!(
+            self,
+            Self::NotSignedIn { .. } | Self::Expired { .. } | Self::Http { status: 401 | 403 }
+        )
+    }
 }
 
 impl fmt::Display for ProviderError {

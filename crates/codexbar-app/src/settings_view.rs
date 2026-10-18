@@ -12,7 +12,9 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::select::{Select, SelectState};
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings as SettingsPanel};
+use gpui_kit::component::setting::{
+    SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings as SettingsPanel,
+};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, IndexPath, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
@@ -31,7 +33,12 @@ use codexbar_store::credentials::SecretSource;
 /// Refresh choices required by #91, in minutes; 0 is Off.
 const REFRESH_CHOICES: [u64; 6] = [0, 1, 5, 15, 30, 60];
 
-pub fn render(_: &mut Window, cx: &mut App) -> impl IntoElement {
+/// The Accounts page's position in the sidebar.
+pub const ACCOUNTS_PAGE: usize = 1;
+
+/// `start` is where the panel opens when its state is new (the dashboard's Open settings button lands on a failed
+/// account's group, #188); `generation` changes with every such jump, so an open panel starts over there too.
+pub fn render(start: Option<SelectIndex>, generation: u32, _: &mut Window, cx: &mut App) -> impl IntoElement {
     let notice = SettingsHub::global(cx).notice();
     v_flex()
         .size_full()
@@ -55,7 +62,8 @@ pub fn render(_: &mut Window, cx: &mut App) -> impl IntoElement {
             )
         })
         .child(
-            SettingsPanel::new("codexbar-settings")
+            SettingsPanel::new(SharedString::from(format!("codexbar-settings-{generation}")))
+                .default_selected_index(start.unwrap_or_default())
                 .sidebar_width(crate::zoom::scaled(200., cx))
                 .pages(vec![
                     general_page(cx),
@@ -370,7 +378,9 @@ struct AccountForm {
     error: Rc<RefCell<Option<SharedString>>>,
 }
 
-fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, window: &mut Window, cx: &mut App) {
+/// The add (`existing` is `None`) or edit dialog for a `provider` account. Also opened from the dashboard's failure
+/// rows (#188).
+pub fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, window: &mut Window, cx: &mut App) {
     if SettingsHub::global(cx).is_read_only() {
         return;
     }

@@ -1050,6 +1050,8 @@ struct FakeProvider {
     id: &'static str,
     next: Mutex<Option<f64>>,
     calls: AtomicUsize,
+    /// How a fetch with no usage fails; a network error unless `failing_with` says otherwise.
+    error: Mutex<ProviderError>,
     /// A credential the adapter holds; it must never reach snapshots.json.
     _key: &'static str,
 }
@@ -1063,8 +1065,16 @@ impl FakeProvider {
             id,
             next: Mutex::new(used),
             calls: AtomicUsize::new(0),
+            error: Mutex::new(ProviderError::Network),
             _key: "sk-test-secret-key",
         })
+    }
+
+    /// Fails every fetch with `error` until `set` gives it usage.
+    fn failing_with(self: Arc<Self>, error: ProviderError) -> Arc<Self> {
+        *self.error.lock().unwrap() = error;
+        self.set(None);
+        self
     }
 
     /// An adapter for one configured account, reporting under that account's id.
@@ -1121,7 +1131,7 @@ impl UsageProvider for FakeProvider {
                 }],
                 now,
             )]),
-            None => Err(ProviderError::Network),
+            None => Err(self.error.lock().unwrap().clone()),
         }
     }
 }
@@ -1323,6 +1333,83 @@ fn retry_fetches_only_the_failed_provider(cx: &mut TestAppContext) {
         "the other provider's account stays"
     );
     assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Fresh);
+}
+
+// Open settings on a failure row (#188): a sign-in or key failure lands on the failed account in Settings.
+
+#[gpui_kit::test]
+fn a_failed_key_opens_settings_on_that_accounts_dialog(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-open-settings-key",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "or-2", "providerId": "OpenRouter", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let expired = FakeProvider::for_account(Provider::OpenRouter, "or-2", None).failing_with(ProviderError::Expired {
+        hint: "Enter a new key.",
+    });
+    let dashboard = open_live(cx, &settings, vec![expired]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "retry-OpenRouter-or-2"), "Retry stays");
+    assert_eq!(
+        label(cx, handle, "fix-OpenRouter-or-2").as_deref(),
+        Some("Open settings for OpenRouter · Team")
+    );
+
+    click(cx, handle, "fix-OpenRouter-or-2");
+    assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Settings);
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        label(cx, handle, "account-detail-or-2").is_some(),
+        "Settings opens on the Accounts page"
+    );
+    assert!(visible(cx, handle, "account-save"), "the account's dialog is open");
+}
+
+#[gpui_kit::test]
+fn a_provider_codexbar_signs_in_opens_settings_on_its_row_without_a_dialog(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("failure-open-settings-managed", "{}");
+    let signed_out = FakeProvider::new(Provider::Codex, "codex-1", None).failing_with(ProviderError::NotSignedIn {
+        hint: "Run codex login.",
+    });
+    let dashboard = open_live(cx, &settings, vec![signed_out]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+
+    click(cx, handle, "fix-ChatGPT · Codex");
+    assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Settings);
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "add-Codex"),
+        "the Accounts page shows the Codex group"
+    );
+    assert!(
+        !visible(cx, handle, "account-save"),
+        "no dialog: the row's own sign-in is the fix"
+    );
+}
+
+#[gpui_kit::test]
+fn a_network_failure_offers_only_retry(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("failure-open-settings-network", "{}");
+    let offline = FakeProvider::new(Provider::Claude, "claude-1", None);
+    let _dashboard = open_live(cx, &settings, vec![offline]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "retry-Claude"));
+    assert!(
+        !visible(cx, handle, "fix-Claude"),
+        "nothing in Settings fixes a network error"
+    );
 }
 
 #[gpui_kit::test]

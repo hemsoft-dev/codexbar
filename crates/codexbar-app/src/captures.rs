@@ -27,6 +27,32 @@ const SETTINGS: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
     { "id": "ms-1", "providerId": "Moonshot", "displayLabel": "Kimi", "enabled": true,
       "authenticationMethod": "ApiKey" } ] }"#;
 
+/// The Work account's adapter when OpenRouter rejects its key (#188): the failure row offers Open settings.
+struct ExpiredKey;
+
+impl codexbar_providers::UsageProvider for ExpiredKey {
+    fn name(&self) -> &'static str {
+        codexbar_core::Provider::OpenRouter.display_name()
+    }
+
+    fn account_id(&self) -> Option<&str> {
+        Some("or-1")
+    }
+
+    fn account_label(&self) -> Option<&str> {
+        Some("Work")
+    }
+
+    fn fetch(
+        &self,
+        _: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_core::AccountSnapshot>, codexbar_providers::ProviderError> {
+        Err(codexbar_providers::ProviderError::Expired {
+            hint: "Enter a new key in CodexBar settings.",
+        })
+    }
+}
+
 fn save(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, dir: &Path, name: &str) {
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
@@ -243,5 +269,30 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "settings-accounts-env-dark");
     cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+
+    // #188: a live dashboard whose Work key OpenRouter rejects. Its failure row offers Open settings, which lands on
+    // the Work account's dialog in Settings › Accounts.
+    let live = cx
+        .open_window(size(px(1440.), px(720.)), |window, cx| {
+            let source = DataSource::Live {
+                history: Arc::new(std::sync::Mutex::new(codexbar_store::HistoryStore::in_memory(
+                    chrono::Duration::days(30),
+                ))),
+                providers: Arc::new(|_| vec![Arc::new(ExpiredKey) as Arc<dyn codexbar_providers::UsageProvider>]),
+            };
+            let view = cx.new(|cx| Dashboard::new(source, window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let live: AnyWindowHandle = live.into();
+    cx.run_until_parked();
+    save(&mut cx, live, &out, "usage-failure-open-settings");
+    cx.update_window(live, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("fix-OpenRouter-or-1", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, live, &out, "settings-after-open-settings");
     let _ = std::fs::remove_dir_all(&settings);
 }
