@@ -24,7 +24,8 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 ## Features
 
 - **System tray** icon with a usage tooltip
-- **Dashboard** with an account table, focus cards, usage history and window curves
+- **Dashboard** with an account table, focus cards, usage history and window curves; wide enough, the table shows
+  each account's 5-hour and weekly windows side by side
 - **Alerts** when an account nears or hits its limit
 - **Groups and ordering** by urgency or by hand
 - **Fix sign-ins from the dashboard**: a provider whose key or sign-in no longer works shows **Open settings**,

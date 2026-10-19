@@ -107,6 +107,24 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage");
 
+    // #195: wide enough, the table shows the 5-hour and weekly windows side by side; rows without one leave the
+    // cells blank. A second demo window at 1920×1100, light and dark, closed again before the drag below.
+    let wide = cx
+        .open_window(size(px(1920.), px(1100.)), |window, cx| {
+            let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let wide: AnyWindowHandle = wide.into();
+    cx.run_until_parked();
+    save(&mut cx, wide, &out, "usage-wide");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, wide, &out, "usage-wide-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.update_window(wide, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+
     // #178: a row dragged to a new place. Manual order first; then the first row is pressed, carried to the lower
     // half of the third row (frames along the way show the preview and the gap line), and released.
     cx.update_window(handle, |_, window, cx| {

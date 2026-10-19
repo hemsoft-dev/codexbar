@@ -1465,6 +1465,117 @@ fn a_network_failure_offers_only_retry(cx: &mut TestAppContext) {
     );
 }
 
+// Both standard windows side by side (#195) when the table is wide enough; one metric per row otherwise.
+
+#[gpui_kit::test]
+fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("wide-windows", "{}");
+    let now = chrono::Utc::now();
+    let window = |label: &str, used: f64| Metric::Window {
+        label: label.into(),
+        used,
+        resets_at: now + chrono::Duration::hours(3),
+        pace: None,
+    };
+    let both = AccountSnapshot::new(
+        AccountId::new("codex-1"),
+        Provider::Codex,
+        vec![window("5-hour window", 0.91), window("Weekly", 0.47)],
+        now,
+    );
+    let weekly_only = AccountSnapshot::new(
+        AccountId::new("grok-1"),
+        Provider::Grok,
+        vec![window("Weekly usage", 0.27)],
+        now,
+    );
+    let quota = AccountSnapshot::new(
+        AccountId::new("copilot-1"),
+        Provider::Copilot,
+        vec![Metric::Quota {
+            label: "Premium requests".into(),
+            used: 1284,
+            limit: 1500,
+            resets_at: now + chrono::Duration::days(12),
+            pace: None,
+        }],
+        now,
+    );
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![both, weekly_only, quota]));
+    let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+
+    // At the default 1440 width there is no room: the single-metric columns, as before.
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(label(cx, handle, "window-5h-codex-1"), None, "no window columns");
+    assert_eq!(
+        label(cx, handle, "progress-cell-codex-1").as_deref(),
+        Some("91% used"),
+        "the primary metric keeps its bar"
+    );
+
+    cx.simulate_window_resize(handle, size(px(1920.), px(1000.)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(
+        label(cx, handle, "window-5h-codex-1").as_deref(),
+        Some("5-hour window: 91%")
+    );
+    assert_eq!(label(cx, handle, "window-5h-codex-1-bar").as_deref(), Some("91% used"));
+    assert_eq!(
+        label(cx, handle, "window-weekly-codex-1").as_deref(),
+        Some("Weekly: 47%")
+    );
+    assert_eq!(
+        label(cx, handle, "window-weekly-codex-1-bar").as_deref(),
+        Some("47% used")
+    );
+    // Its windows sit in their own columns, so the primary pair is blank, not a second copy.
+    assert_eq!(
+        label(cx, handle, "percent-codex-1").as_deref(),
+        Some("Primary metric: not applicable")
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-codex-1").as_deref(),
+        Some("Primary metric: not applicable")
+    );
+    // A weekly-only account leaves the 5-hour cells blank; a quota account leaves both pairs blank and keeps its
+    // own bar.
+    assert_eq!(
+        label(cx, handle, "window-5h-grok-1").as_deref(),
+        Some("5-hour: not applicable")
+    );
+    assert_eq!(
+        label(cx, handle, "window-weekly-grok-1").as_deref(),
+        Some("Weekly usage: 27%")
+    );
+    assert_eq!(
+        label(cx, handle, "window-5h-copilot-1").as_deref(),
+        Some("5-hour: not applicable")
+    );
+    assert_eq!(
+        label(cx, handle, "window-weekly-copilot-1-bar").as_deref(),
+        Some("Weekly: not applicable")
+    );
+    assert_eq!(
+        label(cx, handle, "percent-copilot-1").as_deref(),
+        Some("Premium requests: 86%")
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-copilot-1").as_deref(),
+        Some("86% used")
+    );
+
+    // Narrow again: back to one metric per row.
+    cx.simulate_window_resize(handle, size(px(1440.), px(960.)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(label(cx, handle, "window-weekly-codex-1"), None);
+    assert_eq!(label(cx, handle, "progress-cell-codex-1").as_deref(), Some("91% used"));
+}
+
 #[gpui_kit::test]
 fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) {
     let settings = TempSettings::new("lifecycle-persist", "{}");
