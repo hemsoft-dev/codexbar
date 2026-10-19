@@ -6740,7 +6740,7 @@ fn the_spend_view_totals_each_currency_and_counts_only_net_spend(cx: &mut TestAp
     assert_eq!(spend.len(), 3, "{spend:?}");
     let github = spend.iter().find(|row| row.starts_with("GitHub Billing")).unwrap();
     assert!(
-        github.starts_with("GitHub Billing · HemSoft, Net spend: $23.89, Resets in "),
+        github.starts_with("GitHub Billing · HemSoft, Net spend: $23.89, No limit, Resets in "),
         "{github}"
     );
     assert!(
@@ -6885,4 +6885,24 @@ fn the_spend_view_labels_amounts_a_failed_refresh_left_behind(cx: &mut TestAppCo
         label_of(cx, "spend-stale-note").as_deref(),
         Some("1 account wasn't refreshed: its amounts are the last known, and the totals include them.")
     );
+}
+
+#[gpui_kit::test]
+fn the_spend_view_says_a_money_account_failed_instead_of_claiming_none(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("spend-unavailable", "{}");
+    let cursor = FakeProvider::new(Provider::Cursor, "cursor", None);
+    let dashboard = open_live(cx, &settings, vec![cursor]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    click(cx, handle, ("view-tab", 1usize));
+    assert!(
+        label_of(cx, "spend-empty").is_none(),
+        "a configured money account is not 'no account'"
+    );
+    assert_eq!(
+        label_of(cx, "spend-pending").as_deref(),
+        Some("Couldn't fetch spend yet. Couldn't fetch Cursor; see Usage for the error and a retry.")
+    );
+    click(cx, handle, "spend-open-usage");
+    assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Usage);
 }

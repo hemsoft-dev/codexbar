@@ -27,7 +27,7 @@ use gpui_kit::{
 use crate::account_table::{AccountState, AccountTable, Compact, States};
 use crate::focus_cards::focus_cards;
 use crate::history_view::{HistoryView, ValueKind};
-use crate::spend_view::{OpenAccounts, SpendView};
+use crate::spend_view::{SpendRequest, SpendView};
 use crate::status::{severity_dot_color, severity_tag};
 
 /// The dashboard views. A tray click restores whichever one was open last.
@@ -398,7 +398,10 @@ impl Dashboard {
         let history_view = cx.new(|cx| HistoryView::new(history.clone(), cx));
         let spend_view = cx.new(|cx| SpendView::new(history.clone(), cx));
         // The Spend view's empty state opens Settings on the Accounts page.
-        let spend_requests = cx.subscribe(&spend_view, |this, _, _: &OpenAccounts, cx| this.open_accounts(cx));
+        let spend_requests = cx.subscribe(&spend_view, |this, _, request: &SpendRequest, cx| match request {
+            SpendRequest::OpenAccounts => this.open_accounts(cx),
+            SpendRequest::OpenUsage => this.show_view(DashboardView::Usage, cx),
+        });
 
         // Groups and the manual order can change in Settings or from the focused account; rearrange the table then.
         // Smart order also follows alert settings and the held alerts, which the demo keeps in `Notifications`.

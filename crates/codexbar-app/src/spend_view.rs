@@ -22,7 +22,7 @@ use gpui_kit::{
 };
 
 use crate::account_table::{AccountState, States};
-use crate::history_view::{ValueKind, describe, span_label};
+use crate::history_view::{ValueKind, describe};
 use crate::prefs_hub::PrefsHub;
 use crate::status::{severity_color, severity_dot_color};
 use crate::usage_bar::{Projection, usage_bar};
@@ -31,9 +31,10 @@ use crate::usage_bar::{Projection, usage_bar};
 const TREND_DAYS: usize = 30;
 /// The most points the trend draws.
 const MAX_CHART_POINTS: usize = 120;
-/// A day's total is timed at its last reading, so consecutive days can sit up to two days apart; longer means a day
-/// with no readings at all.
-const DAY_GAP: Duration = Duration::hours(50);
+/// The trend's points are one per local day, timed at that day's last reading, so elapsed time says nothing about
+/// missing days; `summarize` gets a threshold no stretch inside the window reaches, and missing days are counted from
+/// the calendar instead (`missing_days`).
+const NO_GAP: Duration = Duration::days(TREND_DAYS as i64 + 1);
 
 /// The providers whose accounts report spend or a prepaid balance, for the empty state.
 const MONEY_PROVIDERS: [Provider; 8] = [
@@ -47,8 +48,12 @@ const MONEY_PROVIDERS: [Provider; 8] = [
     Provider::XSubscription,
 ];
 
-/// Asks the dashboard to show Settings on the Accounts page, from the empty state.
-pub struct OpenAccounts;
+/// What the Spend view asks the dashboard to show: Settings on the Accounts page from the empty state, or the
+/// Usage view, where a failed account's error and retry are.
+pub enum SpendRequest {
+    OpenAccounts,
+    OpenUsage,
+}
 
 pub struct SpendView {
     history: Arc<Mutex<HistoryStore>>,
@@ -65,7 +70,7 @@ pub struct SpendView {
     row_focus: Vec<FocusHandle>,
 }
 
-impl EventEmitter<OpenAccounts> for SpendView {}
+impl EventEmitter<SpendRequest> for SpendView {}
 
 impl SpendView {
     pub fn new(history: Arc<Mutex<HistoryStore>>, cx: &mut Context<Self>) -> Self {
@@ -171,6 +176,25 @@ fn reset_text(metric: &Metric, now: DateTime<Utc>) -> String {
     }
 }
 
+/// What sits where an uncapped spend's bar would: "No limit", or that a cap in another currency can't be compared
+/// with the amount, so neither a bar nor a severity is drawn from it.
+fn cap_text(metric: &Metric) -> String {
+    match metric {
+        Metric::Spend {
+            spent,
+            limit: Some(limit),
+            ..
+        } if limit.currency() != spent.currency() => {
+            format!(
+                "Limit of {} can't be compared with {}",
+                limit.display(),
+                spent.currency().code()
+            )
+        }
+        _ => "No limit".to_owned(),
+    }
+}
+
 /// "$12.40 of $50.00" for capped spend, "$23.89" otherwise.
 fn amount_text(metric: &Metric) -> String {
     match metric {
@@ -240,6 +264,99 @@ fn row_severity(row: &SpendRow<'_>, now: DateTime<Utc>) -> Option<codexbar_core:
         .max()
 }
 
+/// Money accounts with nothing to show yet, by display name.
+#[derive(Default)]
+struct Pending {
+    loading: Vec<String>,
+    unavailable: Vec<String>,
+}
+
+impl Pending {
+    /// "Couldn't fetch Claude · personal; see Usage for the error and a retry. Still loading: Cursor."
+    fn sentence(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.unavailable.is_empty() {
+            parts.push(format!(
+                "Couldn't fetch {}; see Usage for the error and a retry.",
+                self.unavailable.join(", ")
+            ));
+        }
+        if !self.loading.is_empty() {
+            parts.push(format!("Still loading: {}.", self.loading.join(", ")));
+        }
+        parts.join(" ")
+    }
+}
+
+/// The note above the lists while some money accounts are still loading or failed their first fetch: they are
+/// missing from the lists and the totals.
+fn pending_note(pending: &Pending, cx: &App) -> AnyElement {
+    let text = format!("Not in the totals yet. {}", pending.sentence());
+    let color = if pending.unavailable.is_empty() {
+        cx.theme().muted_foreground
+    } else {
+        cx.theme().warning
+    };
+    h_flex()
+        .id("spend-pending-note")
+        .role(Role::Status)
+        .test_support()
+        .aria_label(text.clone())
+        .gap_2()
+        .items_center()
+        .text_sm()
+        .text_color(color)
+        .child(Icon::new(IconName::Info).small())
+        .child(text)
+        .into_any_element()
+}
+
+/// Days inside the trend with no reading at all: between points, and since the last one.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Missing {
+    between: i64,
+    since_last: i64,
+}
+
+impl Missing {
+    fn text(self) -> Option<String> {
+        let days = |n: i64| {
+            if n == 1 {
+                "1 day".to_owned()
+            } else {
+                format!("{n} days")
+            }
+        };
+        match (self.between, self.since_last) {
+            (0, 0) => None,
+            (between, 0) => Some(format!(
+                "{} without data; the line crosses them straight.",
+                days(between)
+            )),
+            (0, since) => Some(format!("No data for the last {}.", days(since))),
+            (between, since) => Some(format!(
+                "{} without data, and none for the last {}.",
+                days(between),
+                days(since)
+            )),
+        }
+    }
+}
+
+/// Counts the local days with no point: gaps between consecutive points' days, and the days after the last point up
+/// to today.
+fn missing_days(points: &[codexbar_store::summary::Point], now: DateTime<Utc>) -> Missing {
+    let day = |at: DateTime<Utc>| at.with_timezone(&Local).date_naive();
+    let between = points
+        .windows(2)
+        .map(|pair| ((day(pair[1].at) - day(pair[0].at)).num_days() - 1).max(0))
+        .sum();
+    let since_last = points
+        .last()
+        .map_or(0, |last| (day(now) - day(last.at)).num_days().max(0));
+    Missing { between, since_last }
+}
+
 /// What a total reads as, with its currency named only when there is more than one.
 fn total_label(label: &str, amount: Money, several: bool) -> String {
     if several {
@@ -254,7 +371,10 @@ impl Render for SpendView {
         let accounts = self.accounts.clone();
         let sheet = SpendSheet::of(&accounts);
         if sheet.is_empty() {
-            return self.render_empty(cx).into_any_element();
+            return match self.pending() {
+                Some(pending) => self.render_pending(&pending, cx).into_any_element(),
+                None => self.render_empty(cx).into_any_element(),
+            };
         }
         let now = Utc::now();
         let mut focus = self.row_focus.iter();
@@ -282,6 +402,7 @@ impl Render for SpendView {
             .gap_6()
             .child(self.render_totals(&sheet, cx))
             .children(self.render_stale_note(&sheet, now, cx))
+            .children(self.pending().map(|pending| pending_note(&pending, cx)))
             .when(!spend_rows.is_empty(), |this| {
                 this.child(section("spend-list", "Spend this period", spend_rows, cx))
             })
@@ -296,6 +417,57 @@ impl Render for SpendView {
 }
 
 impl SpendView {
+    /// Money accounts that are configured but have nothing to show yet: still on their first fetch, or failed it.
+    fn pending(&self) -> Option<Pending> {
+        let mut pending = Pending::default();
+        for account in &self.accounts {
+            if !MONEY_PROVIDERS.contains(&account.provider()) {
+                continue;
+            }
+            match self.states.get(account.id().as_str()) {
+                Some(AccountState::Loading) => pending.loading.push(account.display_name()),
+                Some(AccountState::Unavailable(_)) => pending.unavailable.push(account.display_name()),
+                _ => {}
+            }
+        }
+        (!pending.loading.is_empty() || !pending.unavailable.is_empty()).then_some(pending)
+    }
+
+    /// The Spend view while its only money accounts are loading or failed: what is happening, and where the error
+    /// and retry are, instead of the "no account" empty state.
+    fn render_pending(&self, pending: &Pending, cx: &mut Context<Self>) -> impl IntoElement {
+        let failed = !pending.unavailable.is_empty();
+        let (icon, title) = if failed {
+            (IconName::TriangleAlert, "Couldn't fetch spend yet")
+        } else {
+            (IconName::Loader, "Fetching spend and balances")
+        };
+        let detail = pending.sentence();
+        v_flex()
+            .id("spend-pending")
+            .role(Role::Status)
+            .test_support()
+            .aria_label(format!("{title}. {detail}"))
+            .flex_1()
+            .min_h(rems(20.))
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .text_color(cx.theme().muted_foreground)
+            .child(Icon::new(icon).large())
+            .child(div().font_semibold().text_color(cx.theme().foreground).child(title))
+            .child(div().text_sm().max_w(rems(36.)).text_center().child(detail))
+            .when(failed, |this| {
+                this.child(
+                    Button::new("spend-open-usage")
+                        .outline()
+                        .small()
+                        .label("Show the error on Usage")
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SpendRequest::OpenUsage))),
+                )
+            })
+    }
+
     /// Says when the totals include amounts that weren't refreshed, so last known money doesn't read as current.
     fn render_stale_note(&self, sheet: &SpendSheet<'_>, now: DateTime<Utc>, cx: &App) -> Option<impl IntoElement> {
         let mut stale: Vec<&str> = sheet
@@ -362,7 +534,7 @@ impl SpendView {
                     .outline()
                     .small()
                     .label("Add an account in Settings")
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(OpenAccounts))),
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SpendRequest::OpenAccounts))),
             )
     }
 
@@ -442,7 +614,8 @@ impl SpendView {
         let currency = self.trend_currency(&currencies).unwrap_or_default();
         let points = self.trend(&rows, currency);
         let now = Utc::now();
-        let summary = summarize(&points, now, DAY_GAP);
+        let summary = summarize(&points, now, NO_GAP);
+        let missing = missing_days(&points, now);
         let series = chart_series(&points, MAX_CHART_POINTS);
         let kind = ValueKind::Money(currency);
         let muted = cx.theme().muted_foreground;
@@ -493,7 +666,9 @@ impl SpendView {
                 )
                 .child(div().text_sm().child("CodexBar records spend on every refresh."))
                 .into_any_element(),
-            Some(summary) => self.render_chart(&series, summary, kind, cx).into_any_element(),
+            Some(summary) => self
+                .render_chart(&series, summary, missing, kind, cx)
+                .into_any_element(),
         };
         v_flex()
             .gap_3()
@@ -511,6 +686,7 @@ impl SpendView {
         &self,
         series: &[ChartPoint],
         summary: &HistorySummary,
+        missing: Missing,
         kind: ValueKind,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -525,7 +701,11 @@ impl SpendView {
                 kind.value(point.value)
             )
         });
-        let description = describe(summary, kind);
+        let description = [Some(describe(summary, kind)), missing.text()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
         let color = cx.theme().chart_1;
         let chart: AnyElement = if summary.samples < 2 {
             v_flex()
@@ -571,18 +751,19 @@ impl SpendView {
         let ring = cx.theme().ring;
         v_flex()
             .gap_3()
-            .when_some(summary.longest_gap, |this, gap| {
+            .when_some(missing.text(), |this, text| {
                 this.child(
                     h_flex()
+                        .id("spend-missing-days")
+                        .role(Role::Status)
+                        .test_support()
+                        .aria_label(text.clone())
                         .gap_2()
                         .items_center()
                         .text_sm()
                         .text_color(muted)
                         .child(Icon::new(IconName::Info).small())
-                        .child(format!(
-                            "Longest stretch without data: {}. The line crosses it straight.",
-                            span_label(gap)
-                        )),
+                        .child(text),
                 )
             })
             .child(
@@ -733,6 +914,7 @@ fn spend_row(
         Some(format!("{name}, {}: {}", metric.label(), amount_text(metric))),
         stale.clone(),
         projection.as_ref().map(|projection| projection.label.clone()),
+        projection.is_none().then(|| cap_text(metric)),
         Some(reset.clone()),
         breakdown.clone(),
     ]
@@ -760,7 +942,7 @@ fn spend_row(
             .gap_x_3()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child("No limit")
+            .child(cap_text(metric))
             .children(
                 row.breakdown
                     .iter()
@@ -894,6 +1076,7 @@ fn balance_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone as _;
     use codexbar_core::{AccountId, Pace, Provider};
 
     fn now() -> DateTime<Utc> {
@@ -1003,6 +1186,63 @@ mod tests {
         );
         assert_eq!(stale_note(Some(&AccountState::Fresh), &account, later), None);
         assert_eq!(stale_note(None, &account, later), None);
+    }
+
+    #[test]
+    fn missing_days_count_calendar_days_not_elapsed_hours() {
+        use codexbar_store::summary::Point;
+        // 09:00 local, then 09:00 two days later: 48 hours apart, one whole day missing.
+        let day = |n: i64| {
+            Local
+                .from_local_datetime(
+                    &chrono::NaiveDate::from_ymd_opt(2026, 10, n as u32)
+                        .unwrap()
+                        .and_hms_opt(9, 0, 0)
+                        .unwrap(),
+                )
+                .unwrap()
+                .to_utc()
+        };
+        let points = [
+            Point::new(day(10), 1.0),
+            Point::new(day(12), 2.0),
+            Point::new(day(13), 3.0),
+        ];
+        let missing = missing_days(&points, day(13));
+        assert_eq!(
+            missing,
+            Missing {
+                between: 1,
+                since_last: 0
+            }
+        );
+        assert_eq!(
+            missing.text().as_deref(),
+            Some("1 day without data; the line crosses them straight.")
+        );
+        assert_eq!(missing_days(&points, day(16)).since_last, 3);
+        assert_eq!(missing_days(&points[1..], day(13)).text(), None);
+    }
+
+    #[test]
+    fn a_cap_in_another_currency_is_not_called_no_limit() {
+        let crossed = Metric::Spend {
+            label: "Extra usage".into(),
+            spent: Money::new(1240, Currency::Eur),
+            limit: Some(Money::from_cents(5000)),
+            resets_at: None,
+            pace: None,
+        };
+        assert_eq!(crossed.used_fraction(), None);
+        assert_eq!(cap_text(&crossed), "Limit of $50.00 can't be compared with EUR");
+        let uncapped = Metric::Spend {
+            label: "Net spend".into(),
+            spent: Money::from_cents(2389),
+            limit: None,
+            resets_at: None,
+            pace: None,
+        };
+        assert_eq!(cap_text(&uncapped), "No limit");
     }
 
     #[test]
