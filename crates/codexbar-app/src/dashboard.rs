@@ -148,22 +148,31 @@ impl Failure {
 }
 
 /// Where Settings opens for a failure (#188): the failed provider's group on the Accounts page (its index in the
-/// catalog) and the account record to edit, when one is known. An adapter for one configured account names it;
-/// a provider-wide failure (OpenCode's cookie adapter, which covers Go and Zen) goes to its first enabled record,
+/// catalog) and the account record to edit, when one is known. An adapter for one configured account names it,
+/// by the record's id or by the dashboard account the record owns (a Codex or Claude account CodexBar signed in
+/// reports under its identity, a Copilot one under its username); `owned` maps record ids to those. A
+/// provider-wide failure (OpenCode's cookie adapter, which covers Go and Zen) goes to its first enabled record,
 /// then any record, then the provider's first group with none.
 fn settings_target(
     failure: &Failure,
+    owned: &HashMap<String, String>,
     cx: &gpui_kit::App,
 ) -> Option<(usize, Option<codexbar_store::settings::AccountRecord>)> {
     let providers = &crate::catalog::PROVIDERS;
     let group_of = |provider: &str| providers.iter().position(|info| info.id.eq_ignore_ascii_case(provider));
     let hub = SettingsHub::global(cx);
     let records = hub.settings().accounts();
-    if let Some(record) = failure
-        .account
-        .as_ref()
-        .and_then(|id| records.iter().find(|record| &record.id == id))
-    {
+    let named = failure.account.as_ref().and_then(|id| {
+        records.iter().find(|record| &record.id == id).or_else(|| {
+            // A Copilot organization card is owned under "<record id>#org".
+            let owner = owned
+                .iter()
+                .find(|(_, account)| *account == id)
+                .and_then(|(key, _)| key.split('#').next())?;
+            records.iter().find(|record| record.id == owner)
+        })
+    });
+    if let Some(record) = named {
         return group_of(&record.provider).map(|group| (group, Some(record.clone())));
     }
     let kind = Provider::from_display_name(failure.provider)?;
@@ -563,6 +572,21 @@ impl Dashboard {
         self.fetch(Some((provider, account)), cx);
     }
 
+    /// The record a failure row's Open settings would edit, for the headless UI tests.
+    #[cfg(test)]
+    pub fn settings_target_record(
+        &self,
+        provider: &'static str,
+        account: Option<String>,
+        cx: &gpui_kit::App,
+    ) -> Option<String> {
+        self.failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .and_then(|failure| settings_target(failure, &self.owned_ids, cx))
+            .and_then(|(_, record)| record.map(|record| record.id))
+    }
+
     /// A failure row's Open settings (#188): shows Settings on the Accounts page at the failed provider's group and,
     /// for an account whose key or cookie is entered there, opens its dialog (Add account… when the provider has no
     /// record yet). Accounts CodexBar signs in itself land on their row, where Sign in… is.
@@ -577,7 +601,7 @@ impl Dashboard {
             .failures
             .iter()
             .find(|failure| failure.provider == provider && failure.account == account)
-            .and_then(|failure| settings_target(failure, cx));
+            .and_then(|failure| settings_target(failure, &self.owned_ids, cx));
         self.settings_start = Some(gpui_kit::component::setting::SelectIndex {
             page_ix: crate::settings_view::ACCOUNTS_PAGE,
             group_ix: target.as_ref().map(|(group, _)| *group),

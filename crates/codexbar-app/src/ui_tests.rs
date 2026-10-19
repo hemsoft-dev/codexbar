@@ -1397,6 +1397,49 @@ fn a_provider_codexbar_signs_in_opens_settings_on_its_row_without_a_dialog(cx: &
 }
 
 #[gpui_kit::test]
+fn a_failure_reported_under_the_identity_a_record_holds_targets_that_record(cx: &mut TestAppContext) {
+    // Two Codex accounts CodexBar signed in report under their ChatGPT identities, not their record ids.
+    let settings = TempSettings::new(
+        "failure-open-settings-owned",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cx-1", "providerId": "Codex", "displayLabel": "Personal", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "user_a" },
+            { "id": "cx-2", "providerId": "Codex", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "user_b" } ] }"#,
+    );
+    let personal = FakeProvider::for_account(Provider::Codex, "user_a", Some(0.2));
+    let team = FakeProvider::for_account(Provider::Codex, "user_b", None)
+        .failing_with(ProviderError::Expired { hint: "Sign in again." });
+    let dashboard = open_live(cx, &settings, vec![personal, team]);
+    cx.run_until_parked();
+    let target = cx.update(|cx| {
+        dashboard
+            .read(cx)
+            .settings_target_record("ChatGPT · Codex", Some("user_b".to_owned()), cx)
+    });
+    assert_eq!(
+        target.as_deref(),
+        Some("cx-2"),
+        "the failed account's own record, not the first"
+    );
+}
+
+#[gpui_kit::test]
+fn a_forbidden_response_offers_only_retry(cx: &mut TestAppContext) {
+    // Claude answers 403 for an organization policy; no key in Settings fixes that.
+    let settings = TempSettings::new("failure-open-settings-forbidden", "{}");
+    let refused =
+        FakeProvider::new(Provider::Claude, "claude-1", None).failing_with(ProviderError::Http { status: 403 });
+    let _dashboard = open_live(cx, &settings, vec![refused]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "retry-Claude"));
+    assert!(!visible(cx, handle, "fix-Claude"));
+}
+
+#[gpui_kit::test]
 fn a_network_failure_offers_only_retry(cx: &mut TestAppContext) {
     let settings = TempSettings::new("failure-open-settings-network", "{}");
     let offline = FakeProvider::new(Provider::Claude, "claude-1", None);

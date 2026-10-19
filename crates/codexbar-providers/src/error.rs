@@ -32,11 +32,12 @@ impl ProviderError {
     }
 
     /// The sign-in or key is the problem (missing, expired, or rejected by the provider), so the fix is in Settings
-    /// rather than a retry (#188).
+    /// rather than a retry (#188). A 403 isn't one: providers use it for refusals that no key fixes (Claude's
+    /// organization policy, Copilot's enterprise billing permission), and an expired token is reported as `Expired`.
     pub fn needs_sign_in(&self) -> bool {
         matches!(
             self,
-            Self::NotSignedIn { .. } | Self::Expired { .. } | Self::Http { status: 401 | 403 }
+            Self::NotSignedIn { .. } | Self::Expired { .. } | Self::Http { status: 401 }
         )
     }
 }
