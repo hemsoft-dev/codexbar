@@ -278,10 +278,12 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .stroke(current_color)
             .fill(area_fill(current_color))
             .name("This window")
+            .linear()
             .y(|(_, _, previous)| *previous)
             .stroke(previous_color)
             .fill(area_fill(previous_color.opacity(0.5)))
             .name("Previous window")
+            .linear()
             .y_domain(0.0, SHARE_TOP)
             .y_axis(true)
             .y_padding(0., 0.)
@@ -312,7 +314,11 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         let kind = trend_kind(account);
         let counted = counted_name(account);
         let is_counted = counted.is_some();
-        let high = account.trend().iter().copied().fold(0.0, f64::max);
+        let (low, high) = if is_counted {
+            day_domain(account.trend(), kind)
+        } else {
+            (0.0, SHARE_TOP)
+        };
         let chart = AreaChart::new(points)
             .id("focus-trend")
             .x(|(label, _)| label.clone())
@@ -320,14 +326,8 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .stroke(current_color)
             .fill(area_fill(current_color))
             .name(counted.clone().unwrap_or_else(|| "Pressure".into()))
-            .y_domain(
-                0.0,
-                if counted.is_some() {
-                    (high * 1.15).max(1.0)
-                } else {
-                    SHARE_TOP
-                },
-            )
+            .linear()
+            .y_domain(low, high)
             .tick_margin(3)
             .y_tick_format(move |value| trend_tick(kind, is_counted, value));
         // A share trend takes the share ticks (#200), so the 100% line keeps its label and the headroom has none.
@@ -544,16 +544,17 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    // A smooth line through the week's points, one marker per day, in the headline's unit (#180). The axis is pinned
-    // to the unit's range with no pixel padding, so its ticks read 0, 33, 67, 100%: the chart spaces ticks over the
-    // padded extent, and padding made them read -8% and 108%. The price is that a natural curve's swing past 0% or
-    // 100% around a sharp change, such as a reset, is clipped flat at the plot's edge for a few pixels.
+    // A line through the week's points, one marker per day, in the headline's unit (#180). The axis is pinned to the
+    // unit's range with no pixel padding, so its ticks read 0, 33, 67, 100%: the chart spaces ticks over the padded
+    // extent, and padding made them read -8% and 108%. Segments are straight (#217): gpui-kit's smooth curve is a
+    // natural spline, which swings past 0% or 100% around a sharp change such as a reset and was clipped there, and
+    // it has no smooth curve that stays between its points.
     let chart = LineChart::new(days)
         .id("focus-days")
         .x(|(label, _)| label.clone())
         .y(|(_, value)| *value)
         .stroke(color)
-        .natural()
+        .linear()
         .dot()
         .y_domain(low, high)
         .y_padding(0., 0.)
@@ -993,6 +994,30 @@ mod tests {
         assert_eq!(day_takeaway(&[0.4], ValueKind::Percent, false), "Flat since yesterday");
         assert_eq!(day_caption(None), "Share of the tightest limit");
         assert_eq!(day_caption(Some("Credits left")), "Credits left at the end of each day");
+    }
+
+    /// #217: the charts draw straight segments, which never leave the range of their own points, so a line stays
+    /// in its plot exactly when every point is inside the axis range. A reset's sharp drop to near zero, a peak at
+    /// the whole allowance and a balance gone negative all have to fit.
+    #[test]
+    fn every_trend_point_sits_inside_its_axis() {
+        use codexbar_core::Currency;
+        let usd = ValueKind::Money(Currency::Usd);
+        let cases: [(&[f64], ValueKind); 4] = [
+            (&[0.93, 0.97, 0.03, 0.12, 0.22, 0.32, 0.41], ValueKind::Percent),
+            (&[0.0, 1.0, 0.0, 1.0], ValueKind::Percent),
+            (&[12.0, -4.5, 3.0, 0.0], usd),
+            (&[40.0, 0.0, 37.0], ValueKind::Count),
+        ];
+        for (values, kind) in cases {
+            let (low, high) = day_domain(values, kind);
+            for value in values {
+                assert!(
+                    (low..=high).contains(value),
+                    "{value} outside {low}..={high} for {kind:?}"
+                );
+            }
+        }
     }
 
     #[test]
