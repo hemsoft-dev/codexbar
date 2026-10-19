@@ -114,7 +114,7 @@ impl Currency {
 }
 
 /// An amount of money in its currency's minor units (cents) so totals never pick up floating-point drift.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Money {
     cents: i64,
     currency: Currency,

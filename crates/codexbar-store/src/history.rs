@@ -21,6 +21,9 @@ struct Header {
     codexbar_history: u32,
 }
 
+/// A reading's time and value.
+type Reading = (DateTime<Utc>, f64);
+
 /// One stored reading.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sample {
@@ -319,6 +322,54 @@ impl HistoryStore {
         last.into_iter().map(|slot| slot.map(|(_, value)| value)).collect()
     }
 
+    /// The sum of several series per local day over the last `days` days, oldest first, for the Spend view's trend
+    /// (#215). A day counts only when at least one series has a reading that day, timed at that day's last reading;
+    /// a series without one adds the value it last had, so a missed refresh doesn't read as a drop. Days before any
+    /// reading, and days where no series has one, are left out, so missing days show as gaps.
+    pub fn daily_total<Tz: TimeZone>(
+        &self,
+        series: &[(&str, &str)],
+        days: usize,
+        tz: &Tz,
+        now: DateTime<Utc>,
+    ) -> Vec<Point> {
+        let today = now.with_timezone(tz).date_naive();
+        let lasts: Vec<Vec<Option<Reading>>> = series
+            .iter()
+            .map(|(account, metric)| {
+                let mut last: Vec<Option<Reading>> = vec![None; days];
+                for sample in self.series(account, metric) {
+                    let day = sample.at().with_timezone(tz).date_naive();
+                    let Ok(age) = usize::try_from((today - day).num_days()) else {
+                        continue;
+                    };
+                    if age < days {
+                        let slot = &mut last[days - 1 - age];
+                        if slot.is_none_or(|(at, _)| sample.at() >= at) {
+                            *slot = Some((sample.at(), sample.v));
+                        }
+                    }
+                }
+                last
+            })
+            .collect();
+        let mut carried: Vec<Option<f64>> = vec![None; series.len()];
+        let mut out = Vec::new();
+        for day in 0..days {
+            let mut at: Option<DateTime<Utc>> = None;
+            for (ix, last) in lasts.iter().enumerate() {
+                if let Some((when, value)) = last[day] {
+                    carried[ix] = Some(value);
+                    at = Some(at.map_or(when, |at| at.max(when)));
+                }
+            }
+            if let Some(at) = at {
+                out.push(Point::new(at, carried.iter().flatten().sum()));
+            }
+        }
+        out
+    }
+
     fn append(&self, samples: &[Sample]) -> io::Result<()> {
         if samples.is_empty() || !self.persist {
             return Ok(());
@@ -606,6 +657,40 @@ mod tests {
         store.record(&[account("codex", 0.2, 3)], now()).unwrap();
         let days = store.daily_max("codex", "5-hour-window", 4, &tz, now());
         assert_eq!(days, [None, Some(0.5), None, Some(0.2)]);
+    }
+
+    #[test]
+    fn daily_total_sums_series_and_carries_a_missed_day() {
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let mut store = HistoryStore::in_memory(retention());
+        let day = |n: i64, hour: i64| now() - Duration::days(n) + Duration::hours(hour);
+        // Four days back, then three, then today; nothing two and one days back.
+        store.insert_points(
+            "a",
+            "net-spend",
+            &[Point::new(day(4, 1), 10.0), Point::new(day(4, 5), 12.0)],
+        );
+        store.insert_points("a", "net-spend", &[Point::new(day(3, 1), 15.0)]);
+        store.insert_points("b", "on-demand", &[Point::new(day(3, 2), 4.0)]);
+        // Today only b reads; a adds the 15 it last had.
+        store.insert_points("b", "on-demand", &[Point::new(day(0, -1), 6.0)]);
+        let totals = store.daily_total(&[("a", "net-spend"), ("b", "on-demand")], 6, &tz, now());
+        assert_eq!(
+            totals,
+            [
+                Point::new(day(4, 5), 12.0),
+                Point::new(day(3, 2), 19.0),
+                Point::new(day(0, -1), 21.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn daily_total_is_empty_without_readings() {
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let store = HistoryStore::in_memory(retention());
+        assert!(store.daily_total(&[("a", "net-spend")], 30, &tz, now()).is_empty());
+        assert!(store.daily_total(&[], 30, &tz, now()).is_empty());
     }
 
     #[test]

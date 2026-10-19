@@ -33,6 +33,7 @@ mod providers;
 mod self_capture;
 mod settings_hub;
 mod settings_view;
+mod spend_view;
 mod status;
 mod theme;
 mod tray;

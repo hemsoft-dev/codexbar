@@ -613,6 +613,8 @@ impl HistoryView {
                 .point_count(point_count)
                 .tick_margin((point_count / 6).max(1))
                 .y_tick_format(move |value| kind.value(value))
+                // The hover tooltip reads like the axis, not as a raw float.
+                .tooltip_value(move |_, _, value| kind.value(value).into())
                 .into_any_element()
         };
 

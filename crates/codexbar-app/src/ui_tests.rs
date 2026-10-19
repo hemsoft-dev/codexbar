@@ -6702,3 +6702,134 @@ fn one_automatic_x_subscription_account_runs_and_owns_its_history(cx: &mut TestA
     let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
     assert_eq!(owned.get("xs-1").map(String::as_str), Some("xs-1"));
 }
+
+// The Spend view (#215).
+
+/// Every row label in a Spend list, in order: `spend-row-0`, `spend-row-1`, … until one is missing.
+fn spend_rows(cx: &mut TestAppContext, prefix: &str) -> Vec<String> {
+    (0..)
+        .map_while(|ix| label_of(cx, gpui_kit::ElementId::Name(format!("{prefix}-{ix}").into())))
+        .collect()
+}
+
+#[gpui_kit::test]
+fn the_spend_view_totals_each_currency_and_counts_only_net_spend(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("spend-demo", "{}");
+    let (handle, _) = open_dashboard(cx, &settings);
+    click(cx, handle, ("view-tab", 1usize));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+
+    // Cursor's $12.40 on-demand plus GitHub's $23.89 net; Claude's euros stay apart.
+    assert_eq!(
+        label(cx, handle, "spend-total-USD").as_deref(),
+        Some("Spent this period · USD: $36.29, 2 accounts")
+    );
+    assert_eq!(
+        label(cx, handle, "spend-total-EUR").as_deref(),
+        Some("Spent this period · EUR: €4.20, 1 account")
+    );
+    assert_eq!(
+        label(cx, handle, "balance-total-USD").as_deref(),
+        Some("Prepaid left: $43.87, 5 accounts")
+    );
+    let first = label(cx, handle, "spend-runs-out-first").unwrap();
+    assert!(first.starts_with("Runs out first: OpenRouter, "), "{first}");
+
+    let spend = spend_rows(cx, "spend-row");
+    assert_eq!(spend.len(), 3, "{spend:?}");
+    let github = spend.iter().find(|row| row.starts_with("GitHub Billing")).unwrap();
+    assert!(
+        github.starts_with("GitHub Billing · HemSoft, Net spend: $23.89, Resets in "),
+        "{github}"
+    );
+    assert!(
+        github.ends_with("Gross charges $605.52 · Discounts $581.63"),
+        "{github}"
+    );
+    let cursor = spend.iter().find(|row| row.starts_with("Cursor")).unwrap();
+    assert!(
+        cursor.starts_with("Cursor, On-demand: $12.40 of $50.00, 25% used, on pace for "),
+        "{cursor}"
+    );
+    let claude = spend.iter().find(|row| row.starts_with("Claude")).unwrap();
+    assert_eq!(
+        claude,
+        "Claude · personal, Extra usage: €4.20 of €20.00, 21% used, No reset date"
+    );
+
+    let balances = spend_rows(cx, "balance-row");
+    assert_eq!(balances.len(), 5, "{balances:?}");
+    assert!(
+        balances
+            .iter()
+            .any(|row| row.starts_with("OpenRouter, Credits: $18.42 left, About 6 days left, until ")),
+        "{balances:?}"
+    );
+    assert!(
+        balances.contains(&"X Subscription · Personal, Extra usage credits: $0.00 left, Empty".to_owned()),
+        "{balances:?}"
+    );
+    assert!(
+        balances.contains(&"Moonshot (Kimi), Balance: $7.85 left, No spending rate known yet".to_owned()),
+        "{balances:?}"
+    );
+
+    let chart = label(cx, handle, "spend-chart-region").unwrap();
+    assert!(chart.starts_with("Spend over 30 days. Latest $36.29, up "), "{chart}");
+    assert!(label(cx, handle, "spend-empty").is_none());
+}
+
+#[gpui_kit::test]
+fn the_spend_view_reads_by_keyboard(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("spend-keys", "{}");
+    let (handle, _) = open_dashboard(cx, &settings);
+    click(cx, handle, ("view-tab", 1usize));
+    let focused = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(handle, |_, window, _| {
+            window.try_find(id).and_then(|found| found.focused())
+        })
+        .unwrap()
+    };
+    // Tab reaches the first spend row, then each row in turn.
+    let mut presses = 0;
+    while focused(cx, "spend-row-0") != Some(true) {
+        press(cx, handle, "tab");
+        presses += 1;
+        assert!(presses < 40, "Tab never reached the first spend row");
+    }
+    press(cx, handle, "tab");
+    assert_eq!(focused(cx, "spend-row-1"), Some(true));
+
+    // The chart is a stop of its own, and the arrows read it a day at a time.
+    while focused(cx, "spend-chart-region") != Some(true) {
+        press(cx, handle, "tab");
+        presses += 1;
+        assert!(presses < 60, "Tab never reached the spend chart");
+    }
+    let latest = label(cx, handle, "spend-readout").unwrap();
+    assert!(latest.ends_with(" · $36.29"), "{latest}");
+    press(cx, handle, "home");
+    let oldest = label(cx, handle, "spend-readout").unwrap();
+    assert_ne!(oldest, latest);
+    press(cx, handle, "end");
+    assert_eq!(label(cx, handle, "spend-readout"), Some(latest));
+}
+
+#[gpui_kit::test]
+fn the_spend_view_points_to_accounts_when_nothing_reports_money(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("spend-empty", "{}");
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![FakeProvider::new(Provider::Codex, "codex", Some(0.5))],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    click(cx, handle, ("view-tab", 1usize));
+    let empty = label_of(cx, "spend-empty").unwrap();
+    assert_eq!(empty, "No account reports spend or a prepaid balance");
+    assert!(label_of(cx, "spend-row-0").is_none());
+    click(cx, handle, "spend-open-accounts");
+    assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Settings);
+}
