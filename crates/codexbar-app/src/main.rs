@@ -38,6 +38,7 @@ mod theme;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod usage_bar;
 #[cfg(windows)]
 mod widget_builder;
 #[cfg(windows)]

@@ -107,6 +107,25 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage");
 
+    // #197: a bar's tooltip, open over the Codex (personal) row after the hover delay has passed.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("progress-cell-codex-personal", cx);
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    save(&mut cx, handle, &out, "usage-bar-tooltip");
+    // Leave the bar, so the tooltip is gone before the captures below.
+    cx.update_window(handle, |_, window, cx| {
+        window.hover("order-mode", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
     // #195: wide enough, the table shows the 5-hour and weekly windows side by side; rows without one leave the
     // cells blank. A second demo window at 1920×1400, light and dark, closed again before the drag below.
     let wide = cx

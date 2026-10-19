@@ -27,6 +27,8 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - **Dashboard** with an account table, focus cards, usage history and window curves; wide enough, the table shows
   each account's 5-hour and weekly windows side by side, and every reset reads as time left ("in 2d 4h"), never a
   date
+- **Projection in every bar**: the share a limit is on pace to reach by its reset runs on past the solid share,
+  faded, with a tooltip that says both figures and the pace behind them
 - **Alerts** when an account nears or hits its limit
 - **Groups and ordering** by urgency or by hand
 - **Fix sign-ins from the dashboard**: a provider whose key or sign-in no longer works shows **Open settings**,

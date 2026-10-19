@@ -155,6 +155,9 @@ the account's id.
   when `widgets.json` changes and once a minute, and exits after ten minutes
   with no widget on screen.
 - **States.** Before the first snapshot, the widget asks you to open CodexBar.
+  A limit with a pace carries the share projected by its reset in `widgets.json`
+  (`projectedPercent`, past 100 when it runs out first), and the tile's line says
+  it ("Weekly: 42% used, on pace for 78%"); Adaptive Cards can't fade a bar.
   Accounts whose last refresh failed show **Last known** with their age, and
   accounts with no usage yet show **Unavailable**. A snapshot older than 15
   minutes reads **CodexBar isn't running**, with an Open button. Tapping the

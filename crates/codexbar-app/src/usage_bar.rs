@@ -53,7 +53,9 @@ impl Projection {
                 Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { .. } => {
                     "Too early in the window to project".to_owned()
                 }
-                Metric::Credits { .. } => "Credits don't project: the bar runs on the spend since the last top-up".to_owned(),
+                Metric::Credits { .. } => {
+                    "Credits don't project: the bar runs on the spend since the last top-up".to_owned()
+                }
                 Metric::Balance { .. } | Metric::Activity { .. } => "Nothing to project".to_owned(),
             },
         };
@@ -165,7 +167,7 @@ pub fn medium() -> Pixels {
 mod tests {
     use super::*;
     use chrono::Duration;
-    use codexbar_core::metric::Pace;
+    use codexbar_core::Pace;
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
