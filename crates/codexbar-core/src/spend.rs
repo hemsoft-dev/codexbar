@@ -45,13 +45,14 @@ impl BalanceRow<'_> {
         self.remaining().cents() <= 0
     }
 
-    /// When the balance runs out at its current burn rate; `None` when it is already empty or no rate is known.
-    pub fn runs_out(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    /// When the balance runs out at its burn rate, counted from when it was fetched, so the date holds still while
+    /// the same reading stays on screen; `None` when it is already empty or no rate is known.
+    pub fn runs_out(&self) -> Option<DateTime<Utc>> {
         if self.is_empty() {
             return None;
         }
         let days = self.metric.days_of_credit()?;
-        Some(now + Duration::seconds((days * 86_400.0).round() as i64))
+        Some(self.account.fetched_at() + Duration::seconds((days * 86_400.0).round() as i64))
     }
 }
 
@@ -101,11 +102,11 @@ impl<'a> SpendSheet<'a> {
         totals(self.balances.iter().map(BalanceRow::remaining))
     }
 
-    /// The balance that runs out first at its current burn rate, and when.
-    pub fn first_to_run_out(&self, now: DateTime<Utc>) -> Option<(&BalanceRow<'a>, DateTime<Utc>)> {
+    /// The balance that runs out first at its burn rate, and when.
+    pub fn first_to_run_out(&self) -> Option<(&BalanceRow<'a>, DateTime<Utc>)> {
         self.balances
             .iter()
-            .filter_map(|row| Some((row, row.runs_out(now)?)))
+            .filter_map(|row| Some((row, row.runs_out()?)))
             .min_by_key(|(_, at)| *at)
     }
 
@@ -243,7 +244,7 @@ mod tests {
         assert!(sheet.is_empty());
         assert!(sheet.spent().is_empty());
         assert!(sheet.left().is_empty());
-        assert!(sheet.first_to_run_out(now()).is_none());
+        assert!(sheet.first_to_run_out().is_none());
     }
 
     #[test]
@@ -280,13 +281,13 @@ mod tests {
             ),
         ];
         let sheet = SpendSheet::of(&accounts);
-        let openrouter = sheet.balances[0].runs_out(now()).unwrap();
+        let openrouter = sheet.balances[0].runs_out().unwrap();
         // $18.42 at $3.10 a day: 5.94 days.
         assert_eq!((openrouter - now()).num_hours(), 142);
-        assert_eq!(sheet.balances[2].runs_out(now()), None);
+        assert_eq!(sheet.balances[2].runs_out(), None);
         assert!(sheet.balances[3].is_empty());
-        assert_eq!(sheet.balances[3].runs_out(now()), None);
-        let (first, at) = sheet.first_to_run_out(now()).unwrap();
+        assert_eq!(sheet.balances[3].runs_out(), None);
+        let (first, at) = sheet.first_to_run_out().unwrap();
         assert_eq!(first.account.id().as_str(), "moonshot");
         assert_eq!((at - now()).num_hours(), 47);
     }

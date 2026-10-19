@@ -175,16 +175,18 @@ fn runway_text(row: &BalanceRow<'_>, now: DateTime<Utc>) -> String {
     if row.is_empty() {
         return "Empty".to_owned();
     }
-    match (row.metric.days_of_credit(), row.runs_out(now)) {
-        (Some(days), Some(at)) => {
+    // The days left count down to the date fixed at the last fetch, so they shrink while the reading ages.
+    match row.runs_out() {
+        Some(at) => {
             let until = crate::locale::style().month_day(at.with_timezone(&Local).date_naive());
-            match days {
+            match (at - now).num_seconds() as f64 / 86_400.0 {
+                d if d <= 0.0 => format!("Expected to have run out by {until}"),
                 d if d < 1.0 => format!("Less than a day left, until {until}"),
                 d if d < 1.5 => format!("About 1 day left, until {until}"),
                 d => format!("About {:.0} days left, until {until}", d),
             }
         }
-        _ => "No spending rate known yet".to_owned(),
+        None => "No spending rate known yet".to_owned(),
     }
 }
 
@@ -248,7 +250,7 @@ impl Render for SpendView {
             .id("spend-view")
             .w_full()
             .gap_6()
-            .child(self.render_totals(&sheet, now, cx))
+            .child(self.render_totals(&sheet, cx))
             .children(self.render_stale_note(&sheet, now, cx))
             .when(!spend_rows.is_empty(), |this| {
                 this.child(section("spend-list", "Spend this period", spend_rows, cx))
@@ -334,7 +336,7 @@ impl SpendView {
             )
     }
 
-    fn render_totals(&self, sheet: &SpendSheet<'_>, now: DateTime<Utc>, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_totals(&self, sheet: &SpendSheet<'_>, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let stat = |id: String, label: String, value: String, note: Option<String>| {
             v_flex()
@@ -389,7 +391,7 @@ impl SpendView {
                     Some(accounts(left_count(amount.currency()))),
                 )
             }))
-            .children(sheet.first_to_run_out(now).map(|(row, at)| {
+            .children(sheet.first_to_run_out().map(|(row, at)| {
                 stat(
                     "spend-runs-out-first".to_owned(),
                     "Runs out first".to_owned(),
@@ -887,6 +889,21 @@ mod tests {
         assert_eq!(runway(&balance(300, Some(310))), "Less than a day left, until Oct 20");
         assert_eq!(runway(&balance(1842, None)), "No spending rate known yet");
         assert_eq!(runway(&balance(0, Some(310))), "Empty");
+    }
+
+    #[test]
+    fn a_balance_keeps_its_run_out_date_while_the_reading_ages() {
+        let accounts = [balance(1842, Some(310))];
+        let sheet = SpendSheet::of(&accounts);
+        let row = &sheet.balances[0];
+        assert_eq!(
+            runway_text(row, now() + Duration::days(2)),
+            "About 4 days left, until Oct 25"
+        );
+        assert_eq!(
+            runway_text(row, now() + Duration::days(7)),
+            "Expected to have run out by Oct 25"
+        );
     }
 
     #[test]

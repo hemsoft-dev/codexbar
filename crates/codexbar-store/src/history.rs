@@ -349,10 +349,13 @@ impl HistoryStore {
         now: DateTime<Utc>,
     ) -> Vec<Point> {
         let today = now.with_timezone(tz).date_naive();
-        let lasts: Vec<Vec<Option<Reading>>> = series
+        // Per series: the last reading of each day in the window, and the last one before it, which the first days
+        // carry until the series reads again, so a series failing at the window's start doesn't read as a drop.
+        let (lasts, before): (Vec<Vec<Option<Reading>>>, Vec<Option<Reading>>) = series
             .iter()
             .map(|(account, metric)| {
                 let mut last: Vec<Option<Reading>> = vec![None; days];
+                let mut before: Option<Reading> = None;
                 for sample in self.series(account, metric) {
                     if sample.at() > now || sample.c.as_deref().is_some_and(|code| code != currency) {
                         continue;
@@ -361,21 +364,24 @@ impl HistoryStore {
                     let Ok(age) = usize::try_from((today - day).num_days()) else {
                         continue;
                     };
-                    if age < days {
-                        let slot = &mut last[days - 1 - age];
-                        if slot.is_none_or(|reading| sample.at() >= reading.at) {
-                            *slot = Some(Reading {
-                                at: sample.at(),
-                                value: sample.v,
-                                resets_at: sample.resets_at(),
-                            });
-                        }
+                    let reading = Reading {
+                        at: sample.at(),
+                        value: sample.v,
+                        resets_at: sample.resets_at(),
+                    };
+                    let slot = if age < days {
+                        &mut last[days - 1 - age]
+                    } else {
+                        &mut before
+                    };
+                    if slot.is_none_or(|kept| reading.at >= kept.at) {
+                        *slot = Some(reading);
                     }
                 }
-                last
+                (last, before)
             })
-            .collect();
-        let mut carried: Vec<Option<Reading>> = vec![None; series.len()];
+            .unzip();
+        let mut carried: Vec<Option<Reading>> = before;
         let mut out = Vec::new();
         for day in 0..days {
             let mut at: Option<DateTime<Utc>> = None;
@@ -758,6 +764,23 @@ mod tests {
         let totals = store.daily_total(&[("a", "on-demand"), ("b", "on-demand")], "USD", 5, &tz, now());
         let values: Vec<f64> = totals.iter().map(|point| point.value).collect();
         assert_eq!(values, [45.0, 7.0], "a's $40 belongs to a period that ended");
+    }
+
+    #[test]
+    fn daily_total_carries_a_reading_from_before_the_window() {
+        use codexbar_core::Currency::Usd;
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let mut store = HistoryStore::in_memory(retention());
+        let resets = now() + Duration::days(9);
+        // a last read six days back, before a five-day window; b reads inside it.
+        store
+            .record(&[spend("a", 2000, Usd, resets)], now() - Duration::days(6))
+            .unwrap();
+        store
+            .record(&[spend("b", 300, Usd, resets)], now() - Duration::days(2))
+            .unwrap();
+        let totals = store.daily_total(&[("a", "on-demand"), ("b", "on-demand")], "USD", 5, &tz, now());
+        assert_eq!(totals, [Point::new(now() - Duration::days(2), 23.0)]);
     }
 
     #[test]
