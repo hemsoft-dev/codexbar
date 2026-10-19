@@ -269,6 +269,84 @@ fn captures() {
     cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
     cx.run_until_parked();
 
+    // #218: Claude's cards by default, then with both its 5-hour and weekly rings chosen, light and dark, and the
+    // gauge card's menu open.
+    let request = crate::handoff::FocusRequest {
+        account: "claude-personal".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-claude-default");
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude-personal", |choice| {
+            choice.toggle_ring("5-hour-window");
+            choice.toggle_ring("weekly");
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-claude-two-rings");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-claude-two-rings-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("focus-card-menu", 1usize), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-card-menu-open");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // The two rings at 150% zoom in a 1440×960 window, scrolled to the cards.
+    let rings_zoomed = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
+            let request = crate::handoff::FocusRequest {
+                account: "claude-personal".into(),
+                metric: None,
+            };
+            view.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let rings_zoomed: AnyWindowHandle = rings_zoomed.into();
+    cx.update(|cx| zoom::set_level(1.5, cx));
+    cx.run_until_parked();
+    cx.update_window(rings_zoomed, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "main-scroll",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-6000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, rings_zoomed, &out, "focus-claude-two-rings-zoom150");
+    // Three rings, the most the card shows (#221), still drawn as rings at 150%.
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude-personal", |choice| {
+            choice.toggle_ring("extra-usage")
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, rings_zoomed, &out, "focus-claude-three-rings-zoom150");
+    cx.update(|cx| {
+        zoom::set_level(1.0, cx);
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude-personal", |choice| choice.rings.clear());
+    });
+    cx.update_window(rings_zoomed, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::History, cx)));
     cx.run_until_parked();
     save(&mut cx, handle, &out, "history");

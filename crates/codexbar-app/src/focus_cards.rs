@@ -3,6 +3,8 @@
 
 use chrono::{DateTime, Local, Utc};
 use codexbar_core::{AccountSnapshot, Metric, Severity, format};
+use codexbar_store::focus::{ActivityView, FocusChoice, MAX_RINGS, UsageView};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
@@ -52,6 +54,8 @@ struct Card {
     takeaway: SharedString,
     alert: Option<Hsla>,
     caption: SharedString,
+    /// What the card can show instead, at the header's end (#218).
+    menu: Option<AnyElement>,
 }
 
 impl Card {
@@ -66,7 +70,13 @@ impl Card {
             takeaway: SharedString::default(),
             alert: None,
             caption: SharedString::default(),
+            menu: None,
         }
+    }
+
+    fn menu(mut self, menu: AnyElement) -> Self {
+        self.menu = Some(menu);
+        self
     }
 
     fn legend(mut self, color: Hsla, label: impl Into<SharedString>) -> Self {
@@ -127,24 +137,33 @@ impl Card {
                             .child(div().font_semibold().child(self.title))
                             .child(div().text_sm().text_color(muted).child(self.period)),
                     )
-                    .when(!self.legend.is_empty(), |this| {
+                    .when(!self.legend.is_empty() || self.menu.is_some(), |this| {
                         this.child(
                             h_flex()
-                                .id(legend_id)
-                                .test_support()
-                                .flex_wrap()
                                 .min_w_0()
-                                .justify_end()
-                                .gap_3()
-                                .text_xs()
-                                .text_color(muted)
-                                .children(self.legend.into_iter().map(|(color, label)| {
-                                    h_flex()
-                                        .gap_1p5()
-                                        .items_center()
-                                        .child(div().size_2().rounded_full().bg(color))
-                                        .child(label)
-                                })),
+                                .gap_2()
+                                .items_start()
+                                .when(!self.legend.is_empty(), |this| {
+                                    this.child(
+                                        h_flex()
+                                            .id(legend_id)
+                                            .test_support()
+                                            .flex_wrap()
+                                            .min_w_0()
+                                            .justify_end()
+                                            .gap_3()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .children(self.legend.into_iter().map(|(color, label)| {
+                                                h_flex()
+                                                    .gap_1p5()
+                                                    .items_center()
+                                                    .child(div().size_2().rounded_full().bg(color))
+                                                    .child(label)
+                                            })),
+                                    )
+                                })
+                                .children(self.menu),
                         )
                     }),
             )
@@ -249,21 +268,187 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
 
 /// The three cards for `account`, left to right.
 pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Vec<AnyElement> {
+    let id = account.id().as_str();
+    let choice = crate::prefs_hub::PrefsHub::focus_choice(cx, id);
+    let menus = card_menus(account, &choice, cx);
+    let [usage, rings, activity] = menus;
     vec![
-        usage_card(account, now, cx).render(cx).into_any_element(),
-        share_card(account, now, cx).render(cx).into_any_element(),
-        activity_card(account, cx).render(cx).into_any_element(),
+        usage_card(account, now, usage_in_effect(account, choice.usage), cx)
+            .menu(usage)
+            .render(cx)
+            .into_any_element(),
+        share_card(account, now, &choice.rings, cx)
+            .menu(rings)
+            .render(cx)
+            .into_any_element(),
+        activity_card(account, activity_in_effect(account, choice.activity), cx)
+            .menu(activity)
+            .render(cx)
+            .into_any_element(),
     ]
 }
 
+/// One entry in a card's menu: what it shows and what choosing it does.
+#[derive(Clone)]
+struct MenuEntry {
+    label: String,
+    checked: bool,
+    /// Shown but not pickable: another ring once the gauge card has its most (#221).
+    disabled: bool,
+    action: MenuAction,
+}
+
+#[derive(Clone)]
+enum MenuAction {
+    Usage(Option<UsageView>),
+    /// `None` clears the rings back to automatic; a key adds or removes that limit's ring.
+    Ring(Option<String>),
+    Activity(Option<ActivityView>),
+}
+
+/// What each card can show for `account`, from what it reports (#218). The usage card offers the window curve when
+/// the provider sends one and the trend once history has two days; the gauge card offers every metric with a share
+/// of a limit; the activity card offers requests by hour when the provider counts them.
+fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice) -> [Vec<MenuEntry>; 3] {
+    let entry = |label: &str, checked: bool, action: MenuAction| MenuEntry {
+        label: label.to_owned(),
+        checked,
+        disabled: false,
+        action,
+    };
+    // Each card checks what it shows, so a saved view the account can no longer draw reads as Automatic (#221).
+    let usage_view = usage_in_effect(account, choice.usage);
+    let activity_view = activity_in_effect(account, choice.activity);
+    let mut usage = vec![entry("Automatic", usage_view.is_none(), MenuAction::Usage(None))];
+    if account.detail().window_curve().is_some() {
+        usage.push(entry(
+            "This window and the last",
+            usage_view == Some(UsageView::Window),
+            MenuAction::Usage(Some(UsageView::Window)),
+        ));
+    }
+    if account.trend().len() >= 2 {
+        usage.push(entry(
+            "Last 14 days",
+            usage_view == Some(UsageView::Trend),
+            MenuAction::Usage(Some(UsageView::Trend)),
+        ));
+    }
+    // Automatic is what the card shows when no chosen limit is reported any more, too (#221).
+    let shown = chosen_rings(account, &choice.rings).len();
+    let mut rings = vec![entry("Automatic", shown == 0, MenuAction::Ring(None))];
+    for metric in limits(account) {
+        let key = metric.key();
+        let checked = choice.rings.contains(&key);
+        rings.push(MenuEntry {
+            disabled: !checked && shown >= MAX_RINGS,
+            ..entry(metric.label(), checked, MenuAction::Ring(Some(key)))
+        });
+    }
+    let mut activity = vec![entry("Automatic", activity_view.is_none(), MenuAction::Activity(None))];
+    if !account.detail().requests_by_hour().is_empty() {
+        activity.push(entry(
+            "Requests by hour",
+            activity_view == Some(ActivityView::Hours),
+            MenuAction::Activity(Some(ActivityView::Hours)),
+        ));
+    }
+    activity.push(entry(
+        "Usage by day",
+        activity_view == Some(ActivityView::Days),
+        MenuAction::Activity(Some(ActivityView::Days)),
+    ));
+    [usage, rings, activity]
+}
+
+/// The usage view a card shows: the chosen one while the account can draw it, otherwise automatic (#221), so the
+/// card and its menu agree on what is on screen.
+fn usage_in_effect(account: &AccountSnapshot, chosen: Option<UsageView>) -> Option<UsageView> {
+    chosen.filter(|view| match view {
+        UsageView::Window => account.detail().window_curve().is_some(),
+        UsageView::Trend => account.trend().len() >= 2,
+    })
+}
+
+/// The activity view a card shows: requests by hour only while the provider counts them (#221).
+fn activity_in_effect(account: &AccountSnapshot, chosen: Option<ActivityView>) -> Option<ActivityView> {
+    chosen.filter(|view| match view {
+        ActivityView::Hours => !account.detail().requests_by_hour().is_empty(),
+        ActivityView::Days => true,
+    })
+}
+
+/// The metrics a ring can show: those with a share of a limit, in the provider's order.
+fn limits(account: &AccountSnapshot) -> impl Iterator<Item = &Metric> {
+    account
+        .metrics()
+        .iter()
+        .filter(|metric| metric.used_fraction().is_some())
+}
+
+/// Each card's menu button. A choice saves at once and the cards redraw; the gauge's limits toggle, so the menu
+/// builds up several rings one pick at a time.
+fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [AnyElement; 3] {
+    use gpui_kit::component::Disableable as _;
+    use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+    let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx);
+    let names = ["usage chart", "gauge", "activity chart"];
+    let entries = menu_entries(account, choice);
+    // The limits the account reports now, so a pick drops chosen ones it no longer reports (#221).
+    let available: Vec<String> = limits(account).map(Metric::key).collect();
+    let mut menus = entries.into_iter().enumerate().map(|(ix, entries)| {
+        let account = account.id().as_str().to_owned();
+        let available = available.clone();
+        let spoken = format!("Choose what the {} shows", names[ix]);
+        Button::new(("focus-card-menu", ix))
+            .ghost()
+            .xsmall()
+            .icon(IconName::Settings)
+            .accessibility_label(spoken.clone())
+            .tooltip(spoken)
+            .disabled(read_only)
+            .dropdown_menu(move |mut menu, _, _| {
+                for entry in &entries {
+                    let account = account.clone();
+                    let action = entry.action.clone();
+                    let available = available.clone();
+                    let item = PopupMenuItem::new(entry.label.clone())
+                        .checked(entry.checked)
+                        .disabled(entry.disabled);
+                    menu = menu.item(item.on_click(
+                        move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut App| {
+                            let action = action.clone();
+                            let available = available.clone();
+                            crate::prefs_hub::PrefsHub::update_focus_choice(cx, &account, move |choice| match action {
+                                MenuAction::Usage(view) => choice.usage = view,
+                                MenuAction::Ring(None) => choice.rings.clear(),
+                                MenuAction::Ring(Some(key)) => choice.toggle_ring_among(&key, &available),
+                                MenuAction::Activity(view) => choice.activity = view,
+                            });
+                        },
+                    ));
+                }
+                menu
+            })
+            .into_any_element()
+    });
+    [menus.next().unwrap(), menus.next().unwrap(), menus.next().unwrap()]
+}
+
 /// The wide card: the current window against the previous one, or the 14-day trend when no curve exists.
-fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
+fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageView>, cx: &App) -> Card {
     let current_color = cx.theme().chart_1;
     let previous_color = cx.theme().chart_4;
     let primary = account.primary();
     let severity = account.assess(now).severity();
 
-    let card = if let Some(curve) = account.detail().window_curve() {
+    // The window curve unless the trend was chosen (#218); a chosen window curve the provider no longer sends falls
+    // back to the trend.
+    let curve = account
+        .detail()
+        .window_curve()
+        .filter(|_| view != Some(UsageView::Trend));
+    let card = if let Some(curve) = curve {
         let points: Vec<(SharedString, f64, f64)> = curve
             .labels()
             .iter()
@@ -354,9 +539,15 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
 }
 
 /// The share of a pool as a ring gauge (#174), or the credits, balance or spend when no metric has a share.
-fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
+fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, rings: &[String], cx: &App) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
-    let Some(metric) = share_metric(account, now) else {
+    // The chosen limits (#218), in the order chosen; any the account no longer reports are skipped, and with none
+    // left the card is automatic again.
+    let chosen = chosen_rings(account, rings);
+    if chosen.len() >= 2 {
+        return rings_card(&chosen, now, cx);
+    }
+    let Some(metric) = chosen.first().copied().or_else(|| share_metric(account, now)) else {
         return Card::new("No limits", "", div()).takeaway("This account reports no limits");
     };
 
@@ -442,6 +633,96 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         .caption(caption)
 }
 
+/// The chosen ring metrics that the account still reports with a share of a limit, in the order chosen.
+fn chosen_rings<'a>(account: &'a AccountSnapshot, rings: &[String]) -> Vec<&'a Metric> {
+    rings
+        .iter()
+        .filter_map(|key| limits(account).find(|metric| &metric.key() == key))
+        .take(MAX_RINGS)
+        .collect()
+}
+
+/// Several rings side by side (#218), one per chosen limit, each with its own number, pace and reset. The takeaway
+/// names the limit with the least of its pool left.
+fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, cx: &App) -> Card {
+    use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
+    let muted = cx.theme().muted_foreground;
+    let rings = metrics.iter().enumerate().map(|(ix, metric)| {
+        let used = metric.used_fraction().unwrap_or_default();
+        let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
+        let outlook = metric.outlook(now);
+        let pace = outlook.map(format::outlook_text);
+        let spoken = match &pace {
+            Some(pace) => format!("{}: {:.0}% used, {pace}", metric.label(), used * 100.0),
+            None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
+        };
+        let hover: SharedString = crate::usage_bar::Projection::of(metric, used, now).tooltip.into();
+        v_flex()
+            .id(("focus-ring", ix))
+            .role(Role::Note)
+            .test_support()
+            .aria_label(spoken)
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .gap_1()
+            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hover.clone()).build(window, cx))
+            .child(
+                // Two lines are kept for every label, so a label that wraps doesn't push its ring below its
+                // neighbours'.
+                v_flex()
+                    .min_h(rems(2.6))
+                    .justify_end()
+                    .text_sm()
+                    .text_color(muted)
+                    .text_center()
+                    .child(metric.label().to_owned()),
+            )
+            .child(
+                div().flex_1().min_h_0().child(
+                    crate::gauge::Gauge::new(
+                        used,
+                        metric.projected_at_reset(now),
+                        format!("{:.0}", used * 100.0),
+                        color,
+                        cx,
+                    )
+                    .pace(pace)
+                    .max_radius(crate::zoom::scaled(RING_MAX_RADIUS, cx))
+                    .render(),
+                ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .text_center()
+                    .child(reset_caption(metric, now)),
+            )
+    });
+    // Labels and resets wrap rather than cut off when the card is narrow or zoomed in.
+    let body = h_flex().size_full().gap_3().children(rings);
+    let tightest = metrics
+        .iter()
+        .max_by(|a, b| {
+            let used = |metric: &&&Metric| metric.used_fraction().unwrap_or_default();
+            used(a).total_cmp(&used(b))
+        })
+        .copied();
+    let takeaway = tightest
+        .map(|metric| {
+            format!(
+                "{}: {}",
+                metric.label(),
+                pool_takeaway(1.0 - metric.used_fraction().unwrap_or_default()).to_lowercase()
+            )
+        })
+        .unwrap_or_default();
+    Card::new("Limits", format!("{} limits", metrics.len()), body)
+        .id("focus-card-limits")
+        .takeaway(takeaway)
+}
+
 /// The metric for the second card: the one after the headline that raises the status when it has a share of a pool
 /// (so Cursor's on-demand spend stays on screen), otherwise the headline's share, otherwise the most pressing share
 /// further down (GitHub Billing lists its allowances after two uncapped spends) (#174). Only when no metric has a
@@ -472,7 +753,7 @@ fn displaced_credits(account: &AccountSnapshot) -> Option<String> {
 }
 
 /// Requests by hour when the provider reports them, otherwise daily pressure as bars.
-fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
+fn activity_card(account: &AccountSnapshot, view: Option<ActivityView>, cx: &App) -> Card {
     let color = cx.theme().chart_1;
     let bar_fill = move |_: &(SharedString, f64), _, _, _| -> Background {
         linear_gradient(
@@ -482,7 +763,8 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         )
     };
     let requests = account.detail().requests_by_hour();
-    if !requests.is_empty() {
+    // Requests by hour unless usage by day was chosen (#218).
+    if !requests.is_empty() && view != Some(ActivityView::Days) {
         let bars: Vec<(SharedString, f64)> = requests
             .iter()
             .enumerate()
@@ -843,6 +1125,120 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    fn claude() -> AccountSnapshot {
+        use codexbar_core::{AccountId, Money, Provider};
+        let named = |label: &str, used: f64| Metric::Window {
+            label: label.into(),
+            used,
+            resets_at: now() + Duration::hours(10),
+            pace: None,
+        };
+        AccountSnapshot::new(
+            AccountId::new("claude"),
+            Provider::Claude,
+            vec![
+                named("Weekly", 0.82),
+                named("5-hour window", 0.64),
+                Metric::Balance {
+                    label: "Credits".into(),
+                    remaining: Money::from_cents(500),
+                    burn_per_day: None,
+                },
+            ],
+            now(),
+        )
+        .with_trend(vec![0.4, 0.5, 0.6])
+    }
+
+    #[test]
+    fn each_card_menu_offers_only_what_the_account_reports() {
+        let account = claude();
+        let [usage, rings, activity] = menu_entries(&account, &FocusChoice::default());
+        let labels = |entries: &[MenuEntry]| entries.iter().map(|e| e.label.clone()).collect::<Vec<_>>();
+        // No window curve from this account, so only the trend; no requests by hour, so only usage by day.
+        assert_eq!(labels(&usage), ["Automatic", "Last 14 days"]);
+        assert_eq!(labels(&activity), ["Automatic", "Usage by day"]);
+        // A balance has no share of a limit, so it gets no ring.
+        assert_eq!(labels(&rings), ["Automatic", "Weekly", "5-hour window"]);
+        assert!(
+            usage[0].checked && rings[0].checked && activity[0].checked,
+            "automatic by default"
+        );
+
+        let mut choice = FocusChoice::default();
+        choice.toggle_ring("5-hour-window");
+        let [_, rings, _] = menu_entries(&account, &choice);
+        let checked: Vec<_> = rings.iter().filter(|e| e.checked).map(|e| e.label.as_str()).collect();
+        assert_eq!(checked, ["5-hour window"]);
+    }
+
+    #[test]
+    fn a_saved_view_the_account_cannot_draw_reads_as_automatic() {
+        // Claude here has a trend but no window curve and no requests by hour.
+        let account = claude();
+        let choice = FocusChoice {
+            usage: Some(UsageView::Window),
+            activity: Some(ActivityView::Hours),
+            ..FocusChoice::default()
+        };
+        assert_eq!(usage_in_effect(&account, choice.usage), None);
+        assert_eq!(activity_in_effect(&account, choice.activity), None);
+        let [usage, _, activity] = menu_entries(&account, &choice);
+        assert!(usage[0].checked, "Automatic, since the card shows its automatic view");
+        assert!(activity[0].checked);
+        // A trend chosen with fewer than two days of history falls back too, rather than hiding a window curve.
+        let young = AccountSnapshot::new(
+            account.id().clone(),
+            account.provider(),
+            account.metrics().to_vec(),
+            now(),
+        );
+        assert_eq!(usage_in_effect(&young, Some(UsageView::Trend)), None);
+        assert_eq!(
+            usage_in_effect(&account, Some(UsageView::Trend)),
+            Some(UsageView::Trend)
+        );
+    }
+
+    #[test]
+    fn the_gauge_menu_reads_automatic_when_no_chosen_limit_is_reported_and_stops_at_three() {
+        let account = claude();
+        let stale = FocusChoice {
+            rings: vec!["opus-weekly".into()],
+            ..FocusChoice::default()
+        };
+        let [_, rings, _] = menu_entries(&account, &stale);
+        assert!(rings[0].checked, "Automatic, since the card shows the automatic ring");
+
+        let full = FocusChoice {
+            rings: vec!["weekly".into(), "5-hour-window".into(), "spare".into()],
+            ..FocusChoice::default()
+        };
+        // Only two of the three are reported, so the card isn't full and nothing is disabled.
+        let [_, rings, _] = menu_entries(&account, &full);
+        assert!(rings.iter().all(|entry| !entry.disabled));
+    }
+
+    #[test]
+    fn chosen_rings_skip_limits_the_account_no_longer_reports() {
+        let account = claude();
+        let keys = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+        let labels = |metrics: Vec<&Metric>| metrics.into_iter().map(|m| m.label().to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            labels(chosen_rings(&account, &keys(&["5-hour-window", "weekly"]))),
+            ["5-hour window", "Weekly"],
+            "in the order chosen"
+        );
+        assert_eq!(
+            labels(chosen_rings(&account, &keys(&["opus-weekly", "weekly"]))),
+            ["Weekly"]
+        );
+        assert!(
+            chosen_rings(&account, &keys(&["gone", "credits"])).is_empty(),
+            "back to automatic"
+        );
     }
 
     #[test]

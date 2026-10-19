@@ -180,6 +180,23 @@ impl PrefsHub {
         cx.refresh_windows();
     }
 
+    /// What `account`'s focus cards show (#218); automatic when nothing is chosen.
+    pub fn focus_choice(cx: &App, account: &str) -> codexbar_store::focus::FocusChoice {
+        cx.try_global::<Self>()
+            .map(|hub| hub.prefs.focus_choice(account))
+            .unwrap_or_default()
+    }
+
+    /// Changes `account`'s focus-card choices, saves when they changed, and redraws.
+    pub fn update_focus_choice(
+        cx: &mut App,
+        account: &str,
+        change: impl FnOnce(&mut codexbar_store::focus::FocusChoice),
+    ) {
+        Self::edit(cx, |prefs| prefs.update_focus_choice(account, change));
+        cx.refresh_windows();
+    }
+
     /// Gives a fresh account's credits their starting balance (#150): remembers the balance just read (a first one,
     /// or a top-up, becomes the start) and saves when the start moved.
     pub fn with_credit_start(cx: &mut App, account: AccountSnapshot) -> AccountSnapshot {

@@ -3623,11 +3623,15 @@ fn the_keyboard_starts_on_the_view_tabs_and_tab_cycles_through_the_usage_view(cx
     };
     // Focus starts on the selected view tab, so the first key press does something.
     assert!(focused(cx, ("view-tab", 0usize).into()));
-    let order: [gpui_kit::ElementId; 4] = [
+    let order: [gpui_kit::ElementId; 7] = [
         "refresh".into(),
         ("order-mode", 0usize).into(),
         ("order-mode", 1usize).into(),
         "group-menu".into(),
+        // Each focus card's menu (#218).
+        ("focus-card-menu", 0usize).into(),
+        ("focus-card-menu", 1usize).into(),
+        ("focus-card-menu", 2usize).into(),
     ];
     for (step, id) in order.iter().enumerate() {
         press(cx, handle, "tab");
@@ -3642,7 +3646,19 @@ fn the_keyboard_starts_on_the_view_tabs_and_tab_cycles_through_the_usage_view(cx
     press(cx, handle, "tab");
     assert!(focused(cx, ("view-tab", 0usize).into()));
     press(cx, handle, "shift-tab");
-    assert!(focused(cx, "group-menu".into()), "Shift+Tab goes back the same way");
+    assert!(
+        focused(cx, ("focus-card-menu", 2usize).into()),
+        "Shift+Tab goes back the same way"
+    );
+    // A focus card's menu opens from the keyboard (#218).
+    press(cx, handle, "enter");
+    let opened = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("popup-menu").is_some()
+        })
+        .unwrap();
+    assert!(opened, "Enter opens the card's menu");
 }
 
 #[gpui_kit::test]
@@ -6905,4 +6921,97 @@ fn the_spend_view_says_a_money_account_failed_instead_of_claiming_none(cx: &mut 
     );
     click(cx, handle, "spend-open-usage");
     assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Usage);
+}
+
+// Focus-card choices (#218).
+
+/// Scrolls the dashboard to its end, where the focus cards are.
+fn scroll_to_cards(cx: &mut TestAppContext, handle: AnyWindowHandle) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("main-scroll", ScrollDelta::Pixels(point(px(0.), px(-6000.))), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// True when an element with `id` was drawn.
+fn drawn(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &'static str) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+/// Opens card `card`'s menu and picks item `item` (0 is Automatic).
+fn pick_card_menu(cx: &mut TestAppContext, handle: AnyWindowHandle, card: usize, item: usize) {
+    scroll_to_cards(cx, handle);
+    click(cx, handle, ("focus-card-menu", card));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("popup-menu").click(item, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_gauge_card_shows_the_limits_chosen_from_its_menu(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("focus-rings", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let request = crate::handoff::FocusRequest {
+        account: "claude-personal".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    assert!(
+        label_of(cx, "focus-card-limits").is_none(),
+        "one ring until more are chosen"
+    );
+
+    // Claude's limits are Weekly, 5-hour window and Extra usage, after Automatic.
+    pick_card_menu(cx, handle, 1, 1);
+    pick_card_menu(cx, handle, 1, 2);
+    let first = label_of(cx, ("focus-ring", 0usize)).unwrap();
+    let second = label_of(cx, ("focus-ring", 1usize)).unwrap();
+    assert!(first.starts_with("Weekly: 82% used"), "{first}");
+    assert!(second.starts_with("5-hour window: 64% used"), "{second}");
+    assert!(label_of(cx, ("focus-ring", 2usize)).is_none());
+
+    // Saved per account, in dashboard.json.
+    let saved = std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        json["focusCards"]["claude-personal"]["rings"],
+        serde_json::json!(["weekly", "5-hour-window"])
+    );
+
+    // Automatic again: one ring, and the account leaves the file's choices.
+    pick_card_menu(cx, handle, 1, 0);
+    assert!(label_of(cx, ("focus-ring", 0usize)).is_none());
+    let saved = std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert!(json["focusCards"].get("claude-personal").is_none(), "{json}");
+}
+
+#[gpui_kit::test]
+fn the_usage_and_activity_cards_switch_from_their_menus(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("focus-views", "{}");
+    let (handle, _dashboard) = open_dashboard(cx, &settings);
+    // The first account, Codex personal, has a window curve and requests by hour.
+    assert!(drawn(cx, handle, "focus-window-plot"));
+    assert!(!drawn(cx, handle, "focus-days-plot"), "requests by hour by default");
+    // Usage card: Automatic, This window and the last, Last 14 days.
+    pick_card_menu(cx, handle, 0, 2);
+    assert!(
+        !drawn(cx, handle, "focus-window-plot"),
+        "the trend replaces the window curve"
+    );
+    // Activity card: Automatic, Requests by hour, Usage by day.
+    pick_card_menu(cx, handle, 2, 2);
+    let days = label_of(cx, "focus-days-plot").unwrap();
+    assert!(days.starts_with("Usage by day: "), "{days}");
 }
