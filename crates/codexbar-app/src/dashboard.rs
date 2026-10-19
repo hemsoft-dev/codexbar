@@ -1389,12 +1389,7 @@ impl Dashboard {
             .unwrap_or_default();
         let reset = metric
             .and_then(Metric::resets_at)
-            .map(|at| {
-                format!(
-                    ", resets {}",
-                    format::reset_label_in(at, self.now, &Local, crate::locale::style())
-                )
-            })
+            .map(|at| format!(", resets {}", format::time_left_label(at, self.now)))
             .unwrap_or_default();
         // Restored or stale usage says so, so an old figure isn't read as current.
         let freshness = match self.states.get(top.id().as_str()) {

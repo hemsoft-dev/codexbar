@@ -696,15 +696,10 @@ fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
     }
 }
 
+/// "Resets in 2d 4h", or "Resets now": always time left (#196), as the table's Resets column says it.
 fn reset_caption(metric: &Metric, now: DateTime<Utc>) -> String {
     match metric.resets_at() {
-        Some(at) => {
-            let label = format::reset_label_in(at, now, &Local, crate::locale::style());
-            match label.strip_prefix("in ") {
-                Some(rest) => format!("Resets in {rest}"),
-                None => format!("Resets {label}"),
-            }
-        }
+        Some(at) => format!("Resets {}", format::time_left_label(at, now)),
         None => String::new(),
     }
 }

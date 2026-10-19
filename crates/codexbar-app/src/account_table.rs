@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Utc};
 use codexbar_core::{AccountSnapshot, Metric, format};
 use codexbar_store::summary::HistorySummary;
 use gpui_kit::component::chart::AreaChart;
@@ -494,15 +494,20 @@ impl TableDelegate for AccountTable {
                     None => bar_cell_without_metric(&id, &assessment, severity, row, cx),
                 }
             }
-            Col::Resets => div()
-                .text_color(muted)
-                .child(
-                    primary
-                        .and_then(Metric::resets_at)
-                        .map(|at| format::reset_label_in(at, self.now, &Local, crate::locale::style()))
-                        .unwrap_or_else(|| "—".into()),
-                )
-                .into_any_element(),
+            // Always how long is left (#196), never a weekday, time or date; the clock refreshes it every second.
+            Col::Resets => {
+                let label = primary
+                    .and_then(Metric::resets_at)
+                    .map(|at| format::time_left_label(at, self.now))
+                    .unwrap_or_else(|| "—".into());
+                div()
+                    .id(ElementId::Name(format!("resets-{}", row.id().as_str()).into()))
+                    .test_support()
+                    .aria_label(format!("Resets: {label}"))
+                    .text_color(muted)
+                    .child(label)
+                    .into_any_element()
+            }
             Col::Trend => self.trend_cell(row, cx),
         }
     }
