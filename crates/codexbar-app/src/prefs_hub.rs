@@ -83,6 +83,17 @@ impl PrefsHub {
         cx.refresh_windows();
     }
 
+    /// Where the dashboard window was last (#194), when a placement was saved.
+    pub fn window_placement(cx: &App) -> Option<codexbar_store::prefs::WindowPlacement> {
+        cx.try_global::<Self>()
+            .and_then(|hub| hub.prefs.window_placement().cloned())
+    }
+
+    /// Remembers where the dashboard window is, saved at once.
+    pub fn set_window_placement(cx: &mut App, placement: codexbar_store::prefs::WindowPlacement) {
+        Self::edit(cx, |prefs| prefs.set_window_placement(placement));
+    }
+
     pub fn alert_settings(cx: &App) -> AlertSettings {
         cx.try_global::<Self>()
             .map(|hub| hub.prefs.alert_settings().clone())

@@ -140,10 +140,14 @@ fn hwnd(window: &Window) -> Option<HWND> {
     }
 }
 
-/// True when the window is on screen and not minimized.
+/// True when the window is on screen and not minimized. A window with no HWND (the headless tests') answers with
+/// what GPUI knows.
 #[cfg(windows)]
 pub fn is_shown(window: &Window) -> bool {
-    hwnd(window).is_some_and(|hwnd| unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() })
+    match hwnd(window) {
+        Some(hwnd) => unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() },
+        None => window.is_visible(),
+    }
 }
 
 #[cfg(windows)]

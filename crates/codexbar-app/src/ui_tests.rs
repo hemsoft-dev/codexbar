@@ -1465,6 +1465,7 @@ fn a_network_failure_offers_only_retry(cx: &mut TestAppContext) {
     );
 }
 
+<<<<<<< HEAD
 // Both standard windows side by side (#195) when the table is wide enough; one metric per row otherwise.
 
 #[gpui_kit::test]
@@ -1574,6 +1575,50 @@ fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut Tes
         .unwrap();
     assert_eq!(label(cx, handle, "window-weekly-codex-1"), None);
     assert_eq!(label(cx, handle, "progress-cell-codex-1").as_deref(), Some("91% used"));
+=======
+// Window placement (#194): saved once the window has rested, read back at the next start.
+
+#[gpui_kit::test]
+fn the_window_placement_is_saved_once_the_window_rests(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("placement-save", "{}");
+    let _dashboard = open_live(cx, &settings, vec![]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.simulate_window_resize(handle, size(px(1200.), px(800.)));
+    // The clock ticks once a second; a placement is saved once it stays the same for a tick.
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0)
+        .window_placement()
+        .cloned()
+        .expect("the placement is in dashboard.json");
+    assert_eq!((saved.width, saved.height), (1200., 800.));
+    assert!(!saved.maximized && !saved.minimized);
+    assert!(saved.display.is_some(), "the display is named");
+
+    // A placement that stays the same isn't written again; a new one is.
+    let written = std::fs::metadata(settings.0.join("dashboard.json"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::metadata(settings.0.join("dashboard.json"))
+            .unwrap()
+            .modified()
+            .unwrap(),
+        written
+    );
+    cx.simulate_window_resize(handle, size(px(1300.), px(900.)));
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0)
+        .window_placement()
+        .cloned()
+        .unwrap();
+    assert_eq!((saved.width, saved.height), (1300., 900.));
+>>>>>>> b8bfee4 (feat: remember the dashboard window's display, position, size and state (#194))
 }
 
 #[gpui_kit::test]

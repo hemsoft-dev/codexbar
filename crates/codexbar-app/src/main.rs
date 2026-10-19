@@ -26,6 +26,7 @@ mod mark;
 mod notifications;
 mod opencode_sign_in;
 mod package;
+mod placement;
 mod prefs_hub;
 mod providers;
 #[cfg(feature = "capture")]
@@ -49,7 +50,7 @@ use std::sync::{Arc, Mutex};
 
 use codexbar_store::{HistoryStore, default_history_path};
 use gpui_kit::component::TitleBar;
-use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions};
 
 use crate::dashboard::{Dashboard, DashboardView, DataSource};
 use crate::tray::TrayCommand;
@@ -226,10 +227,17 @@ fn main() {
         }
         package::StartupSetting::init(cx);
 
-        let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
+        // Where the window was last (#194), or centered on the primary display the first time.
+        let saved_placement = prefs_hub::PrefsHub::window_placement(cx);
+        let restored = placement::restore_in(saved_placement.as_ref(), cx);
+        let bounds = restored.as_ref().map_or_else(
+            || WindowBounds::Windowed(Bounds::centered(None, placement::default_size(), cx)),
+            |restored| restored.bounds,
+        );
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(1040.), px(720.))),
+            window_bounds: Some(bounds),
+            display_id: restored.as_ref().and_then(|restored| restored.display),
+            window_min_size: Some(placement::min_size()),
             // Linux desktops find the window's icon and name through the matching HemSoft.CodexBar.desktop (#167).
             app_id: (!cfg!(windows)).then(|| notifications::APP_ID.to_owned()),
             ..TitleBar::window_options()
@@ -249,7 +257,8 @@ fn main() {
         })
         .expect("failed to open the dashboard window");
         // Start with Windows (the package's startup task) goes straight to the notification area.
-        if package::launched_at_startup() {
+        // Out of the way at a start with Windows, and when it was minimized or hidden to the tray when it last ran.
+        if package::launched_at_startup() || restored.as_ref().is_some_and(|restored| restored.hidden) {
             let _ = cx.update_window(handle, |_, window, cx| tray::hide(window, cx));
         } else {
             cx.activate(true);

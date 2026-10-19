@@ -12,6 +12,7 @@ use std::path::Path;
 
 use codexbar_core::alerts::AlertSettings;
 use codexbar_core::layout::{Group, Layout, OrderMode};
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::widgets::WidgetBuilder;
@@ -19,6 +20,34 @@ use crate::widgets::WidgetBuilder;
 pub const PREFS_FILE: &str = "dashboard.json";
 const LOCK_FILE: &str = "dashboard.write.lock";
 const VERSION: u64 = 1;
+
+/// Where the dashboard window was last (#194): its display, its normal bounds in logical pixels, and its state. Saved
+/// under `window`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowPlacement {
+    /// The display's stable identifier, when the platform gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub maximized: bool,
+    /// Minimized, or hidden to the tray: out of the way either way.
+    #[serde(default)]
+    pub minimized: bool,
+}
+
+/// The `window` entry, when it is one this version can place: finite numbers and a positive size.
+fn placement_from_json(value: &Value) -> Option<WindowPlacement> {
+    let placement: WindowPlacement = serde_json::from_value(value.clone()).ok()?;
+    let finite = [placement.x, placement.y, placement.width, placement.height]
+        .iter()
+        .all(|n| n.is_finite());
+    (finite && placement.width > 0. && placement.height > 0.).then_some(placement)
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DashboardPrefs {
@@ -52,6 +81,9 @@ pub struct DashboardPrefs {
     /// Starting balances changed and not yet saved, by account: a new start, or `None` to forget it. Merged by
     /// account like `pending`.
     pending_credit_starts: BTreeMap<String, Option<f64>>,
+    /// The dashboard window's last placement (#194). Saved as a whole when changed: only one CodexBar runs per user.
+    placement: Option<WindowPlacement>,
+    placement_dirty: bool,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -87,7 +119,22 @@ impl DashboardPrefs {
             widgets_dirty: false,
             credit_starts: credit_starts_from_json(doc.get("creditStarts")),
             pending_credit_starts: BTreeMap::new(),
+            placement: doc.get("window").and_then(placement_from_json),
+            placement_dirty: false,
             read_only: version > VERSION,
+        }
+    }
+
+    /// Where the dashboard window was last, when a placement was saved (#194).
+    pub fn window_placement(&self) -> Option<&WindowPlacement> {
+        self.placement.as_ref()
+    }
+
+    /// Remembers where the dashboard window is. The same placement again changes nothing.
+    pub fn set_window_placement(&mut self, placement: WindowPlacement) {
+        if self.placement.as_ref() != Some(&placement) {
+            self.placement = Some(placement);
+            self.placement_dirty = true;
         }
     }
 
@@ -197,6 +244,7 @@ impl DashboardPrefs {
             || self.appearance_dirty
             || self.widgets_dirty
             || !self.pending_credit_starts.is_empty()
+            || self.placement_dirty
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -362,9 +410,18 @@ impl DashboardPrefs {
         {
             doc.insert("appearance".into(), json!(appearance));
         }
+        if self.placement_dirty
+            && let Some(placement) = &self.placement
+        {
+            doc.insert(
+                "window".into(),
+                serde_json::to_value(placement).map_err(io::Error::other)?,
+            );
+        }
         let layout = layout_from_json(&doc);
         let widgets = doc.get("widgets").map(WidgetBuilder::from_json).unwrap_or_default();
         let doc_appearance = doc.get("appearance").and_then(Value::as_str).map(str::to_owned);
+        let doc_placement = doc.get("window").and_then(placement_from_json);
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(PREFS_FILE);
@@ -381,6 +438,8 @@ impl DashboardPrefs {
         self.widgets_dirty = false;
         self.appearance_dirty = false;
         self.appearance = doc_appearance;
+        self.placement_dirty = false;
+        self.placement = doc_placement;
         self.pending.clear();
         self.pending_alert_fields.clear();
         self.pending_active.clear();
@@ -874,6 +933,43 @@ mod tests {
         assert_eq!(DashboardPrefs::load(&dir.0).appearance(), Some("light"));
         prefs.set_appearance("light");
         assert!(!prefs.is_dirty(), "the same choice again changes nothing");
+    }
+
+    #[test]
+    fn the_window_placement_is_saved_and_read_back() {
+        let dir = Dir::new("placement");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.window_placement(), None, "nothing until the window was seen");
+        let placement = WindowPlacement {
+            display: Some("display-1".to_owned()),
+            x: -1920.,
+            y: 24.5,
+            width: 1440.,
+            height: 960.,
+            maximized: true,
+            minimized: false,
+        };
+        prefs.set_window_placement(placement.clone());
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        assert_eq!(DashboardPrefs::load(&dir.0).window_placement(), Some(&placement));
+        prefs.set_window_placement(placement);
+        assert!(!prefs.is_dirty(), "the same placement again changes nothing");
+    }
+
+    #[test]
+    fn an_unusable_window_placement_is_ignored() {
+        let dir = Dir::new("placement-bad");
+        dir.write(r#"{ "version": 1, "window": { "x": 0, "y": 0, "width": 0, "height": 960 } }"#);
+        assert_eq!(DashboardPrefs::load(&dir.0).window_placement(), None, "an empty size");
+        dir.write(r#"{ "version": 1, "window": { "x": "left", "y": 0, "width": 1440, "height": 960 } }"#);
+        assert_eq!(DashboardPrefs::load(&dir.0).window_placement(), None, "not a number");
+        dir.write(r#"{ "version": 1, "window": { "x": 10, "y": 20, "width": 1440, "height": 960 } }"#);
+        let minimal = DashboardPrefs::load(&dir.0).window_placement().cloned().unwrap();
+        assert_eq!(
+            (minimal.display, minimal.maximized, minimal.minimized),
+            (None, false, false)
+        );
     }
 
     #[test]
