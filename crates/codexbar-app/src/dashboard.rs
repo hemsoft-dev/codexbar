@@ -1085,9 +1085,11 @@ impl Dashboard {
             return;
         }
         if self.placement_pending.as_ref() == Some(&seen) {
-            crate::prefs_hub::PrefsHub::set_window_placement(cx, seen.clone());
-            self.placement = Some(seen);
-            self.placement_pending = None;
+            // A failed save (a busy lock) leaves the placement pending, so the next tick tries again.
+            if crate::prefs_hub::PrefsHub::set_window_placement(cx, seen.clone()) {
+                self.placement = Some(seen);
+                self.placement_pending = None;
+            }
         } else {
             self.placement_pending = Some(seen);
         }

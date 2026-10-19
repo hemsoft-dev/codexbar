@@ -15,10 +15,12 @@ pub fn min_size() -> Size<Pixels> {
     size(px(1040.), px(720.))
 }
 
-/// How much of the window must lie on a display for that display to count as showing it: enough of the title bar
-/// to grab, not a sliver.
+/// The window's title bar, the strip the user drags it by: as tall as the dashboard's own title bar.
+const TITLE_BAR_HEIGHT: f32 = 40.;
+/// How much of the title bar must lie on a display's work area for that display to count as showing the window:
+/// enough to grab, not a sliver.
 const VISIBLE_WIDTH: f32 = 160.;
-const VISIBLE_HEIGHT: f32 = 80.;
+const VISIBLE_HEIGHT: f32 = 20.;
 
 /// A connected display, as placement sees it.
 #[derive(Clone, Debug)]
@@ -26,7 +28,6 @@ pub struct Display {
     pub id: DisplayId,
     /// The platform's stable identifier, when it has one; what a saved placement names.
     pub uuid: Option<String>,
-    pub bounds: Bounds<Pixels>,
     /// The part not covered by the taskbar or dock, where a window is placed.
     pub work_area: Bounds<Pixels>,
 }
@@ -39,7 +40,6 @@ pub fn displays(cx: &App) -> (Vec<Display>, Option<DisplayId>) {
         .map(|display| Display {
             id: display.id(),
             uuid: display.uuid().ok().map(|uuid| uuid.to_string()),
-            bounds: display.bounds(),
             work_area: display.visible_bounds(),
         })
         .collect();
@@ -54,8 +54,7 @@ pub fn capture(window: &Window, cx: &App) -> WindowPlacement {
         WindowBounds::Maximized(bounds) | WindowBounds::Fullscreen(bounds) => (bounds, true),
     };
     WindowPlacement {
-        display: window
-            .display(cx)
+        display: current_display(window, cx)
             .and_then(|display| display.uuid().ok())
             .map(|uuid| uuid.to_string()),
         x: f64::from(f32::from(bounds.origin.x)),
@@ -63,8 +62,27 @@ pub fn capture(window: &Window, cx: &App) -> WindowPlacement {
         width: f64::from(f32::from(bounds.size.width)),
         height: f64::from(f32::from(bounds.size.height)),
         maximized,
-        minimized: !crate::tray::is_shown(window),
+        // Only the app's own hide and the platform's minimize count, never a window that is merely covered or on
+        // another desktop (`is_visible` reports those too).
+        minimized: crate::tray::is_out_of_the_way(window),
     }
+}
+
+/// The display the window is on now. GPUI's `Window::display` answers with the display the window was opened on,
+/// which a move to another display doesn't update, so on Windows the monitor is asked directly.
+fn current_display(window: &Window, cx: &App) -> Option<std::rc::Rc<dyn gpui_kit::PlatformDisplay>> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+        if let Some(hwnd) = crate::tray::hwnd(window) {
+            let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+            let id = DisplayId::new(monitor.0 as u64);
+            if let Some(display) = cx.displays().into_iter().find(|display| display.id() == id) {
+                return Some(display);
+            }
+        }
+    }
+    window.display(cx)
 }
 
 /// How the window opens: its bounds and state, the display to open it on, and whether it stays out of the way.
@@ -81,10 +99,13 @@ pub fn restore_in(saved: Option<&WindowPlacement>, cx: &App) -> Option<Restored>
     restore(saved, &displays, primary)
 }
 
-/// Where `saved` reopens among `displays`: at the saved bounds on whichever display still shows them; else centered
-/// on its own display (by identifier) when that is still connected but the bounds drifted off it; else centered on
-/// the primary display at the saved size. The size never drops below the minimum, and a maximized or minimized
-/// window comes back that way.
+/// Where `saved` reopens among `displays`: on its own display (by identifier) when that is still connected, at the
+/// saved bounds when its title bar still lies on that display's work area and centered on it otherwise; with its
+/// display gone, at the saved bounds on a display whose work area shows the title bar, else centered on the primary
+/// display at the saved size. The own display is checked first because logical bounds are only comparable within one
+/// display: each display's bounds and the bounds of a window on it use that display's own scale, so a window on a
+/// 150% display can seem to overlap a 100% display it is nowhere near. The size never drops below the minimum, and a
+/// maximized or minimized window comes back that way.
 pub fn restore(saved: Option<&WindowPlacement>, displays: &[Display], primary: Option<DisplayId>) -> Option<Restored> {
     let saved = saved?;
     let requested = Bounds {
@@ -98,19 +119,19 @@ pub fn restore(saved: Option<&WindowPlacement>, displays: &[Display], primary: O
         .display
         .as_deref()
         .and_then(|uuid| displays.iter().find(|display| display.uuid.as_deref() == Some(uuid)));
-    let showing = displays.iter().find(|display| shows(&display.bounds, &requested));
     let primary = primary
         .and_then(|id| displays.iter().find(|display| display.id == id))
         .or(displays.first());
-    // The display that shows the saved bounds wins over the named one: the name can lag behind a move to another
-    // display, while the bounds say where the window was.
-    let (display, bounds) = match (showing, own) {
-        (Some(display), _) => (Some(display), requested),
-        // Its display is connected but the window would be off it (a changed resolution): bring it back on.
-        (None, Some(display)) => (Some(display), centered(display, requested.size)),
-        (None, None) => match primary {
-            Some(display) => (Some(display), centered(display, requested.size)),
-            None => (None, requested),
+    let (display, bounds) = match own {
+        Some(display) if shows(&display.work_area, &requested) => (Some(display), requested),
+        // Its display is connected but the title bar would be off it (a changed resolution): bring it back on.
+        Some(display) => (Some(display), centered(display, requested.size)),
+        None => match displays.iter().find(|display| shows(&display.work_area, &requested)) {
+            Some(display) => (Some(display), requested),
+            None => match primary {
+                Some(display) => (Some(display), centered(display, requested.size)),
+                None => (None, requested),
+            },
         },
     };
     Some(Restored {
@@ -124,14 +145,19 @@ pub fn restore(saved: Option<&WindowPlacement>, displays: &[Display], primary: O
     })
 }
 
-/// True when at least a usable corner of `window` lies on `display`.
-fn shows(display: &Bounds<Pixels>, window: &Bounds<Pixels>) -> bool {
-    let left = f32::from(display.origin.x).max(f32::from(window.origin.x));
-    let top = f32::from(display.origin.y).max(f32::from(window.origin.y));
-    let right = (f32::from(display.origin.x) + f32::from(display.size.width))
-        .min(f32::from(window.origin.x) + f32::from(window.size.width));
-    let bottom = (f32::from(display.origin.y) + f32::from(display.size.height))
-        .min(f32::from(window.origin.y) + f32::from(window.size.height));
+/// True when enough of the window's title bar lies on `area` to grab it: a window whose bottom edge alone peeks onto
+/// a display can't be moved back.
+fn shows(area: &Bounds<Pixels>, window: &Bounds<Pixels>) -> bool {
+    let title_bar = Bounds {
+        origin: window.origin,
+        size: size(window.size.width, px(TITLE_BAR_HEIGHT)),
+    };
+    let left = f32::from(area.origin.x).max(f32::from(title_bar.origin.x));
+    let top = f32::from(area.origin.y).max(f32::from(title_bar.origin.y));
+    let right = (f32::from(area.origin.x) + f32::from(area.size.width))
+        .min(f32::from(title_bar.origin.x) + f32::from(title_bar.size.width));
+    let bottom = (f32::from(area.origin.y) + f32::from(area.size.height))
+        .min(f32::from(title_bar.origin.y) + f32::from(title_bar.size.height));
     right - left >= VISIBLE_WIDTH && bottom - top >= VISIBLE_HEIGHT
 }
 
@@ -154,17 +180,12 @@ mod tests {
     use super::*;
 
     fn display(id: u64, uuid: &str, x: f32, y: f32, width: f32, height: f32) -> Display {
-        let bounds = Bounds {
-            origin: point(px(x), px(y)),
-            size: size(px(width), px(height)),
-        };
         Display {
             id: DisplayId::new(id),
             uuid: Some(uuid.to_owned()),
-            bounds,
             // A 40px taskbar along the bottom.
             work_area: Bounds {
-                origin: bounds.origin,
+                origin: point(px(x), px(y)),
                 size: size(px(width), px(height - 40.)),
             },
         }
@@ -242,12 +263,25 @@ mod tests {
     }
 
     #[test]
-    fn the_display_showing_the_bounds_wins_over_a_stale_display_name() {
-        // Moved to the right display while the name still said primary.
+    fn the_named_display_wins_over_bounds_that_seem_to_lie_on_another() {
+        // Logical bounds are only comparable on one display (each has its own scale): the window stays with the
+        // display it was saved on, centered there since its bounds don't fit that display.
         let placement = saved("primary", 2200., 100., 1440., 960.);
         let restored = restore(Some(&placement), &two_displays(), Some(DisplayId::new(1))).unwrap();
-        assert_eq!(restored.display, Some(DisplayId::new(2)));
-        assert_eq!(windowed(&restored).origin, point(px(2200.), px(100.)));
+        assert_eq!(restored.display, Some(DisplayId::new(1)));
+        assert_eq!(windowed(&restored).origin, point(px(240.), px(40.)));
+    }
+
+    #[test]
+    fn a_window_whose_title_bar_is_off_the_display_is_centered() {
+        // Only the bottom 80px overlap the display: nothing to grab, so it is brought back.
+        let placement = saved("primary", 100., -880., 1440., 960.);
+        let restored = restore(Some(&placement), &two_displays(), Some(DisplayId::new(1))).unwrap();
+        assert_eq!(windowed(&restored).origin, point(px(240.), px(40.)));
+        // Half the title bar on the display is enough.
+        let placement = saved("primary", 100., -20., 1440., 960.);
+        let restored = restore(Some(&placement), &two_displays(), Some(DisplayId::new(1))).unwrap();
+        assert_eq!(windowed(&restored).origin, point(px(100.), px(-20.)));
     }
 
     #[test]

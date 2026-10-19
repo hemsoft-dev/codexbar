@@ -89,9 +89,12 @@ impl PrefsHub {
             .and_then(|hub| hub.prefs.window_placement().cloned())
     }
 
-    /// Remembers where the dashboard window is, saved at once.
-    pub fn set_window_placement(cx: &mut App, placement: codexbar_store::prefs::WindowPlacement) {
+    /// Remembers where the dashboard window is, saved at once. False when the save failed (a busy lock, a file that
+    /// couldn't be written), so the caller tries again; the placement stays pending in the preferences meanwhile.
+    pub fn set_window_placement(cx: &mut App, placement: codexbar_store::prefs::WindowPlacement) -> bool {
         Self::edit(cx, |prefs| prefs.set_window_placement(placement));
+        cx.try_global::<Self>()
+            .is_none_or(|hub| hub.dir.is_none() || (hub.error.is_none() && !hub.prefs.is_dirty()))
     }
 
     pub fn alert_settings(cx: &App) -> AlertSettings {

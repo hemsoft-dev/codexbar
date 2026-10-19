@@ -257,8 +257,11 @@ fn main() {
         })
         .expect("failed to open the dashboard window");
         // Start with Windows (the package's startup task) goes straight to the notification area.
-        // Out of the way at a start with Windows, and when it was minimized or hidden to the tray when it last ran.
-        if package::launched_at_startup() || restored.as_ref().is_some_and(|restored| restored.hidden) {
+        // Out of the way at a start with Windows, and when it was minimized or hidden to the tray when it last ran,
+        // unless this start was asked to show something: a widget tile's account, or Settings.
+        let asked_to_show = focus.is_some() || std::env::args().any(|arg| arg == "--settings");
+        let stays_hidden = restored.as_ref().is_some_and(|restored| restored.hidden) && !asked_to_show;
+        if package::launched_at_startup() || stays_hidden {
             let _ = cx.update_window(handle, |_, window, cx| tray::hide(window, cx));
         } else {
             cx.activate(true);

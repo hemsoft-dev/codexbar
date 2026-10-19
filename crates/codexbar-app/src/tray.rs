@@ -133,7 +133,7 @@ pub fn set_tooltip(cx: &App, text: &str) {
 }
 
 #[cfg(windows)]
-fn hwnd(window: &Window) -> Option<HWND> {
+pub(crate) fn hwnd(window: &Window) -> Option<HWND> {
     match HasWindowHandle::window_handle(window).ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut core::ffi::c_void)),
         _ => None,
@@ -148,6 +148,25 @@ pub fn is_shown(window: &Window) -> bool {
         Some(hwnd) => unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() },
         None => window.is_visible(),
     }
+}
+
+/// True when the window was put out of the way: minimized, or hidden to the tray (#194). Never a window that is
+/// merely covered or on another desktop. Without an HWND (the headless tests') the window counts as up.
+#[cfg(windows)]
+pub fn is_out_of_the_way(window: &Window) -> bool {
+    hwnd(window).is_some_and(|hwnd| unsafe { IsIconic(hwnd).as_bool() || !IsWindowVisible(hwnd).as_bool() })
+}
+
+/// Whether `hide` put the window away and `show` hasn't brought it back (#194). GPUI's visibility can't tell a
+/// hidden window from one that is covered or on another desktop, so the app's own action is what counts here.
+#[cfg(not(windows))]
+static OUT_OF_THE_WAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True when the app hid the window (the app's hide, or the minimize it uses on X11) and hasn't shown it since.
+/// A window minimized through the desktop itself isn't tracked.
+#[cfg(not(windows))]
+pub fn is_out_of_the_way(_: &Window) -> bool {
+    OUT_OF_THE_WAY.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(windows)]
@@ -180,6 +199,7 @@ pub fn is_shown(window: &Window) -> bool {
 /// may refuse to bring a minimized window back (xdg-activation), and it would stay out of reach.
 #[cfg(not(windows))]
 pub fn hide(window: &Window, cx: &App) {
+    OUT_OF_THE_WAY.store(true, std::sync::atomic::Ordering::Relaxed);
     #[cfg(target_os = "macos")]
     {
         let _ = window;
@@ -203,6 +223,7 @@ fn on_wayland(window: &Window) -> bool {
 /// Brings the window to the front; an accessory app (macOS) must be activated first or it stays behind others.
 #[cfg(not(windows))]
 pub fn show(window: &Window, cx: &App) {
+    OUT_OF_THE_WAY.store(false, std::sync::atomic::Ordering::Relaxed);
     cx.activate(true);
     window.activate_window();
 }
