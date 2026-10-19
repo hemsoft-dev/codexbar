@@ -31,6 +31,8 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - **Fix sign-ins from the dashboard**: a provider whose key or sign-in no longer works shows **Open settings**,
   which lands on that account in Settings
 - **System, light and dark appearance**, following Windows high contrast
+- **Remembers its window**: the display, position, size and state (maximized or out of the way) come back after a
+  restart, with a visible fallback when that display is gone
 - **Privacy-first**: on-device only, no data sent anywhere except provider APIs; keys are kept in Windows Credential
   Manager (the Keychain on macOS, the Secret Service keyring on Linux)
 

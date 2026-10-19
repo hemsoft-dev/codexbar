@@ -81,7 +81,7 @@ Everything CodexBar writes lives in `%USERPROFILE%\.codexbar`. With
 | File | What it holds |
 | --- | --- |
 | `settings.json` | Accounts (provider, name, sign-in method, username or workspace id, org billing settings), refresh interval, zoom |
-| `dashboard.json` | Groups, order, appearance, alert settings, which alerts were shown, hidden history series, each Codex account's starting credit balance |
+| `dashboard.json` | Groups, order, appearance, alert settings, which alerts were shown, hidden history series, each Codex account's starting credit balance, the dashboard window's last display, position, size and state |
 | `snapshots.json` | The last good usage of each account (ids, labels, metric names, numbers, times), so the dashboard shows something at startup and while a provider fails |
 | `history.jsonl` | Usage samples for the history charts, kept **30 days** and pruned at startup |
 | `codex\`, `claude\`, `cursor\` | One folder per account CodexBar signed in, holding that provider CLI's own sign-in files |

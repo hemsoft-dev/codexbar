@@ -265,6 +265,10 @@ pub struct Dashboard {
     /// The adapters the settings produced when they last changed, as (provider name, account id) pairs (#192): a
     /// settings change that adds one fetches it at once, and one that drops one takes its rows off the screen.
     configured: Vec<(&'static str, Option<String>)>,
+    /// The window placement last saved (#194), and one seen since that is saved once it stays the same for a tick,
+    /// so a drag or resize is written once it ends rather than at every step.
+    placement: Option<codexbar_store::prefs::WindowPlacement>,
+    placement_pending: Option<codexbar_store::prefs::WindowPlacement>,
     /// The widget builder's choices the last snapshot carried (#95).
     #[cfg(windows)]
     widget_builder: codexbar_store::widgets::WidgetBuilder,
@@ -309,11 +313,19 @@ impl Dashboard {
         // Once a second: advance the clock that ages and countdowns read, and refresh when due.
         // Read now, before the first refresh below can start Keychain lookups: the task only starts later.
         let mut keychain_changes = codexbar_providers::claude::keychain_changes();
+        let window_handle = window.window_handle();
         let clock = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                // Where the window is now (#194); read on the window, outside the entity update.
+                let placement = cx
+                    .update_window(window_handle, |_, window, cx| crate::placement::capture(window, cx))
+                    .ok();
                 let alive = this.update(cx, |this, cx| {
                     this.now = Utc::now();
+                    if let Some(placement) = placement {
+                        this.note_placement(placement, cx);
+                    }
                     // A Claude sign-in looked up in the Keychain in the background came out differently from what the
                     // accounts were last sorted by: fetch again with the new answer.
                     let changes = codexbar_providers::claude::keychain_changes();
@@ -438,6 +450,8 @@ impl Dashboard {
             settings_start: None,
             settings_generation: 0,
             configured: Vec::new(),
+            placement: crate::prefs_hub::PrefsHub::window_placement(cx),
+            placement_pending: None,
             #[cfg(windows)]
             widget_builder: Default::default(),
             _clock: clock,
@@ -1053,6 +1067,34 @@ impl Dashboard {
                 (id.to_owned(), urgency)
             })
             .collect()
+    }
+
+    /// Remembers where the window is (#194), once a placement has stayed the same for a tick. A minimized window
+    /// can't say whether it is also maximized, so the state last seen while it was up is kept: the sample still
+    /// pending when there is one, else the saved one. The demo saves nothing.
+    fn note_placement(&mut self, mut seen: codexbar_store::prefs::WindowPlacement, cx: &mut Context<Self>) {
+        if !matches!(self.source, DataSource::Live { .. }) {
+            return;
+        }
+        // A sample not yet saved (a maximize a moment before the hide) is the latest word on that.
+        if seen.minimized
+            && let Some(last) = self.placement_pending.as_ref().or(self.placement.as_ref())
+        {
+            seen.maximized = last.maximized;
+        }
+        if self.placement.as_ref() == Some(&seen) {
+            self.placement_pending = None;
+            return;
+        }
+        if self.placement_pending.as_ref() == Some(&seen) {
+            // A failed save (a busy lock) leaves the placement pending, so the next tick tries again.
+            if crate::prefs_hub::PrefsHub::set_window_placement(cx, seen.clone()) {
+                self.placement = Some(seen);
+                self.placement_pending = None;
+            }
+        } else {
+            self.placement_pending = Some(seen);
+        }
     }
 
     /// The adapters the current settings produce, as (provider name, account id) pairs: what a shown account or failure
