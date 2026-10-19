@@ -78,6 +78,37 @@ pub fn reset_label_in<Tz: TimeZone>(
     }
 }
 
+/// How long until a limit resets, always as time left (#196): "in 38m", "in 1h 12m", "in 2d 4h", "in 12d",
+/// "in 2mo 3d"; "now" once it has passed. Never a weekday, clock time or date, whatever the viewer's date style.
+pub fn time_left_label(resets_at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let remaining = resets_at - now;
+    if remaining <= Duration::zero() {
+        return "now".to_owned();
+    }
+    format!("in {}", time_left(remaining))
+}
+
+/// A duration as its two largest useful units: minutes and hours under a day ("38m", "1h 12m"), days and hours
+/// under three days ("2d 4h"), whole days under two months ("12d", rounded to the nearest day), then months of
+/// thirty days with the days left over ("2mo 3d", "4mo"). Rounds to the unit shown, never up into a larger unit
+/// than the time left.
+pub fn time_left(duration: Duration) -> String {
+    let minutes = (duration.num_seconds() + 30) / 60;
+    let days = minutes / 1440;
+    if days < 3 {
+        return countdown(duration);
+    }
+    if days < 60 {
+        return format!("{}d", (minutes + 720) / 1440);
+    }
+    let (months, rest) = (days / 30, days % 30);
+    if rest == 0 {
+        format!("{months}mo")
+    } else {
+        format!("{months}mo {rest}d")
+    }
+}
+
 /// Compact duration: "25 min", "38m", "1h 12m", "2d 4h". Rounds to whole minutes.
 pub fn countdown(duration: Duration) -> String {
     let minutes = (duration.num_seconds() + 30) / 60;
@@ -180,6 +211,39 @@ mod tests {
     #[test]
     fn reset_label_in_past_returns_now() {
         assert_eq!(reset_label(now() - Duration::minutes(1), now(), &eastern()), "now");
+    }
+
+    #[test]
+    fn time_left_uses_the_two_largest_units_and_never_a_date() {
+        assert_eq!(time_left(Duration::minutes(38)), "38m");
+        assert_eq!(time_left(Duration::minutes(23 * 60 + 59)), "23h 59m");
+        assert_eq!(time_left(Duration::days(1)), "1d");
+        assert_eq!(time_left(Duration::hours(52)), "2d 4h");
+        assert_eq!(time_left(Duration::hours(71) + Duration::minutes(50)), "2d 23h");
+        assert_eq!(time_left(Duration::days(3)), "3d");
+        assert_eq!(
+            time_left(Duration::days(3) + Duration::hours(13)),
+            "4d",
+            "rounded to the nearest day"
+        );
+        assert_eq!(time_left(Duration::days(7)), "7d");
+        assert_eq!(time_left(Duration::days(30)), "30d");
+        assert_eq!(time_left(Duration::days(59) + Duration::hours(23)), "60d");
+        assert_eq!(time_left(Duration::days(60)), "2mo");
+        assert_eq!(time_left(Duration::days(63)), "2mo 3d");
+        assert_eq!(time_left(Duration::days(400)), "13mo 10d");
+    }
+
+    #[test]
+    fn time_left_label_counts_down_and_says_now_when_passed() {
+        assert_eq!(time_left_label(now() + Duration::minutes(38), now()), "in 38m");
+        assert_eq!(time_left_label(now() + Duration::days(8), now()), "in 8d");
+        let nov_first: DateTime<Utc> = "2026-11-01T04:00:00Z".parse().unwrap();
+        assert!(
+            time_left_label(nov_first, now()).starts_with("in ") && !time_left_label(nov_first, now()).contains("Nov"),
+            "a date weeks away is still a duration"
+        );
+        assert_eq!(time_left_label(now() - Duration::minutes(1), now()), "now");
     }
 
     #[test]

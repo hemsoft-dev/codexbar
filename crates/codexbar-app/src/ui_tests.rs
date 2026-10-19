@@ -1620,6 +1620,46 @@ fn the_window_placement_is_saved_once_the_window_rests(cx: &mut TestAppContext) 
     assert_eq!((saved.width, saved.height), (1300., 900.));
 }
 
+// The Resets column always says how long is left (#196), never a weekday, time or date.
+
+#[gpui_kit::test]
+fn the_resets_column_always_shows_time_left(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("resets-relative", "{}");
+    let now = chrono::Utc::now();
+    let window = |id: &str, provider: Provider, ahead: chrono::Duration| {
+        AccountSnapshot::new(
+            AccountId::new(id),
+            provider,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used: 0.4,
+                resets_at: now + ahead,
+                pace: None,
+            }],
+            now,
+        )
+    };
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![
+        window("soon", Provider::Claude, chrono::Duration::minutes(38)),
+        window(
+            "days",
+            Provider::Codex,
+            chrono::Duration::days(8) + chrono::Duration::hours(2),
+        ),
+        window("weeks", Provider::Grok, chrono::Duration::days(40)),
+        window("months", Provider::Gemini, chrono::Duration::days(95)),
+    ]));
+    let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(label(cx, handle, "resets-soon").as_deref(), Some("Resets: in 38m"));
+    assert_eq!(label(cx, handle, "resets-days").as_deref(), Some("Resets: in 8d"));
+    assert_eq!(label(cx, handle, "resets-weeks").as_deref(), Some("Resets: in 40d"));
+    assert_eq!(label(cx, handle, "resets-months").as_deref(), Some("Resets: in 3mo 5d"));
+}
+
 #[gpui_kit::test]
 fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) {
     let settings = TempSettings::new("lifecycle-persist", "{}");
