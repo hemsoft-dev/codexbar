@@ -1736,7 +1736,24 @@ fn focus_card_charts_keep_their_minimum_height_at_every_zoom(cx: &mut TestAppCon
             let height = cx
                 .update_window(handle, |_, window, _| f32::from(window.find(id).bounds().size.height))
                 .unwrap();
-            assert!(height + 1. >= floor, "{id} at {level:.1}×: {height}px, floor {floor}px");
+            assert!(height + 1. >= floor, "{id} at {level:.1}x: {height}px, floor {floor}px");
+        }
+        // Nothing the card holds runs past its right edge: the legend drops under the title and the takeaway wraps.
+        let card = cx
+            .update_window(handle, |_, window, _| window.find("focus-window-card").bounds())
+            .unwrap();
+        for id in [
+            "focus-window-card-legend",
+            "focus-window-card-takeaway",
+            "focus-window-plot",
+        ] {
+            let bounds = cx
+                .update_window(handle, |_, window, _| window.find(id).bounds())
+                .unwrap();
+            assert!(
+                bounds.right() <= card.right() + px(1.) && bounds.left() >= card.left() - px(1.),
+                "{id} at {level:.1}: {bounds:?} outside {card:?}"
+            );
         }
     }
     cx.update(|cx| crate::zoom::set_level(1.0, cx));

@@ -6,7 +6,7 @@ use codexbar_core::{AccountSnapshot, Metric, Severity, format};
 use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, Background, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
+    AnyElement, App, Background, ElementId, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
     linear_color_stop, linear_gradient, prelude::FluentBuilder as _, rems,
 };
 
@@ -36,6 +36,9 @@ use crate::status::severity_color;
 
 /// One card. Built fresh each frame; the charts own their own hover state by id.
 struct Card {
+    /// The id of the card and, suffixed, of its parts, so a headless test can check that its content stays inside
+    /// it (#200). Derived from the title unless set.
+    id: SharedString,
     title: SharedString,
     period: SharedString,
     legend: Vec<(Hsla, SharedString)>,
@@ -47,8 +50,10 @@ struct Card {
 
 impl Card {
     fn new(title: impl Into<SharedString>, period: impl Into<SharedString>, chart: impl IntoElement) -> Self {
+        let title = title.into();
         Self {
-            title: title.into(),
+            id: format!("focus-card-{}", title.to_lowercase().replace(' ', "-")).into(),
+            title,
             period: period.into(),
             legend: Vec::new(),
             chart: chart.into_any_element(),
@@ -79,9 +84,19 @@ impl Card {
         self
     }
 
+    fn id(mut self, id: impl Into<SharedString>) -> Self {
+        self.id = id.into();
+        self
+    }
+
     fn render(self, cx: &App) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let part = |name: &str| ElementId::Name(format!("{}-{name}", self.id).into());
+        let legend_id = part("legend");
+        let takeaway_id = part("takeaway");
         v_flex()
+            .id(ElementId::Name(self.id.clone()))
+            .test_support()
             .flex_1()
             .min_w_0()
             .h_full()
@@ -91,11 +106,15 @@ impl Card {
             .border_1()
             .border_color(cx.theme().border)
             .rounded(cx.theme().radius_lg)
+            // The legend sits beside the title when there is room, otherwise under it (#200): zoomed in, a wide
+            // legend used to run past the card's edge.
             .child(
                 h_flex()
+                    .flex_wrap()
                     .items_start()
                     .justify_between()
-                    .gap_3()
+                    .gap_x_3()
+                    .gap_y_1()
                     .child(
                         v_flex()
                             .flex_shrink_0()
@@ -105,7 +124,10 @@ impl Card {
                     .when(!self.legend.is_empty(), |this| {
                         this.child(
                             h_flex()
+                                .id(legend_id)
+                                .test_support()
                                 .flex_wrap()
+                                .min_w_0()
                                 .justify_end()
                                 .gap_3()
                                 .text_xs()
@@ -128,16 +150,19 @@ impl Card {
                     .py_3()
                     .child(self.chart),
             )
+            // The takeaway wraps instead of running past the card (#200).
             .child(
                 h_flex()
+                    .id(takeaway_id)
+                    .test_support()
                     .gap_1p5()
-                    .items_center()
+                    .items_start()
                     .text_sm()
                     .font_semibold()
                     .when_some(self.alert, |this, color| {
                         this.child(Icon::new(IconName::TriangleAlert).small().text_color(color))
                     })
-                    .child(self.takeaway),
+                    .child(div().flex_1().min_w_0().child(self.takeaway)),
             )
             .child(div().text_sm().text_color(muted).child(self.caption))
     }
@@ -265,6 +290,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         // Findable by the headless tests, as the day plot is (#200).
         let plot = div().id("focus-window-plot").test_support().size_full().child(chart);
         Card::new(title, format!("Today, {start} – now"), plot)
+            .id("focus-window-card")
             .legend(current_color, "This window")
             .legend(previous_color, "Previous window")
     } else if account.trend().len() < 2 {
