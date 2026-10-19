@@ -3,12 +3,12 @@
 //! their metric through [`Projection`], so the hover text and the accessibility label read the same everywhere.
 
 use chrono::{DateTime, Utc};
-use codexbar_core::{Metric, format};
+use codexbar_core::{Metric, Pace, format};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _, px, relative,
+    AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _, px, relative,
 };
 
 /// How the faded run shows against the solid fill and the track: the same color at these opacities.
@@ -44,20 +44,12 @@ impl Projection {
         };
         let outlook = match (projected, pace) {
             (Some(projected), Some(pace)) => format!(
-                "on pace for {:.0}% by the reset ({:.1}%/h)",
+                "on pace for {:.0}% by the reset ({})",
                 projected * 100.0,
-                pace.fraction_per_hour() * 100.0
+                pace_text(pace)
             ),
             (Some(projected), None) => format!("on pace for {:.0}% by the reset", projected * 100.0),
-            (None, _) => match metric {
-                Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { .. } => {
-                    "Too early in the window to project".to_owned()
-                }
-                Metric::Credits { .. } => {
-                    "Credits don't project: the bar runs on the spend since the last top-up".to_owned()
-                }
-                Metric::Balance { .. } | Metric::Activity { .. } => "Nothing to project".to_owned(),
-            },
+            (None, _) => no_projection(metric, pace, now).to_owned(),
         };
         let label = match projected {
             Some(projected) => format!("{share}, on pace for {:.0}%", projected * 100.0),
@@ -85,6 +77,39 @@ impl Projection {
             label: share.clone(),
             tooltip: share,
         }
+    }
+}
+
+/// Why a metric projects nothing, for the tooltip: each reason is told from the metric's own state, so a window
+/// that is merely young is the only one called early.
+fn no_projection(metric: &Metric, pace: Option<Pace>, now: DateTime<Utc>) -> &'static str {
+    match metric {
+        Metric::Credits { .. } => "Credits don't project: the bar runs on the spend since the last top-up",
+        Metric::Balance { .. } | Metric::Activity { .. } => "Nothing to project",
+        Metric::Spend { limit: None, .. } => "No spend limit to project against",
+        Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { .. } => {
+            match (metric.resets_at(), pace) {
+                (Some(at), _) if at <= now => "The reset is due; nothing left to project",
+                // A spend's pace needs the period's start, which some providers never say (Cursor).
+                (_, None) if matches!(metric, Metric::Spend { .. }) => "No pace is known for this spend",
+                (_, None) => "Too early in the window to project",
+                (None, Some(_)) => "No reset to project to",
+                (Some(_), Some(_)) => "Nothing to project",
+            }
+        }
+    }
+}
+
+/// A pace in the unit that keeps its figure readable: per hour from 0.1%/h up, else per day, with a second decimal
+/// for a monthly trickle, so the rate never reads as zero beside a projection it produced.
+fn pace_text(pace: Pace) -> String {
+    let per_hour = pace.fraction_per_hour() * 100.0;
+    if per_hour >= 0.1 {
+        format!("{per_hour:.1}%/h")
+    } else if per_hour * 24.0 >= 0.1 {
+        format!("{:.1}%/day", per_hour * 24.0)
+    } else {
+        format!("{:.2}%/day", per_hour * 24.0)
     }
 }
 
@@ -119,8 +144,12 @@ pub fn usage_bar(
         .child(
             div()
                 .id(ElementId::Name(format!("{id}-bar").into()))
+                .role(Role::ProgressIndicator)
+                .aria_label(format!("{spoken}: {}", projection.label))
+                .aria_min_numeric_value(0.)
+                .aria_max_numeric_value(100.)
+                .aria_numeric_value(f64::from(used) * 100.0)
                 .test_support()
-                .aria_label(format!("{spoken} used"))
                 .relative()
                 .w_full()
                 .h(height)
@@ -167,7 +196,6 @@ pub fn medium() -> Pixels {
 mod tests {
     use super::*;
     use chrono::Duration;
-    use codexbar_core::Pace;
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
@@ -210,6 +238,59 @@ mod tests {
         let projection = Projection::of(&window(0.91, Some(Pace::per_hour(0.05))), 0.91, now());
         assert!(projection.projected.unwrap() > 1.0);
         assert!(projection.label.ends_with("on pace for 331%"), "{}", projection.label);
+    }
+
+    #[test]
+    fn a_slow_pace_reads_per_day_so_it_never_shows_as_zero() {
+        // 0.04%/h over 48h: on pace for 37%, told as 0.96%/day rather than 0.0%/h.
+        let projection = Projection::of(&window(0.35, Some(Pace::per_hour(0.0004))), 0.35, now());
+        assert!(projection.tooltip.ends_with("(1.0%/day)"), "{}", projection.tooltip);
+        let trickle = Projection::of(&window(0.35, Some(Pace::per_hour(0.00002))), 0.35, now());
+        assert!(trickle.tooltip.ends_with("(0.05%/day)"), "{}", trickle.tooltip);
+    }
+
+    #[test]
+    fn each_reason_for_no_projection_is_its_own() {
+        let spend = Metric::Spend {
+            label: "On-demand".into(),
+            spent: codexbar_core::Money::from_cents(1200),
+            limit: Some(codexbar_core::Money::from_cents(5000)),
+            resets_at: Some(now() + Duration::days(10)),
+            pace: None,
+        };
+        assert!(
+            Projection::of(&spend, 0.24, now())
+                .tooltip
+                .ends_with("No pace is known for this spend")
+        );
+        let uncapped = Metric::Spend {
+            label: "Net spend".into(),
+            spent: codexbar_core::Money::from_cents(1200),
+            limit: None,
+            resets_at: Some(now() + Duration::days(10)),
+            pace: None,
+        };
+        assert!(
+            Projection::of(&uncapped, 0.0, now())
+                .tooltip
+                .ends_with("No spend limit to project against")
+        );
+        let due = Metric::Window {
+            label: "Weekly".into(),
+            used: 0.5,
+            resets_at: now() - Duration::minutes(1),
+            pace: Some(Pace::per_hour(0.01)),
+        };
+        assert!(
+            Projection::of(&due, 0.5, now())
+                .tooltip
+                .ends_with("The reset is due; nothing left to project")
+        );
+        assert!(
+            Projection::of(&window(0.35, None), 0.35, now())
+                .tooltip
+                .ends_with("Too early in the window to project")
+        );
     }
 
     #[test]
