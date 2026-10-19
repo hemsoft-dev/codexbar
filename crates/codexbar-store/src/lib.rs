@@ -5,6 +5,7 @@
 pub mod credentials;
 mod demo;
 mod enrich;
+pub mod focus;
 mod history;
 mod lock;
 pub mod prefs;

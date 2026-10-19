@@ -15,6 +15,7 @@ use codexbar_core::layout::{Group, Layout, OrderMode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::focus::{FocusChoice, FocusChoices};
 use crate::widgets::WidgetBuilder;
 
 pub const PREFS_FILE: &str = "dashboard.json";
@@ -75,6 +76,9 @@ pub struct DashboardPrefs {
     /// The widget builder's choices (#95). Saved as a whole when changed, like the layout.
     widgets: WidgetBuilder,
     widgets_dirty: bool,
+    /// What each account's focus cards show (#218). Saved as a whole when changed, like the widget builder.
+    focus: FocusChoices,
+    focus_dirty: bool,
     /// Each account's starting credit balance (#150): the highest balance seen since the last top-up. A count of
     /// credits, never a secret.
     credit_starts: BTreeMap<String, f64>,
@@ -117,6 +121,8 @@ impl DashboardPrefs {
             layout_dirty: false,
             widgets: doc.get("widgets").map(WidgetBuilder::from_json).unwrap_or_default(),
             widgets_dirty: false,
+            focus: doc.get("focusCards").map(FocusChoices::from_json).unwrap_or_default(),
+            focus_dirty: false,
             credit_starts: credit_starts_from_json(doc.get("creditStarts")),
             pending_credit_starts: BTreeMap::new(),
             placement: doc.get("window").and_then(placement_from_json),
@@ -164,6 +170,20 @@ impl DashboardPrefs {
             self.widgets_dirty = true;
         }
         result
+    }
+
+    /// What `account`'s focus cards show; automatic when nothing is chosen (#218).
+    pub fn focus_choice(&self, account: &str) -> FocusChoice {
+        self.focus.of(account)
+    }
+
+    /// Changes `account`'s focus-card choices. Unchanged choices aren't saved.
+    pub fn update_focus_choice(&mut self, account: &str, change: impl FnOnce(&mut FocusChoice)) {
+        let before = self.focus.clone();
+        self.focus.update(account, change);
+        if self.focus != before {
+            self.focus_dirty = true;
+        }
     }
 
     /// The starting credit balance remembered for `account`, if any.
@@ -243,6 +263,7 @@ impl DashboardPrefs {
             || self.layout_dirty
             || self.appearance_dirty
             || self.widgets_dirty
+            || self.focus_dirty
             || !self.pending_credit_starts.is_empty()
             || self.placement_dirty
     }
@@ -284,6 +305,10 @@ impl DashboardPrefs {
         if self.update_widget_builder(|builder| builder.forget_account(account)) {
             changed = true;
         }
+        if self.focus.forget_account(account) {
+            self.focus_dirty = true;
+            changed = true;
+        }
         if self.credit_starts.contains_key(account) {
             self.set_credit_start(account, None);
             changed = true;
@@ -323,6 +348,10 @@ impl DashboardPrefs {
             changed = true;
         }
         if self.update_widget_builder(|builder| builder.rename_account(from, to)) {
+            changed = true;
+        }
+        if self.focus.rename_account(from, to) {
+            self.focus_dirty = true;
             changed = true;
         }
         if let Some(start) = self.credit_start(from) {
@@ -405,6 +434,12 @@ impl DashboardPrefs {
                 serde_json::to_value(&self.widgets).map_err(io::Error::other)?,
             );
         }
+        if self.focus_dirty {
+            doc.insert(
+                "focusCards".into(),
+                serde_json::to_value(&self.focus).map_err(io::Error::other)?,
+            );
+        }
         if self.appearance_dirty
             && let Some(appearance) = &self.appearance
         {
@@ -420,6 +455,7 @@ impl DashboardPrefs {
         }
         let layout = layout_from_json(&doc);
         let widgets = doc.get("widgets").map(WidgetBuilder::from_json).unwrap_or_default();
+        let focus = doc.get("focusCards").map(FocusChoices::from_json).unwrap_or_default();
         let doc_appearance = doc.get("appearance").and_then(Value::as_str).map(str::to_owned);
         let doc_placement = doc.get("window").and_then(placement_from_json);
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
@@ -436,6 +472,8 @@ impl DashboardPrefs {
         self.layout_dirty = false;
         self.widgets = widgets;
         self.widgets_dirty = false;
+        self.focus = focus;
+        self.focus_dirty = false;
         self.appearance_dirty = false;
         self.appearance = doc_appearance;
         self.placement_dirty = false;
@@ -970,6 +1008,38 @@ mod tests {
             (minimal.display, minimal.maximized, minimal.minimized),
             (None, false, false)
         );
+    }
+
+    #[test]
+    fn focus_card_choices_save_and_follow_account_changes() {
+        use crate::focus::{ActivityView, UsageView};
+        let dir = Dir::new("focus");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        prefs.update_focus_choice("claude", |choice| {
+            choice.toggle_ring("weekly");
+            choice.toggle_ring("5-hour-window");
+        });
+        prefs.update_focus_choice("codex", |choice| {
+            choice.usage = Some(UsageView::Trend);
+            choice.activity = Some(ActivityView::Days);
+        });
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.focus_choice("claude").rings, ["weekly", "5-hour-window"]);
+        assert_eq!(loaded.focus_choice("codex").usage, Some(UsageView::Trend));
+
+        let mut prefs = loaded;
+        // An unchanged choice isn't a change to save.
+        prefs.update_focus_choice("claude", |_| {});
+        assert!(!prefs.is_dirty());
+        assert!(prefs.rename_account("claude", "claude-2"));
+        assert!(prefs.forget_account("codex"));
+        prefs.save(&dir.0).unwrap();
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.focus_choice("claude-2").rings, ["weekly", "5-hour-window"]);
+        assert!(loaded.focus_choice("claude").is_automatic());
+        assert!(loaded.focus_choice("codex").is_automatic());
     }
 
     #[test]
