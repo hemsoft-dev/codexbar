@@ -254,6 +254,21 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage-codex-team");
 
+    // #217: Copilot HemSoft's monthly reset drops its trend from 97% to 3%; both trend charts draw it inside their
+    // plots, light and dark.
+    let request = crate::handoff::FocusRequest {
+        account: "copilot-hemsoft".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "usage-copilot-reset");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "usage-copilot-reset-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.run_until_parked();
+
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::History, cx)));
     cx.run_until_parked();
     save(&mut cx, handle, &out, "history");

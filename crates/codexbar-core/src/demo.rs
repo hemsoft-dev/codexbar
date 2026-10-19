@@ -122,8 +122,10 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             fetched,
         )
         .with_label("HemSoft")
+        // #217: last month's requests climb to nearly the whole allowance, then the monthly reset drops them to a
+        // few percent, a sharp change both trend charts must draw without leaving their plots.
         .with_trend(vec![
-            0.2, 0.22, 0.25, 0.24, 0.27, 0.29, 0.3, 0.32, 0.33, 0.35, 0.36, 0.38, 0.4, 0.41,
+            0.6, 0.65, 0.7, 0.74, 0.79, 0.83, 0.88, 0.93, 0.97, 0.03, 0.12, 0.22, 0.32, 0.41,
         ]),
         AccountSnapshot::new(
             AccountId::new("openrouter"),
