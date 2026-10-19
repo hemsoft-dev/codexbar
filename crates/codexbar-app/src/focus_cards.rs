@@ -273,7 +273,7 @@ pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> V
     let menus = card_menus(account, &choice, cx);
     let [usage, rings, activity] = menus;
     vec![
-        usage_card(account, now, choice.usage, cx)
+        usage_card(account, now, usage_in_effect(account, choice.usage), cx)
             .menu(usage)
             .render(cx)
             .into_any_element(),
@@ -281,7 +281,7 @@ pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> V
             .menu(rings)
             .render(cx)
             .into_any_element(),
-        activity_card(account, choice.activity, cx)
+        activity_card(account, activity_in_effect(account, choice.activity), cx)
             .menu(activity)
             .render(cx)
             .into_any_element(),
@@ -316,18 +316,21 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice) -> [Vec<MenuEnt
         disabled: false,
         action,
     };
-    let mut usage = vec![entry("Automatic", choice.usage.is_none(), MenuAction::Usage(None))];
+    // Each card checks what it shows, so a saved view the account can no longer draw reads as Automatic (#221).
+    let usage_view = usage_in_effect(account, choice.usage);
+    let activity_view = activity_in_effect(account, choice.activity);
+    let mut usage = vec![entry("Automatic", usage_view.is_none(), MenuAction::Usage(None))];
     if account.detail().window_curve().is_some() {
         usage.push(entry(
             "This window and the last",
-            choice.usage == Some(UsageView::Window),
+            usage_view == Some(UsageView::Window),
             MenuAction::Usage(Some(UsageView::Window)),
         ));
     }
     if account.trend().len() >= 2 {
         usage.push(entry(
             "Last 14 days",
-            choice.usage == Some(UsageView::Trend),
+            usage_view == Some(UsageView::Trend),
             MenuAction::Usage(Some(UsageView::Trend)),
         ));
     }
@@ -342,24 +345,37 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice) -> [Vec<MenuEnt
             ..entry(metric.label(), checked, MenuAction::Ring(Some(key)))
         });
     }
-    let mut activity = vec![entry(
-        "Automatic",
-        choice.activity.is_none(),
-        MenuAction::Activity(None),
-    )];
+    let mut activity = vec![entry("Automatic", activity_view.is_none(), MenuAction::Activity(None))];
     if !account.detail().requests_by_hour().is_empty() {
         activity.push(entry(
             "Requests by hour",
-            choice.activity == Some(ActivityView::Hours),
+            activity_view == Some(ActivityView::Hours),
             MenuAction::Activity(Some(ActivityView::Hours)),
         ));
     }
     activity.push(entry(
         "Usage by day",
-        choice.activity == Some(ActivityView::Days),
+        activity_view == Some(ActivityView::Days),
         MenuAction::Activity(Some(ActivityView::Days)),
     ));
     [usage, rings, activity]
+}
+
+/// The usage view a card shows: the chosen one while the account can draw it, otherwise automatic (#221), so the
+/// card and its menu agree on what is on screen.
+fn usage_in_effect(account: &AccountSnapshot, chosen: Option<UsageView>) -> Option<UsageView> {
+    chosen.filter(|view| match view {
+        UsageView::Window => account.detail().window_curve().is_some(),
+        UsageView::Trend => account.trend().len() >= 2,
+    })
+}
+
+/// The activity view a card shows: requests by hour only while the provider counts them (#221).
+fn activity_in_effect(account: &AccountSnapshot, chosen: Option<ActivityView>) -> Option<ActivityView> {
+    chosen.filter(|view| match view {
+        ActivityView::Hours => !account.detail().requests_by_hour().is_empty(),
+        ActivityView::Days => true,
+    })
 }
 
 /// The metrics a ring can show: those with a share of a limit, in the provider's order.
@@ -1156,6 +1172,34 @@ mod tests {
         let [_, rings, _] = menu_entries(&account, &choice);
         let checked: Vec<_> = rings.iter().filter(|e| e.checked).map(|e| e.label.as_str()).collect();
         assert_eq!(checked, ["5-hour window"]);
+    }
+
+    #[test]
+    fn a_saved_view_the_account_cannot_draw_reads_as_automatic() {
+        // Claude here has a trend but no window curve and no requests by hour.
+        let account = claude();
+        let choice = FocusChoice {
+            usage: Some(UsageView::Window),
+            activity: Some(ActivityView::Hours),
+            ..FocusChoice::default()
+        };
+        assert_eq!(usage_in_effect(&account, choice.usage), None);
+        assert_eq!(activity_in_effect(&account, choice.activity), None);
+        let [usage, _, activity] = menu_entries(&account, &choice);
+        assert!(usage[0].checked, "Automatic, since the card shows its automatic view");
+        assert!(activity[0].checked);
+        // A trend chosen with fewer than two days of history falls back too, rather than hiding a window curve.
+        let young = AccountSnapshot::new(
+            account.id().clone(),
+            account.provider(),
+            account.metrics().to_vec(),
+            now(),
+        );
+        assert_eq!(usage_in_effect(&young, Some(UsageView::Trend)), None);
+        assert_eq!(
+            usage_in_effect(&account, Some(UsageView::Trend)),
+            Some(UsageView::Trend)
+        );
     }
 
     #[test]

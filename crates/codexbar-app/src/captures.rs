@@ -331,6 +331,14 @@ fn captures() {
     .unwrap();
     cx.run_until_parked();
     save(&mut cx, rings_zoomed, &out, "focus-claude-two-rings-zoom150");
+    // Three rings, the most the card shows (#221), still drawn as rings at 150%.
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude-personal", |choice| {
+            choice.toggle_ring("extra-usage")
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, rings_zoomed, &out, "focus-claude-three-rings-zoom150");
     cx.update(|cx| {
         zoom::set_level(1.0, cx);
         crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude-personal", |choice| choice.rings.clear());
