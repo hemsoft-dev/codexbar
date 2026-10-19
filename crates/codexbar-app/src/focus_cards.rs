@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Local, Utc};
 use codexbar_core::{AccountSnapshot, Metric, Severity, format};
-use codexbar_store::focus::{ActivityView, FocusChoice, UsageView};
+use codexbar_store::focus::{ActivityView, FocusChoice, MAX_RINGS, UsageView};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
@@ -293,6 +293,8 @@ pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> V
 struct MenuEntry {
     label: String,
     checked: bool,
+    /// Shown but not pickable: another ring once the gauge card has its most (#221).
+    disabled: bool,
     action: MenuAction,
 }
 
@@ -311,6 +313,7 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice) -> [Vec<MenuEnt
     let entry = |label: &str, checked: bool, action: MenuAction| MenuEntry {
         label: label.to_owned(),
         checked,
+        disabled: false,
         action,
     };
     let mut usage = vec![entry("Automatic", choice.usage.is_none(), MenuAction::Usage(None))];
@@ -328,14 +331,16 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice) -> [Vec<MenuEnt
             MenuAction::Usage(Some(UsageView::Trend)),
         ));
     }
-    let mut rings = vec![entry("Automatic", choice.rings.is_empty(), MenuAction::Ring(None))];
+    // Automatic is what the card shows when no chosen limit is reported any more, too (#221).
+    let shown = chosen_rings(account, &choice.rings).len();
+    let mut rings = vec![entry("Automatic", shown == 0, MenuAction::Ring(None))];
     for metric in limits(account) {
         let key = metric.key();
-        rings.push(entry(
-            metric.label(),
-            choice.rings.contains(&key),
-            MenuAction::Ring(Some(key)),
-        ));
+        let checked = choice.rings.contains(&key);
+        rings.push(MenuEntry {
+            disabled: !checked && shown >= MAX_RINGS,
+            ..entry(metric.label(), checked, MenuAction::Ring(Some(key)))
+        });
     }
     let mut activity = vec![entry(
         "Automatic",
@@ -373,8 +378,11 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
     let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx);
     let names = ["usage chart", "gauge", "activity chart"];
     let entries = menu_entries(account, choice);
+    // The limits the account reports now, so a pick drops chosen ones it no longer reports (#221).
+    let available: Vec<String> = limits(account).map(Metric::key).collect();
     let mut menus = entries.into_iter().enumerate().map(|(ix, entries)| {
         let account = account.id().as_str().to_owned();
+        let available = available.clone();
         let spoken = format!("Choose what the {} shows", names[ix]);
         Button::new(("focus-card-menu", ix))
             .ghost()
@@ -387,13 +395,18 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
                 for entry in &entries {
                     let account = account.clone();
                     let action = entry.action.clone();
-                    menu = menu.item(PopupMenuItem::new(entry.label.clone()).checked(entry.checked).on_click(
+                    let available = available.clone();
+                    let item = PopupMenuItem::new(entry.label.clone())
+                        .checked(entry.checked)
+                        .disabled(entry.disabled);
+                    menu = menu.item(item.on_click(
                         move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut App| {
                             let action = action.clone();
+                            let available = available.clone();
                             crate::prefs_hub::PrefsHub::update_focus_choice(cx, &account, move |choice| match action {
                                 MenuAction::Usage(view) => choice.usage = view,
                                 MenuAction::Ring(None) => choice.rings.clear(),
-                                MenuAction::Ring(Some(key)) => choice.toggle_ring(&key),
+                                MenuAction::Ring(Some(key)) => choice.toggle_ring_among(&key, &available),
                                 MenuAction::Activity(view) => choice.activity = view,
                             });
                         },
@@ -609,6 +622,7 @@ fn chosen_rings<'a>(account: &'a AccountSnapshot, rings: &[String]) -> Vec<&'a M
     rings
         .iter()
         .filter_map(|key| limits(account).find(|metric| &metric.key() == key))
+        .take(MAX_RINGS)
         .collect()
 }
 
@@ -1142,6 +1156,25 @@ mod tests {
         let [_, rings, _] = menu_entries(&account, &choice);
         let checked: Vec<_> = rings.iter().filter(|e| e.checked).map(|e| e.label.as_str()).collect();
         assert_eq!(checked, ["5-hour window"]);
+    }
+
+    #[test]
+    fn the_gauge_menu_reads_automatic_when_no_chosen_limit_is_reported_and_stops_at_three() {
+        let account = claude();
+        let stale = FocusChoice {
+            rings: vec!["opus-weekly".into()],
+            ..FocusChoice::default()
+        };
+        let [_, rings, _] = menu_entries(&account, &stale);
+        assert!(rings[0].checked, "Automatic, since the card shows the automatic ring");
+
+        let full = FocusChoice {
+            rings: vec!["weekly".into(), "5-hour-window".into(), "spare".into()],
+            ..FocusChoice::default()
+        };
+        // Only two of the three are reported, so the card isn't full and nothing is disabled.
+        let [_, rings, _] = menu_entries(&account, &full);
+        assert!(rings.iter().all(|entry| !entry.disabled));
     }
 
     #[test]

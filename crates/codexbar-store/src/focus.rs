@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// The most rings the gauge card shows side by side; more would shrink each below the gauge's smallest ring.
+pub const MAX_RINGS: usize = 3;
+
 /// The usage card: the current window against the previous one, or the 14-day trend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +41,16 @@ impl FocusChoice {
     /// Nothing chosen: every card is automatic.
     pub fn is_automatic(&self) -> bool {
         self == &Self::default()
+    }
+
+    /// Adds or removes `key`'s ring among the limits the account reports now (`available`). Chosen limits it no
+    /// longer reports are dropped first, so they can't come back later, and a ring is added only while fewer than
+    /// [`MAX_RINGS`] are chosen.
+    pub fn toggle_ring_among(&mut self, key: &str, available: &[String]) {
+        self.rings.retain(|ring| available.contains(ring));
+        if self.rings.iter().any(|ring| ring == key) || self.rings.len() < MAX_RINGS {
+            self.toggle_ring(key);
+        }
     }
 
     /// Adds `key` to the rings, or removes it when it is already there.
@@ -135,6 +148,22 @@ mod tests {
         assert_eq!(choice.rings, ["weekly", "5-hour-window"]);
         choice.toggle_ring("weekly");
         assert_eq!(choice.rings, ["5-hour-window"]);
+    }
+
+    #[test]
+    fn rings_drop_unreported_limits_and_stop_at_the_cap() {
+        let available: Vec<String> = ["a", "b", "c", "d"].map(str::to_owned).to_vec();
+        let mut choice = FocusChoice {
+            rings: vec!["gone".into(), "a".into()],
+            ..FocusChoice::default()
+        };
+        choice.toggle_ring_among("b", &available);
+        assert_eq!(choice.rings, ["a", "b"], "the unreported limit went");
+        choice.toggle_ring_among("c", &available);
+        choice.toggle_ring_among("d", &available);
+        assert_eq!(choice.rings, ["a", "b", "c"], "no fourth ring");
+        choice.toggle_ring_among("a", &available);
+        assert_eq!(choice.rings, ["b", "c"], "a chosen ring still comes off at the cap");
     }
 
     #[test]
