@@ -26,7 +26,8 @@ const RING_MAX_RADIUS: f32 = 120.;
 
 /// A share tick's label: a percentage up to 100%, nothing for the headroom above it.
 fn share_tick(value: f64) -> String {
-    if value > 1.0 + 1e-9 {
+    // The chart reads each tick's value back from its pixel row in f32, so 100% can arrive a hair above 1.0.
+    if value > 1.0 + 1e-3 {
         String::new()
     } else {
         format!("{:.0}%", value * 100.0)
@@ -979,6 +980,7 @@ mod tests {
         );
         assert_eq!(day_ticks((0.0, SHARE_TOP), ValueKind::Percent), SHARE_TICKS);
         assert_eq!(share_tick(1.0), "100%");
+        assert_eq!(share_tick(1.000_000_1), "100%", "a tick read back from its pixel row");
         assert_eq!(share_tick(0.75), "75%");
         assert_eq!(share_tick(SHARE_TOP), "", "the headroom gridline carries no label");
         assert_eq!(day_domain(&[0.0, 0.0], ValueKind::Count), (0.0, 1.0), "never flat");
