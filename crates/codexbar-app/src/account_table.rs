@@ -54,18 +54,72 @@ impl Render for DragRow {
 use crate::status::{severity_color, severity_dot_color, severity_tag};
 use crate::zoom::scaled;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Col {
     Account,
     Limit,
     Used,
     Percent,
     Progress,
+    /// The standard windows side by side (#195), each as a percentage and a bar; blank for a row without one.
+    Window(WindowKind, WindowCell),
     Resets,
     Trend,
 }
 
-const COLUMNS: [Col; 7] = [
+/// The two windows most subscriptions share, shown side by side when the table is wide enough (#195).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowKind {
+    FiveHour,
+    Weekly,
+}
+
+impl WindowKind {
+    /// Which standard window a metric is, by its label: "5-hour window", "Gemini Apps five-hour", "Weekly",
+    /// "Weekly usage", "Weekly SuperGrok". A scoped weekly limit ("Weekly Opus") is weekly too; the first weekly
+    /// metric of an account is the one shown, which providers list before the scoped ones.
+    pub fn of(label: &str) -> Option<Self> {
+        let label = label.to_ascii_lowercase();
+        if label.contains("5-hour") || label.contains("five-hour") || label.contains("5 hour") {
+            Some(Self::FiveHour)
+        } else if label.contains("week") {
+            Some(Self::Weekly)
+        } else {
+            None
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::FiveHour => "5-hour",
+            Self::Weekly => "Weekly",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::FiveHour => "5h",
+            Self::Weekly => "weekly",
+        }
+    }
+
+    /// The account's window of this kind, when it reports one.
+    pub fn in_account(self, account: &AccountSnapshot) -> Option<&Metric> {
+        account
+            .metrics()
+            .iter()
+            .find(|metric| matches!(metric, Metric::Window { .. }) && Self::of(metric.label()) == Some(self))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum WindowCell {
+    Percent,
+    Bar,
+}
+
+/// The columns at the usual width: one metric per row, its primary one.
+const NARROW: [Col; 7] = [
     Col::Account,
     Col::Limit,
     Col::Used,
@@ -74,6 +128,25 @@ const COLUMNS: [Col; 7] = [
     Col::Resets,
     Col::Trend,
 ];
+
+/// The columns when there is room (#195): the 5-hour and weekly windows get a percentage and a bar each, and the
+/// primary metric's own percentage and bar show only when it is neither (credits, premium requests, activity).
+const WIDE: [Col; 11] = [
+    Col::Account,
+    Col::Limit,
+    Col::Used,
+    Col::Percent,
+    Col::Progress,
+    Col::Window(WindowKind::FiveHour, WindowCell::Percent),
+    Col::Window(WindowKind::FiveHour, WindowCell::Bar),
+    Col::Window(WindowKind::Weekly, WindowCell::Percent),
+    Col::Window(WindowKind::Weekly, WindowCell::Bar),
+    Col::Resets,
+    Col::Trend,
+];
+
+/// The width the wide columns need, in unzoomed pixels: what the table must have to show both windows.
+pub const WIDE_TABLE_WIDTH: f32 = 320. + 150. + 110. + 64. + 200. + 2. * (72. + 140.) + 110. + 200.;
 
 /// Each account's stored history summary for its primary metric, by account id.
 pub type Compact = HashMap<String, (HistorySummary, ValueKind)>;
@@ -108,6 +181,8 @@ pub struct AccountTable {
     draggable: bool,
     /// While a row is dragged over the table: the gap it would drop into, as the index of the row below the gap.
     drop_gap: Option<usize>,
+    /// Both standard windows side by side (#195); the dashboard sets it from the window's width.
+    wide: bool,
 }
 
 impl AccountTable {
@@ -120,7 +195,22 @@ impl AccountTable {
             groups: HashMap::new(),
             draggable: false,
             drop_gap: None,
+            wide: false,
         }
+    }
+
+    /// Whether both standard windows are shown side by side (#195).
+    pub fn is_wide(&self) -> bool {
+        self.wide
+    }
+
+    /// Shows both standard windows side by side, or one metric per row; the caller refreshes the table's columns.
+    pub fn set_wide(&mut self, wide: bool) {
+        self.wide = wide;
+    }
+
+    fn columns(&self) -> &'static [Col] {
+        if self.wide { &WIDE } else { &NARROW }
     }
 
     pub fn with_groups(mut self, groups: HashMap<String, String>) -> Self {
@@ -202,7 +292,7 @@ impl AccountTable {
 
 impl TableDelegate for AccountTable {
     fn columns_count(&self, _: &gpui_kit::App) -> usize {
-        COLUMNS.len()
+        self.columns().len()
     }
 
     /// The row itself: draggable to a new place in its group (#178), with a line in the gap a drop would take.
@@ -285,7 +375,15 @@ impl TableDelegate for AccountTable {
     }
 
     fn column(&self, col_ix: usize, cx: &gpui_kit::App) -> Column {
-        match COLUMNS[col_ix] {
+        match self.columns()[col_ix] {
+            Col::Window(kind, WindowCell::Percent) => {
+                Column::new(SharedString::from(format!("{}-percent", kind.key())), kind.title())
+                    .width(scaled(72., cx))
+                    .text_right()
+            }
+            Col::Window(kind, WindowCell::Bar) => {
+                Column::new(SharedString::from(format!("{}-bar", kind.key())), "").width(scaled(140., cx))
+            }
             // DataTable widths are pixels, so they follow the interface zoom explicitly (#116).
             Col::Account => Column::new("account", "Account")
                 .width(scaled(320., cx))
@@ -313,8 +411,26 @@ impl TableDelegate for AccountTable {
         let severity = assessment.severity();
         let primary = row.primary();
         let muted = cx.theme().muted_foreground;
+        // Wide, a standard window has its own columns; the primary pair then shows only what is neither (#195).
+        let own_pair = if self.wide {
+            primary.filter(|metric| WindowKind::of(metric.label()).is_none())
+        } else {
+            primary
+        };
 
-        match COLUMNS[col_ix] {
+        match self.columns()[col_ix] {
+            Col::Window(kind, cell) => {
+                let metric = kind.in_account(row);
+                let id = format!("window-{}-{}", kind.key(), row.id().as_str());
+                let name = metric.map_or(kind.title(), Metric::label);
+                match cell {
+                    WindowCell::Percent => percent_cell(metric, name, &id, muted),
+                    WindowCell::Bar => match metric {
+                        Some(metric) => bar_cell(metric, row, severity, &assessment, &format!("{id}-bar"), cx),
+                        None => blank_cell(&format!("{id}-bar"), kind.title(), muted),
+                    },
+                }
+            }
             Col::Account => h_flex()
                 .gap_2()
                 .items_center()
@@ -364,59 +480,19 @@ impl TableDelegate for AccountTable {
                     .child(used)
                     .into_any_element()
             }
-            Col::Percent => div()
-                .w_full()
-                .text_right()
-                .child(
-                    primary
-                        .and_then(Metric::used_fraction)
-                        .map(|used| format!("{:.0}%", used * 100.0))
-                        .unwrap_or_else(|| "—".into()),
-                )
-                .into_any_element(),
+            Col::Percent => {
+                let id = format!("percent-{}", row.id().as_str());
+                let name = own_pair.map_or("Primary metric", Metric::label);
+                percent_cell(own_pair, name, &id, muted)
+            }
             Col::Progress => {
-                // Credits draw their spend from the remembered start, and nothing without one (#150).
-                let value = match primary {
-                    // An activity count has no limit to fill a bar against (#103).
-                    Some(Metric::Activity { .. }) => {
-                        return div()
-                            .id(ElementId::Name(format!("progress-cell-{}", row.id().as_str()).into()))
-                            .test_support()
-                            .aria_label("No bar")
-                            .text_color(muted)
-                            .child("—")
-                            .into_any_element();
-                    }
-                    Some(metric @ Metric::Credits { .. }) => match metric.progress() {
-                        Some(progress) => progress,
-                        None => {
-                            return div()
-                                .id(ElementId::Name(format!("progress-cell-{}", row.id().as_str()).into()))
-                                .test_support()
-                                .aria_label("No bar")
-                                .text_color(muted)
-                                .child("—")
-                                .into_any_element();
-                        }
-                    },
-                    _ => primary
-                        .and_then(Metric::used_fraction)
-                        .unwrap_or_else(|| assessment.pressure()),
-                };
-                h_flex()
-                    .id(ElementId::Name(format!("progress-cell-{}", row.id().as_str()).into()))
-                    .test_support()
-                    .aria_label(format!("{:.0}% used", value * 100.0))
-                    .size_full()
-                    .items_center()
-                    .child(
-                        Progress::new(ElementId::Name(format!("progress-{}", row.id().as_str()).into()))
-                            .small()
-                            .value(value as f32 * 100.0)
-                            .color(severity_color(severity, cx))
-                            .accessibility_label(format!("{} used", row.display_name())),
-                    )
-                    .into_any_element()
+                let id = format!("progress-cell-{}", row.id().as_str());
+                match own_pair {
+                    Some(metric) => bar_cell(metric, row, severity, &assessment, &id, cx),
+                    // Wide, the row's window sits in its own columns; narrow, a row always has a primary metric.
+                    None if self.wide && primary.is_some() => blank_cell(&id, "Primary metric", muted),
+                    None => bar_cell_without_metric(&id, &assessment, severity, row, cx),
+                }
             }
             Col::Resets => div()
                 .text_color(muted)
@@ -524,6 +600,102 @@ impl AccountTable {
 }
 
 /// What the primary metric limits: "5-hour window", "1,500 requests", "$ credits".
+/// A metric's share used, as "42%", or a dash with nothing to show. `name` names the metric for screen readers.
+fn percent_cell(metric: Option<&Metric>, name: &str, id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+    let percent = metric.and_then(Metric::used_fraction);
+    let text = percent.map_or_else(|| "—".to_owned(), |used| format!("{:.0}%", used * 100.0));
+    let label = match percent {
+        Some(_) => format!("{name}: {text}"),
+        None => format!("{name}: not applicable"),
+    };
+    div()
+        .id(ElementId::Name(id.to_owned().into()))
+        .test_support()
+        .aria_label(label)
+        .w_full()
+        .text_right()
+        .when(percent.is_none(), |this| this.text_color(muted))
+        .child(text)
+        .into_any_element()
+}
+
+/// A dash where a row has no metric for a column, named for screen readers so the gap reads as deliberate.
+fn blank_cell(id: &str, name: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+    div()
+        .id(ElementId::Name(id.to_owned().into()))
+        .test_support()
+        .aria_label(format!("{name}: not applicable"))
+        .text_color(muted)
+        .child("—")
+        .into_any_element()
+}
+
+/// The bar for `metric`: its share used, or for credits the spend from the remembered start (#150); an activity count
+/// or credits without a start have no bar (#103).
+fn bar_cell(
+    metric: &Metric,
+    row: &AccountSnapshot,
+    severity: codexbar_core::Severity,
+    assessment: &codexbar_core::Assessment,
+    id: &str,
+    cx: &gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let value = match metric {
+        Metric::Activity { .. } => return no_bar(id, muted),
+        Metric::Credits { .. } => match metric.progress() {
+            Some(progress) => progress,
+            None => return no_bar(id, muted),
+        },
+        _ => metric.used_fraction().unwrap_or_else(|| assessment.pressure()),
+    };
+    bar(id, value, severity, row, cx)
+}
+
+/// The bar for a row with no primary metric: the account's pressure.
+fn bar_cell_without_metric(
+    id: &str,
+    assessment: &codexbar_core::Assessment,
+    severity: codexbar_core::Severity,
+    row: &AccountSnapshot,
+    cx: &gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    bar(id, assessment.pressure(), severity, row, cx)
+}
+
+fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+    div()
+        .id(ElementId::Name(id.to_owned().into()))
+        .test_support()
+        .aria_label("No bar")
+        .text_color(muted)
+        .child("—")
+        .into_any_element()
+}
+
+fn bar(
+    id: &str,
+    value: f64,
+    severity: codexbar_core::Severity,
+    row: &AccountSnapshot,
+    cx: &gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    h_flex()
+        .id(ElementId::Name(id.to_owned().into()))
+        .test_support()
+        .aria_label(format!("{:.0}% used", value * 100.0))
+        .size_full()
+        .items_center()
+        .child(
+            Progress::new(ElementId::Name(format!("{id}-progress").into()))
+                .small()
+                .value(value as f32 * 100.0)
+                .color(severity_color(severity, cx))
+                .accessibility_label(format!("{} used", row.display_name())),
+        )
+        .into_any_element()
+}
+
 fn limit_label(metric: &Metric) -> String {
     match metric {
         Metric::Window { label, .. } => label.clone(),

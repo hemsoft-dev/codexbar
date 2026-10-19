@@ -63,6 +63,9 @@ impl DashboardView {
 /// Row height of a large `DataTable` (header and body rows).
 /// Row height of the account table at 100% zoom; DataTable rows are pixels, so they're scaled explicitly.
 const TABLE_ROW_HEIGHT: f32 = 40.;
+/// What the window's width holds besides the table, in unzoomed pixels: the 13.5rem rail, the content padding and
+/// the table's borders (#195).
+const RAIL_AND_PADDING_WIDTH: f32 = 13.5 * 16. + 48.;
 /// A tray click this soon after the window lost focus means "hide it": the click itself took the focus away.
 const TOGGLE_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 
@@ -1881,6 +1884,16 @@ impl Render for Dashboard {
         if (zoom - self.table_zoom).abs() > f64::EPSILON {
             self.table_zoom = zoom;
             self.table.update(cx, |table, cx| table.refresh(cx));
+        }
+        // Both standard windows side by side when the table has room for them (#195): the window's width less the
+        // rail and the content padding, against the wide columns' total, all following the zoom.
+        let table_width = window.viewport_size().width - crate::zoom::scaled(RAIL_AND_PADDING_WIDTH, cx);
+        let wide = table_width >= crate::zoom::scaled(crate::account_table::WIDE_TABLE_WIDTH, cx);
+        if self.table.read(cx).delegate().is_wide() != wide {
+            self.table.update(cx, |table, cx| {
+                table.delegate_mut().set_wide(wide);
+                table.refresh(cx);
+            });
         }
         let body = match self.view {
             DashboardView::Usage => self.render_usage(cx),
