@@ -721,8 +721,11 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, control: &crate::ring_siz
                     .render(),
                 ),
             )
+            // The reset line is kept even when a limit has no reset, such as Claude's Extra usage, so its ring sits
+            // level with the others.
             .child(
                 div()
+                    .min_h(rems(2.4))
                     .text_xs()
                     .text_color(muted)
                     .text_center()
