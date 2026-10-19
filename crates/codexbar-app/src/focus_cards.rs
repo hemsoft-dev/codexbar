@@ -635,13 +635,13 @@ fn share_card(
                 .max_radius(control.radius(cx))
                 .render(),
         );
-    // The ring's size slider sits beside it and shows while the card is hovered or the slider is focused (#219).
-    let ring = h_flex()
+    // The ring's size slider overlays its right edge and shows while the card is hovered or the slider is focused
+    // (#219).
+    let ring = div()
         .group(crate::ring_size::GROUP)
+        .relative()
         .size_full()
-        .items_center()
-        .gap_1()
-        .child(div().flex_1().min_w_0().h_full().child(ring))
+        .child(ring)
         .child(control.render(cx));
     let takeaway = pool_takeaway(1.0 - used);
     let title = if metric.label().to_lowercase().contains("window") {
@@ -735,8 +735,8 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, control: &crate::ring_siz
     // Labels and resets wrap rather than cut off when the card is narrow or zoomed in.
     let body = h_flex()
         .group(crate::ring_size::GROUP)
+        .relative()
         .size_full()
-        .items_center()
         .gap_3()
         .children(rings)
         .child(control.render(cx));

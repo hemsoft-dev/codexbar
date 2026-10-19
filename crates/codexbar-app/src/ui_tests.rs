@@ -6983,6 +6983,28 @@ fn the_gauge_card_shows_the_limits_chosen_from_its_menu(cx: &mut TestAppContext)
     assert!(second.starts_with("5-hour window: 64% used"), "{second}");
     assert!(label_of(cx, ("focus-ring", 2usize)).is_none());
 
+    // The ring size slider overlays the card's edge rather than taking a column from the rings (#219): the last
+    // ring reaches the card's content edge, 1rem in from its border, and the slider stays inside the card.
+    let (ring, card, slider) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find(("focus-ring", 1usize)).bounds(),
+                window.find("focus-card-limits").bounds(),
+                window.find("ring-size").bounds(),
+            )
+        })
+        .unwrap();
+    let content_right = card.origin.x + card.size.width - gpui_kit::px(17.);
+    assert!(
+        ring.origin.x + ring.size.width >= content_right,
+        "ring {ring:?} spans card {card:?}"
+    );
+    assert!(
+        slider.origin.x + slider.size.width <= card.origin.x + card.size.width,
+        "slider {slider:?} inside card {card:?}"
+    );
+
     // Saved per account, in dashboard.json.
     let saved = std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap();
     let json: serde_json::Value = serde_json::from_str(&saved).unwrap();

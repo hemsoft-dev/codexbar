@@ -62,23 +62,28 @@ impl RingControl {
 
     /// The vertical slider beside the ring. Hidden until the card is hovered or the slider is focused; the arrow
     /// keys, Home and End move it, and every change is saved.
+    ///
+    /// It overlays the right edge of its parent, which must be `relative()`, centered on the edge of the card's
+    /// content, so half of it sits in the card's padding. Taking a column of its own squeezed the Limits card's rings
+    /// at 150% zoom until their labels broke mid-word and the rings had no height left.
     pub fn render(&self, cx: &App) -> AnyElement {
         let size = self.size(cx);
         let state = self.state.clone();
         let revealed = self.revealed;
-        div()
+        let slider = div()
             .id("ring-size")
             .role(Role::Group)
             // Registered before the focus binding, so the headless tests can see it.
             .test_support()
             .track_focus(&self.focus)
             .aria_label(spoken(size))
-            .flex_shrink_0()
             .w(rems(1.5))
             .h(rems(9.))
             .py_1()
             .opacity(if revealed { 1. } else { 0. })
             .group_hover(GROUP, |style| style.opacity(1.))
+            // Half of it lies outside the card's body, so hovering that half keeps it shown too.
+            .hover(|style| style.opacity(1.))
             .on_key_down(move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
                 if event.keystroke.modifiers.modified() {
                     return;
@@ -91,7 +96,15 @@ impl RingControl {
                 state.update(cx, |state, cx| state.set_value(next, window, cx));
                 crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(next));
             })
-            .child(Slider::new(&self.state).vertical().h_full())
+            .child(Slider::new(&self.state).vertical().h_full());
+        div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(rems(-0.75))
+            .flex()
+            .items_center()
+            .child(slider)
             .into_any_element()
     }
 }
