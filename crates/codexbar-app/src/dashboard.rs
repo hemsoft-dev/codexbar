@@ -1313,7 +1313,7 @@ impl Dashboard {
             view.set_accounts(accounts.clone(), preferred.as_ref(), cx);
         });
         self.spend_view
-            .update(cx, |view, cx| view.set_accounts(accounts.clone(), cx));
+            .update(cx, |view, cx| view.set_accounts(accounts.clone(), states.clone(), cx));
         // Rows drag to a new place (#178) unless the preferences can't be saved.
         let draggable = !crate::prefs_hub::PrefsHub::is_read_only(cx);
         self.table.update(cx, |table, cx| {

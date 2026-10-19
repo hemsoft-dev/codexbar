@@ -21,6 +21,7 @@ use gpui_kit::{
     linear_color_stop, linear_gradient, prelude::FluentBuilder as _, rems,
 };
 
+use crate::account_table::{AccountState, States};
 use crate::history_view::{ValueKind, describe, span_label};
 use crate::prefs_hub::PrefsHub;
 use crate::status::{severity_color, severity_dot_color};
@@ -52,6 +53,9 @@ pub struct OpenAccounts;
 pub struct SpendView {
     history: Arc<Mutex<HistoryStore>>,
     accounts: Vec<AccountSnapshot>,
+    /// Refresh state by account id, as the Usage table has it: amounts from a failed or not yet repeated fetch are
+    /// labelled as the last known ones.
+    states: States,
     /// The currency the trend shows when spend comes in more than one; the first one until picked.
     currency: Option<Currency>,
     /// The trend point the keyboard is on; `None` reads the latest.
@@ -68,6 +72,7 @@ impl SpendView {
         Self {
             history,
             accounts: Vec::new(),
+            states: States::new(),
             currency: None,
             cursor: None,
             chart_focus: cx.focus_handle().tab_index(0).tab_stop(true),
@@ -75,9 +80,10 @@ impl SpendView {
         }
     }
 
-    /// New accounts after a refresh.
-    pub fn set_accounts(&mut self, accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
+    /// New accounts after a refresh, with their refresh states.
+    pub fn set_accounts(&mut self, accounts: Vec<AccountSnapshot>, states: States, cx: &mut Context<Self>) {
         self.accounts = accounts;
+        self.states = states;
         let sheet = SpendSheet::of(&self.accounts);
         let rows = sheet.spend.len() + sheet.balances.len();
         while self.row_focus.len() < rows {
@@ -105,7 +111,7 @@ impl SpendView {
             .collect();
         let series: Vec<(&str, &str)> = keys.iter().map(|(a, m)| (a.as_str(), m.as_str())).collect();
         let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        history.daily_total(&series, TREND_DAYS, &Local, Utc::now())
+        history.daily_total(&series, currency.code(), TREND_DAYS, &Local, Utc::now())
     }
 
     /// Left/Right move the chart cursor one point, Home/End jump to the ends. Unmodified keys only.
@@ -154,11 +160,11 @@ fn breakdown_text(row: &SpendRow<'_>) -> Option<String> {
         .breakdown
         .iter()
         .filter_map(|metric| {
-            Some(format!(
-                "{} {}",
-                metric.label(),
-                codexbar_core::spend::spent(metric)?.display()
-            ))
+            codexbar_core::spend::spent(metric)?;
+            Some(match metric.used_fraction() {
+                Some(used) => format!("{} {}, {:.0}% used", metric.label(), amount_text(metric), used * 100.0),
+                None => format!("{} {}", metric.label(), amount_text(metric)),
+            })
         })
         .collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
@@ -180,6 +186,26 @@ fn runway_text(row: &BalanceRow<'_>, now: DateTime<Utc>) -> String {
         }
         _ => "No spending rate known yet".to_owned(),
     }
+}
+
+/// How an account's amounts are dated when they aren't from this refresh, as the Usage table's tags say it.
+fn stale_note(state: Option<&AccountState>, account: &AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
+    let age = format::age_label(account.fetched_at(), now);
+    match state? {
+        AccountState::Restored => Some(format!("Last known, saved {age}")),
+        AccountState::Failed(_) => Some(format!("Stale, from {age}")),
+        AccountState::Fresh | AccountState::Loading | AccountState::Unavailable(_) => None,
+    }
+}
+
+/// The severity a spend row shows: the worst of its capped metrics, the counted one and any capped breakdown (a
+/// team pool beside an individual cap).
+fn row_severity(row: &SpendRow<'_>, now: DateTime<Utc>) -> Option<codexbar_core::Severity> {
+    std::iter::once(row.counted)
+        .chain(row.breakdown.iter().copied())
+        .filter(|metric| metric.used_fraction().is_some())
+        .map(|metric| codexbar_core::assess(metric, now).severity())
+        .max()
 }
 
 /// What a total reads as, with its currency named only when there is more than one.
@@ -204,19 +230,26 @@ impl Render for SpendView {
             .spend
             .iter()
             .enumerate()
-            .map(|(ix, row)| spend_row(ix, row, focus.next(), now, cx))
+            .map(|(ix, row)| {
+                let stale = stale_note(self.states.get(row.account.id().as_str()), row.account, now);
+                spend_row(ix, row, stale, focus.next(), now, cx)
+            })
             .collect();
         let balance_rows: Vec<AnyElement> = sheet
             .balances
             .iter()
             .enumerate()
-            .map(|(ix, row)| balance_row(ix, row, focus.next(), now, cx))
+            .map(|(ix, row)| {
+                let stale = stale_note(self.states.get(row.account.id().as_str()), row.account, now);
+                balance_row(ix, row, stale, focus.next(), now, cx)
+            })
             .collect();
         v_flex()
             .id("spend-view")
             .w_full()
             .gap_6()
             .child(self.render_totals(&sheet, now, cx))
+            .children(self.render_stale_note(&sheet, now, cx))
             .when(!spend_rows.is_empty(), |this| {
                 this.child(section("spend-list", "Spend this period", spend_rows, cx))
             })
@@ -231,6 +264,40 @@ impl Render for SpendView {
 }
 
 impl SpendView {
+    /// Says when the totals include amounts that weren't refreshed, so last known money doesn't read as current.
+    fn render_stale_note(&self, sheet: &SpendSheet<'_>, now: DateTime<Utc>, cx: &App) -> Option<impl IntoElement> {
+        let mut stale: Vec<&str> = sheet
+            .spend
+            .iter()
+            .map(|row| row.account)
+            .chain(sheet.balances.iter().map(|row| row.account))
+            .filter(|account| stale_note(self.states.get(account.id().as_str()), account, now).is_some())
+            .map(|account| account.id().as_str())
+            .collect();
+        stale.sort_unstable();
+        stale.dedup();
+        let text = match stale.len() {
+            0 => return None,
+            1 => "1 account wasn't refreshed: its amounts are the last known, and the totals include them.".to_owned(),
+            n => format!(
+                "{n} accounts weren't refreshed: their amounts are the last known, and the totals include them."
+            ),
+        };
+        Some(
+            h_flex()
+                .id("spend-stale-note")
+                .role(Role::Status)
+                .test_support()
+                .aria_label(text.clone())
+                .gap_2()
+                .items_center()
+                .text_sm()
+                .text_color(cx.theme().warning)
+                .child(Icon::new(IconName::TriangleAlert).small())
+                .child(text),
+        )
+    }
+
     fn render_empty(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let names: Vec<&str> = MONEY_PROVIDERS.iter().map(|provider| provider.display_name()).collect();
         v_flex()
@@ -548,6 +615,8 @@ struct RowHead {
     dot: Hsla,
     name: String,
     detail: Option<String>,
+    /// "Stale, from 2h ago" when the amounts aren't from this refresh.
+    stale: Option<String>,
 }
 
 /// A row's frame: a focus stop that names everything the row shows, with the account in the first column. The caller
@@ -560,8 +629,10 @@ fn row_frame(head: RowHead, focus: Option<&FocusHandle>, cx: &App) -> Observed<g
         dot,
         name,
         detail,
+        stale,
     } = head;
     let ring = cx.theme().ring;
+    let warning = cx.theme().warning;
     let muted = cx.theme().muted_foreground;
     let row = h_flex()
         .id(SharedString::from(id))
@@ -590,7 +661,8 @@ fn row_frame(head: RowHead, focus: Option<&FocusHandle>, cx: &App) -> Observed<g
                     v_flex()
                         .min_w_0()
                         .child(div().truncate().child(name))
-                        .children(detail.map(|detail| div().text_sm().text_color(muted).truncate().child(detail))),
+                        .children(detail.map(|detail| div().text_sm().text_color(muted).truncate().child(detail)))
+                        .children(stale.map(|stale| div().text_sm().text_color(warning).truncate().child(stale))),
                 ),
         );
     match focus {
@@ -599,7 +671,14 @@ fn row_frame(head: RowHead, focus: Option<&FocusHandle>, cx: &App) -> Observed<g
     }
 }
 
-fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: DateTime<Utc>, cx: &App) -> AnyElement {
+fn spend_row(
+    ix: usize,
+    row: &SpendRow<'_>,
+    stale: Option<String>,
+    focus: Option<&FocusHandle>,
+    now: DateTime<Utc>,
+    cx: &App,
+) -> AnyElement {
     let metric = row.counted;
     let capped = metric.used_fraction();
     let severity = codexbar_core::assess(metric, now).severity();
@@ -610,6 +689,7 @@ fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: Da
     let projection = capped.map(|used| Projection::of(metric, used, now));
     let spoken = [
         Some(format!("{name}, {}: {}", metric.label(), amount_text(metric))),
+        stale.clone(),
         projection.as_ref().map(|projection| projection.label.clone()),
         Some(reset.clone()),
         breakdown.clone(),
@@ -618,12 +698,11 @@ fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: Da
     .flatten()
     .collect::<Vec<_>>()
     .join(", ");
-    let dot = if capped.is_some() {
-        severity_dot_color(severity, cx)
-    } else {
-        cx.theme().muted_foreground
+    let dot = match row_severity(row, now) {
+        Some(worst) => severity_dot_color(worst, cx),
+        None => cx.theme().muted_foreground,
     };
-    let bar: AnyElement = match &projection {
+    let main: AnyElement = match &projection {
         Some(projection) => usage_bar(
             &format!("spend-bar-{ix}"),
             projection,
@@ -640,16 +719,53 @@ fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: Da
             .text_sm()
             .text_color(cx.theme().muted_foreground)
             .child("No limit")
-            .children(row.breakdown.iter().filter_map(|metric| {
-                let spent = codexbar_core::spend::spent(metric)?;
-                Some(
-                    div()
-                        .whitespace_nowrap()
-                        .child(format!("{} {}", metric.label(), spent.display())),
-                )
-            }))
+            .children(
+                row.breakdown
+                    .iter()
+                    .filter(|metric| metric.used_fraction().is_none())
+                    .filter_map(|metric| {
+                        let spent = codexbar_core::spend::spent(metric)?;
+                        Some(
+                            div()
+                                .whitespace_nowrap()
+                                .child(format!("{} {}", metric.label(), spent.display())),
+                        )
+                    }),
+            )
             .into_any_element(),
     };
+    // A capped breakdown, such as a team pool beside the individual cap, gets a bar of its own: it can run out first.
+    let capped_breakdown = row
+        .breakdown
+        .iter()
+        .enumerate()
+        .filter_map(|(j, metric)| {
+            let used = metric.used_fraction()?;
+            let projection = Projection::of(metric, used, now);
+            let severity = codexbar_core::assess(metric, now).severity();
+            Some(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .whitespace_nowrap()
+                            .child(format!("{} {}", metric.label(), amount_text(metric))),
+                    )
+                    .child(div().flex_1().min_w(rems(4.)).child(usage_bar(
+                        &format!("spend-bar-{ix}-{j}"),
+                        &projection,
+                        severity_color(severity, cx),
+                        crate::usage_bar::small(),
+                        format!("{name}, {}", metric.label()),
+                        cx,
+                    ))),
+            )
+        })
+        .collect::<Vec<_>>();
+    let bar = v_flex().gap_1().child(main).children(capped_breakdown);
     let head = RowHead {
         id: format!("spend-row-{ix}"),
         first: ix == 0,
@@ -657,6 +773,7 @@ fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: Da
         dot,
         name,
         detail,
+        stale,
     };
     row_frame(head, focus, cx)
         .child(
@@ -681,6 +798,7 @@ fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: Da
 fn balance_row(
     ix: usize,
     row: &BalanceRow<'_>,
+    stale: Option<String>,
     focus: Option<&FocusHandle>,
     now: DateTime<Utc>,
     cx: &App,
@@ -689,7 +807,10 @@ fn balance_row(
     let name = row.account.display_name();
     let runway = runway_text(row, now);
     let remaining = row.remaining().display();
-    let spoken = format!("{name}, {}: {remaining} left, {runway}", row.metric.label());
+    let spoken = match &stale {
+        Some(stale) => format!("{name}, {}: {remaining} left, {stale}, {runway}", row.metric.label()),
+        None => format!("{name}, {}: {remaining} left, {runway}", row.metric.label()),
+    };
     let dot = if row.is_empty() {
         cx.theme().danger
     } else {
@@ -707,6 +828,7 @@ fn balance_row(
         dot,
         name,
         detail: Some(row.metric.label().to_owned()),
+        stale,
     };
     row_frame(head, focus, cx)
         .child(
@@ -783,6 +905,47 @@ mod tests {
         assert_eq!(reset_text(&capped, now()), "Resets in 14d");
         assert_eq!(amount_text(&uncapped), "$23.89");
         assert_eq!(reset_text(&uncapped, now()), "No reset date");
+    }
+
+    #[test]
+    fn a_nearly_spent_team_pool_colors_the_row_and_is_read_out() {
+        let cap = |label: &str, spent: i64, limit: i64| Metric::Spend {
+            label: label.into(),
+            spent: Money::from_cents(spent),
+            limit: Some(Money::from_cents(limit)),
+            resets_at: Some(now() + Duration::days(14)),
+            pace: None,
+        };
+        let accounts = [AccountSnapshot::new(
+            AccountId::new("cursor"),
+            Provider::Cursor,
+            vec![cap("On-demand", 500, 5000), cap("Team on-demand", 48_500, 50_000)],
+            now(),
+        )];
+        let sheet = SpendSheet::of(&accounts);
+        let row = &sheet.spend[0];
+        assert_eq!(row.counted.label(), "On-demand");
+        assert_eq!(row_severity(row, now()), Some(codexbar_core::Severity::LimitSoon));
+        assert_eq!(
+            breakdown_text(row).as_deref(),
+            Some("Team on-demand $485.00 of $500.00, 97% used")
+        );
+    }
+
+    #[test]
+    fn stale_amounts_say_how_old_they_are() {
+        let account = balance(1842, Some(310));
+        let later = now() + Duration::hours(2);
+        assert_eq!(
+            stale_note(Some(&AccountState::Failed("offline".into())), &account, later).as_deref(),
+            Some("Stale, from 2h ago")
+        );
+        assert_eq!(
+            stale_note(Some(&AccountState::Restored), &account, later).as_deref(),
+            Some("Last known, saved 2h ago")
+        );
+        assert_eq!(stale_note(Some(&AccountState::Fresh), &account, later), None);
+        assert_eq!(stale_note(None, &account, later), None);
     }
 
     #[test]

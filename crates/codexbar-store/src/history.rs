@@ -21,8 +21,13 @@ struct Header {
     codexbar_history: u32,
 }
 
-/// A reading's time and value.
-type Reading = (DateTime<Utc>, f64);
+/// A day's last reading of one series: its time, its value, and when its period resets.
+#[derive(Clone, Copy)]
+struct Reading {
+    at: DateTime<Utc>,
+    value: f64,
+    resets_at: Option<DateTime<Utc>>,
+}
 
 /// One stored reading.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -38,6 +43,10 @@ pub struct Sample {
     /// Unix seconds of the window's reset, when it has one. Samples sharing it belong to the same window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     r: Option<i64>,
+    /// The ISO currency of a money reading (spend or a balance), so a series whose account changes currency is
+    /// never summed across the change (#215). Older samples have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    c: Option<String>,
 }
 
 impl Sample {
@@ -119,6 +128,7 @@ impl HistoryStore {
             m: metric.to_owned(),
             v: point.value,
             r: None,
+            c: None,
         }));
         self.samples.sort_by_key(|sample| sample.t);
         self.reindex();
@@ -198,6 +208,7 @@ impl HistoryStore {
                     m: metric.key(),
                     v: value,
                     r: metric.resets_at().map(|at| at.timestamp()),
+                    c: currency_of(metric).map(|currency| currency.code().to_owned()),
                 };
                 if !self.is_duplicate(&sample) {
                     fresh.push(sample);
@@ -227,6 +238,7 @@ impl HistoryStore {
         let last = &self.samples[ix];
         (last.v - sample.v).abs() < DEDUP_EPSILON
             && last.r == sample.r
+            && last.c == sample.c
             && sample.t - last.t < Duration::minutes(HEARTBEAT_MINUTES).num_seconds()
     }
 
@@ -322,13 +334,16 @@ impl HistoryStore {
         last.into_iter().map(|slot| slot.map(|(_, value)| value)).collect()
     }
 
-    /// The sum of several series per local day over the last `days` days, oldest first, for the Spend view's trend
-    /// (#215). A day counts only when at least one series has a reading that day, timed at that day's last reading;
-    /// a series without one adds the value it last had, so a missed refresh doesn't read as a drop. Days before any
-    /// reading, and days where no series has one, are left out, so missing days show as gaps.
+    /// The sum of several money series in `currency` per local day over the last `days` days, oldest first, for the
+    /// Spend view's trend (#215). A day counts only when at least one series has a reading that day, timed at that
+    /// day's last reading; a series without one adds the value it last had, so a missed refresh doesn't read as a
+    /// drop, until the period that value belongs to resets. Days before any reading, and days where no series has
+    /// one, are left out, so missing days show as gaps. Readings in another currency, and readings dated after `now`
+    /// (the clock was set back), are ignored.
     pub fn daily_total<Tz: TimeZone>(
         &self,
         series: &[(&str, &str)],
+        currency: &str,
         days: usize,
         tz: &Tz,
         now: DateTime<Utc>,
@@ -339,32 +354,48 @@ impl HistoryStore {
             .map(|(account, metric)| {
                 let mut last: Vec<Option<Reading>> = vec![None; days];
                 for sample in self.series(account, metric) {
+                    if sample.at() > now || sample.c.as_deref().is_some_and(|code| code != currency) {
+                        continue;
+                    }
                     let day = sample.at().with_timezone(tz).date_naive();
                     let Ok(age) = usize::try_from((today - day).num_days()) else {
                         continue;
                     };
                     if age < days {
                         let slot = &mut last[days - 1 - age];
-                        if slot.is_none_or(|(at, _)| sample.at() >= at) {
-                            *slot = Some((sample.at(), sample.v));
+                        if slot.is_none_or(|reading| sample.at() >= reading.at) {
+                            *slot = Some(Reading {
+                                at: sample.at(),
+                                value: sample.v,
+                                resets_at: sample.resets_at(),
+                            });
                         }
                     }
                 }
                 last
             })
             .collect();
-        let mut carried: Vec<Option<f64>> = vec![None; series.len()];
+        let mut carried: Vec<Option<Reading>> = vec![None; series.len()];
         let mut out = Vec::new();
         for day in 0..days {
             let mut at: Option<DateTime<Utc>> = None;
             for (ix, last) in lasts.iter().enumerate() {
-                if let Some((when, value)) = last[day] {
-                    carried[ix] = Some(value);
-                    at = Some(at.map_or(when, |at| at.max(when)));
+                if let Some(reading) = last[day] {
+                    carried[ix] = Some(reading);
+                    at = Some(at.map_or(reading.at, |at| at.max(reading.at)));
                 }
             }
             if let Some(at) = at {
-                out.push(Point::new(at, carried.iter().flatten().sum()));
+                // A value from a period that has since reset no longer counts.
+                for reading in &mut carried {
+                    if reading.is_some_and(|reading| reading.resets_at.is_some_and(|reset| reset <= at)) {
+                        *reading = None;
+                    }
+                }
+                out.push(Point::new(
+                    at,
+                    carried.iter().flatten().map(|reading| reading.value).sum(),
+                ));
             }
         }
         out
@@ -427,6 +458,15 @@ fn header_line() -> String {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// The currency of a money metric; `None` for every other kind.
+fn currency_of(metric: &codexbar_core::Metric) -> Option<codexbar_core::Currency> {
+    match metric {
+        codexbar_core::Metric::Spend { spent, .. } => Some(spent.currency()),
+        codexbar_core::Metric::Balance { remaining, .. } => Some(remaining.currency()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -674,7 +714,7 @@ mod tests {
         store.insert_points("b", "on-demand", &[Point::new(day(3, 2), 4.0)]);
         // Today only b reads; a adds the 15 it last had.
         store.insert_points("b", "on-demand", &[Point::new(day(0, -1), 6.0)]);
-        let totals = store.daily_total(&[("a", "net-spend"), ("b", "on-demand")], 6, &tz, now());
+        let totals = store.daily_total(&[("a", "net-spend"), ("b", "on-demand")], "USD", 6, &tz, now());
         assert_eq!(
             totals,
             [
@@ -685,12 +725,73 @@ mod tests {
         );
     }
 
+    fn spend(id: &str, cents: i64, currency: codexbar_core::Currency, resets_at: DateTime<Utc>) -> AccountSnapshot {
+        AccountSnapshot::new(
+            AccountId::new(id),
+            Provider::Cursor,
+            vec![Metric::Spend {
+                label: "On-demand".into(),
+                spent: Money::new(cents, currency),
+                limit: None,
+                resets_at: Some(resets_at),
+                pace: None,
+            }],
+            now(),
+        )
+    }
+
+    #[test]
+    fn daily_total_drops_a_carried_spend_once_its_period_resets() {
+        use codexbar_core::Currency::Usd;
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let mut store = HistoryStore::in_memory(retention());
+        let day = |n: i64| now() - Duration::days(n);
+        // a's period resets a day and a half back; it is read before the reset and not again.
+        let reset = day(1) - Duration::hours(12);
+        store.record(&[spend("a", 4000, Usd, reset)], day(3)).unwrap();
+        store
+            .record(&[spend("b", 500, Usd, now() + Duration::days(9))], day(3))
+            .unwrap();
+        store
+            .record(&[spend("b", 700, Usd, now() + Duration::days(9))], day(0))
+            .unwrap();
+        let totals = store.daily_total(&[("a", "on-demand"), ("b", "on-demand")], "USD", 5, &tz, now());
+        let values: Vec<f64> = totals.iter().map(|point| point.value).collect();
+        assert_eq!(values, [45.0, 7.0], "a's $40 belongs to a period that ended");
+    }
+
+    #[test]
+    fn daily_total_skips_other_currencies_and_readings_after_now() {
+        use codexbar_core::Currency::{Eur, Usd};
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let mut store = HistoryStore::in_memory(retention());
+        let resets = now() + Duration::days(9);
+        store
+            .record(&[spend("a", 900, Eur, resets)], now() - Duration::days(2))
+            .unwrap();
+        store
+            .record(&[spend("a", 300, Usd, resets)], now() - Duration::hours(1))
+            .unwrap();
+        // Recorded before the clock was set back, so dated after now but still today.
+        store
+            .record(&[spend("a", 9900, Usd, resets)], now() + Duration::minutes(30))
+            .unwrap();
+        let usd = store.daily_total(&[("a", "on-demand")], "USD", 5, &tz, now());
+        assert_eq!(usd, [Point::new(now() - Duration::hours(1), 3.0)]);
+        let eur = store.daily_total(&[("a", "on-demand")], "EUR", 5, &tz, now());
+        assert_eq!(eur, [Point::new(now() - Duration::days(2), 9.0)]);
+    }
+
     #[test]
     fn daily_total_is_empty_without_readings() {
         let tz = FixedOffset::west_opt(0).unwrap();
         let store = HistoryStore::in_memory(retention());
-        assert!(store.daily_total(&[("a", "net-spend")], 30, &tz, now()).is_empty());
-        assert!(store.daily_total(&[], 30, &tz, now()).is_empty());
+        assert!(
+            store
+                .daily_total(&[("a", "net-spend")], "USD", 30, &tz, now())
+                .is_empty()
+        );
+        assert!(store.daily_total(&[], "USD", 30, &tz, now()).is_empty());
     }
 
     #[test]
@@ -702,7 +803,8 @@ mod tests {
             let value: serde_json::Value = serde_json::from_str(line).unwrap();
             let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
             assert!(
-                keys.iter().all(|key| ["t", "a", "m", "v", "r"].contains(&key.as_str())),
+                keys.iter()
+                    .all(|key| ["t", "a", "m", "v", "r", "c"].contains(&key.as_str())),
                 "{keys:?}"
             );
         }

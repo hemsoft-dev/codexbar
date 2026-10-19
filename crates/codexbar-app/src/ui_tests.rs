@@ -6833,3 +6833,56 @@ fn the_spend_view_points_to_accounts_when_nothing_reports_money(cx: &mut TestApp
     click(cx, handle, "spend-open-accounts");
     assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Settings);
 }
+
+/// One OpenRouter balance on the first fetch, then a network failure on every later one.
+struct BalanceThenFailing {
+    calls: AtomicUsize,
+}
+
+impl UsageProvider for BalanceThenFailing {
+    fn name(&self) -> &'static str {
+        Provider::OpenRouter.display_name()
+    }
+
+    fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+            return Err(ProviderError::Network);
+        }
+        Ok(vec![AccountSnapshot::new(
+            AccountId::new("openrouter"),
+            Provider::OpenRouter,
+            vec![Metric::Balance {
+                label: "Credits".into(),
+                remaining: codexbar_core::Money::from_cents(1842),
+                burn_per_day: Some(codexbar_core::Money::from_cents(310)),
+            }],
+            now,
+        )])
+    }
+}
+
+#[gpui_kit::test]
+fn the_spend_view_labels_amounts_a_failed_refresh_left_behind(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("spend-stale", "{}");
+    let provider: Arc<dyn UsageProvider> = Arc::new(BalanceThenFailing {
+        calls: AtomicUsize::new(0),
+    });
+    let dashboard = open_live_fixed(cx, &settings, vec![provider]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    click(cx, handle, ("view-tab", 1usize));
+    let fresh = label_of(cx, "balance-row-0").unwrap();
+    assert_eq!(fresh.matches("Stale").count(), 0, "{fresh}");
+    assert!(label_of(cx, "spend-stale-note").is_none());
+
+    refresh(cx, &dashboard);
+    let stale = label_of(cx, "balance-row-0").unwrap();
+    assert!(
+        stale.starts_with("OpenRouter, Credits: $18.42 left, Stale, from "),
+        "{stale}"
+    );
+    assert_eq!(
+        label_of(cx, "spend-stale-note").as_deref(),
+        Some("1 account wasn't refreshed: its amounts are the last known, and the totals include them.")
+    );
+}
