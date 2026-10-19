@@ -5103,6 +5103,42 @@ fn the_implicit_cookie_workspace_is_not_added_again_through_oauth(cx: &mut TestA
     assert!(saved_console_sign_in(cx, "oc-1").is_none());
 }
 
+/// A cookie account migrated from the single-account settings keeps the implicit account's id. Switched to OAuth, it
+/// is that setup made explicit: its leftover cookie must not count as a second setup for the same workspace (#190).
+#[gpui_kit::test]
+fn a_migrated_cookie_account_switched_to_oauth_signs_in(cx: &mut TestAppContext) {
+    let implicit = codexbar_store::settings::legacy_id(codexbar_store::settings::names::OPENCODE_GO, "");
+    let json = format!(
+        r#"{{ "accountConfigurationVersion": 1, "openCodeGoWorkspaceId": "wrk_01ABC", "accounts": [
+            {{ "id": "{implicit}", "providerId": "OpenCodeGo", "displayLabel": "OpenCodeGo", "enabled": true,
+              "authenticationMethod": "OAuth", "workspaceId": "wrk_01ABC", "legacyCardKey": "OpenCodeGo" }} ] }}"#
+    );
+    let settings = TempSettings::new("opencode-migrated-oauth", &json);
+    let fake = FakeOpenCode::new(opencode_fixture::Outcome::SignsIn("wrk_01ABC", "usr_1"));
+    let handle = open_opencode_accounts(cx, &settings, &fake);
+    // The cookie the account used before the switch is still under its id.
+    keep_implicit_cookie(cx);
+    click(cx, handle, format!("sign-in-{implicit}"));
+    assert_eq!(
+        label_of(cx, "opencode-sign-in-error"),
+        None,
+        "its own cookie is no second setup"
+    );
+    let saved = saved_console_sign_in(cx, &implicit).expect("the sign-in is kept");
+    assert_eq!(saved.workspace_id, "wrk_01ABC");
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let ids: Vec<Option<String>> = adapters
+        .iter()
+        .filter(|a| a.name() == "OpenCode Go + Zen")
+        .map(|a| a.account_id().map(str::to_owned))
+        .collect();
+    assert_eq!(
+        ids,
+        [Some(implicit)],
+        "no second row stands in for the account's own cookie"
+    );
+}
+
 #[gpui_kit::test]
 fn a_cookie_that_cant_be_saved_with_the_account_gives_the_sign_in_back(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
