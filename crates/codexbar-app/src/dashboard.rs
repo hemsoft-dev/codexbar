@@ -124,6 +124,8 @@ struct Failure {
     /// That account's label, to tell sibling failures apart.
     label: Option<String>,
     message: String,
+    /// The sign-in or key is the problem, so the row offers Settings beside Retry (#188).
+    sign_in: bool,
 }
 
 impl Failure {
@@ -133,6 +135,58 @@ impl Failure {
             Some(label) => format!("{} · {label}", self.provider),
             None => self.provider.to_owned(),
         }
+    }
+
+    /// What tells this row's buttons apart: several users of one provider can fail in the same refresh.
+    fn element_suffix(&self) -> String {
+        match (&self.account, &self.label) {
+            (Some(account), _) => format!("{}-{account}", self.provider),
+            (None, Some(label)) => format!("{}-{label}", self.provider),
+            (None, None) => self.provider.to_owned(),
+        }
+    }
+}
+
+/// Where Settings opens for a failure (#188): the failed provider's group on the Accounts page (its index in the
+/// catalog) and the account record to edit, when one is known. An adapter for one configured account names it,
+/// by the record's id or by the dashboard account the record owns (a Codex or Claude account CodexBar signed in
+/// reports under its identity, a Copilot one under its username); `owned` maps record ids to those. A
+/// provider-wide failure (OpenCode's cookie adapter, which covers Go and Zen) goes to its first enabled record,
+/// then any record, then the provider's first group with none.
+fn settings_target(
+    failure: &Failure,
+    owned: &HashMap<String, String>,
+    cx: &gpui_kit::App,
+) -> Option<(usize, Option<codexbar_store::settings::AccountRecord>)> {
+    let providers = &crate::catalog::PROVIDERS;
+    let group_of = |provider: &str| providers.iter().position(|info| info.id.eq_ignore_ascii_case(provider));
+    let hub = SettingsHub::global(cx);
+    let records = hub.settings().accounts();
+    let named = failure.account.as_ref().and_then(|id| {
+        records.iter().find(|record| &record.id == id).or_else(|| {
+            // A Copilot organization card is owned under "<record id>#org".
+            let owner = owned
+                .iter()
+                .find(|(_, account)| *account == id)
+                .and_then(|(key, _)| key.split('#').next())?;
+            records.iter().find(|record| record.id == owner)
+        })
+    });
+    if let Some(record) = named {
+        return group_of(&record.provider).map(|group| (group, Some(record.clone())));
+    }
+    let kind = Provider::from_display_name(failure.provider)?;
+    let of_kind = |provider: &str| {
+        group_of(provider).is_some_and(|group| crate::brand::from_settings_name(providers[group].id) == Some(kind))
+    };
+    let siblings: Vec<&codexbar_store::settings::AccountRecord> =
+        records.iter().filter(|record| of_kind(&record.provider)).collect();
+    match siblings.iter().find(|record| record.enabled).or(siblings.first()) {
+        Some(record) => group_of(&record.provider).map(|group| (group, Some((*record).clone()))),
+        None => providers
+            .iter()
+            .position(|info| crate::brand::from_settings_name(info.id) == Some(kind))
+            .map(|group| (group, None)),
     }
 }
 
@@ -191,6 +245,11 @@ pub struct Dashboard {
     widgets_written: Option<DateTime<Utc>>,
     /// A widget tile's account (#95) that wasn't loaded yet when it was tapped; shown once it arrives.
     pending_focus: Option<(crate::handoff::FocusRequest, Instant)>,
+    /// Where Settings opens next (#188): a failure row's Open settings button points it at the failed account's
+    /// group. Taken by the first Settings frame; later frames keep whatever the user navigates to.
+    settings_start: Option<gpui_kit::component::setting::SelectIndex>,
+    /// Bumped with every such jump, so a Settings panel already on screen starts over at the new place.
+    settings_generation: u32,
     /// The widget builder's choices the last snapshot carried (#95).
     #[cfg(windows)]
     widget_builder: codexbar_store::widgets::WidgetBuilder,
@@ -360,6 +419,8 @@ impl Dashboard {
             #[cfg(windows)]
             widgets_written: None,
             pending_focus: None,
+            settings_start: None,
+            settings_generation: 0,
             #[cfg(windows)]
             widget_builder: Default::default(),
             _clock: clock,
@@ -509,6 +570,55 @@ impl Dashboard {
     /// as it is.
     pub fn retry(&mut self, provider: &'static str, account: Option<String>, cx: &mut Context<Self>) {
         self.fetch(Some((provider, account)), cx);
+    }
+
+    /// The record a failure row's Open settings would edit, for the headless UI tests.
+    #[cfg(test)]
+    pub fn settings_target_record(
+        &self,
+        provider: &'static str,
+        account: Option<String>,
+        cx: &gpui_kit::App,
+    ) -> Option<String> {
+        self.failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .and_then(|failure| settings_target(failure, &self.owned_ids, cx))
+            .and_then(|(_, record)| record.map(|record| record.id))
+    }
+
+    /// A failure row's Open settings (#188): shows Settings on the Accounts page at the failed provider's group and,
+    /// for an account whose key or cookie is entered there, opens its dialog (Add account… when the provider has no
+    /// record yet). Accounts CodexBar signs in itself land on their row, where Sign in… is.
+    pub fn open_settings_for(
+        &mut self,
+        provider: &'static str,
+        account: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self
+            .failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .and_then(|failure| settings_target(failure, &self.owned_ids, cx));
+        self.settings_start = Some(gpui_kit::component::setting::SelectIndex {
+            page_ix: crate::settings_view::ACCOUNTS_PAGE,
+            group_ix: target.as_ref().map(|(group, _)| *group),
+        });
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        self.view = DashboardView::Settings;
+        cx.notify();
+        let Some((group, record)) = target else {
+            return;
+        };
+        let info = &crate::catalog::PROVIDERS[group];
+        let managed = record
+            .as_ref()
+            .is_some_and(|record| crate::managed::Managed::of(record).is_some());
+        if info.secret.is_some() && !managed {
+            crate::settings_view::open_account_dialog(info.id, record, window, cx);
+        }
     }
 
     fn fetch(&mut self, only: Option<(&'static str, Option<String>)>, cx: &mut Context<Self>) {
@@ -716,6 +826,7 @@ impl Dashboard {
                                     account: account_id.clone(),
                                     label,
                                     message,
+                                    sign_in: error.needs_sign_in(),
                                 });
                             }
                         }
@@ -745,6 +856,7 @@ impl Dashboard {
                         account: account_id.clone(),
                         label: account_label.clone(),
                         message,
+                        sign_in: error.needs_sign_in(),
                     });
                 }
             }
@@ -1544,21 +1656,30 @@ impl Dashboard {
                         .text_color(cx.theme().muted_foreground)
                         .child(failure.message.clone()),
                 )
+                .when(failure.sign_in, |this| {
+                    let provider = failure.provider;
+                    let account = failure.account.clone();
+                    this.child(
+                        Button::new(SharedString::from(format!("fix-{}", failure.element_suffix())))
+                            .label("Open settings")
+                            .accessibility_label(format!("Open settings for {}", failure.name()))
+                            .small()
+                            .outline()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_settings_for(provider, account.clone(), window, cx)
+                            })),
+                    )
+                })
                 .child({
                     let provider = failure.provider;
                     let account = failure.account.clone();
-                    // Unique per failure row: several users of one provider can fail in the same refresh.
-                    Button::new(SharedString::from(match (&account, &failure.label) {
-                        (Some(account), _) => format!("retry-{provider}-{account}"),
-                        (None, Some(label)) => format!("retry-{provider}-{label}"),
-                        (None, None) => format!("retry-{provider}"),
-                    }))
-                    .label("Retry")
-                    .accessibility_label(format!("Retry {}", failure.name()))
-                    .small()
-                    .outline()
-                    .loading(self.loading)
-                    .on_click(cx.listener(move |this, _, _, cx| this.retry(provider, account.clone(), cx)))
+                    Button::new(SharedString::from(format!("retry-{}", failure.element_suffix())))
+                        .label("Retry")
+                        .accessibility_label(format!("Retry {}", failure.name()))
+                        .small()
+                        .outline()
+                        .loading(self.loading)
+                        .on_click(cx.listener(move |this, _, _, cx| this.retry(provider, account.clone(), cx)))
                 })
         });
         if self.accounts.is_empty() {
@@ -1685,7 +1806,10 @@ impl Render for Dashboard {
         }
         let body = match self.view {
             DashboardView::Usage => self.render_usage(cx),
-            DashboardView::Settings => crate::settings_view::render(window, cx).into_any_element(),
+            DashboardView::Settings => {
+                crate::settings_view::render(self.settings_start.take(), self.settings_generation, window, cx)
+                    .into_any_element()
+            }
             DashboardView::History => self.history_view.clone().into_any_element(),
             _ => self.render_placeholder(cx).into_any_element(),
         };

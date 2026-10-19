@@ -27,6 +27,8 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - **Dashboard** with an account table, focus cards, usage history and window curves
 - **Alerts** when an account nears or hits its limit
 - **Groups and ordering** by urgency or by hand
+- **Fix sign-ins from the dashboard**: a provider whose key or sign-in no longer works shows **Open settings**,
+  which lands on that account in Settings
 - **System, light and dark appearance**, following Windows high contrast
 - **Privacy-first**: on-device only, no data sent anywhere except provider APIs; keys are kept in Windows Credential
   Manager (the Keychain on macOS, the Secret Service keyring on Linux)
