@@ -2186,6 +2186,19 @@ fn provider_messages_show_with_the_focused_account(cx: &mut TestAppContext) {
     assert_eq!(message.as_deref(), Some("Usage is delayed by up to an hour"));
 }
 
+/// The accessibility value of the element with `id` in the first window, after a fresh frame.
+fn value_of(cx: &mut TestAppContext, id: impl Into<gpui_kit::ElementId> + Clone) -> Option<String> {
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, _| {
+        window
+            .try_find(id.clone())
+            .and_then(|found| found.value().map(str::to_owned))
+    })
+    .unwrap()
+}
+
 /// The aria label of the element with `id` in the first window, after a fresh frame.
 fn label_of(cx: &mut TestAppContext, id: impl Into<gpui_kit::ElementId> + Clone) -> Option<String> {
     let handle = cx.windows()[0];
@@ -7047,22 +7060,27 @@ fn the_ring_size_slider_moves_by_keyboard_saves_and_resets_from_the_menu(cx: &mu
     let settings = TempSettings::new("ring-size", "{}");
     let (handle, dashboard) = open_dashboard(cx, &settings);
     scroll_to_cards(cx, handle);
-    assert_eq!(
-        label_of(cx, "ring-size").as_deref(),
-        Some("Ring size, 20%"),
-        "the old 120px ring"
-    );
+    assert_eq!(value_of(cx, "ring-size").as_deref(), Some("20%"), "the old 120px ring");
+    // The focus stop is the slider a screen reader meets, named and with its value (#222).
+    let (role, label) = cx
+        .update_window(handle, |_, window, _| {
+            let found = window.find("ring-size");
+            (found.role(), found.label().map(str::to_owned))
+        })
+        .unwrap();
+    assert_eq!(role, Some(gpui_kit::Role::Slider));
+    assert_eq!(label.as_deref(), Some("Ring size"));
 
     let focus = cx.update(|cx| dashboard.read(cx).ring_focus());
     cx.update_window(handle, |_, window, cx| focus.focus(window, cx))
         .unwrap();
     cx.run_until_parked();
     press(cx, handle, "up");
-    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 25%"));
+    assert_eq!(value_of(cx, "ring-size").as_deref(), Some("25%"));
     press(cx, handle, "home");
-    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 0%"));
+    assert_eq!(value_of(cx, "ring-size").as_deref(), Some("0%"));
     press(cx, handle, "end");
-    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 100%"));
+    assert_eq!(value_of(cx, "ring-size").as_deref(), Some("100%"));
     let saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap()).unwrap();
     assert_eq!(saved["ringSize"], serde_json::json!(100.0));
@@ -7087,8 +7105,30 @@ fn the_ring_size_slider_moves_by_keyboard_saves_and_resets_from_the_menu(cx: &mu
 
     // The gauge card's menu: Automatic, 5-hour window, Weekly, then Default ring size once it was resized.
     pick_card_menu(cx, handle, 1, 3);
-    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 20%"));
+    assert_eq!(value_of(cx, "ring-size").as_deref(), Some("20%"));
     let saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap()).unwrap();
     assert!(saved.get("ringSize").is_none(), "{saved}");
+}
+
+#[gpui_kit::test]
+fn the_ring_size_stays_put_while_preferences_are_read_only(cx: &mut TestAppContext) {
+    // A newer dashboard.json can't be saved, so the size must not change only to revert after a restart (#222).
+    let settings = TempSettings::new("ring-size-readonly", "{}");
+    let newer = r#"{ "version": 2, "ringSize": 60 }"#;
+    std::fs::write(settings.0.join("dashboard.json"), newer).unwrap();
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    scroll_to_cards(cx, handle);
+    let focus = cx.update(|cx| dashboard.read(cx).ring_focus());
+    cx.update_window(handle, |_, window, cx| focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    let before = value_of(cx, "ring-size");
+    press(cx, handle, "up");
+    press(cx, handle, "home");
+    assert_eq!(value_of(cx, "ring-size"), before);
+    assert_eq!(
+        std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap(),
+        newer
+    );
 }

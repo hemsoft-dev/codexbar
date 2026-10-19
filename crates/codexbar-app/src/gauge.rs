@@ -49,7 +49,7 @@ pub struct Gauge {
 
 /// The smallest ring worth drawing, in pixels: its center (the radius less the 8px band) must hold the smallest
 /// number, "100" with its percent sign at 14px, about 36px wide. Below it the box keeps the number alone (#176).
-const MIN_RADIUS: f32 = 28.;
+pub const MIN_RADIUS: f32 = 28.;
 
 /// Where everything goes in a box, in pixels from the box's origin.
 #[derive(Debug, PartialEq)]

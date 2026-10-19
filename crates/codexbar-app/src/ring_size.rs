@@ -4,13 +4,14 @@
 
 use gpui_kit::component::slider::{Slider, SliderState};
 use gpui_kit::{
-    AnyElement, App, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Role,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div, rems,
+    AccessibleAction, AnyElement, App, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    Orientation, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
+    div, rems,
 };
 
 /// The smallest radius the slider sets, in pixels: the gauge's own smallest ring.
-const MIN_RADIUS: f32 = 28.;
-/// The largest radius the slider sets, in pixels. Larger than any card, so the top of the slider means "fill the card".
+const MIN_RADIUS: f32 = crate::gauge::MIN_RADIUS;
+/// The largest radius the slider sets below its top, in pixels. The top itself lifts the cap (see [`cap`]).
 const MAX_RADIUS: f32 = 488.;
 /// The default size: the 120px radius the ring had before it could be resized (#200), along the slider.
 pub const DEFAULT: f32 = (120. - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS) * 100.;
@@ -22,6 +23,16 @@ pub const GROUP: &str = "focus-ring-area";
 /// The ring's largest radius, in unzoomed pixels, for a size along the slider (0 to 100).
 pub fn radius(size: f32) -> f32 {
     MIN_RADIUS + size.clamp(0., 100.) / 100. * (MAX_RADIUS - MIN_RADIUS)
+}
+
+/// The cap on the ring's radius at a zoom level, in pixels. It never falls below the smallest ring the gauge draws,
+/// so the slider's floor keeps a ring when zoomed out, and the top of the slider lifts the cap, so the ring fills a
+/// card of any size.
+pub fn cap(size: f32, zoom: f32) -> f32 {
+    if size >= 100. {
+        return f32::INFINITY;
+    }
+    (radius(size) * zoom).max(MIN_RADIUS)
 }
 
 /// The size an arrow, Home or End key moves to, or `None` for any other key.
@@ -36,9 +47,21 @@ pub fn key_target(size: f32, key: &str) -> Option<f32> {
     Some(next.clamp(0., 100.))
 }
 
-/// What the slider says to a screen reader: "Ring size, 20%".
+/// The slider's accessible name.
+pub const LABEL: &str = "Ring size";
+
+/// The slider's accessible value: "20%".
 pub fn spoken(size: f32) -> String {
-    format!("Ring size, {:.0}%", size.clamp(0., 100.))
+    format!("{:.0}%", size.clamp(0., 100.))
+}
+
+/// Moves the slider to `size` and saves it, unless the preferences are read-only.
+fn move_to(state: &Entity<SliderState>, size: f32, window: &mut Window, cx: &mut App) {
+    if crate::prefs_hub::PrefsHub::is_read_only(cx) {
+        return;
+    }
+    state.update(cx, |state, cx| state.set_value(size, window, cx));
+    crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(size));
 }
 
 /// The slider's state, its focus stop, and whether it shows without hover (it has keyboard focus).
@@ -55,9 +78,9 @@ impl RingControl {
         self.state.read(cx).value().end()
     }
 
-    /// The ring's largest radius at the current size, in pixels at the current zoom.
+    /// The cap on the ring's radius at the current size, in pixels at the current zoom.
     pub fn radius(&self, cx: &App) -> gpui_kit::Pixels {
-        crate::zoom::scaled(radius(self.size(cx)), cx)
+        gpui_kit::px(cap(self.size(cx), crate::zoom::level(cx) as f32))
     }
 
     /// The vertical slider beside the ring. Hidden until the card is hovered or the slider is focused; the arrow
@@ -66,17 +89,30 @@ impl RingControl {
     /// It overlays the right edge of its parent, which must be `relative()`, centered on the edge of the card's
     /// content, so half of it sits in the card's padding. Taking a column of its own squeezed the Limits card's rings
     /// at 150% zoom until their labels broke mid-word and the rings had no height left.
+    ///
+    /// The focus stop is the slider screen readers meet: named "Ring size", with the value, range and step, and the
+    /// increment and decrement actions. gpui-kit 0.7.1's own slider node inside it can't be named (#222).
+    ///
+    /// While the preferences are read-only (a newer `dashboard.json`), nothing moves it, since the size couldn't be
+    /// saved.
     pub fn render(&self, cx: &App) -> AnyElement {
         let size = self.size(cx);
+        let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx);
         let state = self.state.clone();
         let revealed = self.revealed;
         let slider = div()
             .id("ring-size")
-            .role(Role::Group)
+            .role(Role::Slider)
             // Registered before the focus binding, so the headless tests can see it.
             .test_support()
             .track_focus(&self.focus)
-            .aria_label(spoken(size))
+            .aria_label(LABEL)
+            .aria_value(spoken(size))
+            .aria_numeric_value(size as f64)
+            .aria_min_numeric_value(0.)
+            .aria_max_numeric_value(100.)
+            .aria_numeric_value_step(STEP as f64)
+            .aria_orientation(Orientation::Vertical)
             .w(rems(1.5))
             .h(rems(9.))
             .py_1()
@@ -84,6 +120,20 @@ impl RingControl {
             .group_hover(GROUP, |style| style.opacity(1.))
             // Half of it lies outside the card's body, so hovering that half keeps it shown too.
             .hover(|style| style.opacity(1.))
+            .on_a11y_action(AccessibleAction::Increment, {
+                let state = state.clone();
+                move |_, window, cx| {
+                    let next = key_target(state.read(cx).value().end(), "up").unwrap_or(100.);
+                    move_to(&state, next, window, cx);
+                }
+            })
+            .on_a11y_action(AccessibleAction::Decrement, {
+                let state = state.clone();
+                move |_, window, cx| {
+                    let next = key_target(state.read(cx).value().end(), "down").unwrap_or(0.);
+                    move_to(&state, next, window, cx);
+                }
+            })
             .on_key_down(move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
                 if event.keystroke.modifiers.modified() {
                     return;
@@ -93,10 +143,9 @@ impl RingControl {
                     return;
                 };
                 cx.stop_propagation();
-                state.update(cx, |state, cx| state.set_value(next, window, cx));
-                crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(next));
+                move_to(&state, next, window, cx);
             })
-            .child(Slider::new(&self.state).vertical().h_full());
+            .child(Slider::new(&self.state).vertical().disabled(read_only).h_full());
         div()
             .absolute()
             .top_0()
@@ -131,6 +180,17 @@ mod tests {
         assert_eq!(key_target(60., "home"), Some(0.));
         assert_eq!(key_target(60., "end"), Some(100.));
         assert_eq!(key_target(60., "a"), None);
-        assert_eq!(spoken(DEFAULT), "Ring size, 20%");
+        assert_eq!(spoken(DEFAULT), "20%");
+    }
+
+    #[test]
+    fn the_cap_keeps_a_ring_when_zoomed_out_and_lifts_at_the_top() {
+        // Zoomed out, the floor would fall below the smallest ring the gauge draws, which left only the number.
+        assert_eq!(cap(0., 0.5), crate::gauge::MIN_RADIUS);
+        assert_eq!(cap(0., 1.5), crate::gauge::MIN_RADIUS * 1.5);
+        assert!((cap(DEFAULT, 1.5) - 180.).abs() < 0.01, "scaled with zoom");
+        // The top fills a card of any size, even past the largest set radius.
+        assert!(cap(100., 1.).is_infinite());
+        assert!(cap(95., 2.) < f32::INFINITY);
     }
 }
