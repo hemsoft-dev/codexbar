@@ -426,9 +426,7 @@ impl TableDelegate for AccountTable {
                 match cell {
                     WindowCell::Percent => percent_cell(metric, name, &id, muted),
                     WindowCell::Bar => match metric {
-                        Some(metric) => {
-                            bar_cell(metric, row, severity, &assessment, self.now, &format!("{id}-bar"), cx)
-                        }
+                        Some(metric) => bar_cell(metric, row, &assessment, self.now, &format!("{id}-bar"), cx),
                         None => blank_cell(&format!("{id}-bar"), kind.title(), muted),
                     },
                 }
@@ -490,7 +488,7 @@ impl TableDelegate for AccountTable {
             Col::Progress => {
                 let id = format!("progress-cell-{}", row.id().as_str());
                 match own_pair {
-                    Some(metric) => bar_cell(metric, row, severity, &assessment, self.now, &id, cx),
+                    Some(metric) => bar_cell(metric, row, &assessment, self.now, &id, cx),
                     // Wide, the row's window sits in its own columns; narrow, a row always has a primary metric.
                     None if self.wide && primary.is_some() => blank_cell(&id, "Primary metric", muted),
                     None => bar_cell_without_metric(&id, &assessment, severity, row, cx),
@@ -637,19 +635,30 @@ fn blank_cell(id: &str, name: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyEleme
         .into_any_element()
 }
 
+/// The severity a metric's own bar is colored by (#203): the metric's own assessment, not the account's worst, so a
+/// weekly window at 53% stays calm while the 5-hour window beside it is about to run out. A used-up window the
+/// account's credits carry it past (#150) stays calm too, as it does for the account.
+fn bar_severity(metric: &Metric, row: &AccountSnapshot, now: DateTime<Utc>) -> codexbar_core::Severity {
+    if row.credits_cover(metric) {
+        codexbar_core::Severity::Normal
+    } else {
+        codexbar_core::assess(metric, now).severity()
+    }
+}
+
 /// The bar for `metric`: its share used, or for credits the spend from the remembered start (#150), with the share
 /// projected by the reset faded past it and a tooltip saying both (#197); an activity count or credits without a
-/// start have no bar (#103).
+/// start have no bar (#103). Colored by the metric's own severity (#203).
 fn bar_cell(
     metric: &Metric,
     row: &AccountSnapshot,
-    severity: codexbar_core::Severity,
     assessment: &codexbar_core::Assessment,
     now: DateTime<Utc>,
     id: &str,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
     let muted = cx.theme().muted_foreground;
+    let severity = bar_severity(metric, row, now);
     let used = match metric {
         Metric::Activity { .. } => return no_bar(id, muted),
         Metric::Credits { .. } => match metric.progress() {
@@ -763,4 +772,67 @@ fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> g
                 .appear(false),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+    use codexbar_core::{AccountId, Pace, Provider, Severity};
+
+    fn now() -> DateTime<Utc> {
+        "2026-10-19T08:00:00Z".parse().unwrap()
+    }
+
+    fn window(label: &str, used: f64, resets_in: Duration, pace: Pace) -> Metric {
+        Metric::Window {
+            label: label.into(),
+            used,
+            resets_at: now() + resets_in,
+            pace: Some(pace),
+        }
+    }
+
+    fn account(metrics: Vec<Metric>) -> AccountSnapshot {
+        AccountSnapshot::new(AccountId::new("codex-1"), Provider::Codex, metrics, now())
+    }
+
+    /// The screenshot on #203: the 5-hour window about to run out, the weekly window on pace for 54%.
+    #[test]
+    fn a_calm_weekly_bar_stays_calm_beside_a_five_hour_window_about_to_run_out() {
+        let five_hour = window("5-hour window", 0.91, Duration::minutes(38), Pace::per_hour(0.216));
+        let weekly = window("Weekly", 0.53, Duration::days(6), Pace::per_hour(0.003));
+        let row = account(vec![five_hour.clone(), weekly.clone()]);
+        assert_eq!(
+            row.assess(now()).severity(),
+            Severity::LimitSoon,
+            "the account is in trouble"
+        );
+        assert_eq!(bar_severity(&five_hour, &row, now()), Severity::LimitSoon);
+        assert_eq!(bar_severity(&weekly, &row, now()), Severity::Normal);
+    }
+
+    /// The other way round: a weekly window projected past its limit colors its own bar, not the 5-hour one.
+    #[test]
+    fn a_weekly_window_projected_past_its_limit_colors_only_its_own_bar() {
+        let five_hour = window("5-hour window", 0.12, Duration::hours(4), Pace::per_hour(0.03));
+        let weekly = window("Weekly", 0.70, Duration::days(3), Pace::per_day(0.15));
+        let row = account(vec![five_hour.clone(), weekly.clone()]);
+        assert!(bar_severity(&weekly, &row, now()) >= Severity::AtRisk);
+        assert_eq!(bar_severity(&five_hour, &row, now()), Severity::Normal);
+    }
+
+    /// A used-up window the account's credits carry it past (#150) keeps a calm bar, as the account does.
+    #[test]
+    fn a_used_up_window_covered_by_credits_keeps_a_calm_bar() {
+        let five_hour = window("5-hour window", 1.0, Duration::hours(2), Pace::per_hour(0.2));
+        let credits = Metric::Credits {
+            label: "Credits".into(),
+            balance: Some(12.0),
+            start: None,
+        };
+        let row = account(vec![five_hour.clone(), credits]);
+        assert!(row.credits_cover(&five_hour));
+        assert_eq!(bar_severity(&five_hour, &row, now()), Severity::Normal);
+    }
 }
