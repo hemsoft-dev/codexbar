@@ -1070,13 +1070,15 @@ impl Dashboard {
     }
 
     /// Remembers where the window is (#194), once a placement has stayed the same for a tick. A minimized window
-    /// can't say whether it is also maximized, so the state last seen while it was up is kept. The demo saves nothing.
+    /// can't say whether it is also maximized, so the state last seen while it was up is kept: the sample still
+    /// pending when there is one, else the saved one. The demo saves nothing.
     fn note_placement(&mut self, mut seen: codexbar_store::prefs::WindowPlacement, cx: &mut Context<Self>) {
         if !matches!(self.source, DataSource::Live { .. }) {
             return;
         }
+        // A sample not yet saved (a maximize a moment before the hide) is the latest word on that.
         if seen.minimized
-            && let Some(last) = &self.placement
+            && let Some(last) = self.placement_pending.as_ref().or(self.placement.as_ref())
         {
             seen.maximized = last.maximized;
         }

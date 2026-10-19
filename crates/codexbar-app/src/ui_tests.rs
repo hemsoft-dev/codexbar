@@ -1465,7 +1465,6 @@ fn a_network_failure_offers_only_retry(cx: &mut TestAppContext) {
     );
 }
 
-<<<<<<< HEAD
 // Both standard windows side by side (#195) when the table is wide enough; one metric per row otherwise.
 
 #[gpui_kit::test]
@@ -1575,7 +1574,8 @@ fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut Tes
         .unwrap();
     assert_eq!(label(cx, handle, "window-weekly-codex-1"), None);
     assert_eq!(label(cx, handle, "progress-cell-codex-1").as_deref(), Some("91% used"));
-=======
+}
+
 // Window placement (#194): saved once the window has rested, read back at the next start.
 
 #[gpui_kit::test]
@@ -1618,7 +1618,6 @@ fn the_window_placement_is_saved_once_the_window_rests(cx: &mut TestAppContext) 
         .cloned()
         .unwrap();
     assert_eq!((saved.width, saved.height), (1300., 900.));
->>>>>>> b8bfee4 (feat: remember the dashboard window's display, position, size and state (#194))
 }
 
 #[gpui_kit::test]
