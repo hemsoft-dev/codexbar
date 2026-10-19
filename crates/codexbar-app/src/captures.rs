@@ -120,7 +120,7 @@ fn captures() {
     save(&mut cx, handle, &out, "usage-bar-tooltip");
     // Leave the bar, so the tooltip is gone before the captures below.
     cx.update_window(handle, |_, window, cx| {
-        window.hover("order-mode", cx);
+        window.hover("refresh", cx);
         window.render_frame(cx);
     })
     .unwrap();
