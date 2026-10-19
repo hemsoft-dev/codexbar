@@ -61,7 +61,8 @@ enum Col {
     Used,
     Percent,
     Progress,
-    /// The standard windows side by side (#195), each as a percentage and a bar; blank for a row without one.
+    /// The standard windows side by side (#195), each as a percentage, a bar and its own reset (#204); blank for a
+    /// row without one.
     Window(WindowKind, WindowCell),
     Resets,
     Trend,
@@ -116,6 +117,7 @@ impl WindowKind {
 enum WindowCell {
     Percent,
     Bar,
+    Resets,
 }
 
 /// The columns at the usual width: one metric per row, its primary one.
@@ -129,24 +131,27 @@ const NARROW: [Col; 7] = [
     Col::Trend,
 ];
 
-/// The columns when there is room (#195): the 5-hour and weekly windows get a percentage and a bar each, and the
-/// primary metric's own percentage and bar show only when it is neither (credits, premium requests, activity).
-const WIDE: [Col; 11] = [
+/// The columns when there is room (#195): the 5-hour and weekly windows get a percentage, a bar and their own reset
+/// each (#204), and the primary metric's own percentage, bar and reset follow them (#207), filled only when it is
+/// neither window (credits, premium requests, activity).
+const WIDE: [Col; 13] = [
     Col::Account,
     Col::Limit,
     Col::Used,
-    Col::Percent,
-    Col::Progress,
     Col::Window(WindowKind::FiveHour, WindowCell::Percent),
     Col::Window(WindowKind::FiveHour, WindowCell::Bar),
+    Col::Window(WindowKind::FiveHour, WindowCell::Resets),
     Col::Window(WindowKind::Weekly, WindowCell::Percent),
     Col::Window(WindowKind::Weekly, WindowCell::Bar),
+    Col::Window(WindowKind::Weekly, WindowCell::Resets),
+    Col::Percent,
+    Col::Progress,
     Col::Resets,
     Col::Trend,
 ];
 
 /// The width the wide columns need, in unzoomed pixels: what the table must have to show both windows.
-pub const WIDE_TABLE_WIDTH: f32 = 320. + 150. + 110. + 64. + 200. + 2. * (72. + 140.) + 110. + 200.;
+pub const WIDE_TABLE_WIDTH: f32 = 320. + 150. + 110. + 2. * (72. + 140. + 110.) + 64. + 200. + 110. + 200.;
 
 /// Each account's stored history summary for its primary metric, by account id.
 pub type Compact = HashMap<String, (HistorySummary, ValueKind)>;
@@ -384,6 +389,9 @@ impl TableDelegate for AccountTable {
             Col::Window(kind, WindowCell::Bar) => {
                 Column::new(SharedString::from(format!("{}-bar", kind.key())), "").width(scaled(140., cx))
             }
+            Col::Window(kind, WindowCell::Resets) => {
+                Column::new(SharedString::from(format!("{}-resets", kind.key())), "Resets").width(scaled(110., cx))
+            }
             // DataTable widths are pixels, so they follow the interface zoom explicitly (#116).
             Col::Account => Column::new("account", "Account")
                 .width(scaled(320., cx))
@@ -428,6 +436,16 @@ impl TableDelegate for AccountTable {
                     WindowCell::Bar => match metric {
                         Some(metric) => bar_cell(metric, row, &assessment, self.now, &format!("{id}-bar"), cx),
                         None => blank_cell(&format!("{id}-bar"), kind.title(), muted),
+                    },
+                    // The window's own reset (#204), as time left (#196), beside its bar.
+                    WindowCell::Resets => match metric.and_then(Metric::resets_at) {
+                        Some(at) => resets_cell(
+                            &format!("{id}-resets"),
+                            &format!("{name} resets"),
+                            &format::time_left_label(at, self.now),
+                            muted,
+                        ),
+                        None => blank_cell(&format!("{id}-resets"), &format!("{name} resets"), muted),
                     },
                 }
             }
@@ -495,18 +513,14 @@ impl TableDelegate for AccountTable {
                 }
             }
             // Always how long is left (#196), never a weekday, time or date; the clock refreshes it every second.
+            // Wide, a window's reset sits in its own column (#204), so this one is blank for it.
             Col::Resets => {
-                let label = primary
-                    .and_then(Metric::resets_at)
-                    .map(|at| format::time_left_label(at, self.now))
-                    .unwrap_or_else(|| "—".into());
-                div()
-                    .id(ElementId::Name(format!("resets-{}", row.id().as_str()).into()))
-                    .test_support()
-                    .aria_label(format!("Resets: {label}"))
-                    .text_color(muted)
-                    .child(label)
-                    .into_any_element()
+                let id = format!("resets-{}", row.id().as_str());
+                match own_pair.and_then(Metric::resets_at) {
+                    Some(at) => resets_cell(&id, "Resets", &format::time_left_label(at, self.now), muted),
+                    None if self.wide && primary.is_some() => blank_cell(&id, "Resets", muted),
+                    None => resets_cell(&id, "Resets", "—", muted),
+                }
             }
             Col::Trend => self.trend_cell(row, cx),
         }
@@ -621,6 +635,17 @@ fn percent_cell(metric: Option<&Metric>, name: &str, id: &str, muted: gpui_kit::
         .text_right()
         .when(percent.is_none(), |this| this.text_color(muted))
         .child(text)
+        .into_any_element()
+}
+
+/// A reset as time left (#196), named for its window so screen readers tell the columns apart (#204).
+fn resets_cell(id: &str, name: &str, text: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+    div()
+        .id(ElementId::Name(id.to_owned().into()))
+        .test_support()
+        .aria_label(format!("{name}: {text}"))
+        .text_color(muted)
+        .child(text.to_owned())
         .into_any_element()
 }
 
@@ -820,6 +845,51 @@ mod tests {
         let row = account(vec![five_hour.clone(), weekly.clone()]);
         assert!(bar_severity(&weekly, &row, now()) >= Severity::AtRisk);
         assert_eq!(bar_severity(&five_hour, &row, now()), Severity::Normal);
+    }
+
+    /// The wide layout (#204, #207): the windows first, each with its reset, then the primary pair and its reset.
+    #[test]
+    fn the_wide_columns_put_the_windows_before_the_primary_pair() {
+        let order: Vec<&str> = WIDE
+            .iter()
+            .map(|col| match col {
+                Col::Account => "account",
+                Col::Limit => "limit",
+                Col::Used => "used",
+                Col::Window(WindowKind::FiveHour, WindowCell::Percent) => "5h%",
+                Col::Window(WindowKind::FiveHour, WindowCell::Bar) => "5h-bar",
+                Col::Window(WindowKind::FiveHour, WindowCell::Resets) => "5h-resets",
+                Col::Window(WindowKind::Weekly, WindowCell::Percent) => "weekly%",
+                Col::Window(WindowKind::Weekly, WindowCell::Bar) => "weekly-bar",
+                Col::Window(WindowKind::Weekly, WindowCell::Resets) => "weekly-resets",
+                Col::Percent => "%",
+                Col::Progress => "progress",
+                Col::Resets => "resets",
+                Col::Trend => "trend",
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "account",
+                "limit",
+                "used",
+                "5h%",
+                "5h-bar",
+                "5h-resets",
+                "weekly%",
+                "weekly-bar",
+                "weekly-resets",
+                "%",
+                "progress",
+                "resets",
+                "trend"
+            ]
+        );
+        assert!(
+            NARROW.iter().all(|col| !matches!(col, Col::Window(..))),
+            "narrow has no window columns"
+        );
     }
 
     /// A used-up window the account's credits carry it past (#150) keeps a calm bar, as the account does.
