@@ -3623,7 +3623,7 @@ fn the_keyboard_starts_on_the_view_tabs_and_tab_cycles_through_the_usage_view(cx
     };
     // Focus starts on the selected view tab, so the first key press does something.
     assert!(focused(cx, ("view-tab", 0usize).into()));
-    let order: [gpui_kit::ElementId; 7] = [
+    let order: [gpui_kit::ElementId; 8] = [
         "refresh".into(),
         ("order-mode", 0usize).into(),
         ("order-mode", 1usize).into(),
@@ -3631,6 +3631,8 @@ fn the_keyboard_starts_on_the_view_tabs_and_tab_cycles_through_the_usage_view(cx
         // Each focus card's menu (#218).
         ("focus-card-menu", 0usize).into(),
         ("focus-card-menu", 1usize).into(),
+        // The gauge ring's size slider (#219).
+        "ring-size".into(),
         ("focus-card-menu", 2usize).into(),
     ];
     for (step, id) in order.iter().enumerate() {
@@ -7014,4 +7016,57 @@ fn the_usage_and_activity_cards_switch_from_their_menus(cx: &mut TestAppContext)
     pick_card_menu(cx, handle, 2, 2);
     let days = label_of(cx, "focus-days-plot").unwrap();
     assert!(days.starts_with("Usage by day: "), "{days}");
+}
+
+// The gauge ring's size (#219).
+
+#[gpui_kit::test]
+fn the_ring_size_slider_moves_by_keyboard_saves_and_resets_from_the_menu(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("ring-size", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    scroll_to_cards(cx, handle);
+    assert_eq!(
+        label_of(cx, "ring-size").as_deref(),
+        Some("Ring size, 20%"),
+        "the old 120px ring"
+    );
+
+    let focus = cx.update(|cx| dashboard.read(cx).ring_focus());
+    cx.update_window(handle, |_, window, cx| focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    press(cx, handle, "up");
+    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 25%"));
+    press(cx, handle, "home");
+    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 0%"));
+    press(cx, handle, "end");
+    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 100%"));
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap()).unwrap();
+    assert_eq!(saved["ringSize"], serde_json::json!(100.0));
+
+    // At its largest the ring still fills only its card: Codex personal's gauge card is its weekly window.
+    let (ring, card) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find("focus-share").bounds(),
+                window.find("focus-card-weekly-window").bounds(),
+            )
+        })
+        .unwrap();
+    assert!(
+        ring.origin.x >= card.origin.x
+            && ring.origin.y >= card.origin.y
+            && ring.origin.x + ring.size.width <= card.origin.x + card.size.width
+            && ring.origin.y + ring.size.height <= card.origin.y + card.size.height,
+        "ring {ring:?} inside card {card:?}"
+    );
+
+    // The gauge card's menu: Automatic, 5-hour window, Weekly, then Default ring size once it was resized.
+    pick_card_menu(cx, handle, 1, 3);
+    assert_eq!(label_of(cx, "ring-size").as_deref(), Some("Ring size, 20%"));
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap()).unwrap();
+    assert!(saved.get("ringSize").is_none(), "{saved}");
 }

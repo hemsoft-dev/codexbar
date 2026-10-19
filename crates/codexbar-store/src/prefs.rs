@@ -79,6 +79,9 @@ pub struct DashboardPrefs {
     /// What each account's focus cards show (#218). Saved as a whole when changed, like the widget builder.
     focus: FocusChoices,
     focus_dirty: bool,
+    /// The gauge ring's size (#219), 0 to 100 along its slider; `None` is the default size.
+    ring_size: Option<f32>,
+    ring_size_dirty: bool,
     /// Each account's starting credit balance (#150): the highest balance seen since the last top-up. A count of
     /// credits, never a secret.
     credit_starts: BTreeMap<String, f64>,
@@ -123,6 +126,8 @@ impl DashboardPrefs {
             widgets_dirty: false,
             focus: doc.get("focusCards").map(FocusChoices::from_json).unwrap_or_default(),
             focus_dirty: false,
+            ring_size: ring_size_from_json(&doc),
+            ring_size_dirty: false,
             credit_starts: credit_starts_from_json(doc.get("creditStarts")),
             pending_credit_starts: BTreeMap::new(),
             placement: doc.get("window").and_then(placement_from_json),
@@ -183,6 +188,20 @@ impl DashboardPrefs {
         self.focus.update(account, change);
         if self.focus != before {
             self.focus_dirty = true;
+        }
+    }
+
+    /// The gauge ring's size (#219), 0 to 100; `None` until one is chosen, which means the default.
+    pub fn ring_size(&self) -> Option<f32> {
+        self.ring_size
+    }
+
+    /// Chooses the ring size, or `None` for the default. An unchanged size isn't saved.
+    pub fn set_ring_size(&mut self, size: Option<f32>) {
+        let size = size.filter(|size| size.is_finite()).map(|size| size.clamp(0., 100.));
+        if self.ring_size != size {
+            self.ring_size = size;
+            self.ring_size_dirty = true;
         }
     }
 
@@ -264,6 +283,7 @@ impl DashboardPrefs {
             || self.appearance_dirty
             || self.widgets_dirty
             || self.focus_dirty
+            || self.ring_size_dirty
             || !self.pending_credit_starts.is_empty()
             || self.placement_dirty
     }
@@ -440,6 +460,16 @@ impl DashboardPrefs {
                 serde_json::to_value(&self.focus).map_err(io::Error::other)?,
             );
         }
+        if self.ring_size_dirty {
+            match self.ring_size {
+                Some(size) => {
+                    doc.insert("ringSize".into(), json!(size));
+                }
+                None => {
+                    doc.remove("ringSize");
+                }
+            }
+        }
         if self.appearance_dirty
             && let Some(appearance) = &self.appearance
         {
@@ -456,6 +486,7 @@ impl DashboardPrefs {
         let layout = layout_from_json(&doc);
         let widgets = doc.get("widgets").map(WidgetBuilder::from_json).unwrap_or_default();
         let focus = doc.get("focusCards").map(FocusChoices::from_json).unwrap_or_default();
+        let ring_size = ring_size_from_json(&doc);
         let doc_appearance = doc.get("appearance").and_then(Value::as_str).map(str::to_owned);
         let doc_placement = doc.get("window").and_then(placement_from_json);
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
@@ -474,6 +505,8 @@ impl DashboardPrefs {
         self.widgets_dirty = false;
         self.focus = focus;
         self.focus_dirty = false;
+        self.ring_size = ring_size;
+        self.ring_size_dirty = false;
         self.appearance_dirty = false;
         self.appearance = doc_appearance;
         self.placement_dirty = false;
@@ -504,6 +537,14 @@ fn credit_starts_from_json(value: Option<&Value>) -> BTreeMap<String, f64> {
 }
 
 /// The JSON names of the alert settings, as `alerts_to_json` writes them.
+/// The saved ring size, when it is a number in range; anything else is the default.
+fn ring_size_from_json(doc: &serde_json::Map<String, Value>) -> Option<f32> {
+    doc.get("ringSize")
+        .and_then(Value::as_f64)
+        .filter(|size| (0.0..=100.0).contains(size))
+        .map(|size| size as f32)
+}
+
 const ALERT_FIELDS: [&str; 5] = ["enabled", "usageThreshold", "balanceThreshold", "warning", "critical"];
 
 fn string_set(value: Option<&Value>) -> BTreeSet<String> {
@@ -1008,6 +1049,25 @@ mod tests {
             (minimal.display, minimal.maximized, minimal.minimized),
             (None, false, false)
         );
+    }
+
+    #[test]
+    fn the_ring_size_saves_and_its_default_leaves_the_file() {
+        let dir = Dir::new("ring-size");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.ring_size(), None);
+        prefs.set_ring_size(Some(64.0));
+        prefs.save(&dir.0).unwrap();
+        assert_eq!(DashboardPrefs::load(&dir.0).ring_size(), Some(64.0));
+        // Out of range and non-numbers clamp or read as the default.
+        prefs.set_ring_size(Some(250.0));
+        assert_eq!(prefs.ring_size(), Some(100.0));
+        prefs.set_ring_size(None);
+        prefs.save(&dir.0).unwrap();
+        let text = std::fs::read_to_string(dir.0.join(PREFS_FILE)).unwrap();
+        assert!(!text.contains("ringSize"), "{text}");
+        std::fs::write(dir.0.join(PREFS_FILE), r#"{"version":1,"ringSize":"big"}"#).unwrap();
+        assert_eq!(DashboardPrefs::load(&dir.0).ring_size(), None);
     }
 
     #[test]

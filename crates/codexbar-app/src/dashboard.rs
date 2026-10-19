@@ -209,6 +209,11 @@ pub struct Dashboard {
     history: Arc<Mutex<HistoryStore>>,
     history_view: Entity<HistoryView>,
     spend_view: Entity<SpendView>,
+    /// The gauge ring's size slider (#219), its focus stop, and the saved size it last took, so a reset from the
+    /// gauge card's menu moves it while a drag in progress isn't undone by the size saved before it.
+    ring_slider: Entity<gpui_kit::component::slider::SliderState>,
+    ring_focus: FocusHandle,
+    ring_size_seen: Option<f32>,
     accounts: Vec<AccountSnapshot>,
     failures: Vec<Failure>,
     loading: bool,
@@ -397,6 +402,26 @@ impl Dashboard {
         };
         let history_view = cx.new(|cx| HistoryView::new(history.clone(), cx));
         let spend_view = cx.new(|cx| SpendView::new(history.clone(), cx));
+        let ring_size_seen = crate::prefs_hub::PrefsHub::ring_size(cx);
+        let ring_slider = cx.new(|_| {
+            gpui_kit::component::slider::SliderState::new()
+                .min(0.)
+                .max(100.)
+                .step(crate::ring_size::STEP)
+                .default_value(ring_size_seen.unwrap_or(crate::ring_size::DEFAULT))
+        });
+        // A drag redraws the ring as it goes and saves the size when it is let go.
+        let ring_redraws = cx.observe(&ring_slider, |_, _, cx| cx.notify());
+        let ring_saves = cx.subscribe(
+            &ring_slider,
+            |this, _, event: &gpui_kit::component::slider::SliderEvent, cx| {
+                if let gpui_kit::component::slider::SliderEvent::Release(value) = event {
+                    let size = Some(value.end());
+                    this.ring_size_seen = size;
+                    crate::prefs_hub::PrefsHub::set_ring_size(cx, size);
+                }
+            },
+        );
         // The Spend view's empty state opens Settings on the Accounts page.
         let spend_requests = cx.subscribe(&spend_view, |this, _, request: &SpendRequest, cx| match request {
             SpendRequest::OpenAccounts => this.open_accounts(cx),
@@ -429,6 +454,9 @@ impl Dashboard {
             history,
             history_view,
             spend_view,
+            ring_slider,
+            ring_focus: cx.focus_handle().tab_index(0).tab_stop(true),
+            ring_size_seen,
             accounts: Vec::new(),
             failures: Vec::new(),
             loading: false,
@@ -471,6 +499,8 @@ impl Dashboard {
                 alert_changes,
                 settings_changes,
                 spend_requests,
+                ring_redraws,
+                ring_saves,
             ],
         };
         dashboard.configured = dashboard.configured_adapters(cx).unwrap_or_default();
@@ -588,6 +618,12 @@ impl Dashboard {
         self.history_view
             .update(cx, |view, cx| view.focus(&id, metric.as_deref(), cx));
         cx.notify();
+    }
+
+    /// The gauge ring's size slider focus stop (#219), for the headless UI tests.
+    #[cfg(test)]
+    pub fn ring_focus(&self) -> FocusHandle {
+        self.ring_focus.clone()
     }
 
     /// The selected account's id, for the headless UI tests.
@@ -1730,10 +1766,10 @@ impl Dashboard {
             })
     }
 
-    fn render_usage(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    fn render_usage(&self, ring: &crate::ring_size::RingControl, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let focused = self.focused();
         let cards = focused
-            .map(|account| focus_cards(account, self.now, cx))
+            .map(|account| focus_cards(account, self.now, ring, cx))
             .unwrap_or_default();
         let heading = focused.map(|account| {
             // Alerts that hold now (#88), from the current settings and the delivered set, so they stay visible
@@ -1944,8 +1980,21 @@ impl Render for Dashboard {
                 table.refresh(cx);
             });
         }
+        // The ring size follows a change saved elsewhere, such as Default ring size in the gauge card's menu (#219).
+        let saved_ring_size = crate::prefs_hub::PrefsHub::ring_size(cx);
+        if saved_ring_size != self.ring_size_seen {
+            self.ring_size_seen = saved_ring_size;
+            let size = saved_ring_size.unwrap_or(crate::ring_size::DEFAULT);
+            self.ring_slider
+                .update(cx, |slider, cx| slider.set_value(size, window, cx));
+        }
+        let ring = crate::ring_size::RingControl {
+            state: self.ring_slider.clone(),
+            focus: self.ring_focus.clone(),
+            revealed: self.ring_focus.is_focused(window),
+        };
         let body = match self.view {
-            DashboardView::Usage => self.render_usage(cx),
+            DashboardView::Usage => self.render_usage(&ring, cx),
             DashboardView::Settings => {
                 crate::settings_view::render(self.settings_start.take(), self.settings_generation, window, cx)
                     .into_any_element()

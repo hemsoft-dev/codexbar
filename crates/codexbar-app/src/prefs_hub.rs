@@ -197,6 +197,17 @@ impl PrefsHub {
         cx.refresh_windows();
     }
 
+    /// The gauge ring's size (#219), 0 to 100; `None` is the default.
+    pub fn ring_size(cx: &App) -> Option<f32> {
+        cx.try_global::<Self>().and_then(|hub| hub.prefs.ring_size())
+    }
+
+    /// Chooses the ring size (`None` for the default), saves when it changed, and redraws.
+    pub fn set_ring_size(cx: &mut App, size: Option<f32>) {
+        Self::edit(cx, |prefs| prefs.set_ring_size(size));
+        cx.refresh_windows();
+    }
+
     /// Gives a fresh account's credits their starting balance (#150): remembers the balance just read (a first one,
     /// or a top-up, becomes the start) and saves when the start moved.
     pub fn with_credit_start(cx: &mut App, account: AccountSnapshot) -> AccountSnapshot {

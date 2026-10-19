@@ -23,8 +23,6 @@ const SHARE_TICKS: usize = 6;
 /// The least height a card's chart slot keeps, in rems so it follows the zoom (#200); below it the card grows and
 /// the dashboard scrolls rather than the chart drawing past its box.
 const CHART_MIN_HEIGHT_REMS: f32 = 11.;
-/// The largest the ring gauge grows, in unzoomed pixels (#200), so a tall card on a big display doesn't balloon it.
-const RING_MAX_RADIUS: f32 = 120.;
 
 /// A trend tick's label: the share ticks for a share trend (#200), the headline's own unit for a count or money.
 fn trend_tick(kind: ValueKind, counted: bool, value: f64) -> String {
@@ -267,7 +265,12 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
 }
 
 /// The three cards for `account`, left to right.
-pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Vec<AnyElement> {
+pub fn focus_cards(
+    account: &AccountSnapshot,
+    now: DateTime<Utc>,
+    ring: &crate::ring_size::RingControl,
+    cx: &App,
+) -> Vec<AnyElement> {
     let id = account.id().as_str();
     let choice = crate::prefs_hub::PrefsHub::focus_choice(cx, id);
     let menus = card_menus(account, &choice, cx);
@@ -277,7 +280,7 @@ pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> V
             .menu(usage)
             .render(cx)
             .into_any_element(),
-        share_card(account, now, &choice.rings, cx)
+        share_card(account, now, &choice.rings, ring, cx)
             .menu(rings)
             .render(cx)
             .into_any_element(),
@@ -303,13 +306,15 @@ enum MenuAction {
     Usage(Option<UsageView>),
     /// `None` clears the rings back to automatic; a key adds or removes that limit's ring.
     Ring(Option<String>),
+    /// Back to the ring's default size (#219).
+    DefaultRingSize,
     Activity(Option<ActivityView>),
 }
 
 /// What each card can show for `account`, from what it reports (#218). The usage card offers the window curve when
 /// the provider sends one and the trend once history has two days; the gauge card offers every metric with a share
 /// of a limit; the activity card offers requests by hour when the provider counts them.
-fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice) -> [Vec<MenuEntry>; 3] {
+fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice, sized: bool) -> [Vec<MenuEntry>; 3] {
     let entry = |label: &str, checked: bool, action: MenuAction| MenuEntry {
         label: label.to_owned(),
         checked,
@@ -344,6 +349,10 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice) -> [Vec<MenuEnt
             disabled: !checked && shown >= MAX_RINGS,
             ..entry(metric.label(), checked, MenuAction::Ring(Some(key)))
         });
+    }
+    // A resized ring can go back to its default size from here (#219).
+    if sized {
+        rings.push(entry("Default ring size", false, MenuAction::DefaultRingSize));
     }
     let mut activity = vec![entry("Automatic", activity_view.is_none(), MenuAction::Activity(None))];
     if !account.detail().requests_by_hour().is_empty() {
@@ -393,7 +402,8 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
     use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
     let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx);
     let names = ["usage chart", "gauge", "activity chart"];
-    let entries = menu_entries(account, choice);
+    let sized = crate::prefs_hub::PrefsHub::ring_size(cx).is_some();
+    let entries = menu_entries(account, choice, sized);
     // The limits the account reports now, so a pick drops chosen ones it no longer reports (#221).
     let available: Vec<String> = limits(account).map(Metric::key).collect();
     let mut menus = entries.into_iter().enumerate().map(|(ix, entries)| {
@@ -419,11 +429,16 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
                         move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut App| {
                             let action = action.clone();
                             let available = available.clone();
+                            if let MenuAction::DefaultRingSize = action {
+                                crate::prefs_hub::PrefsHub::set_ring_size(cx, None);
+                                return;
+                            }
                             crate::prefs_hub::PrefsHub::update_focus_choice(cx, &account, move |choice| match action {
                                 MenuAction::Usage(view) => choice.usage = view,
                                 MenuAction::Ring(None) => choice.rings.clear(),
                                 MenuAction::Ring(Some(key)) => choice.toggle_ring_among(&key, &available),
                                 MenuAction::Activity(view) => choice.activity = view,
+                                MenuAction::DefaultRingSize => {}
                             });
                         },
                     ));
@@ -539,13 +554,19 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
 }
 
 /// The share of a pool as a ring gauge (#174), or the credits, balance or spend when no metric has a share.
-fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, rings: &[String], cx: &App) -> Card {
+fn share_card(
+    account: &AccountSnapshot,
+    now: DateTime<Utc>,
+    rings: &[String],
+    control: &crate::ring_size::RingControl,
+    cx: &App,
+) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     // The chosen limits (#218), in the order chosen; any the account no longer reports are skipped, and with none
     // left the card is automatic again.
     let chosen = chosen_rings(account, rings);
     if chosen.len() >= 2 {
-        return rings_card(&chosen, now, cx);
+        return rings_card(&chosen, now, control, cx);
     }
     let Some(metric) = chosen.first().copied().or_else(|| share_metric(account, now)) else {
         return Card::new("No limits", "", div()).takeaway("This account reports no limits");
@@ -611,9 +632,17 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, rings: &[String], c
         .child(
             crate::gauge::Gauge::new(used, projected, format!("{:.0}", used * 100.0), color, cx)
                 .pace(pace)
-                .max_radius(crate::zoom::scaled(RING_MAX_RADIUS, cx))
+                .max_radius(control.radius(cx))
                 .render(),
         );
+    // The ring's size slider sits beside it and shows while the card is hovered or the slider is focused (#219).
+    let ring = h_flex()
+        .group(crate::ring_size::GROUP)
+        .size_full()
+        .items_center()
+        .gap_1()
+        .child(div().flex_1().min_w_0().h_full().child(ring))
+        .child(control.render(cx));
     let takeaway = pool_takeaway(1.0 - used);
     let title = if metric.label().to_lowercase().contains("window") {
         metric.label().to_owned()
@@ -644,7 +673,7 @@ fn chosen_rings<'a>(account: &'a AccountSnapshot, rings: &[String]) -> Vec<&'a M
 
 /// Several rings side by side (#218), one per chosen limit, each with its own number, pace and reset. The takeaway
 /// names the limit with the least of its pool left.
-fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, cx: &App) -> Card {
+fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, control: &crate::ring_size::RingControl, cx: &App) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     let muted = cx.theme().muted_foreground;
     let rings = metrics.iter().enumerate().map(|(ix, metric)| {
@@ -688,7 +717,7 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, cx: &App) -> Card {
                         cx,
                     )
                     .pace(pace)
-                    .max_radius(crate::zoom::scaled(RING_MAX_RADIUS, cx))
+                    .max_radius(control.radius(cx))
                     .render(),
                 ),
             )
@@ -701,7 +730,13 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, cx: &App) -> Card {
             )
     });
     // Labels and resets wrap rather than cut off when the card is narrow or zoomed in.
-    let body = h_flex().size_full().gap_3().children(rings);
+    let body = h_flex()
+        .group(crate::ring_size::GROUP)
+        .size_full()
+        .items_center()
+        .gap_3()
+        .children(rings)
+        .child(control.render(cx));
     let tightest = metrics
         .iter()
         .max_by(|a, b| {
@@ -1155,7 +1190,7 @@ mod tests {
     #[test]
     fn each_card_menu_offers_only_what_the_account_reports() {
         let account = claude();
-        let [usage, rings, activity] = menu_entries(&account, &FocusChoice::default());
+        let [usage, rings, activity] = menu_entries(&account, &FocusChoice::default(), false);
         let labels = |entries: &[MenuEntry]| entries.iter().map(|e| e.label.clone()).collect::<Vec<_>>();
         // No window curve from this account, so only the trend; no requests by hour, so only usage by day.
         assert_eq!(labels(&usage), ["Automatic", "Last 14 days"]);
@@ -1169,7 +1204,7 @@ mod tests {
 
         let mut choice = FocusChoice::default();
         choice.toggle_ring("5-hour-window");
-        let [_, rings, _] = menu_entries(&account, &choice);
+        let [_, rings, _] = menu_entries(&account, &choice, false);
         let checked: Vec<_> = rings.iter().filter(|e| e.checked).map(|e| e.label.as_str()).collect();
         assert_eq!(checked, ["5-hour window"]);
     }
@@ -1185,7 +1220,7 @@ mod tests {
         };
         assert_eq!(usage_in_effect(&account, choice.usage), None);
         assert_eq!(activity_in_effect(&account, choice.activity), None);
-        let [usage, _, activity] = menu_entries(&account, &choice);
+        let [usage, _, activity] = menu_entries(&account, &choice, false);
         assert!(usage[0].checked, "Automatic, since the card shows its automatic view");
         assert!(activity[0].checked);
         // A trend chosen with fewer than two days of history falls back too, rather than hiding a window curve.
@@ -1209,7 +1244,7 @@ mod tests {
             rings: vec!["opus-weekly".into()],
             ..FocusChoice::default()
         };
-        let [_, rings, _] = menu_entries(&account, &stale);
+        let [_, rings, _] = menu_entries(&account, &stale, false);
         assert!(rings[0].checked, "Automatic, since the card shows the automatic ring");
 
         let full = FocusChoice {
@@ -1217,7 +1252,7 @@ mod tests {
             ..FocusChoice::default()
         };
         // Only two of the three are reported, so the card isn't full and nothing is disabled.
-        let [_, rings, _] = menu_entries(&account, &full);
+        let [_, rings, _] = menu_entries(&account, &full, false);
         assert!(rings.iter().all(|entry| !entry.disabled));
     }
 
