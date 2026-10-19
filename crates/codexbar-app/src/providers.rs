@@ -322,13 +322,17 @@ fn cursor_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 }
 
 /// The workspace the implicit OpenCode Go cookie setup tracks (from before accounts, or environment variables), when it
-/// is in use: OpenCode Go is on, no cookie record exists (enabled or not), and the setup has a workspace and a cookie.
+/// is in use: OpenCode Go is on, no cookie record exists (enabled or not), no record carries the implicit account's
+/// own id (an account migrated from the single-account settings has it; switched to OAuth, it is that setup made
+/// explicit, and a cookie left under its id is its own, not a second setup, #190), and the setup has a workspace and
+/// a cookie.
 pub fn implicit_opencode_workspace(hub: &SettingsHub) -> Option<String> {
     let settings = hub.settings();
-    let cookie_record = settings
+    let implicit = codexbar_store::settings::legacy_id(names::OPENCODE_GO, "");
+    let explicit = settings
         .accounts_for(names::OPENCODE_GO)
-        .any(|record| !crate::opencode_sign_in::is_managed(record));
-    if cookie_record || !settings.is_enabled(names::OPENCODE_GO) {
+        .any(|record| !crate::opencode_sign_in::is_managed(record) || record.id == implicit);
+    if explicit || !settings.is_enabled(names::OPENCODE_GO) {
         return None;
     }
     let workspace = std::env::var("OPENCODE_GO_WORKSPACE_ID")
