@@ -1188,9 +1188,11 @@ mod tests {
 
     #[test]
     fn visibility_is_remembered_per_repository() {
-        remember("Acme", "Site", true);
-        assert_eq!(remembered("acme", "site"), Some(true));
-        assert_eq!(remembered("acme", "other"), None);
+        // The cache is process-wide and github_billing's tests remember `acme/*` repositories in parallel, so this
+        // test uses an owner nothing else touches; with `acme`, `acme/other` was sometimes already cached.
+        remember("Visibility-Test", "Site", true);
+        assert_eq!(remembered("visibility-test", "site"), Some(true));
+        assert_eq!(remembered("visibility-test", "other"), None);
     }
 
     #[test]
