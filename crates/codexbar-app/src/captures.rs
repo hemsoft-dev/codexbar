@@ -107,6 +107,42 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage");
 
+    // #200: the focus cards at 150% zoom in a 1440×960 window, light and dark, scrolled to the cards: the charts keep
+    // their room (the card grows, the dashboard scrolls) and the ring stays at its cap.
+    let zoomed = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let zoomed: AnyWindowHandle = zoomed.into();
+    cx.update(|cx| zoom::set_level(1.5, cx));
+    cx.run_until_parked();
+    for (appearance, name) in [
+        (theme::Appearance::System, "focus-cards-zoom150"),
+        (theme::Appearance::Dark, "focus-cards-zoom150-dark"),
+    ] {
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, appearance));
+        cx.update_window(zoomed, |_, window, cx| {
+            window.render_frame(cx);
+            window.scroll(
+                "main-scroll",
+                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-6000.))),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        save(&mut cx, zoomed, &out, name);
+    }
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System);
+        zoom::set_level(1.0, cx);
+    });
+    cx.update_window(zoomed, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
+
     // #195: wide enough, the table shows the 5-hour and weekly windows side by side; rows without one leave the
     // cells blank. A second demo window at 1920×1400, light and dark, closed again before the drag below.
     let wide = cx

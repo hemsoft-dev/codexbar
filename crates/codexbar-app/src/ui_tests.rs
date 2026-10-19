@@ -1719,6 +1719,46 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
     );
 }
 
+// Focus-card charts keep their room at every zoom (#200): the card grows and the dashboard scrolls instead.
+
+#[gpui_kit::test]
+fn focus_card_charts_keep_their_minimum_height_at_every_zoom(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("chart-room", "{}");
+    let (handle, _dashboard) = open_dashboard(cx, &settings);
+    cx.run_until_parked();
+    for level in [1.0, 1.5, 3.0] {
+        cx.update(|cx| crate::zoom::set_level(level, cx));
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        // The chart slot keeps 11rem less its own padding; the chart element itself fills the rest.
+        let floor = cx.update(|cx| f32::from(crate::zoom::scaled(11. * 16. - 24., cx)));
+        for id in ["focus-window-plot", "focus-share"] {
+            let height = cx
+                .update_window(handle, |_, window, _| f32::from(window.find(id).bounds().size.height))
+                .unwrap();
+            assert!(height + 1. >= floor, "{id} at {level:.1}x: {height}px, floor {floor}px");
+        }
+        // Nothing the card holds runs past its right edge: the legend drops under the title and the takeaway wraps.
+        let card = cx
+            .update_window(handle, |_, window, _| window.find("focus-window-card").bounds())
+            .unwrap();
+        for id in [
+            "focus-window-card-legend",
+            "focus-window-card-takeaway",
+            "focus-window-plot",
+        ] {
+            let bounds = cx
+                .update_window(handle, |_, window, _| window.find(id).bounds())
+                .unwrap();
+            assert!(
+                bounds.right() <= card.right() + px(1.) && bounds.left() >= card.left() - px(1.),
+                "{id} at {level:.1}: {bounds:?} outside {card:?}"
+            );
+        }
+    }
+    cx.update(|cx| crate::zoom::set_level(1.0, cx));
+}
+
 #[gpui_kit::test]
 fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) {
     let settings = TempSettings::new("lifecycle-persist", "{}");

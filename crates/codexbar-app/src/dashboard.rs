@@ -1971,6 +1971,8 @@ impl Render for Dashboard {
                             .child(
                                 div()
                                     .id("main-scroll")
+                                    // Registered so headless captures can scroll the zoomed dashboard (#200).
+                                    .test_support()
                                     .flex_1()
                                     .min_h_0()
                                     .overflow_y_scroll()

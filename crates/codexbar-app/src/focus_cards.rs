@@ -6,15 +6,45 @@ use codexbar_core::{AccountSnapshot, Metric, Severity, format};
 use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::{
-    AnyElement, App, Background, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
-    linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
+    AnyElement, App, Background, ElementId, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, rems,
 };
 
 use crate::history_view::ValueKind;
+use gpui_kit::{InteractiveElement as _, TestSupportExt as _};
+
+/// Where a share axis ends (#200): a quarter above 100%, so a smooth curve's swing past a limit and the marker on a
+/// point at 100% stay inside the plot. The ticks land on 0, 25, 50, 75 and 100%, and the headroom tick at the top
+/// draws its gridline without a label.
+const SHARE_TOP: f64 = 1.25;
+const SHARE_TICKS: usize = 6;
+/// The least height a card's chart slot keeps, in rems so it follows the zoom (#200); below it the card grows and
+/// the dashboard scrolls rather than the chart drawing past its box.
+const CHART_MIN_HEIGHT_REMS: f32 = 11.;
+/// The largest the ring gauge grows, in unzoomed pixels (#200), so a tall card on a big display doesn't balloon it.
+const RING_MAX_RADIUS: f32 = 120.;
+
+/// A trend tick's label: the share ticks for a share trend (#200), the headline's own unit for a count or money.
+fn trend_tick(kind: ValueKind, counted: bool, value: f64) -> String {
+    if counted { kind.value(value) } else { share_tick(value) }
+}
+
+/// A share tick's label: a percentage up to 100%, nothing for the headroom above it.
+fn share_tick(value: f64) -> String {
+    // The chart reads each tick's value back from its pixel row in f32, so 100% can arrive a hair above 1.0.
+    if value > 1.0 + 1e-3 {
+        String::new()
+    } else {
+        format!("{:.0}%", value * 100.0)
+    }
+}
 use crate::status::severity_color;
 
 /// One card. Built fresh each frame; the charts own their own hover state by id.
 struct Card {
+    /// The id of the card and, suffixed, of its parts, so a headless test can check that its content stays inside
+    /// it (#200). Derived from the title unless set.
+    id: SharedString,
     title: SharedString,
     period: SharedString,
     legend: Vec<(Hsla, SharedString)>,
@@ -26,8 +56,10 @@ struct Card {
 
 impl Card {
     fn new(title: impl Into<SharedString>, period: impl Into<SharedString>, chart: impl IntoElement) -> Self {
+        let title = title.into();
         Self {
-            title: title.into(),
+            id: format!("focus-card-{}", title.to_lowercase().replace(' ', "-")).into(),
+            title,
             period: period.into(),
             legend: Vec::new(),
             chart: chart.into_any_element(),
@@ -58,9 +90,19 @@ impl Card {
         self
     }
 
+    fn id(mut self, id: impl Into<SharedString>) -> Self {
+        self.id = id.into();
+        self
+    }
+
     fn render(self, cx: &App) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
+        let part = |name: &str| ElementId::Name(format!("{}-{name}", self.id).into());
+        let legend_id = part("legend");
+        let takeaway_id = part("takeaway");
         v_flex()
+            .id(ElementId::Name(self.id.clone()))
+            .test_support()
             .flex_1()
             .min_w_0()
             .h_full()
@@ -70,11 +112,15 @@ impl Card {
             .border_1()
             .border_color(cx.theme().border)
             .rounded(cx.theme().radius_lg)
+            // The legend sits beside the title when there is room, otherwise under it (#200): zoomed in, a wide
+            // legend used to run past the card's edge.
             .child(
                 h_flex()
+                    .flex_wrap()
                     .items_start()
                     .justify_between()
-                    .gap_3()
+                    .gap_x_3()
+                    .gap_y_1()
                     .child(
                         v_flex()
                             .flex_shrink_0()
@@ -84,7 +130,10 @@ impl Card {
                     .when(!self.legend.is_empty(), |this| {
                         this.child(
                             h_flex()
+                                .id(legend_id)
+                                .test_support()
                                 .flex_wrap()
+                                .min_w_0()
                                 .justify_end()
                                 .gap_3()
                                 .text_xs()
@@ -99,17 +148,27 @@ impl Card {
                         )
                     }),
             )
-            .child(div().flex_1().min_h_0().py_3().child(self.chart))
+            // Never squeezed below what a chart needs (#200): the card grows and the dashboard scrolls instead.
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(rems(CHART_MIN_HEIGHT_REMS))
+                    .py_3()
+                    .child(self.chart),
+            )
+            // The takeaway wraps instead of running past the card (#200).
             .child(
                 h_flex()
+                    .id(takeaway_id)
+                    .test_support()
                     .gap_1p5()
-                    .items_center()
+                    .items_start()
                     .text_sm()
                     .font_semibold()
                     .when_some(self.alert, |this, color| {
                         this.child(Icon::new(IconName::TriangleAlert).small().text_color(color))
                     })
-                    .child(self.takeaway),
+                    .child(div().flex_1().min_w_0().child(self.takeaway)),
             )
             .child(div().text_sm().text_color(muted).child(self.caption))
     }
@@ -223,18 +282,21 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .stroke(previous_color)
             .fill(area_fill(previous_color.opacity(0.5)))
             .name("Previous window")
-            .y_domain(0.0, 1.0)
+            .y_domain(0.0, SHARE_TOP)
             .y_axis(true)
             .y_padding(0., 0.)
-            .y_tick_count(5)
+            .y_tick_count(SHARE_TICKS)
             .point_count(curve.labels().len())
             .tick_margin(6)
-            .y_tick_format(|value| format!("{:.0}%", value * 100.0));
+            .y_tick_format(share_tick);
         let title = primary
             .map(|m| format!("{} usage", m.label()))
             .unwrap_or_else(|| "Usage".into());
         let start = curve.labels().first().cloned().unwrap_or_default();
-        Card::new(title, format!("Today, {start} – now"), chart)
+        // Findable by the headless tests, as the day plot is (#200).
+        let plot = div().id("focus-window-plot").test_support().size_full().child(chart);
+        Card::new(title, format!("Today, {start} – now"), plot)
+            .id("focus-window-card")
             .legend(current_color, "This window")
             .legend(previous_color, "Previous window")
     } else if account.trend().len() < 2 {
@@ -249,6 +311,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         // The trend is in the headline's own unit: a fraction, credits left (#150), a count (#103) or money (#104).
         let kind = trend_kind(account);
         let counted = counted_name(account);
+        let is_counted = counted.is_some();
         let high = account.trend().iter().copied().fold(0.0, f64::max);
         let chart = AreaChart::new(points)
             .id("focus-trend")
@@ -257,9 +320,22 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
             .stroke(current_color)
             .fill(area_fill(current_color))
             .name(counted.clone().unwrap_or_else(|| "Pressure".into()))
-            .y_domain(0.0, if counted.is_some() { (high * 1.15).max(1.0) } else { 1.0 })
+            .y_domain(
+                0.0,
+                if counted.is_some() {
+                    (high * 1.15).max(1.0)
+                } else {
+                    SHARE_TOP
+                },
+            )
             .tick_margin(3)
-            .y_tick_format(move |value| kind.value(value));
+            .y_tick_format(move |value| trend_tick(kind, is_counted, value));
+        // A share trend takes the share ticks (#200), so the 100% line keeps its label and the headroom has none.
+        let chart = if is_counted {
+            chart
+        } else {
+            chart.y_tick_count(SHARE_TICKS)
+        };
         let title = counted.unwrap_or_else(|| "Daily pressure".into());
         Card::new(title, "Last 14 days", chart)
     };
@@ -340,6 +416,7 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         .child(
             crate::gauge::Gauge::new(used, projected, format!("{:.0}", used * 100.0), color, cx)
                 .pace(pace)
+                .max_radius(crate::zoom::scaled(RING_MAX_RADIUS, cx))
                 .render(),
         );
     let takeaway = pool_takeaway(1.0 - used);
@@ -478,7 +555,13 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
         .y_padding(0., 0.)
         .y_axis(true)
         .y_tick_count(ticks)
-        .y_tick_format(move |value| kind.value(value))
+        .y_tick_format(move |value| {
+            if kind == ValueKind::Percent {
+                share_tick(value)
+            } else {
+                kind.value(value)
+            }
+        })
         .tooltip_value(move |_, value| kind.value(value).into())
         .name(counted.clone().unwrap_or_else(|| "Pressure".into()));
     let plot = div()
@@ -497,7 +580,7 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
 /// week's lowest value, for a balance gone negative, #104) to 15% over its highest day, never flat.
 fn day_domain(values: &[f64], kind: ValueKind) -> (f64, f64) {
     if kind == ValueKind::Percent {
-        return (0.0, 1.0);
+        return (0.0, SHARE_TOP);
     }
     let low = values.iter().copied().fold(0.0, f64::min);
     let high = values.iter().copied().fold(0.0, f64::max);
@@ -509,6 +592,9 @@ fn day_domain(values: &[f64], kind: ValueKind) -> (f64, f64) {
 /// that still read distinctly, down to two. Ticks sit evenly over `low..=high` before formatting, so a week of one
 /// or two activities, or of credits down to a fraction, never reads "0, 1, 1, 2".
 fn day_ticks((low, high): (f64, f64), kind: ValueKind) -> usize {
+    if kind == ValueKind::Percent {
+        return SHARE_TICKS;
+    }
     (2..=4)
         .rev()
         .find(|count| {
@@ -901,8 +987,20 @@ mod tests {
         let usd = ValueKind::Money(Currency::Usd);
         assert_eq!(
             day_domain(&[0.2, 1.0], ValueKind::Percent),
-            (0.0, 1.0),
-            "a share stays pinned"
+            (0.0, SHARE_TOP),
+            "a share is pinned, with headroom over 100% (#200)"
+        );
+        assert_eq!(day_ticks((0.0, SHARE_TOP), ValueKind::Percent), SHARE_TICKS);
+        assert_eq!(share_tick(1.0), "100%");
+        assert_eq!(share_tick(1.000_000_1), "100%", "a tick read back from its pixel row");
+        assert_eq!(share_tick(0.75), "75%");
+        assert_eq!(share_tick(SHARE_TOP), "", "the headroom gridline carries no label");
+        // The fallback share trend (no window curve) labels like the other share charts; a count keeps its unit.
+        assert_eq!(trend_tick(ValueKind::Percent, false, SHARE_TOP), "");
+        assert_eq!(trend_tick(ValueKind::Percent, false, 1.0), "100%");
+        assert_eq!(
+            trend_tick(ValueKind::Percent, true, SHARE_TOP),
+            ValueKind::Percent.value(SHARE_TOP)
         );
         assert_eq!(day_domain(&[0.0, 0.0], ValueKind::Count), (0.0, 1.0), "never flat");
         assert_eq!(
@@ -926,7 +1024,7 @@ mod tests {
         assert_eq!(ticks(&[1.0], ValueKind::Credits), 2);
         assert_eq!(ticks(&[1.1], ValueKind::Credits), 2, "0, 1, 1 would repeat");
         assert_eq!(ticks(&[36_800.0], ValueKind::Credits), 4);
-        assert_eq!(ticks(&[0.5, 1.0], ValueKind::Percent), 4);
+        assert_eq!(ticks(&[0.5, 1.0], ValueKind::Percent), SHARE_TICKS);
         assert_eq!(ticks(&[1.0], usd), 4);
     }
 

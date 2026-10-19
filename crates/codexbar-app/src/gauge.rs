@@ -43,6 +43,8 @@ pub struct Gauge {
     cut: Hsla,
     foreground: Hsla,
     muted: Hsla,
+    /// The largest radius, in pixels (#200); unbounded unless set.
+    max_radius: f32,
 }
 
 /// The smallest ring worth drawing, in pixels: its center (the radius less the 8px band) must hold the smallest
@@ -63,13 +65,14 @@ struct Geometry {
 }
 
 impl Geometry {
-    /// The ring that fits a box. A box too small for a ring still places the number, at its smallest, on the box's
-    /// center, so the card never loses its value at extreme zoom.
-    fn fit(width: f32, height: f32) -> Self {
+    /// The ring that fits a box, no larger than `max_radius` (#200): a tall card on a big display doesn't balloon the
+    /// ring past its text. A box too small for a ring still places the number, at its smallest, on the box's center,
+    /// so the card never loses its value at extreme zoom.
+    fn fit(width: f32, height: f32, max_radius: f32) -> Self {
         let side = width.min(height);
         // Room for the glow and the head past the ring.
         let margin = (side * 0.06).max(GLOW + 2.);
-        let radius = (side / 2. - margin).max(0.);
+        let radius = (side / 2. - margin).max(0.).min(max_radius);
         let draws_ring = radius >= MIN_RADIUS;
         Self {
             height,
@@ -113,12 +116,19 @@ impl Gauge {
             cut: cx.theme().group_box,
             foreground: cx.theme().foreground,
             muted: cx.theme().muted_foreground,
+            max_radius: f32::INFINITY,
         }
     }
 
     /// The line in the ring's opening, such as "on pace for 97%".
     pub fn pace(mut self, pace: Option<impl Into<SharedString>>) -> Self {
         self.pace = pace.map(Into::into);
+        self
+    }
+
+    /// The largest the ring grows, however big its box (#200); pass a zoom-scaled size.
+    pub fn max_radius(mut self, radius: Pixels) -> Self {
+        self.max_radius = radius.as_f32();
         self
     }
 
@@ -132,7 +142,7 @@ impl Gauge {
     }
 
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
-        let geometry = Geometry::fit(bounds.size.width.as_f32(), bounds.size.height.as_f32());
+        let geometry = Geometry::fit(bounds.size.width.as_f32(), bounds.size.height.as_f32(), self.max_radius);
         if geometry.draws_ring() {
             self.paint_ring(&bounds, &geometry, window);
         }
@@ -333,7 +343,7 @@ mod tests {
         // The arc's extent is centered in the box and the pace line fits inside it, in a wide box, a tall box, a
         // small one and a zoomed-in one.
         for (width, height) in [(400., 240.), (240., 400.), (120., 120.), (300., 900.)] {
-            let g = Geometry::fit(width, height);
+            let g = Geometry::fit(width, height, f32::INFINITY);
             assert!(g.draws_ring() && g.draws_pace(), "{width}x{height}: ring and pace");
             let arc_top = g.center_y - g.radius;
             let arc_bottom = g.center_y + FRAC_1_SQRT_2 * g.radius;
@@ -364,16 +374,30 @@ mod tests {
     fn a_box_too_small_for_the_ring_keeps_the_number_on_its_center() {
         // At extreme zoom the card can leave the ring a sliver of a box (#176): no ring, no pace, but the number at
         // its smallest size on the box's center.
-        let g = Geometry::fit(30., 30.);
+        let g = Geometry::fit(30., 30., f32::INFINITY);
         assert!(!g.draws_ring() && !g.draws_pace());
         assert_eq!((g.center_x, g.center_y), (15., 15.));
         assert_eq!((g.number_size, g.label_size), (14., 9.));
 
         // The smallest ring drawn still has room in its center for "100%" at the smallest size, and a box a little
         // narrower draws none rather than a ring over the number.
-        let smallest = Geometry::fit(2. * (MIN_RADIUS + GLOW + 2.), 400.);
+        let smallest = Geometry::fit(2. * (MIN_RADIUS + GLOW + 2.), 400., f32::INFINITY);
         assert!(smallest.draws_ring(), "{smallest:?}");
         assert!(2. * (smallest.radius - smallest.ring) >= 40., "{smallest:?}");
-        assert!(!Geometry::fit(2. * (MIN_RADIUS + GLOW + 1.), 400.).draws_ring());
+        assert!(!Geometry::fit(2. * (MIN_RADIUS + GLOW + 1.), 400., f32::INFINITY).draws_ring());
+    }
+
+    #[test]
+    fn a_capped_ring_stays_centered_at_its_cap_in_a_bigger_box() {
+        // A 600×500 slot would give a 220px radius; the cap keeps it at 120 and the text sized with it (#200).
+        let g = Geometry::fit(600., 500., 120.);
+        assert_eq!(g.radius, 120.);
+        assert_eq!(g.center_x, 300.);
+        assert!(g.draws_ring() && g.draws_pace());
+        assert!((g.number_size - 120. * 0.44).abs() < 1e-6);
+        assert!(
+            g.center_y + FRAC_1_SQRT_2 * g.radius <= 500.,
+            "the arc stays in the box"
+        );
     }
 }
