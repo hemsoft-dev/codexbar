@@ -21,12 +21,14 @@ struct Header {
     codexbar_history: u32,
 }
 
-/// A day's last reading of one series: its time, its value, and when its period resets.
+/// A day's last reading of one series: its time, its value, and when its period resets. `ended` marks a reading in
+/// another currency: the series stopped reporting in this one, so nothing is carried past it.
 #[derive(Clone, Copy)]
 struct Reading {
     at: DateTime<Utc>,
     value: f64,
     resets_at: Option<DateTime<Utc>>,
+    ended: bool,
 }
 
 /// One stored reading.
@@ -358,7 +360,7 @@ impl HistoryStore {
                 let mut last: Vec<Option<Reading>> = vec![None; days];
                 let mut before: Option<Reading> = None;
                 for sample in self.series(account, metric) {
-                    if sample.at() > now || sample.c.as_deref().unwrap_or(current) != currency {
+                    if sample.at() > now {
                         continue;
                     }
                     let day = sample.at().with_timezone(tz).date_naive();
@@ -369,6 +371,7 @@ impl HistoryStore {
                         at: sample.at(),
                         value: sample.v,
                         resets_at: sample.resets_at(),
+                        ended: sample.c.as_deref().unwrap_or(current) != currency,
                     };
                     let slot = if age < days {
                         &mut last[days - 1 - age]
@@ -382,14 +385,21 @@ impl HistoryStore {
                 (last, before)
             })
             .unzip();
-        let mut carried: Vec<Option<Reading>> = before;
+        let mut carried: Vec<Option<Reading>> =
+            before.into_iter().map(|reading| reading.filter(|r| !r.ended)).collect();
         let mut out = Vec::new();
         for day in 0..days {
             let mut at: Option<DateTime<Utc>> = None;
             for (ix, last) in lasts.iter().enumerate() {
-                if let Some(reading) = last[day] {
-                    carried[ix] = Some(reading);
-                    at = Some(at.map_or(reading.at, |at| at.max(reading.at)));
+                match last[day] {
+                    // The series moved to another currency: its last amount here no longer counts, and the day gets
+                    // no point of its own from it.
+                    Some(reading) if reading.ended => carried[ix] = None,
+                    Some(reading) => {
+                        carried[ix] = Some(reading);
+                        at = Some(at.map_or(reading.at, |at| at.max(reading.at)));
+                    }
+                    None => {}
                 }
             }
             if let Some(at) = at {
@@ -861,6 +871,32 @@ mod tests {
         // The untagged reading counts under the account's current EUR, never under USD.
         assert_eq!(in_eur("EUR"), [1.0, 5.0]);
         assert_eq!(in_eur("USD"), [3.0]);
+    }
+
+    #[test]
+    fn daily_total_stops_carrying_an_account_that_moved_to_another_currency() {
+        use codexbar_core::Currency::{Eur, Usd};
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let mut store = HistoryStore::in_memory(retention());
+        let resets = now() + Duration::days(9);
+        let day = |n: i64| now() - Duration::days(n);
+        store.record(&[spend("a", 4000, Usd, resets)], day(3)).unwrap();
+        store.record(&[spend("b", 500, Usd, resets)], day(3)).unwrap();
+        // a switches to euros; b keeps reporting dollars.
+        store.record(&[spend("a", 100, Eur, resets)], day(2)).unwrap();
+        store.record(&[spend("b", 700, Usd, resets)], day(1)).unwrap();
+        let usd: Vec<f64> = store
+            .daily_total(
+                &[("a", "on-demand", "EUR"), ("b", "on-demand", "USD")],
+                "USD",
+                5,
+                &tz,
+                now(),
+            )
+            .iter()
+            .map(|point| point.value)
+            .collect();
+        assert_eq!(usd, [45.0, 7.0], "a's last $40 ends when it moves to euros");
     }
 
     #[test]
