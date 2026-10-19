@@ -258,6 +258,48 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "history");
 
+    // #215: the Spend view over the demo, light and dark, then at 150% zoom in a 1440×960 window, top and scrolled to
+    // the trend.
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Spend, cx)));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "spend");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "spend-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    let mut spend_zoomed_view = None;
+    let spend_zoomed = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
+            spend_zoomed_view = Some(view.clone());
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let spend_zoomed: AnyWindowHandle = spend_zoomed.into();
+    let spend_zoomed_view = spend_zoomed_view.unwrap();
+    cx.update(|cx| {
+        spend_zoomed_view.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Spend, cx));
+        zoom::set_level(1.5, cx);
+    });
+    cx.run_until_parked();
+    save(&mut cx, spend_zoomed, &out, "spend-zoom150");
+    cx.update_window(spend_zoomed, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "main-scroll",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-6000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, spend_zoomed, &out, "spend-zoom150-scrolled");
+    cx.update(|cx| zoom::set_level(1.0, cx));
+    cx.update_window(spend_zoomed, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
     cx.run_until_parked();
     // Settings pages in sidebar order; Widgets exists only on Windows.
@@ -341,6 +383,18 @@ fn captures() {
     let live: AnyWindowHandle = live.into();
     cx.run_until_parked();
     save(&mut cx, live, &out, "usage-failure-open-settings");
+    // #215: nothing here reports money, so Spend shows its empty state.
+    for (tab, name) in [(1usize, Some("spend-empty")), (0usize, None)] {
+        cx.update_window(live, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("view-tab", tab), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        if let Some(name) = name {
+            save(&mut cx, live, &out, name);
+        }
+    }
     cx.update_window(live, |_, window, cx| {
         window.render_frame(cx);
         window.click("fix-OpenRouter-or-1", cx)

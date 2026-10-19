@@ -27,6 +27,7 @@ use gpui_kit::{
 use crate::account_table::{AccountState, AccountTable, Compact, States};
 use crate::focus_cards::focus_cards;
 use crate::history_view::{HistoryView, ValueKind};
+use crate::spend_view::{SpendRequest, SpendView};
 use crate::status::{severity_dot_color, severity_tag};
 
 /// The dashboard views. A tray click restores whichever one was open last.
@@ -207,6 +208,7 @@ pub struct Dashboard {
     /// Stored history: the history file for live data, generated in memory for the demo.
     history: Arc<Mutex<HistoryStore>>,
     history_view: Entity<HistoryView>,
+    spend_view: Entity<SpendView>,
     accounts: Vec<AccountSnapshot>,
     failures: Vec<Failure>,
     loading: bool,
@@ -394,6 +396,12 @@ impl Dashboard {
             DataSource::Demo => Arc::new(Mutex::new(demo_history(&demo_accounts(now, &Local), now))),
         };
         let history_view = cx.new(|cx| HistoryView::new(history.clone(), cx));
+        let spend_view = cx.new(|cx| SpendView::new(history.clone(), cx));
+        // The Spend view's empty state opens Settings on the Accounts page.
+        let spend_requests = cx.subscribe(&spend_view, |this, _, request: &SpendRequest, cx| match request {
+            SpendRequest::OpenAccounts => this.open_accounts(cx),
+            SpendRequest::OpenUsage => this.show_view(DashboardView::Usage, cx),
+        });
 
         // Groups and the manual order can change in Settings or from the focused account; rearrange the table then.
         // Smart order also follows alert settings and the held alerts, which the demo keeps in `Notifications`.
@@ -420,6 +428,7 @@ impl Dashboard {
             source,
             history,
             history_view,
+            spend_view,
             accounts: Vec::new(),
             failures: Vec::new(),
             loading: false,
@@ -455,7 +464,14 @@ impl Dashboard {
             #[cfg(windows)]
             widget_builder: Default::default(),
             _clock: clock,
-            _subscriptions: vec![selection, activation, layout_changes, alert_changes, settings_changes],
+            _subscriptions: vec![
+                selection,
+                activation,
+                layout_changes,
+                alert_changes,
+                settings_changes,
+                spend_requests,
+            ],
         };
         dashboard.configured = dashboard.configured_adapters(cx).unwrap_or_default();
         if matches!(dashboard.source, DataSource::Live { .. }) {
@@ -617,6 +633,17 @@ impl Dashboard {
             .find(|failure| failure.provider == provider && failure.account == account)
             .and_then(|failure| settings_target(failure, &self.owned_ids, cx))
             .and_then(|(_, record)| record.map(|record| record.id))
+    }
+
+    /// Shows Settings on the Accounts page, where accounts are added (the Spend view's empty state, #215).
+    fn open_accounts(&mut self, cx: &mut Context<Self>) {
+        self.settings_start = Some(gpui_kit::component::setting::SelectIndex {
+            page_ix: crate::settings_view::ACCOUNTS_PAGE,
+            group_ix: None,
+        });
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        self.view = DashboardView::Settings;
+        cx.notify();
     }
 
     /// A failure row's Open settings (#188): shows Settings on the Accounts page at the failed provider's group and,
@@ -1288,6 +1315,8 @@ impl Dashboard {
         self.history_view.update(cx, |view, cx| {
             view.set_accounts(accounts.clone(), preferred.as_ref(), cx);
         });
+        self.spend_view
+            .update(cx, |view, cx| view.set_accounts(accounts.clone(), states.clone(), cx));
         // Rows drag to a new place (#178) unless the preferences can't be saved.
         let draggable = !crate::prefs_hub::PrefsHub::is_read_only(cx);
         self.table.update(cx, |table, cx| {
@@ -1859,23 +1888,6 @@ impl Dashboard {
             .into_any_element()
     }
 
-    fn render_placeholder(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .flex_1()
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .text_color(cx.theme().muted_foreground)
-            .child(Icon::new(self.view.icon()).large())
-            .child(
-                div()
-                    .font_semibold()
-                    .text_color(cx.theme().foreground)
-                    .child(self.view.title()),
-            )
-            .child(SharedString::from("This view arrives with account history (#85, #86)."))
-    }
-
     fn render_status_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let attention = self
             .accounts
@@ -1939,7 +1951,7 @@ impl Render for Dashboard {
                     .into_any_element()
             }
             DashboardView::History => self.history_view.clone().into_any_element(),
-            _ => self.render_placeholder(cx).into_any_element(),
+            DashboardView::Spend => self.spend_view.clone().into_any_element(),
         };
         v_flex()
             .relative()

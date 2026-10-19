@@ -3,7 +3,7 @@
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc, Weekday};
 
 use crate::account::{AccountDetail, AccountId, AccountSnapshot, Provider, WindowCurve};
-use crate::metric::{Metric, Money, Pace};
+use crate::metric::{Currency, Metric, Money, Pace};
 
 /// The eight demo accounts of the approved dashboard comp, relative to `now`, plus two Codex accounts whose weekly
 /// window is used up (#150): one still working on credits, one blocked.
@@ -70,6 +70,14 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     resets_at: now + Duration::minutes(72),
                     pace: Some(Pace::per_hour(0.12)),
                 },
+                // #215: Extra usage bills in the account's own currency, so the Spend view totals euros apart.
+                Metric::Spend {
+                    label: "Extra usage".into(),
+                    spent: Money::new(420, Currency::Eur),
+                    limit: Some(Money::new(2000, Currency::Eur)),
+                    resets_at: None,
+                    pace: None,
+                },
             ],
             fetched,
         )
@@ -80,12 +88,22 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         AccountSnapshot::new(
             AccountId::new("cursor"),
             Provider::Cursor,
-            vec![Metric::Window {
-                label: "Included usage".into(),
-                used: 0.71,
-                resets_at: in_days(14),
-                pace: Some(Pace::per_day(0.015)),
-            }],
+            vec![
+                Metric::Window {
+                    label: "Included usage".into(),
+                    used: 0.71,
+                    resets_at: in_days(14),
+                    pace: Some(Pace::per_day(0.015)),
+                },
+                // #215: on-demand spend against its monthly limit, with a pace, so the Spend view projects it.
+                Metric::Spend {
+                    label: "On-demand".into(),
+                    spent: Money::from_cents(1240),
+                    limit: Some(Money::from_cents(5000)),
+                    resets_at: Some(in_days(14)),
+                    pace: Some(Pace::per_day(0.02)),
+                },
+            ],
             fetched,
         )
         .with_trend(vec![
