@@ -5505,9 +5505,10 @@ fn switching_a_greptile_account_off_clears_its_row_and_banner_and_a_pending_refr
     refresh(cx, &dashboard);
     assert_eq!(acme.calls(), fetched_while_off, "a switched-off account isn't fetched");
 
-    // Switched on again, it is fetched and shown as before.
+    // Switched on again, it is fetched at once (no Refresh now, no automatic refresh needed) and shown as before.
     switch(cx, true);
-    refresh(cx, &dashboard);
+    cx.run_until_parked();
+    assert_eq!(acme.calls(), fetched_while_off + 1, "switching on fetches the account");
     assert_eq!(ids(cx, &dashboard), vec!["gr-1"]);
 }
 

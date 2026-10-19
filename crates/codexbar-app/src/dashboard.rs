@@ -259,6 +259,9 @@ pub struct Dashboard {
     settings_start: Option<gpui_kit::component::setting::SelectIndex>,
     /// Bumped with every such jump, so a Settings panel already on screen starts over at the new place.
     settings_generation: u32,
+    /// The adapters the settings produced when they last changed, as (provider name, account id) pairs (#192): a
+    /// settings change that adds one fetches it at once, and one that drops one takes its rows off the screen.
+    configured: Vec<(&'static str, Option<String>)>,
     /// The widget builder's choices the last snapshot carried (#95).
     #[cfg(windows)]
     widget_builder: codexbar_store::widgets::WidgetBuilder,
@@ -391,7 +394,7 @@ impl Dashboard {
             cx.observe_global::<crate::notifications::Notifications>(|this, cx| this.rearrange_if_changed(cx));
         let settings_changes = cx.observe_global::<SettingsHub>(|this, cx| {
             this.forget_removed_accounts(cx);
-            this.drop_unconfigured_accounts(cx);
+            this.follow_configured_adapters(cx);
             let requests = SettingsHub::refresh_requests(cx);
             if requests != this.refresh_requests {
                 this.refresh_requests = requests;
@@ -431,11 +434,13 @@ impl Dashboard {
             pending_focus: None,
             settings_start: None,
             settings_generation: 0,
+            configured: Vec::new(),
             #[cfg(windows)]
             widget_builder: Default::default(),
             _clock: clock,
             _subscriptions: vec![selection, activation, layout_changes, alert_changes, settings_changes],
         };
+        dashboard.configured = dashboard.configured_adapters(cx).unwrap_or_default();
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
         }
@@ -1061,20 +1066,31 @@ impl Dashboard {
         )
     }
 
-    /// Drops the rows and failure banners no adapter serves under the current settings: an account switched off, its
-    /// provider turned off, or a record removed (#192). A refresh that is still running is handled when its results
-    /// land, in `apply_results`.
-    fn drop_unconfigured_accounts(&mut self, cx: &mut Context<Self>) {
+    /// Follows a settings change to the adapters it produces (#192): rows and failure banners no adapter serves any
+    /// more are dropped (an account switched off, its provider turned off, a record removed), and an adapter that
+    /// didn't exist before (an account switched on or added) is fetched at once, whatever the automatic refresh
+    /// setting. A refresh that is still running is handled when its results land, in `apply_results`.
+    fn follow_configured_adapters(&mut self, cx: &mut Context<Self>) {
         let Some(adapters) = self.configured_adapters(cx) else {
             return;
         };
+        let added = adapters.iter().any(|adapter| !self.configured.contains(adapter));
+        self.configured = adapters.clone();
+        self.drop_unconfigured_accounts(&adapters, cx);
+        if added {
+            self.refresh(cx);
+        }
+    }
+
+    /// Drops the rows and failure banners none of `adapters` serves.
+    fn drop_unconfigured_accounts(&mut self, adapters: &[(&'static str, Option<String>)], cx: &mut Context<Self>) {
         let before = self.accounts.len() + self.failures.len();
         self.failures
             .retain(|failure| adapters.contains(&(failure.provider, failure.account.clone())));
         let accounts: Vec<AccountSnapshot> = self
             .accounts
             .iter()
-            .filter(|account| covered_by(&adapters, account))
+            .filter(|account| covered_by(adapters, account))
             .cloned()
             .collect();
         if before == accounts.len() + self.failures.len() {
