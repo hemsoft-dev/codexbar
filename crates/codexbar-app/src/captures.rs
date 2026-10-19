@@ -342,6 +342,37 @@ fn captures() {
         cx.run_until_parked();
     }
     save(&mut cx, greptile, &out, "greptile-unconfigured-settings-dark");
+    // Switching an account on fetches it at once, which with the real factory would call Greptile with the dummy key.
+    // The Settings row is captured from a window whose factory builds nothing, so no request leaves the harness.
+    cx.update_window(greptile, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let mut settings_dashboard = None;
+    let configured = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let source = DataSource::Live {
+                history: Arc::new(std::sync::Mutex::new(codexbar_store::HistoryStore::in_memory(
+                    chrono::Duration::days(30),
+                ))),
+                providers: Arc::new(|_| Vec::new()),
+            };
+            let view = cx.new(|cx| Dashboard::new(source, window, cx));
+            settings_dashboard = Some(view.clone());
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let configured: AnyWindowHandle = configured.into();
+    let settings_view = settings_dashboard.unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| settings_view.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    for entry in ["0-1".to_owned(), format!("0-1-{greptile_group}")] {
+        cx.update_window(configured, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("settings-sidebar").click(entry, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
     cx.update(|cx| {
         SettingsHub::update(cx, |settings| {
             settings.upsert(codexbar_store::settings::AccountRecord::new(
@@ -353,7 +384,7 @@ fn captures() {
     })
     .unwrap();
     cx.run_until_parked();
-    save(&mut cx, greptile, &out, "greptile-env-account-settings-dark");
+    save(&mut cx, configured, &out, "greptile-env-account-settings-dark");
     cx.update(|cx| {
         SettingsHub::use_environment(cx, |_| None);
         crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System);
