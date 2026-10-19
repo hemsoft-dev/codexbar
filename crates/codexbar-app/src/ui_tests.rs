@@ -1809,6 +1809,40 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
         visible(cx, handle, "progress-cell-paced-bar"),
         "the bar itself is drawn"
     );
+    // The tick marks where the projection ends (#213): at 90% of the bar, standing proud of it above and below,
+    // and none on a bar with nothing projected.
+    let (bar, tick) = cx
+        .update_window(handle, |_, window, _| {
+            (
+                window.find("progress-cell-paced-bar").bounds(),
+                window.find("progress-cell-paced-projected").bounds(),
+            )
+        })
+        .unwrap();
+    let centre = f32::from(tick.left() + tick.size.width / 2.);
+    let expected = f32::from(bar.left() + bar.size.width * 0.9);
+    assert!(
+        (centre - expected).abs() <= 1.5,
+        "tick at {centre}, expected {expected}"
+    );
+    assert!(
+        tick.top() < bar.top() && tick.bottom() > bar.bottom(),
+        "the tick stands proud of the bar"
+    );
+    assert!(
+        !visible(cx, handle, "progress-cell-young-projected"),
+        "nothing projected, no tick"
+    );
+    // Past the limit the tick sits at the bar's end, inside it.
+    let (over_bar, over_tick) = cx
+        .update_window(handle, |_, window, _| {
+            (
+                window.find("progress-cell-over-bar").bounds(),
+                window.find("progress-cell-over-projected").bounds(),
+            )
+        })
+        .unwrap();
+    assert!((f32::from(over_tick.right()) - f32::from(over_bar.right())).abs() <= 0.5);
 }
 
 // Focus-card charts keep their room at every zoom (#200): the card grows and the dashboard scrolls instead.

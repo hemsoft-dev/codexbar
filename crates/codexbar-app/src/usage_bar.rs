@@ -1,19 +1,80 @@
-//! One bar for a limit (#197): the share used as a solid fill, the share projected by the reset as a faded run past
-//! it in the same color, and a tooltip that says both. The table, the focus card and the ring gauge all describe
-//! their metric through [`Projection`], so the hover text and the accessibility label read the same everywhere.
+//! One bar for a limit (#197): the share used as a solid fill, the share projected by the reset as a hatched run past
+//! it with a tick where it ends (#213), and a tooltip that says both. The table, the focus card and the ring gauge all
+//! describe their metric through [`Projection`], so the hover text and the accessibility label read the same
+//! everywhere.
 
 use chrono::{DateTime, Utc};
 use codexbar_core::{Metric, Pace, format};
 use gpui_kit::TestSupportExt as _;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
     AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _, px, relative,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, pattern_slash, prelude::FluentBuilder as _, px,
+    relative,
 };
 
-/// How the faded run shows against the solid fill and the track: the same color at these opacities.
-const PROJECTED_OPACITY: f32 = 0.4;
-const TRACK_OPACITY: f32 = 0.2;
+/// The empty track past the projection: the bar's color, faint (#213 measured the old faded run at 1.4:1 against it).
+const TRACK_OPACITY: f32 = 0.15;
+/// The projected run is hatched in the bar's own color (#213): the stripes' gaps show the row behind them, so the run
+/// reads as a texture apart from the solid share, in both themes, whatever the severity color.
+const HATCH_STRIPE: f32 = 3.;
+const HATCH_GAP: f32 = 3.;
+/// The tick where the projection ends sticks out this far above and below the bar, so it reads even where the run is
+/// a pixel wide, and it is this wide.
+const TICK_OVERHANG: f32 = 2.;
+const TICK_WIDTH: f32 = 2.;
+
+/// Where a bar's parts go, as shares of its width (#213): the solid share, the hatched run from it to the projection,
+/// the faint track after that, and the tick at the projection's end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarLayout {
+    /// 0 to 1: the solid fill's width.
+    pub used: f32,
+    /// The hatched run, as start and end, when the pace projects past the solid share.
+    pub run: Option<(f32, f32)>,
+    /// Where the faint track starts; it runs to the end. A plain bar keeps it whole, under its pill end.
+    pub track_from: f32,
+    /// The tick at the projected share, and whether the projection runs past the limit.
+    pub tick: Option<Tick>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tick {
+    /// 0 to 1: the tick's centre.
+    pub at: f32,
+    /// The pace runs the limit out before the reset: the tick sits at the end in the warning color.
+    pub past_limit: bool,
+}
+
+impl BarLayout {
+    /// The parts for a share used and a projection, both as fractions of the limit. A projection at or below the
+    /// solid share draws nothing past it; one past the limit fills the bar and flags the tick.
+    pub fn of(used: f64, projected: Option<f64>) -> Self {
+        let used_share = used.clamp(0.0, 1.0) as f32;
+        let projected = projected.filter(|share| share.is_finite() && *share > used);
+        match projected {
+            Some(share) => {
+                let end = share.clamp(0.0, 1.0) as f32;
+                Self {
+                    used: used_share,
+                    run: (end > used_share).then_some((used_share, end)),
+                    track_from: end,
+                    tick: Some(Tick {
+                        at: end,
+                        past_limit: share > 1.0,
+                    }),
+                }
+            }
+            None => Self {
+                used: used_share,
+                run: None,
+                track_from: 0.,
+                tick: None,
+            },
+        }
+    }
+}
 
 /// What a bar says about its metric: the share used, the share projected by the reset when the pace allows one, and
 /// the words for both.
@@ -116,9 +177,10 @@ fn pace_text(pace: Pace) -> String {
     }
 }
 
-/// The bar: `height` tall, its track faint, the projected share faded past the solid share, with the tooltip on
-/// hover and `projection.label` for screen readers and the headless tests. `id` names the hoverable cell; the bar
-/// itself is `<id>-bar`.
+/// The bar: `height` tall, the solid share in `color`, the projected run hatched in it, the faint track after, and a
+/// tick in the text color where the projection ends (#213), in the warning color at the end when the pace runs the
+/// limit out first. The tooltip shows on hover and `projection.label` serves screen readers and the headless tests.
+/// `id` names the hoverable cell; the bar itself is `<id>-bar` and the tick `<id>-projected`.
 pub fn usage_bar(
     id: &str,
     projection: &Projection,
@@ -127,15 +189,30 @@ pub fn usage_bar(
     spoken_name: impl Into<SharedString>,
     cx: &App,
 ) -> AnyElement {
-    let _ = cx;
-    let used = projection.used.clamp(0.0, 1.0) as f32;
-    // Drawn only past the solid share: a pace that slowed to nothing adds nothing.
-    let projected = projection
-        .projected
-        .map(|share| share.clamp(0.0, 1.0) as f32)
-        .filter(|share| *share > used);
+    let layout = BarLayout::of(projection.used, projection.projected);
     let tooltip: SharedString = projection.tooltip.clone().into();
     let spoken: SharedString = spoken_name.into();
+    let (text, danger) = (cx.theme().foreground, cx.theme().danger);
+    // Each part rounds its own outer ends: GPUI clips children to a rectangle, not to the parent's rounded corners.
+    // The bar's left end belongs to whichever part starts at 0, its right end to whichever reaches 1, and a run past
+    // the solid share starts square so the texture begins at a clean edge.
+    let radius = height / 2.;
+    let span = |from: f32, to: f32| {
+        let part = div()
+            .absolute()
+            .top_0()
+            .h_full()
+            .left(relative(from))
+            .w(relative((to - from).max(0.)));
+        let part = if from <= 0. { part.rounded_l(radius) } else { part };
+        if to >= 1. { part.rounded_r(radius) } else { part }
+    };
+    let solid = span(0., layout.used).bg(color);
+    let solid = if layout.run.is_some() {
+        solid
+    } else {
+        solid.rounded(radius)
+    };
     div()
         .id(ElementId::Name(id.to_owned().into()))
         .test_support()
@@ -151,43 +228,51 @@ pub fn usage_bar(
                 .aria_label(format!("{spoken}: {}", projection.label))
                 .aria_min_numeric_value(0.)
                 .aria_max_numeric_value(100.)
-                .aria_numeric_value(f64::from(used) * 100.0)
+                .aria_numeric_value(f64::from(layout.used) * 100.0)
                 .test_support()
                 .relative()
                 .w_full()
                 .h(height)
-                .rounded(height / 2.)
-                .overflow_hidden()
-                .child(div().absolute().size_full().bg(color.opacity(TRACK_OPACITY)))
-                .when_some(projected, |this, projected| {
-                    this.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .h_full()
-                            .w(relative(projected))
-                            .rounded(height / 2.)
-                            .bg(color.opacity(PROJECTED_OPACITY)),
-                    )
-                })
                 .child(
                     div()
                         .absolute()
-                        .top_0()
-                        .left_0()
-                        .h_full()
-                        .w(relative(used))
-                        .rounded(height / 2.)
-                        .bg(color),
-                ),
+                        .size_full()
+                        .overflow_hidden()
+                        .child(span(layout.track_from, 1.).bg(color.opacity(TRACK_OPACITY)))
+                        .when_some(layout.run, |this, (from, to)| {
+                            this.child(span(from, to).bg(pattern_slash(color, HATCH_STRIPE, HATCH_GAP)))
+                        })
+                        .child(solid),
+                )
+                // Outside the clipped bar, so it stands proud of it and reads at any width of run.
+                .when_some(layout.tick, |this, tick| {
+                    let (shift, tint) = if tick.past_limit {
+                        (px(-TICK_WIDTH), danger)
+                    } else {
+                        (px(-TICK_WIDTH / 2.), text)
+                    };
+                    this.child(
+                        div()
+                            .id(ElementId::Name(format!("{id}-projected").into()))
+                            .test_support()
+                            .absolute()
+                            .top(px(-TICK_OVERHANG))
+                            .left(relative(tick.at))
+                            .ml(shift)
+                            .w(px(TICK_WIDTH))
+                            .h(height + px(2. * TICK_OVERHANG))
+                            .rounded(px(1.))
+                            .bg(tint),
+                    )
+                }),
         )
         .into_any_element()
 }
 
-/// The height the table's bars have, as the stock small progress bar.
+/// The height the table's bars have: tall enough for the hatched run to read (#213), with room in the row for the
+/// tick above and below.
 pub fn small() -> Pixels {
-    px(6.)
+    px(8.)
 }
 
 /// The height the focus card's bar has, as the stock medium progress bar.
@@ -210,6 +295,71 @@ mod tests {
             used,
             resets_at: now() + Duration::days(2),
             pace,
+        }
+    }
+
+    /// Under the limit (#213): solid to the share used, hatched run to the projection, track after, tick at the end
+    /// of the run.
+    #[test]
+    fn a_projection_under_the_limit_runs_to_its_tick_and_leaves_the_track() {
+        let layout = BarLayout::of(0.42, Some(0.9));
+        assert!((layout.used - 0.42).abs() < 1e-6);
+        let (from, to) = layout.run.unwrap();
+        assert!((from - 0.42).abs() < 1e-6 && (to - 0.9).abs() < 1e-6);
+        assert!((layout.track_from - 0.9).abs() < 1e-6);
+        let tick = layout.tick.unwrap();
+        assert!((tick.at - 0.9).abs() < 1e-6);
+        assert!(!tick.past_limit);
+    }
+
+    /// Exactly at the limit is not past it: the run fills the bar, the tick is the ordinary one.
+    #[test]
+    fn a_projection_at_the_limit_fills_the_bar_without_the_warning() {
+        let layout = BarLayout::of(0.5, Some(1.0));
+        assert_eq!(layout.run, Some((0.5, 1.0)));
+        assert_eq!(
+            layout.tick,
+            Some(Tick {
+                at: 1.0,
+                past_limit: false
+            })
+        );
+    }
+
+    /// Past the limit, the run fills the bar and the tick sits at the end, flagged, so it looks different without a
+    /// hover; the solid share stays where it is.
+    #[test]
+    fn a_projection_past_the_limit_flags_the_tick_at_the_end() {
+        let layout = BarLayout::of(0.91, Some(3.31));
+        assert!((layout.used - 0.91).abs() < 1e-6);
+        assert_eq!(layout.run.map(|(_, to)| to), Some(1.0));
+        assert_eq!(layout.track_from, 1.0, "no track left");
+        assert_eq!(
+            layout.tick,
+            Some(Tick {
+                at: 1.0,
+                past_limit: true
+            })
+        );
+    }
+
+    /// A projection a point ahead still gets its tick at the true share, neither moved nor widened.
+    #[test]
+    fn a_projection_a_point_ahead_still_gets_its_tick() {
+        let layout = BarLayout::of(0.53, Some(0.54));
+        let tick = layout.tick.unwrap();
+        assert!((tick.at - 0.54).abs() < 1e-6);
+        assert!((layout.used - 0.53).abs() < 1e-6);
+    }
+
+    /// Nothing projected, or a projection at or behind the share used: a plain bar with no run and no tick.
+    #[test]
+    fn no_projection_draws_a_plain_bar() {
+        for projected in [None, Some(0.42), Some(0.3), Some(f64::NAN)] {
+            let layout = BarLayout::of(0.42, projected);
+            assert_eq!(layout.run, None, "{projected:?}");
+            assert_eq!(layout.tick, None, "{projected:?}");
+            assert_eq!(layout.track_from, 0., "the whole track, under the pill end");
         }
     }
 
