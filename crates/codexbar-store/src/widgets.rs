@@ -271,6 +271,10 @@ pub struct WidgetMetric {
     /// This metric's own status ("Watch", "At risk", "Limit soon"); none when it is normal (#95).
     #[serde(default)]
     pub status: Option<String>,
+    /// The share of the limit used by the reset at the current pace, as a percent that can pass 100 (#197); none
+    /// with nothing to project (a window too young, a balance, a count, credits).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projected_percent: Option<f64>,
 }
 
 impl WidgetSnapshot {
@@ -384,6 +388,7 @@ mod tests {
                     used_percent: Some(82.0),
                     resets_at: Some(at("2026-10-12T00:00:00Z")),
                     status: Some("At risk".into()),
+                    projected_percent: Some(130.0),
                 }],
             }],
         )
@@ -420,7 +425,8 @@ mod tests {
                     "value": "82% used",
                     "usedPercent": 82.0,
                     "resetsAt": "2026-10-12T00:00:00Z",
-                    "status": "At risk"
+                    "status": "At risk",
+                    "projectedPercent": 130.0
                 }]
             }],
             "builder": {"tiles": [], "refresh": "withCodexBar"}

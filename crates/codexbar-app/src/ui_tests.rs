@@ -1660,6 +1660,65 @@ fn the_resets_column_always_shows_time_left(cx: &mut TestAppContext) {
     assert_eq!(label(cx, handle, "resets-months").as_deref(), Some("Resets: in 3mo 5d"));
 }
 
+// Every bar carries the share projected by the reset (#197): faded past the solid share, named in the label.
+
+#[gpui_kit::test]
+fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("projected-bars", "{}");
+    let now = chrono::Utc::now();
+    let window = |id: &str, pace: Option<codexbar_core::Pace>| {
+        AccountSnapshot::new(
+            AccountId::new(id),
+            Provider::Claude,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used: 0.42,
+                resets_at: now + chrono::Duration::days(2),
+                pace,
+            }],
+            now,
+        )
+    };
+    // 1%/h with 48h left on top of 42%: on pace for 90% by the reset.
+    let paced = window("paced", Some(codexbar_core::Pace::per_hour(0.01)));
+    let young = window("young", None);
+    let over = AccountSnapshot::new(
+        AccountId::new("over"),
+        Provider::Codex,
+        vec![Metric::Window {
+            label: "5-hour window".into(),
+            used: 0.91,
+            resets_at: now + chrono::Duration::hours(1),
+            pace: Some(codexbar_core::Pace::per_hour(0.2)),
+        }],
+        now,
+    );
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![paced, young, over]));
+    let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(
+        label(cx, handle, "progress-cell-paced").as_deref(),
+        Some("42% used, on pace for 90%")
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-young").as_deref(),
+        Some("42% used"),
+        "too young to project: the label is the share alone"
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-over").as_deref(),
+        Some("91% used, on pace for 111%"),
+        "a projection past the limit keeps its figure"
+    );
+    assert!(
+        visible(cx, handle, "progress-cell-paced-bar"),
+        "the bar itself is drawn"
+    );
+}
+
 #[gpui_kit::test]
 fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) {
     let settings = TempSettings::new("lifecycle-persist", "{}");

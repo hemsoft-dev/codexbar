@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
+use crate::usage_bar::{Projection, usage_bar};
 use chrono::{DateTime, Utc};
 use codexbar_core::{AccountSnapshot, Metric, format};
 use codexbar_store::summary::HistorySummary;
 use gpui_kit::component::chart::AreaChart;
-use gpui_kit::component::progress::Progress;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
@@ -426,7 +426,9 @@ impl TableDelegate for AccountTable {
                 match cell {
                     WindowCell::Percent => percent_cell(metric, name, &id, muted),
                     WindowCell::Bar => match metric {
-                        Some(metric) => bar_cell(metric, row, severity, &assessment, &format!("{id}-bar"), cx),
+                        Some(metric) => {
+                            bar_cell(metric, row, severity, &assessment, self.now, &format!("{id}-bar"), cx)
+                        }
                         None => blank_cell(&format!("{id}-bar"), kind.title(), muted),
                     },
                 }
@@ -488,7 +490,7 @@ impl TableDelegate for AccountTable {
             Col::Progress => {
                 let id = format!("progress-cell-{}", row.id().as_str());
                 match own_pair {
-                    Some(metric) => bar_cell(metric, row, severity, &assessment, &id, cx),
+                    Some(metric) => bar_cell(metric, row, severity, &assessment, self.now, &id, cx),
                     // Wide, the row's window sits in its own columns; narrow, a row always has a primary metric.
                     None if self.wide && primary.is_some() => blank_cell(&id, "Primary metric", muted),
                     None => bar_cell_without_metric(&id, &assessment, severity, row, cx),
@@ -635,18 +637,20 @@ fn blank_cell(id: &str, name: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyEleme
         .into_any_element()
 }
 
-/// The bar for `metric`: its share used, or for credits the spend from the remembered start (#150); an activity count
-/// or credits without a start have no bar (#103).
+/// The bar for `metric`: its share used, or for credits the spend from the remembered start (#150), with the share
+/// projected by the reset faded past it and a tooltip saying both (#197); an activity count or credits without a
+/// start have no bar (#103).
 fn bar_cell(
     metric: &Metric,
     row: &AccountSnapshot,
     severity: codexbar_core::Severity,
     assessment: &codexbar_core::Assessment,
+    now: DateTime<Utc>,
     id: &str,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
     let muted = cx.theme().muted_foreground;
-    let value = match metric {
+    let used = match metric {
         Metric::Activity { .. } => return no_bar(id, muted),
         Metric::Credits { .. } => match metric.progress() {
             Some(progress) => progress,
@@ -654,10 +658,10 @@ fn bar_cell(
         },
         _ => metric.used_fraction().unwrap_or_else(|| assessment.pressure()),
     };
-    bar(id, value, severity, row, cx)
+    bar(id, &Projection::of(metric, used, now), severity, row, cx)
 }
 
-/// The bar for a row with no primary metric: the account's pressure.
+/// The bar for a row with no primary metric: the account's pressure, with nothing to project.
 fn bar_cell_without_metric(
     id: &str,
     assessment: &codexbar_core::Assessment,
@@ -665,7 +669,7 @@ fn bar_cell_without_metric(
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
-    bar(id, assessment.pressure(), severity, row, cx)
+    bar(id, &Projection::bare(assessment.pressure()), severity, row, cx)
 }
 
 fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
@@ -680,25 +684,19 @@ fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
 
 fn bar(
     id: &str,
-    value: f64,
+    projection: &Projection,
     severity: codexbar_core::Severity,
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
-    h_flex()
-        .id(ElementId::Name(id.to_owned().into()))
-        .test_support()
-        .aria_label(format!("{:.0}% used", value * 100.0))
-        .size_full()
-        .items_center()
-        .child(
-            Progress::new(ElementId::Name(format!("{id}-progress").into()))
-                .small()
-                .value(value as f32 * 100.0)
-                .color(severity_color(severity, cx))
-                .accessibility_label(format!("{} used", row.display_name())),
-        )
-        .into_any_element()
+    usage_bar(
+        id,
+        projection,
+        severity_color(severity, cx),
+        crate::usage_bar::small(),
+        row.display_name(),
+        cx,
+    )
 }
 
 fn limit_label(metric: &Metric) -> String {

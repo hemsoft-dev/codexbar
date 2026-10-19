@@ -328,12 +328,15 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
     };
     // The ring paints its number and pace itself, on its own geometry, so it fits any card width and zoom (#176).
+    // Hovering it says what the table's bars say (#197).
+    let hover: gpui_kit::SharedString = crate::usage_bar::Projection::of(metric, used, now).tooltip.into();
     let ring = div()
         .id("focus-share")
         .role(Role::Note)
         .test_support()
         .aria_label(spoken)
         .size_full()
+        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hover.clone()).build(window, cx))
         .child(
             crate::gauge::Gauge::new(used, projected, format!("{:.0}", used * 100.0), color, cx)
                 .pace(pace)
@@ -634,14 +637,15 @@ fn credits_card(metric: &Metric, balance: Option<f64>, cx: &App) -> Card {
                 .child("credits left"),
         );
     if let Some(progress) = metric.progress() {
-        body = body.child(
-            div().w_full().px_4().child(
-                gpui_kit::component::progress::Progress::new("focus-credits")
-                    .value(progress as f32 * 100.0)
-                    .color(cx.theme().chart_1)
-                    .accessibility_label("Credits used since the last top-up"),
-            ),
-        );
+        // The same bar as the table's, with its tooltip (#197); credits project nothing, and it says so.
+        body = body.child(div().w_full().px_4().child(crate::usage_bar::usage_bar(
+            "focus-credits",
+            &crate::usage_bar::Projection::of(metric, progress, Utc::now()),
+            cx.theme().chart_1,
+            crate::usage_bar::medium(),
+            "Credits since the last top-up",
+            cx,
+        )));
     }
     let takeaway = match (balance, credit_spend(metric)) {
         (None, _) => "This account's credits are unlimited".to_owned(),
