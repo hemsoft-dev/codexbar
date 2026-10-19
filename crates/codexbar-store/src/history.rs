@@ -418,13 +418,25 @@ impl HistoryStore {
         out
     }
 
-    /// The currencies a money series was recorded in up to `now`, as ISO codes in sorted order; readings stored before
-    /// currencies were recorded name none, and readings dated after `now` (the clock was set back) are left out, as
-    /// `daily_total` leaves them out.
-    pub fn currencies(&self, account: &str, metric: &str, now: DateTime<Utc>) -> Vec<String> {
+    /// The currencies a money series was recorded in on the last `days` local days, as ISO codes in sorted order: the
+    /// same days `daily_total` draws, so a currency is offered only when its chart can have points. Readings stored
+    /// before currencies were recorded name none, and readings dated after `now` (the clock was set back) are left out.
+    pub fn currencies<Tz: TimeZone>(
+        &self,
+        account: &str,
+        metric: &str,
+        days: usize,
+        tz: &Tz,
+        now: DateTime<Utc>,
+    ) -> Vec<String> {
+        let today = now.with_timezone(tz).date_naive();
         let mut codes: Vec<String> = self
             .series(account, metric)
             .filter(|sample| sample.at() <= now)
+            .filter(|sample| {
+                usize::try_from((today - sample.at().with_timezone(tz).date_naive()).num_days())
+                    .is_ok_and(|age| age < days)
+            })
             .filter_map(|sample| sample.c.clone())
             .collect();
         codes.sort_unstable();
@@ -862,12 +874,14 @@ mod tests {
         store
             .record(&[spend("a", 500, Eur, resets)], now() - Duration::days(1))
             .unwrap();
-        assert_eq!(store.currencies("a", "on-demand", now()), ["EUR", "USD"]);
+        assert_eq!(store.currencies("a", "on-demand", 5, &tz, now()), ["EUR", "USD"]);
+        // Outside a shorter window, the older USD reading names no currency the chart could draw.
+        assert_eq!(store.currencies("a", "on-demand", 3, &tz, now()), ["EUR"]);
         // A reading dated after now names no currency yet.
         store
             .record(&[spend("b", 100, Usd, resets)], now() + Duration::minutes(30))
             .unwrap();
-        assert!(store.currencies("b", "on-demand", now()).is_empty());
+        assert!(store.currencies("b", "on-demand", 5, &tz, now()).is_empty());
         let in_eur = |query: &str| {
             store
                 .daily_total(&[("a", "on-demand", "EUR")], query, 5, &tz, now())
