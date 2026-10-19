@@ -9,7 +9,7 @@ use codexbar_core::{AccountSnapshot, Currency, Metric, Money, Provider, format};
 use codexbar_store::HistoryStore;
 use codexbar_store::summary::{ChartPoint, HistorySummary, chart_series, summarize};
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::base::test_support::Observed;
+use gpui_kit::base::ObservedElement;
 use gpui_kit::component::button::{Button, ButtonGroup};
 use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::{
@@ -621,7 +621,11 @@ struct RowHead {
 
 /// A row's frame: a focus stop that names everything the row shows, with the account in the first column. The caller
 /// adds the other columns.
-fn row_frame(head: RowHead, focus: Option<&FocusHandle>, cx: &App) -> Observed<gpui_kit::Stateful<gpui_kit::Div>> {
+fn row_frame(
+    head: RowHead,
+    focus: Option<&FocusHandle>,
+    cx: &App,
+) -> ObservedElement<gpui_kit::Stateful<gpui_kit::Div>> {
     let RowHead {
         id,
         first,
