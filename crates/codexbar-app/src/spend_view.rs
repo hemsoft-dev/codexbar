@@ -578,10 +578,11 @@ fn row_frame(head: RowHead, focus: Option<&FocusHandle>, cx: &App) -> Observed<g
         .when(!first, |this| this.border_t_1().border_color(cx.theme().border))
         .focus_visible(move |style| style.bg(ring.opacity(0.12)))
         .child(
+            // The name gives way first when zoomed, so the middle column keeps room for its bar or breakdown.
             h_flex()
-                .w(rems(18.))
-                .flex_shrink_0()
-                .min_w_0()
+                .flex_basis(rems(18.))
+                .flex_shrink(1.)
+                .min_w(rems(10.))
                 .gap_2()
                 .items_center()
                 .child(div().size_2().flex_shrink_0().rounded_full().bg(dot))
@@ -632,13 +633,21 @@ fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: Da
             cx,
         ),
         // Uncapped spend has room here for what the counted amount is made of.
-        None => div()
+        // One line each, so a narrow column wraps between items rather than inside one.
+        None => h_flex()
+            .flex_wrap()
+            .gap_x_3()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child(match &breakdown {
-                Some(breakdown) => format!("No limit · {breakdown}"),
-                None => "No limit".to_owned(),
-            })
+            .child("No limit")
+            .children(row.breakdown.iter().filter_map(|metric| {
+                let spent = codexbar_core::spend::spent(metric)?;
+                Some(
+                    div()
+                        .whitespace_nowrap()
+                        .child(format!("{} {}", metric.label(), spent.display())),
+                )
+            }))
             .into_any_element(),
     };
     let head = RowHead {
@@ -657,7 +666,7 @@ fn spend_row(ix: usize, row: &SpendRow<'_>, focus: Option<&FocusHandle>, now: Da
                 .font_semibold()
                 .child(amount_text(metric)),
         )
-        .child(div().flex_1().min_w(rems(6.)).child(bar))
+        .child(div().flex_1().min_w(rems(8.)).child(bar))
         .child(
             div()
                 .w(rems(9.))
