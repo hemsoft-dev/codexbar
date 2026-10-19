@@ -77,6 +77,8 @@ fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
         used_percent: metric.used_fraction().map(|used| (used * 100.0).clamp(0.0, 100.0)),
         resets_at: metric.resets_at(),
         status: codexbar_core::assess(metric, now).label().map(str::to_owned),
+        // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
+        projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
     }
 }
 
@@ -142,6 +144,31 @@ mod tests {
             BTreeMap::from([("claude-1".to_owned(), "g1".to_owned())]),
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn a_paced_window_carries_its_projection_and_an_unpaced_one_none() {
+        // 1%/h with 48h left on top of 42%: on pace for 90% by the reset (#197).
+        let paced = AccountSnapshot::new(
+            AccountId::new("claude-2"),
+            Provider::Claude,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used: 0.42,
+                resets_at: now() + chrono::Duration::days(2),
+                pace: Some(codexbar_core::Pace::per_hour(0.01)),
+            }],
+            now(),
+        );
+        let snapshot = build(&[paced, accounts().remove(0)], &States::new(), &layout(), now());
+        assert_eq!(
+            snapshot.accounts[0].metrics[0].projected_percent.map(f64::round),
+            Some(90.0)
+        );
+        assert_eq!(
+            snapshot.accounts[1].metrics[0].projected_percent, None,
+            "too young to project"
+        );
     }
 
     #[test]
