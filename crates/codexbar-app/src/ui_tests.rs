@@ -1516,7 +1516,7 @@ fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut Tes
         "the primary metric keeps its bar"
     );
 
-    cx.simulate_window_resize(handle, size(px(1920.), px(1000.)));
+    cx.simulate_window_resize(handle, size(px(2200.), px(1000.)));
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     assert_eq!(
@@ -1574,6 +1574,98 @@ fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut Tes
         .unwrap();
     assert_eq!(label(cx, handle, "window-weekly-codex-1"), None);
     assert_eq!(label(cx, handle, "progress-cell-codex-1").as_deref(), Some("91% used"));
+}
+
+/// Wide, each window shows its own reset beside its bar (#204), and the primary pair with its reset comes after
+/// the windows (#207): blank for a window shown in its own columns, filled for a quota.
+#[gpui_kit::test]
+fn a_wide_table_shows_each_windows_own_reset(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("wide-resets", "{}");
+    let now = chrono::Utc::now();
+    let window = |label: &str, used: f64, resets_in: chrono::Duration| Metric::Window {
+        label: label.into(),
+        used,
+        resets_at: now + resets_in,
+        pace: None,
+    };
+    let codex = AccountSnapshot::new(
+        AccountId::new("codex-1"),
+        Provider::Codex,
+        vec![
+            window("5-hour window", 0.91, chrono::Duration::hours(3)),
+            window("Weekly", 0.47, chrono::Duration::days(6)),
+        ],
+        now,
+    );
+    let grok = AccountSnapshot::new(
+        AccountId::new("grok-1"),
+        Provider::Grok,
+        vec![window("Weekly usage", 0.27, chrono::Duration::days(2))],
+        now,
+    );
+    let copilot = AccountSnapshot::new(
+        AccountId::new("copilot-1"),
+        Provider::Copilot,
+        vec![Metric::Quota {
+            label: "Premium requests".into(),
+            used: 1284,
+            limit: 1500,
+            resets_at: now + chrono::Duration::days(12),
+            pace: None,
+        }],
+        now,
+    );
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![codex, grok, copilot]));
+    let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    let left = |hours: i64| codexbar_core::format::time_left_label(now + chrono::Duration::hours(hours), now);
+
+    cx.simulate_window_resize(handle, size(px(2200.), px(1000.)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    // Each window's own reset, which differ.
+    assert_eq!(
+        label(cx, handle, "window-5h-codex-1-resets"),
+        Some(format!("5-hour window resets: {}", left(3)))
+    );
+    assert_eq!(
+        label(cx, handle, "window-weekly-codex-1-resets"),
+        Some(format!("Weekly resets: {}", left(6 * 24)))
+    );
+    // The primary reset column is blank for a window that has its own columns.
+    assert_eq!(
+        label(cx, handle, "resets-codex-1").as_deref(),
+        Some("Resets: not applicable")
+    );
+    // A weekly-only account: blank 5-hour reset, its own weekly reset.
+    assert_eq!(
+        label(cx, handle, "window-5h-grok-1-resets").as_deref(),
+        Some("5-hour resets: not applicable")
+    );
+    assert_eq!(
+        label(cx, handle, "window-weekly-grok-1-resets"),
+        Some(format!("Weekly usage resets: {}", left(2 * 24)))
+    );
+    // A quota keeps its reset beside its own percentage and bar.
+    assert_eq!(
+        label(cx, handle, "window-weekly-copilot-1-resets").as_deref(),
+        Some("Weekly resets: not applicable")
+    );
+    assert_eq!(
+        label(cx, handle, "resets-copilot-1"),
+        Some(format!("Resets: {}", left(12 * 24)))
+    );
+
+    // Narrow: the single reset column shows the primary metric's reset, as before.
+    cx.simulate_window_resize(handle, size(px(1440.), px(960.)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(label(cx, handle, "window-5h-codex-1-resets"), None);
+    assert_eq!(
+        label(cx, handle, "resets-codex-1"),
+        Some(format!("Resets: {}", left(3)))
+    );
 }
 
 // Window placement (#194): saved once the window has rested, read back at the next start.
