@@ -100,16 +100,46 @@ impl SpendView {
             .or_else(|| currencies.first().copied())
     }
 
-    /// The summed daily spend in `currency` over the trend's days, from accounts whose history is shown.
-    fn trend(&self, sheet: &SpendSheet<'_>, currency: Currency, cx: &App) -> Vec<codexbar_store::summary::Point> {
-        let keys: Vec<(String, String)> = sheet
+    /// The spend rows whose history is shown, each with every currency it has spend in: its current one and any its
+    /// stored history was recorded in, so readings from before a currency change keep a chart of their own.
+    fn trend_rows<'r>(&self, sheet: &'r SpendSheet<'_>, cx: &App) -> Vec<(&'r SpendRow<'r>, Vec<Currency>)> {
+        let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        sheet
             .spend
             .iter()
-            .filter(|row| row.spent().currency() == currency)
             .filter(|row| PrefsHub::shows(cx, row.account.id().as_str()))
-            .map(|row| (row.account.id().as_str().to_owned(), row.counted.key()))
+            .map(|row| {
+                let mut currencies: Vec<Currency> = history
+                    .currencies(row.account.id().as_str(), &row.counted.key())
+                    .iter()
+                    .filter_map(|code| Currency::from_code(code))
+                    .chain(std::iter::once(row.spent().currency()))
+                    .collect();
+                currencies.sort_unstable();
+                currencies.dedup();
+                (row, currencies)
+            })
+            .collect()
+    }
+
+    /// The summed daily spend in `currency` over the trend's days, from the rows that have spend in it.
+    fn trend(
+        &self,
+        rows: &[(&SpendRow<'_>, Vec<Currency>)],
+        currency: Currency,
+    ) -> Vec<codexbar_store::summary::Point> {
+        let keys: Vec<(String, String, &'static str)> = rows
+            .iter()
+            .filter(|(_, currencies)| currencies.contains(&currency))
+            .map(|(row, _)| {
+                (
+                    row.account.id().as_str().to_owned(),
+                    row.counted.key(),
+                    row.spent().currency().code(),
+                )
+            })
             .collect();
-        let series: Vec<(&str, &str)> = keys.iter().map(|(a, m)| (a.as_str(), m.as_str())).collect();
+        let series: Vec<(&str, &str, &str)> = keys.iter().map(|(a, m, c)| (a.as_str(), m.as_str(), *c)).collect();
         let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         history.daily_total(&series, currency.code(), TREND_DAYS, &Local, Utc::now())
     }
@@ -402,9 +432,15 @@ impl SpendView {
     }
 
     fn render_trend(&self, sheet: &SpendSheet<'_>, cx: &mut Context<Self>) -> impl IntoElement {
-        let currencies = sheet.currencies();
+        let rows = self.trend_rows(sheet, cx);
+        let mut currencies: Vec<Currency> = rows
+            .iter()
+            .flat_map(|(_, currencies)| currencies.iter().copied())
+            .collect();
+        currencies.sort_unstable();
+        currencies.dedup();
         let currency = self.trend_currency(&currencies).unwrap_or_default();
-        let points = self.trend(sheet, currency, cx);
+        let points = self.trend(&rows, currency);
         let now = Utc::now();
         let summary = summarize(&points, now, DAY_GAP);
         let series = chart_series(&points, MAX_CHART_POINTS);

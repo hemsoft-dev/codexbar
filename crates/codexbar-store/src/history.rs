@@ -339,10 +339,11 @@ impl HistoryStore {
     /// day's last reading; a series without one adds the value it last had, so a missed refresh doesn't read as a
     /// drop, until the period that value belongs to resets. Days before any reading, and days where no series has
     /// one, are left out, so missing days show as gaps. Readings in another currency, and readings dated after `now`
-    /// (the clock was set back), are ignored.
+    /// (the clock was set back), are ignored. Each series is an account, a metric key and the currency it reports in
+    /// now; readings stored before currencies were recorded count only under that one.
     pub fn daily_total<Tz: TimeZone>(
         &self,
-        series: &[(&str, &str)],
+        series: &[(&str, &str, &str)],
         currency: &str,
         days: usize,
         tz: &Tz,
@@ -353,11 +354,11 @@ impl HistoryStore {
         // carry until the series reads again, so a series failing at the window's start doesn't read as a drop.
         let (lasts, before): (Vec<Vec<Option<Reading>>>, Vec<Option<Reading>>) = series
             .iter()
-            .map(|(account, metric)| {
+            .map(|(account, metric, current)| {
                 let mut last: Vec<Option<Reading>> = vec![None; days];
                 let mut before: Option<Reading> = None;
                 for sample in self.series(account, metric) {
-                    if sample.at() > now || sample.c.as_deref().is_some_and(|code| code != currency) {
+                    if sample.at() > now || sample.c.as_deref().unwrap_or(current) != currency {
                         continue;
                     }
                     let day = sample.at().with_timezone(tz).date_naive();
@@ -405,6 +406,18 @@ impl HistoryStore {
             }
         }
         out
+    }
+
+    /// The currencies a money series was recorded in, as ISO codes in sorted order; readings stored before currencies
+    /// were recorded name none.
+    pub fn currencies(&self, account: &str, metric: &str) -> Vec<String> {
+        let mut codes: Vec<String> = self
+            .series(account, metric)
+            .filter_map(|sample| sample.c.clone())
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        codes
     }
 
     fn append(&self, samples: &[Sample]) -> io::Result<()> {
@@ -720,7 +733,13 @@ mod tests {
         store.insert_points("b", "on-demand", &[Point::new(day(3, 2), 4.0)]);
         // Today only b reads; a adds the 15 it last had.
         store.insert_points("b", "on-demand", &[Point::new(day(0, -1), 6.0)]);
-        let totals = store.daily_total(&[("a", "net-spend"), ("b", "on-demand")], "USD", 6, &tz, now());
+        let totals = store.daily_total(
+            &[("a", "net-spend", "USD"), ("b", "on-demand", "USD")],
+            "USD",
+            6,
+            &tz,
+            now(),
+        );
         assert_eq!(
             totals,
             [
@@ -761,7 +780,13 @@ mod tests {
         store
             .record(&[spend("b", 700, Usd, now() + Duration::days(9))], day(0))
             .unwrap();
-        let totals = store.daily_total(&[("a", "on-demand"), ("b", "on-demand")], "USD", 5, &tz, now());
+        let totals = store.daily_total(
+            &[("a", "on-demand", "USD"), ("b", "on-demand", "USD")],
+            "USD",
+            5,
+            &tz,
+            now(),
+        );
         let values: Vec<f64> = totals.iter().map(|point| point.value).collect();
         assert_eq!(values, [45.0, 7.0], "a's $40 belongs to a period that ended");
     }
@@ -779,7 +804,13 @@ mod tests {
         store
             .record(&[spend("b", 300, Usd, resets)], now() - Duration::days(2))
             .unwrap();
-        let totals = store.daily_total(&[("a", "on-demand"), ("b", "on-demand")], "USD", 5, &tz, now());
+        let totals = store.daily_total(
+            &[("a", "on-demand", "USD"), ("b", "on-demand", "USD")],
+            "USD",
+            5,
+            &tz,
+            now(),
+        );
         assert_eq!(totals, [Point::new(now() - Duration::days(2), 23.0)]);
     }
 
@@ -799,10 +830,37 @@ mod tests {
         store
             .record(&[spend("a", 9900, Usd, resets)], now() + Duration::minutes(30))
             .unwrap();
-        let usd = store.daily_total(&[("a", "on-demand")], "USD", 5, &tz, now());
+        let usd = store.daily_total(&[("a", "on-demand", "USD")], "USD", 5, &tz, now());
         assert_eq!(usd, [Point::new(now() - Duration::hours(1), 3.0)]);
-        let eur = store.daily_total(&[("a", "on-demand")], "EUR", 5, &tz, now());
+        let eur = store.daily_total(&[("a", "on-demand", "USD")], "EUR", 5, &tz, now());
         assert_eq!(eur, [Point::new(now() - Duration::days(2), 9.0)]);
+    }
+
+    #[test]
+    fn a_series_lists_its_recorded_currencies_and_untagged_readings_stay_in_the_current_one() {
+        use codexbar_core::Currency::{Eur, Usd};
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let mut store = HistoryStore::in_memory(retention());
+        let resets = now() + Duration::days(9);
+        // Stored before currencies were recorded, then in USD, then in EUR after the account changed currency.
+        store.insert_points("a", "on-demand", &[Point::new(now() - Duration::days(4), 1.0)]);
+        store
+            .record(&[spend("a", 300, Usd, resets)], now() - Duration::days(3))
+            .unwrap();
+        store
+            .record(&[spend("a", 500, Eur, resets)], now() - Duration::days(1))
+            .unwrap();
+        assert_eq!(store.currencies("a", "on-demand"), ["EUR", "USD"]);
+        let in_eur = |query: &str| {
+            store
+                .daily_total(&[("a", "on-demand", "EUR")], query, 5, &tz, now())
+                .iter()
+                .map(|point| point.value)
+                .collect::<Vec<f64>>()
+        };
+        // The untagged reading counts under the account's current EUR, never under USD.
+        assert_eq!(in_eur("EUR"), [1.0, 5.0]);
+        assert_eq!(in_eur("USD"), [3.0]);
     }
 
     #[test]
@@ -811,7 +869,7 @@ mod tests {
         let store = HistoryStore::in_memory(retention());
         assert!(
             store
-                .daily_total(&[("a", "net-spend")], "USD", 30, &tz, now())
+                .daily_total(&[("a", "net-spend", "USD")], "USD", 30, &tz, now())
                 .is_empty()
         );
         assert!(store.daily_total(&[], "USD", 30, &tz, now()).is_empty());

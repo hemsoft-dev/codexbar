@@ -97,9 +97,13 @@ impl<'a> SpendSheet<'a> {
         totals(self.spend.iter().map(SpendRow::spent))
     }
 
-    /// The prepaid balances summed per currency, in currency order.
+    /// The prepaid balances summed per currency, in currency order. An overdrawn balance counts as nothing left:
+    /// one provider's debt can't use up another's credit.
     pub fn left(&self) -> Vec<Money> {
-        totals(self.balances.iter().map(BalanceRow::remaining))
+        totals(self.balances.iter().map(|row| {
+            let remaining = row.remaining();
+            Money::new(remaining.cents().max(0), remaining.currency())
+        }))
     }
 
     /// The balance that runs out first at its burn rate, and when.
@@ -221,10 +225,17 @@ mod tests {
                 Provider::Moonshot,
                 vec![balance("Balance", Money::from_cents(785), None)],
             ),
+            // Overdrawn: shown as empty, and it takes nothing from the others' credit.
+            account(
+                "zen",
+                Provider::OpenCode,
+                vec![balance("Zen balance", Money::from_cents(-1000), None)],
+            ),
         ];
         let sheet = SpendSheet::of(&accounts);
         assert_eq!(sheet.spent(), [Money::from_cents(3629), eur(420)]);
         assert_eq!(sheet.left(), [Money::from_cents(2627)]);
+        assert!(sheet.balances[2].is_empty());
         assert_eq!(sheet.currencies(), [Currency::Usd, Currency::Eur]);
     }
 
