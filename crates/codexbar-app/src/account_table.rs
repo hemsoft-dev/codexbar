@@ -146,7 +146,7 @@ const WIDE: [Col; 11] = [
 ];
 
 /// The width the wide columns need, in unzoomed pixels: what the table must have to show both windows.
-pub const WIDE_TABLE_WIDTH: f32 = 320. + 150. + 110. + 64. + 200. + 2. * (56. + 150.) + 110. + 200.;
+pub const WIDE_TABLE_WIDTH: f32 = 320. + 150. + 110. + 64. + 200. + 2. * (72. + 140.) + 110. + 200.;
 
 /// Each account's stored history summary for its primary metric, by account id.
 pub type Compact = HashMap<String, (HistorySummary, ValueKind)>;
@@ -378,11 +378,11 @@ impl TableDelegate for AccountTable {
         match self.columns()[col_ix] {
             Col::Window(kind, WindowCell::Percent) => {
                 Column::new(SharedString::from(format!("{}-percent", kind.key())), kind.title())
-                    .width(scaled(56., cx))
+                    .width(scaled(72., cx))
                     .text_right()
             }
             Col::Window(kind, WindowCell::Bar) => {
-                Column::new(SharedString::from(format!("{}-bar", kind.key())), "").width(scaled(150., cx))
+                Column::new(SharedString::from(format!("{}-bar", kind.key())), "").width(scaled(140., cx))
             }
             // DataTable widths are pixels, so they follow the interface zoom explicitly (#116).
             Col::Account => Column::new("account", "Account")

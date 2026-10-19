@@ -108,9 +108,9 @@ fn captures() {
     save(&mut cx, handle, &out, "usage");
 
     // #195: wide enough, the table shows the 5-hour and weekly windows side by side; rows without one leave the
-    // cells blank. A second demo window at 1920×1100, light and dark, closed again before the drag below.
+    // cells blank. A second demo window at 1920×1400, light and dark, closed again before the drag below.
     let wide = cx
-        .open_window(size(px(1920.), px(1100.)), |window, cx| {
+        .open_window(size(px(1920.), px(1400.)), |window, cx| {
             let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
