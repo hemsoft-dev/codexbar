@@ -110,7 +110,7 @@ impl SpendView {
             .filter(|row| PrefsHub::shows(cx, row.account.id().as_str()))
             .map(|row| {
                 let mut currencies: Vec<Currency> = history
-                    .currencies(row.account.id().as_str(), &row.counted.key())
+                    .currencies(row.account.id().as_str(), &row.counted.key(), Utc::now())
                     .iter()
                     .filter_map(|code| Currency::from_code(code))
                     .chain(std::iter::once(row.spent().currency()))
