@@ -1178,6 +1178,17 @@ fn open_live_dyn(
     providers: Vec<Arc<dyn UsageProvider>>,
     store: MemoryCredentialStore,
 ) -> Entity<Dashboard> {
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
+    open_live_factory(cx, settings, factory, store)
+}
+
+/// `open_live` with any provider factory, such as one that follows the account settings.
+fn open_live_factory(
+    cx: &mut TestAppContext,
+    settings: &TempSettings,
+    factory: crate::dashboard::ProviderFactory,
+    store: MemoryCredentialStore,
+) -> Entity<Dashboard> {
     use codexbar_store::HistoryStore;
     cx.update(|cx| {
         gpui_kit::init(cx);
@@ -1211,7 +1222,6 @@ fn open_live_dyn(
             crate::grok_sign_in::init_with(cx, Arc::new(grok_fixture::FakeGrok::default()));
         }
     });
-    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
     let mut dashboard = None;
     cx.open_window(size(px(1440.), px(960.)), |window, cx| {
         let source = DataSource::Live {
@@ -5332,18 +5342,204 @@ fn a_greptile_account_reads_with_its_own_key_under_its_own_id(cx: &mut TestAppCo
     assert_eq!(owned.get("gr-1").map(String::as_str), Some("gr-1"));
 }
 
+// Greptile runs only for an enabled account (#192): the environment key never switches it on by itself. The key is
+// supplied through the hub's lookup, so neither the host's real GREPTILE_API_KEY nor its secret store takes part.
+
+fn greptile_adapters(cx: &mut TestAppContext) -> Vec<Option<String>> {
+    cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)))
+        .iter()
+        .filter(|a| a.name() == "Greptile")
+        .map(|a| a.account_id().map(str::to_owned))
+        .collect()
+}
+
+fn greptile_key_in_environment(cx: &mut TestAppContext, set: bool) {
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, move |name| {
+            (set && name == "GREPTILE_API_KEY").then(|| "grp-env-dummy".to_owned())
+        })
+    });
+}
+
 #[gpui_kit::test]
-fn greptile_stays_off_until_an_account_is_added(cx: &mut TestAppContext) {
+fn greptile_stays_off_until_an_account_is_added_even_with_the_environment_key(cx: &mut TestAppContext) {
     let settings = TempSettings::new("greptile-off", "{}");
     let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
-    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
-    let greptile: Vec<_> = adapters.iter().filter(|a| a.name() == "Greptile").collect();
-    // A real GREPTILE_API_KEY on this machine stands in as the implicit account; without one, nothing runs.
-    if std::env::var("GREPTILE_API_KEY").is_ok_and(|key| !key.trim().is_empty()) {
-        assert_eq!(greptile.len(), 1, "the environment key is the implicit account");
-    } else {
-        assert!(greptile.is_empty());
+    for set in [true, false] {
+        greptile_key_in_environment(cx, set);
+        assert!(
+            greptile_adapters(cx).is_empty(),
+            "no account, key in environment: {set}"
+        );
     }
+}
+
+#[gpui_kit::test]
+fn a_disabled_greptile_account_stays_off_with_the_environment_key(cx: &mut TestAppContext) {
+    let disabled_account = TempSettings::new(
+        "greptile-disabled-account",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": false,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &disabled_account, MemoryCredentialStore::default(), 1);
+    greptile_key_in_environment(cx, true);
+    assert!(greptile_adapters(cx).is_empty(), "a switched-off account");
+    greptile_key_in_environment(cx, false);
+}
+
+#[gpui_kit::test]
+fn a_switched_off_greptile_provider_stays_off_with_the_environment_key(cx: &mut TestAppContext) {
+    // The provider's own switch off (as the settings file keeps it), with a record under it that is on.
+    let disabled_provider = TempSettings::new(
+        "greptile-disabled-provider",
+        r#"{ "accountConfigurationVersion": 1, "providers": { "Greptile": { "enabled": false } }, "accounts": [
+            { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &disabled_provider, MemoryCredentialStore::default(), 1);
+    greptile_key_in_environment(cx, true);
+    assert!(greptile_adapters(cx).is_empty(), "a switched-off provider");
+    greptile_key_in_environment(cx, false);
+}
+
+#[gpui_kit::test]
+fn an_enabled_greptile_account_uses_the_environment_key_only_while_it_has_none_saved(cx: &mut TestAppContext) {
+    use codexbar_store::credentials::SecretSource;
+    let settings = TempSettings::new(
+        "greptile-enabled-env",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    greptile_key_in_environment(cx, true);
+    assert_eq!(
+        greptile_adapters(cx),
+        [Some("gr-1".to_owned())],
+        "the enabled account runs"
+    );
+    let record = cx.update(|cx| SettingsHub::global(cx).settings().accounts()[0].clone());
+    let source = |cx: &mut TestAppContext| cx.update(|cx| SettingsHub::global(cx).secret_for(&record).1);
+    assert!(
+        matches!(source(cx), SecretSource::Environment("GREPTILE_API_KEY")),
+        "the variable stands in while no key is saved"
+    );
+    cx.update(|cx| SettingsHub::global(cx).credentials().write("gr-1", "grp-saved-dummy"))
+        .unwrap();
+    assert!(
+        matches!(source(cx), SecretSource::CredentialManager),
+        "a saved key keeps precedence"
+    );
+    assert_eq!(greptile_adapters(cx), [Some("gr-1".to_owned())]);
+    greptile_key_in_environment(cx, false);
+}
+
+/// `open_live` with fakes that follow the account settings, as the real factory does: an adapter for a configured
+/// account is built only while that record exists and is switched on and its provider is on.
+fn open_live_configured(
+    cx: &mut TestAppContext,
+    settings: &TempSettings,
+    providers: Vec<Arc<FakeProvider>>,
+) -> Entity<Dashboard> {
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        providers
+            .iter()
+            .filter(|provider| {
+                provider.account_id().is_none_or(|id| {
+                    hub.settings()
+                        .accounts()
+                        .iter()
+                        .any(|record| record.id == id && record.enabled && hub.settings().is_enabled(&record.provider))
+                })
+            })
+            .map(|provider| provider.clone() as Arc<dyn UsageProvider>)
+            .collect()
+    });
+    open_live_factory(cx, settings, factory, MemoryCredentialStore::default())
+}
+
+const ONE_GREPTILE: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
+    { "id": "gr-1", "providerId": "Greptile", "displayLabel": "Acme", "enabled": true,
+      "authenticationMethod": "ApiKey" } ] }"#;
+
+#[gpui_kit::test]
+fn switching_a_greptile_account_off_clears_its_row_and_banner_and_a_pending_refresh_cant_bring_them_back(
+    cx: &mut TestAppContext,
+) {
+    let settings = TempSettings::new("greptile-switch-off", ONE_GREPTILE);
+    let acme = FakeProvider::for_account(Provider::Greptile, "gr-1", None).failing_with(ProviderError::Expired {
+        hint: "Enter a new key.",
+    });
+    let dashboard = open_live_configured(cx, &settings, vec![acme.clone()]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(ids(cx, &dashboard), vec!["gr-1"], "the failed account has a row");
+    assert!(visible(cx, handle, "retry-Greptile-gr-1"), "and a failure banner");
+
+    // Switched off while a refresh is running: neither the row nor the banner may come back with its results.
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    let switch = |cx: &mut TestAppContext, on: bool| {
+        cx.update(|cx| {
+            SettingsHub::update(cx, |settings| {
+                let record = settings.accounts().iter().find(|a| a.id == "gr-1").cloned().unwrap();
+                settings.upsert(codexbar_store::settings::AccountRecord { enabled: on, ..record })
+            })
+        })
+        .unwrap();
+    };
+    switch(cx, false);
+    assert!(ids(cx, &dashboard).is_empty(), "gone at once");
+    cx.run_until_parked();
+    assert!(
+        ids(cx, &dashboard).is_empty(),
+        "the pending refresh's results are dropped"
+    );
+    assert!(cx.update(|cx| dashboard.read(cx).failed_providers()).is_empty());
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(!visible(cx, handle, "retry-Greptile-gr-1"), "no banner");
+    let fetched_while_off = acme.calls();
+    refresh(cx, &dashboard);
+    assert_eq!(acme.calls(), fetched_while_off, "a switched-off account isn't fetched");
+
+    // Switched on again, it is fetched and shown as before.
+    switch(cx, true);
+    refresh(cx, &dashboard);
+    assert_eq!(ids(cx, &dashboard), vec!["gr-1"]);
+}
+
+#[gpui_kit::test]
+fn removing_a_greptile_account_during_a_refresh_keeps_it_gone(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("greptile-remove", ONE_GREPTILE);
+    let acme = FakeProvider::for_account(Provider::Greptile, "gr-1", Some(0.3));
+    let dashboard = open_live_configured(cx, &settings, vec![acme]);
+    cx.run_until_parked();
+    assert_eq!(ids(cx, &dashboard), vec!["gr-1"]);
+
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.remove("gr-1");
+            Ok(())
+        })
+    })
+    .unwrap();
+    assert!(ids(cx, &dashboard).is_empty(), "gone at once");
+    cx.run_until_parked();
+    assert!(
+        ids(cx, &dashboard).is_empty(),
+        "the pending refresh's result doesn't restore it"
+    );
+    refresh(cx, &dashboard);
+    assert!(ids(cx, &dashboard).is_empty(), "nor does the next refresh");
+    let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
+    assert!(
+        saved.iter().all(|account| account.id().as_str() != "gr-1"),
+        "not kept for a restart either"
+    );
 }
 
 // GitHub Billing (#104): its own GitHub CLI sign-in, checked against the chosen owner's billing before it is kept.

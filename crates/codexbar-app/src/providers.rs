@@ -179,14 +179,10 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         providers.push(Arc::new(provider));
     }
 
-    // Greptile (#103) is new: every account reports under its own id from the start, with no legacy id to keep. With no
-    // account but GREPTILE_API_KEY set, that key stands in as the implicit account, as the README describes.
-    let mut greptile = enabled_accounts(hub, names::GREPTILE);
-    let has_key = std::env::var("GREPTILE_API_KEY").is_ok_and(|key| !key.trim().is_empty());
-    if greptile.is_empty() && has_key && hub.settings().accounts_for(names::GREPTILE).next().is_none() {
-        greptile.push(SettingsHub::implicit_account(names::GREPTILE));
-    }
-    for account in greptile {
+    // Greptile (#103) is new: every account reports under its own id from the start, with no legacy id to keep. It runs
+    // only for an enabled account record: Settings decides, and GREPTILE_API_KEY merely supplies the key for an enabled
+    // account that has none saved. A key in the machine environment never switches the provider on by itself (#192).
+    for account in enabled_accounts(hub, names::GREPTILE) {
         let key = hub.secret_for(&account).0;
         providers.push(Arc::new(GreptileProvider::new(
             UreqClient::new(),

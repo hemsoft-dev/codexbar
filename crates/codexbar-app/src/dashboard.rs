@@ -190,6 +190,15 @@ fn settings_target(
     }
 }
 
+/// Whether one of `adapters` serves `account`: an adapter for one configured account by that account's id, a
+/// provider-wide adapter by the provider's name (the same rule `apply_results` uses to tell what a fetch reported).
+fn covered_by(adapters: &[(&'static str, Option<String>)], account: &AccountSnapshot) -> bool {
+    adapters.iter().any(|(name, id)| match id {
+        Some(id) => account.id().as_str() == id,
+        None => account.provider().display_name() == *name,
+    })
+}
+
 pub struct Dashboard {
     source: DataSource,
     /// Stored history: the history file for live data, generated in memory for the demo.
@@ -382,6 +391,7 @@ impl Dashboard {
             cx.observe_global::<crate::notifications::Notifications>(|this, cx| this.rearrange_if_changed(cx));
         let settings_changes = cx.observe_global::<SettingsHub>(|this, cx| {
             this.forget_removed_accounts(cx);
+            this.drop_unconfigured_accounts(cx);
             let requests = SettingsHub::refresh_requests(cx);
             if requests != this.refresh_requests {
                 this.refresh_requests = requests;
@@ -876,6 +886,17 @@ impl Dashboard {
             crate::notifications::process(cx, &refreshed, Utc::now());
         } else {
             self.accounts_revision = None;
+            // An account switched off (or a provider, or a record removed) while the fetch ran must not come back
+            // with the fetch's results, not even until the next refresh replaces them (#192).
+            if let Some(adapters) = self.configured_adapters(cx) {
+                accounts.retain(|account| covered_by(&adapters, account));
+                self.failures
+                    .retain(|failure| adapters.contains(&(failure.provider, failure.account.clone())));
+                self.states
+                    .retain(|id, _| accounts.iter().any(|account| account.id().as_str() == id));
+                self.placeholders
+                    .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
+            }
             // Run again under the current settings, so a crossed condition is still noticed even with automatic
             // refresh off.
             self.refresh_queued = true;
@@ -1024,6 +1045,47 @@ impl Dashboard {
                 (id.to_owned(), urgency)
             })
             .collect()
+    }
+
+    /// The adapters the current settings produce, as (provider name, account id) pairs: what a shown account or failure
+    /// row must be served by once the settings change (#192). `None` in the demo, which has no adapters.
+    fn configured_adapters(&self, cx: &gpui_kit::App) -> Option<Vec<(&'static str, Option<String>)>> {
+        let DataSource::Live { providers, .. } = &self.source else {
+            return None;
+        };
+        Some(
+            providers(SettingsHub::global(cx))
+                .iter()
+                .map(|provider| (provider.name(), provider.account_id().map(str::to_owned)))
+                .collect(),
+        )
+    }
+
+    /// Drops the rows and failure banners no adapter serves under the current settings: an account switched off, its
+    /// provider turned off, or a record removed (#192). A refresh that is still running is handled when its results
+    /// land, in `apply_results`.
+    fn drop_unconfigured_accounts(&mut self, cx: &mut Context<Self>) {
+        let Some(adapters) = self.configured_adapters(cx) else {
+            return;
+        };
+        let before = self.accounts.len() + self.failures.len();
+        self.failures
+            .retain(|failure| adapters.contains(&(failure.provider, failure.account.clone())));
+        let accounts: Vec<AccountSnapshot> = self
+            .accounts
+            .iter()
+            .filter(|account| covered_by(&adapters, account))
+            .cloned()
+            .collect();
+        if before == accounts.len() + self.failures.len() {
+            return;
+        }
+        self.states
+            .retain(|id, _| accounts.iter().any(|account| account.id().as_str() == id));
+        self.placeholders
+            .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
+        self.set_accounts(accounts, cx);
+        self.save_snapshots(cx);
     }
 
     /// When accounts are removed in Settings (one at a time or by Reset), deletes what was kept for them: stored history,
