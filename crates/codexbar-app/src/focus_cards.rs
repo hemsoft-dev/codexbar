@@ -774,24 +774,20 @@ fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
     if let Some(days) = metric.days_of_credit() {
         return format!("About {days:.0} days of credit left");
     }
-    match metric.time_to_limit() {
-        Some(to_limit) if metric.exhausts_before_reset(now) => {
-            // How early, in the tile's own words (#206), so the card and its tile agree.
-            let early = match metric.outlook(now) {
-                Some(outlook @ codexbar_core::Outlook::Early(_)) => format!(", {}", format::outlook_text(outlook)),
-                _ => String::new(),
-            };
-            format!(
-                "Hits the {} limit in ~{} at this pace{early}",
-                metric.label().to_lowercase(),
-                format::countdown(to_limit)
-            )
+    // The outlook picks the wording (#206), so the card and its tile agree even at the minute where a limit hit
+    // just before the reset counts as a full share.
+    match (metric.outlook(now), metric.time_to_limit()) {
+        (Some(outlook @ codexbar_core::Outlook::Early(_)), Some(to_limit)) => format!(
+            "Hits the {} limit in ~{} at this pace, {}",
+            metric.label().to_lowercase(),
+            format::countdown(to_limit),
+            format::outlook_text(outlook)
+        ),
+        (Some(codexbar_core::Outlook::Share(share)), _) => {
+            format!("On pace for about {:.0}% by the reset", share * 100.0)
         }
-        Some(_) => match metric.projected_at_reset(now) {
-            Some(projected) => format!("On pace for about {:.0}% by the reset", projected * 100.0),
-            None => "On pace to stay under the limit".to_owned(),
-        },
-        None => "Steady".to_owned(),
+        (_, Some(_)) => "On pace to stay under the limit".to_owned(),
+        (_, None) => "Steady".to_owned(),
     }
 }
 
@@ -959,6 +955,11 @@ mod tests {
         assert_eq!(
             pace_takeaway(&window(0.4, 0.1), now()),
             "Hits the included usage limit in ~6h at this pace, 4h early"
+        );
+        // 60% left at 6%/h lands on the 10h reset: a full share, as the tile says, not "hits the limit".
+        assert_eq!(
+            pace_takeaway(&window(0.4, 0.06), now()),
+            "On pace for about 100% by the reset"
         );
     }
 
