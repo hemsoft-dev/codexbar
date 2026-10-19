@@ -294,5 +294,100 @@ fn captures() {
     .unwrap();
     cx.run_until_parked();
     save(&mut cx, live, &out, "settings-after-open-settings");
+
+    // #192: Greptile is opt-in. With GREPTILE_API_KEY in the environment (a dummy, through the hub's lookup) and no
+    // Greptile account, the real provider factory builds no Greptile adapter: Usage shows no row and no banner, and
+    // Settings shows the provider off. An account added and switched on then reads the key from the variable.
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark);
+        SettingsHub::use_environment(cx, |name| {
+            (name == "GREPTILE_API_KEY").then(|| "grp-capture-dummy".to_owned())
+        });
+    });
+    let greptile_only: crate::dashboard::ProviderFactory = Arc::new(|hub: &SettingsHub| {
+        crate::providers::enabled(hub)
+            .into_iter()
+            .filter(|provider| provider.name() == "Greptile")
+            .collect()
+    });
+    let mut greptile_dashboard = None;
+    let greptile = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let source = DataSource::Live {
+                history: Arc::new(std::sync::Mutex::new(codexbar_store::HistoryStore::in_memory(
+                    chrono::Duration::days(30),
+                ))),
+                providers: greptile_only,
+            };
+            let view = cx.new(|cx| Dashboard::new(source, window, cx));
+            greptile_dashboard = Some(view.clone());
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let greptile: AnyWindowHandle = greptile.into();
+    let greptile_view = greptile_dashboard.unwrap();
+    cx.run_until_parked();
+    save(&mut cx, greptile, &out, "greptile-unconfigured-usage-dark");
+    cx.update(|cx| greptile_view.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    let greptile_group = crate::catalog::PROVIDERS
+        .iter()
+        .position(|info| info.id == codexbar_store::settings::names::GREPTILE)
+        .unwrap();
+    for entry in ["0-1".to_owned(), format!("0-1-{greptile_group}")] {
+        cx.update_window(greptile, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("settings-sidebar").click(entry, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    save(&mut cx, greptile, &out, "greptile-unconfigured-settings-dark");
+    // Switching an account on fetches it at once, which with the real factory would call Greptile with the dummy key.
+    // The Settings row is captured from a window whose factory builds nothing, so no request leaves the harness.
+    cx.update_window(greptile, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    let mut settings_dashboard = None;
+    let configured = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let source = DataSource::Live {
+                history: Arc::new(std::sync::Mutex::new(codexbar_store::HistoryStore::in_memory(
+                    chrono::Duration::days(30),
+                ))),
+                providers: Arc::new(|_| Vec::new()),
+            };
+            let view = cx.new(|cx| Dashboard::new(source, window, cx));
+            settings_dashboard = Some(view.clone());
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let configured: AnyWindowHandle = configured.into();
+    let settings_view = settings_dashboard.unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| settings_view.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    for entry in ["0-1".to_owned(), format!("0-1-{greptile_group}")] {
+        cx.update_window(configured, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("settings-sidebar").click(entry, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.upsert(codexbar_store::settings::AccountRecord::new(
+                codexbar_store::settings::names::GREPTILE,
+                "Acme",
+                codexbar_store::settings::AuthMethod::ApiKey,
+            ))
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, configured, &out, "greptile-env-account-settings-dark");
+    cx.update(|cx| {
+        SettingsHub::use_environment(cx, |_| None);
+        crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System);
+    });
     let _ = std::fs::remove_dir_all(&settings);
 }

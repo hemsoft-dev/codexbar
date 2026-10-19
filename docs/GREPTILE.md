@@ -35,9 +35,13 @@ or a history deeper than the cap is shown as an error, never as a short count. J
   limit and an unreadable response are each shown as such on the account's row.
   The last good result stays visible meanwhile.
 
-Greptile is off until a Greptile account is added, or `GREPTILE_API_KEY` is
-set, which then stands in as one implicit account. Each account reports under
-its own id, so several organizations can be added side by side.
+Greptile is off until a Greptile account is added and switched on in Settings.
+`GREPTILE_API_KEY` never switches it on by itself: a key found in the machine
+environment only supplies the key for an enabled account that has none saved
+(#192). Switching the account off, or removing it, takes its row and any error
+off the dashboard at once; a refresh that was already running cannot bring them
+back. Each account reports under its own id, so several organizations can be
+added side by side.
 
 ## Not verified here
 
