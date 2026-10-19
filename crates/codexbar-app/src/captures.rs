@@ -310,6 +310,7 @@ fn captures() {
             .filter(|provider| provider.name() == "Greptile")
             .collect()
     });
+    let mut greptile_dashboard = None;
     let greptile = cx
         .open_window(size(px(1440.), px(960.)), |window, cx| {
             let source = DataSource::Live {
@@ -319,12 +320,12 @@ fn captures() {
                 providers: greptile_only,
             };
             let view = cx.new(|cx| Dashboard::new(source, window, cx));
-            dashboard = Some(view.clone());
+            greptile_dashboard = Some(view.clone());
             cx.new(|cx| Root::new(view, window, cx))
         })
         .unwrap();
     let greptile: AnyWindowHandle = greptile.into();
-    let greptile_view = dashboard.unwrap();
+    let greptile_view = greptile_dashboard.unwrap();
     cx.run_until_parked();
     save(&mut cx, greptile, &out, "greptile-unconfigured-usage-dark");
     cx.update(|cx| greptile_view.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
