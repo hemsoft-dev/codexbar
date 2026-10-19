@@ -193,25 +193,25 @@ pub fn usage_bar(
     let tooltip: SharedString = projection.tooltip.clone().into();
     let spoken: SharedString = spoken_name.into();
     let (text, danger) = (cx.theme().foreground, cx.theme().danger);
-    let span = |this: gpui_kit::Div, from: f32, to: f32| {
-        this.absolute()
+    // Each part rounds its own outer ends: GPUI clips children to a rectangle, not to the parent's rounded corners.
+    // The bar's left end belongs to whichever part starts at 0, its right end to whichever reaches 1, and a run past
+    // the solid share starts square so the texture begins at a clean edge.
+    let radius = height / 2.;
+    let span = |from: f32, to: f32| {
+        let part = div()
+            .absolute()
             .top_0()
             .h_full()
             .left(relative(from))
-            .w(relative((to - from).max(0.)))
+            .w(relative((to - from).max(0.)));
+        let part = if from <= 0. { part.rounded_l(radius) } else { part };
+        if to >= 1. { part.rounded_r(radius) } else { part }
     };
-    // A plain bar keeps its pill end; one with a run past it ends square, so the texture starts at a clean edge.
-    let solid = div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .h_full()
-        .w(relative(layout.used))
-        .bg(color);
+    let solid = span(0., layout.used).bg(color);
     let solid = if layout.run.is_some() {
         solid
     } else {
-        solid.rounded(height / 2.)
+        solid.rounded(radius)
     };
     div()
         .id(ElementId::Name(id.to_owned().into()))
@@ -237,11 +237,10 @@ pub fn usage_bar(
                     div()
                         .absolute()
                         .size_full()
-                        .rounded(height / 2.)
                         .overflow_hidden()
-                        .child(span(div(), layout.track_from, 1.).bg(color.opacity(TRACK_OPACITY)))
+                        .child(span(layout.track_from, 1.).bg(color.opacity(TRACK_OPACITY)))
                         .when_some(layout.run, |this, (from, to)| {
-                            this.child(span(div(), from, to).bg(pattern_slash(color, HATCH_STRIPE, HATCH_GAP)))
+                            this.child(span(from, to).bg(pattern_slash(color, HATCH_STRIPE, HATCH_GAP)))
                         })
                         .child(solid),
                 )
