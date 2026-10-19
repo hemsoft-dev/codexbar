@@ -275,6 +275,10 @@ pub struct WidgetMetric {
     /// with nothing to project (a window too young, a balance, a count, credits).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projected_percent: Option<f64>,
+    /// The projection as the dashboard words it (#206): "on pace for 76%", or "21m early" when the limit runs out
+    /// before the reset; none with nothing to project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outlook: Option<String>,
 }
 
 impl WidgetSnapshot {
@@ -389,6 +393,7 @@ mod tests {
                     resets_at: Some(at("2026-10-12T00:00:00Z")),
                     status: Some("At risk".into()),
                     projected_percent: Some(130.0),
+                    outlook: Some("2d 12h early".into()),
                 }],
             }],
         )
@@ -426,7 +431,8 @@ mod tests {
                     "usedPercent": 82.0,
                     "resetsAt": "2026-10-12T00:00:00Z",
                     "status": "At risk",
-                    "projectedPercent": 130.0
+                    "projectedPercent": 130.0,
+                    "outlook": "2d 12h early"
                 }]
             }],
             "builder": {"tiles": [], "refresh": "withCodexBar"}

@@ -1802,8 +1802,8 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
     );
     assert_eq!(
         label(cx, handle, "progress-cell-over").as_deref(),
-        Some("91% used, on pace for 111%"),
-        "a projection past the limit keeps its figure"
+        Some("91% used, 33m early"),
+        "a projection past the limit says how early it runs out (#206)"
     );
     assert!(
         visible(cx, handle, "progress-cell-paced-bar"),

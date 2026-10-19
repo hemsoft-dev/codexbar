@@ -79,6 +79,7 @@ fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
         status: codexbar_core::assess(metric, now).label().map(str::to_owned),
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
         projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
+        outlook: metric.outlook(now).map(codexbar_core::format::outlook_text),
     }
 }
 
@@ -166,9 +167,14 @@ mod tests {
             Some(90.0)
         );
         assert_eq!(
+            snapshot.accounts[0].metrics[0].outlook.as_deref(),
+            Some("on pace for 90%")
+        );
+        assert_eq!(
             snapshot.accounts[1].metrics[0].projected_percent, None,
             "too young to project"
         );
+        assert_eq!(snapshot.accounts[1].metrics[0].outlook, None);
     }
 
     #[test]
