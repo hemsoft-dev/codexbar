@@ -638,7 +638,11 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, cx: &App) -> Card {
             .gap_1()
             .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(hover.clone()).build(window, cx))
             .child(
-                div()
+                // Two lines are kept for every label, so a label that wraps doesn't push its ring below its
+                // neighbours'.
+                v_flex()
+                    .min_h(rems(2.6))
+                    .justify_end()
                     .text_sm()
                     .text_color(muted)
                     .text_center()
