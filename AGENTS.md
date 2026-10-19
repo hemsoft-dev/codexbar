@@ -11,7 +11,7 @@ Social Media.
 
 ## Repository automation
 
-Keep the normal CI workflow and required Copilot/Codex review integrations.
+Keep the normal CI workflow and the required Codex review integration; Copilot does not review in this org.
 Do not install autonomous issue processing, scheduled audit, or PR promotion
 workflows without an explicit maintainer request.
 
