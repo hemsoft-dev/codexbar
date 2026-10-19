@@ -233,8 +233,8 @@ pub struct AlertDetail {
     /// What the alert compares against ("Alert at 80%").
     pub threshold: String,
     pub resets_at: Option<DateTime<Utc>>,
-    /// The fraction of the limit used by the reset at the current pace, when it can be projected.
-    pub projected_at_reset: Option<f64>,
+    /// How the pace plays out by the reset (#206), when it can be projected.
+    pub outlook: Option<crate::metric::Outlook>,
     /// Effective severity (with the projection) and the severity from observed usage alone.
     pub severity: Severity,
     pub observed: Severity,
@@ -250,14 +250,18 @@ impl AlertDetail {
         matches!(self.kind, AlertKind::Warning | AlertKind::Critical) && self.severity > self.observed
     }
 
-    /// One line of context: "82% · Alert at 80% · resets in 2d 4h · on pace for 130% by the reset".
+    /// One line of context: "82% · Alert at 80% · resets in 2d 4h · on pace for 95% by the reset", or "… · 2d 12h
+    /// early" when the pace runs the limit out first (#206).
     pub fn summary(&self, now: DateTime<Utc>) -> String {
         let mut parts = vec![self.value.clone(), self.threshold.clone()];
         if let Some(resets_at) = self.resets_at.filter(|at| *at > now) {
             parts.push(format!("resets in {}", crate::format::countdown(resets_at - now)));
         }
-        if let Some(projected) = self.projected_at_reset {
-            parts.push(format!("on pace for {:.0}% by the reset", projected * 100.0));
+        if let Some(outlook) = self.outlook {
+            parts.push(match outlook {
+                crate::metric::Outlook::Share(_) => format!("{} by the reset", crate::format::outlook_text(outlook)),
+                crate::metric::Outlook::Early(_) => crate::format::outlook_text(outlook),
+            });
         }
         parts.join(" · ")
     }
@@ -367,7 +371,7 @@ fn detail(
         value: metric.used_display(),
         threshold,
         resets_at: metric.resets_at(),
-        projected_at_reset: metric.projected_at_reset(now),
+        outlook: metric.outlook(now),
         severity,
         observed,
         notified,
@@ -1154,7 +1158,7 @@ mod detail_tests {
         assert_eq!(at_risk.value, "50%", "observed usage is unchanged");
         assert_eq!(
             at_risk.summary(now()),
-            "50% · At risk: on pace to run out before the reset · resets in 5d · on pace for 150% by the reset"
+            "50% · At risk: on pace to run out before the reset · resets in 5d · 2d 12h early"
         );
     }
 

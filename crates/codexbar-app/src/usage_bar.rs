@@ -23,7 +23,8 @@ pub struct Projection {
     pub used: f64,
     /// 0 up, past 1 when the limit runs out before the reset; `None` with nothing to project.
     pub projected: Option<f64>,
-    /// "42% used, on pace for 78%", or "42% used" with nothing projected: the accessibility label.
+    /// "42% used, on pace for 78%", "91% used, 21m early" (#206), or "42% used" with nothing projected: the
+    /// accessibility label.
     pub label: String,
     /// The hover text: the share, when the window resets, and the projection with its pace, or why there is none.
     pub tooltip: String,
@@ -42,17 +43,19 @@ impl Projection {
             Metric::Window { pace, .. } | Metric::Quota { pace, .. } | Metric::Spend { pace, .. } => *pace,
             Metric::Balance { .. } | Metric::Activity { .. } | Metric::Credits { .. } => None,
         };
-        let outlook = match (projected, pace) {
-            (Some(projected), Some(pace)) => format!(
-                "on pace for {:.0}% by the reset ({})",
-                projected * 100.0,
-                pace_text(pace)
-            ),
-            (Some(projected), None) => format!("on pace for {:.0}% by the reset", projected * 100.0),
+        // The share by the reset, or how early the limit runs out (#206).
+        let outlook = metric.outlook(now);
+        let told = outlook.map(|outlook| match outlook {
+            codexbar_core::Outlook::Share(_) => format!("{} by the reset", format::outlook_text(outlook)),
+            codexbar_core::Outlook::Early(_) => format::outlook_text(outlook),
+        });
+        let outlook = match (told, pace) {
+            (Some(told), Some(pace)) => format!("{told} ({})", pace_text(pace)),
+            (Some(told), None) => told,
             (None, _) => no_projection(metric, pace, now).to_owned(),
         };
-        let label = match projected {
-            Some(projected) => format!("{share}, on pace for {:.0}%", projected * 100.0),
+        let label = match metric.outlook(now) {
+            Some(outlook) => format!("{share}, {}", format::outlook_text(outlook)),
             None => share.clone(),
         };
         let tooltip = [Some(share), resets, Some(outlook)]
@@ -234,10 +237,15 @@ mod tests {
     }
 
     #[test]
-    fn a_projection_past_the_limit_keeps_its_figure() {
+    fn a_projection_past_the_limit_says_how_early_it_runs_out() {
+        // 5%/h with 9% left: the limit in 1h 48m, the reset in two days (#206).
         let projection = Projection::of(&window(0.91, Some(Pace::per_hour(0.05))), 0.91, now());
-        assert!(projection.projected.unwrap() > 1.0);
-        assert!(projection.label.ends_with("on pace for 331%"), "{}", projection.label);
+        assert!(
+            projection.projected.unwrap() > 1.0,
+            "the faded segment still runs to the end"
+        );
+        assert_eq!(projection.label, "91% used, 1d 22h early");
+        assert_eq!(projection.tooltip, "91% used · resets in 2d · 1d 22h early (5.0%/h)");
     }
 
     #[test]

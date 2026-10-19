@@ -174,6 +174,15 @@ impl Money {
 }
 
 /// How fast a limit is being consumed, as a fraction of the whole limit per hour.
+/// How a limit's pace plays out by its reset (#206).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Outlook {
+    /// The share of the limit used by the reset, at most the whole of it.
+    Share(f64),
+    /// The limit runs out this long before the reset.
+    Early(Duration),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pace {
     fraction_per_hour: f64,
@@ -377,6 +386,19 @@ impl Metric {
         Some(used + pace.fraction_per_hour() * left.num_seconds() as f64 / 3600.0)
     }
 
+    /// How the pace plays out by the reset (#206): the share it reaches, or how early the limit runs out. A limit
+    /// hit at the reset, or within a minute of it, is a full share rather than "0m early".
+    pub fn outlook(&self, now: DateTime<Utc>) -> Option<Outlook> {
+        let projected = self.projected_at_reset(now)?;
+        if let (Some(to_limit), Some(resets_at)) = (self.time_to_limit(), self.resets_at()) {
+            let early = resets_at - (now + to_limit);
+            if early >= Duration::minutes(1) {
+                return Some(Outlook::Early(early));
+            }
+        }
+        Some(Outlook::Share(projected.min(1.0)))
+    }
+
     /// True when the current pace exhausts the limit before it resets.
     pub fn exhausts_before_reset(&self, now: DateTime<Utc>) -> bool {
         match (self.time_to_limit(), self.resets_at()) {
@@ -445,6 +467,50 @@ pub fn group_thousands(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod outlook {
+        use super::*;
+
+        fn at(used: f64, hours_left: f64, per_hour: Option<f64>) -> Option<Outlook> {
+            let now: DateTime<Utc> = "2026-10-19T08:00:00Z".parse().unwrap();
+            let metric = Metric::Window {
+                label: "5-hour window".into(),
+                used,
+                resets_at: now + Duration::seconds((hours_left * 3600.0) as i64),
+                pace: per_hour.map(Pace::per_hour),
+            };
+            metric.outlook(now)
+        }
+
+        #[test]
+        fn a_pace_that_runs_out_before_the_reset_says_how_early() {
+            // 91% used, 0.2/h: the limit in 27m, the reset in 60m.
+            assert_eq!(at(0.91, 1.0, Some(0.2)), Some(Outlook::Early(Duration::minutes(33))));
+            // 50% used, 0.2/day over five days: the limit in 2.5 days.
+            assert_eq!(
+                at(0.5, 120.0, Some(0.2 / 24.0)),
+                Some(Outlook::Early(Duration::hours(60)))
+            );
+        }
+
+        #[test]
+        fn a_pace_that_lands_on_the_reset_is_a_full_share_not_zero_early() {
+            // 50% used, 0.5/h, one hour left: exactly at the reset.
+            assert_eq!(at(0.5, 1.0, Some(0.5)), Some(Outlook::Share(1.0)));
+            // Thirty seconds early rounds into the reset too.
+            assert!(matches!(at(0.5, 1.0 + 30.0 / 3600.0, Some(0.5)), Some(Outlook::Share(share)) if share >= 1.0));
+        }
+
+        #[test]
+        fn a_pace_under_the_limit_is_its_share() {
+            assert!(matches!(at(0.35, 48.0, Some(0.01)), Some(Outlook::Share(share)) if (share - 0.83).abs() < 1e-9));
+        }
+
+        #[test]
+        fn no_pace_is_no_outlook() {
+            assert_eq!(at(0.35, 48.0, None), None);
+        }
+    }
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()

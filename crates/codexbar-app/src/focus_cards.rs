@@ -195,8 +195,8 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         if let Some(at) = metric.resets_at().filter(|at| *at > now) {
             detail.push(format!("resets in {}", format::countdown(at - now)));
         }
-        if let Some(projected) = metric.projected_at_reset(now) {
-            detail.push(format!("on pace for {:.0}%", projected * 100.0));
+        if let Some(outlook) = metric.outlook(now) {
+            detail.push(format::outlook_text(outlook));
         }
         // What is left under a spend limit, derived from spend and limit; never presented as a balance.
         if let Some(headroom) = metric.headroom() {
@@ -398,10 +398,14 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
     // The number leads (#174): large in the ring, with the pace in the ring's opening and the reset in the caption.
     let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
     let projected = metric.projected_at_reset(now);
-    let pace = projected.map(|projected| format!("on pace for {:.0}%", projected * 100.0));
-    let spoken = match &pace {
-        Some(pace) => format!("{}: {:.0}% used, {pace} by the reset", metric.label(), used * 100.0),
-        None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
+    let outlook = metric.outlook(now);
+    let pace = outlook.map(format::outlook_text);
+    let spoken = match (outlook, &pace) {
+        (Some(codexbar_core::Outlook::Share(_)), Some(pace)) => {
+            format!("{}: {:.0}% used, {pace} by the reset", metric.label(), used * 100.0)
+        }
+        (_, Some(pace)) => format!("{}: {:.0}% used, {pace}", metric.label(), used * 100.0),
+        (_, None) => format!("{}: {:.0}% used", metric.label(), used * 100.0),
     };
     // The ring paints its number and pace itself, on its own geometry, so it fits any card width and zoom (#176).
     // Hovering it says what the table's bars say (#197).
@@ -772,8 +776,13 @@ fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
     }
     match metric.time_to_limit() {
         Some(to_limit) if metric.exhausts_before_reset(now) => {
+            // How early, in the tile's own words (#206), so the card and its tile agree.
+            let early = match metric.outlook(now) {
+                Some(outlook @ codexbar_core::Outlook::Early(_)) => format!(", {}", format::outlook_text(outlook)),
+                _ => String::new(),
+            };
             format!(
-                "Hits the {} limit in ~{} at this pace",
+                "Hits the {} limit in ~{} at this pace{early}",
                 metric.label().to_lowercase(),
                 format::countdown(to_limit)
             )
@@ -946,7 +955,11 @@ mod tests {
             pace_takeaway(&window(0.4, 0.03), now()),
             "On pace for about 70% by the reset"
         );
-        assert!(pace_takeaway(&window(0.4, 0.1), now()).starts_with("Hits the included usage limit in ~"));
+        // 60% left at 10%/h: the limit in 6h, four hours before the 10h reset (#206).
+        assert_eq!(
+            pace_takeaway(&window(0.4, 0.1), now()),
+            "Hits the included usage limit in ~6h at this pace, 4h early"
+        );
     }
 
     #[test]

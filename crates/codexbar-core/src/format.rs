@@ -88,6 +88,15 @@ pub fn time_left_label(resets_at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     format!("in {}", time_left(remaining))
 }
 
+/// How a pace plays out, as the tiles and bars word it (#206): the share by the reset ("on pace for 76%"), or how
+/// early the limit runs out, in the resets' own time-left form ("21m early", "2d 12h early").
+pub fn outlook_text(outlook: crate::metric::Outlook) -> String {
+    match outlook {
+        crate::metric::Outlook::Share(share) => format!("on pace for {:.0}%", share * 100.0),
+        crate::metric::Outlook::Early(early) => format!("{} early", time_left(early)),
+    }
+}
+
 /// A duration as its two largest useful units: minutes and hours under a day ("38m", "1h 12m"), days and hours
 /// under three days ("2d 4h"), whole days under two months ("12d", rounded to the nearest day), then months of
 /// thirty days with the days left over ("2mo 3d", "4mo"). Rounds to the unit shown, never up into a larger unit
