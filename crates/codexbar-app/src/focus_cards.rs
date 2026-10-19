@@ -24,6 +24,11 @@ const CHART_MIN_HEIGHT_REMS: f32 = 11.;
 /// The largest the ring gauge grows, in unzoomed pixels (#200), so a tall card on a big display doesn't balloon it.
 const RING_MAX_RADIUS: f32 = 120.;
 
+/// A trend tick's label: the share ticks for a share trend (#200), the headline's own unit for a count or money.
+fn trend_tick(kind: ValueKind, counted: bool, value: f64) -> String {
+    if counted { kind.value(value) } else { share_tick(value) }
+}
+
 /// A share tick's label: a percentage up to 100%, nothing for the headroom above it.
 fn share_tick(value: f64) -> String {
     // The chart reads each tick's value back from its pixel row in f32, so 100% can arrive a hair above 1.0.
@@ -306,6 +311,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         // The trend is in the headline's own unit: a fraction, credits left (#150), a count (#103) or money (#104).
         let kind = trend_kind(account);
         let counted = counted_name(account);
+        let is_counted = counted.is_some();
         let high = account.trend().iter().copied().fold(0.0, f64::max);
         let chart = AreaChart::new(points)
             .id("focus-trend")
@@ -323,7 +329,13 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
                 },
             )
             .tick_margin(3)
-            .y_tick_format(move |value| kind.value(value));
+            .y_tick_format(move |value| trend_tick(kind, is_counted, value));
+        // A share trend takes the share ticks (#200), so the 100% line keeps its label and the headroom has none.
+        let chart = if is_counted {
+            chart
+        } else {
+            chart.y_tick_count(SHARE_TICKS)
+        };
         let title = counted.unwrap_or_else(|| "Daily pressure".into());
         Card::new(title, "Last 14 days", chart)
     };
@@ -983,6 +995,13 @@ mod tests {
         assert_eq!(share_tick(1.000_000_1), "100%", "a tick read back from its pixel row");
         assert_eq!(share_tick(0.75), "75%");
         assert_eq!(share_tick(SHARE_TOP), "", "the headroom gridline carries no label");
+        // The fallback share trend (no window curve) labels like the other share charts; a count keeps its unit.
+        assert_eq!(trend_tick(ValueKind::Percent, false, SHARE_TOP), "");
+        assert_eq!(trend_tick(ValueKind::Percent, false, 1.0), "100%");
+        assert_eq!(
+            trend_tick(ValueKind::Percent, true, SHARE_TOP),
+            ValueKind::Percent.value(SHARE_TOP)
+        );
         assert_eq!(day_domain(&[0.0, 0.0], ValueKind::Count), (0.0, 1.0), "never flat");
         assert_eq!(
             day_domain(&[10.0, 20.0], ValueKind::Credits),
