@@ -205,7 +205,11 @@ impl Window {
     fn from_json(value: &Value) -> Option<Self> {
         let used = value.get("used_percent")?.as_f64()?;
         let resets_at = Utc.timestamp_opt(value.get("reset_at")?.as_i64()?, 0).single()?;
-        let duration_secs = value.get("limit_window_seconds")?.as_i64().filter(|secs| *secs > 0)?;
+        // An implausible length, even one too large to be a duration, drops the window rather than panicking (#226).
+        let duration_secs = value
+            .get("limit_window_seconds")?
+            .as_i64()
+            .filter(|secs| codexbar_core::window_length_from_seconds(*secs).is_some())?;
         Some(Self {
             used: (used / 100.0).clamp(0.0, 1.0),
             resets_at,
@@ -608,6 +612,16 @@ mod tests {
         assert_eq!(account.primary().unwrap().time_to_limit(), None);
         // The window's length comes from `limit_window_seconds` (#223).
         assert_eq!(account.primary().unwrap().window_length(), Some(Duration::hours(5)));
+    }
+
+    #[test]
+    fn an_implausible_window_length_is_dropped_without_panicking() {
+        // A length too large to be a duration must not crash the parse (#226).
+        let payload = r#"{"rate_limit":{"primary_window":{"used_percent":5,"reset_at":1893456000,"limit_window_seconds":9223372036854775807},
+            "secondary_window":{"used_percent":22,"reset_at":1893456000,"limit_window_seconds":604800}}}"#;
+        let account = parse_usage(payload, now()).unwrap();
+        let lengths: Vec<_> = account.metrics().iter().map(Metric::window_length).collect();
+        assert_eq!(lengths, [Some(Duration::days(7))]);
     }
 
     #[test]

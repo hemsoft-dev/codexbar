@@ -150,12 +150,12 @@ fn metric_to_json(metric: &Metric) -> Value {
 fn metric_from_json(value: &Value) -> Option<Metric> {
     let label = value.get("label")?.as_str()?.to_owned();
     let pace = value.get("pacePerHour").and_then(Value::as_f64).map(Pace::per_hour);
-    // How long a window lasts (#223); files written before it was kept have none, and a nonsense value counts as none.
+    // How long a window lasts (#223); files written before it was kept have none, and an implausible value, even one
+    // too large to be a duration, counts as none (#226).
     let length = value
         .get("lengthSeconds")
         .and_then(Value::as_i64)
-        .filter(|seconds| *seconds > 0)
-        .map(chrono::Duration::seconds);
+        .and_then(codexbar_core::window_length_from_seconds);
     Some(match value.get("kind")?.as_str()? {
         "window" => Metric::Window {
             label,
@@ -299,6 +299,9 @@ mod tests {
             (r#","lengthSeconds":0"#, None),
             (r#","lengthSeconds":-60"#, None),
             (r#","lengthSeconds":"5h""#, None),
+            // Too large for a duration: loading it must not panic (#226).
+            (r#","lengthSeconds":9223372036854775807"#, None),
+            (r#","lengthSeconds":31708800"#, None),
         ] {
             let value: Value = serde_json::from_str(&format!(
                 r#"{{"kind":"window","label":"5-hour window","used":0.5,"resetsAt":"2026-10-07T15:00:00Z"{length}}}"#

@@ -204,6 +204,16 @@ impl Pace {
     }
 }
 
+/// The longest window a provider can plausibly report: a year, with a day to spare.
+const MAX_WINDOW_DAYS: i64 = 366;
+
+/// A window length from a count of seconds read from outside (a provider's payload, a saved file), or `None` when it
+/// isn't a plausible window (#226): zero or less, or longer than a year, which also keeps `Duration::seconds` and the
+/// date arithmetic on the window's start from overflowing.
+pub fn window_length_from_seconds(seconds: i64) -> Option<Duration> {
+    (seconds > 0 && seconds <= MAX_WINDOW_DAYS * 24 * 3600).then(|| Duration::seconds(seconds))
+}
+
 /// One limit an account reports.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Metric {
@@ -478,6 +488,16 @@ pub fn group_thousands(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_window_length_must_be_plausible() {
+        use super::window_length_from_seconds;
+        assert_eq!(window_length_from_seconds(18_000), Some(Duration::hours(5)));
+        assert_eq!(window_length_from_seconds(366 * 24 * 3600), Some(Duration::days(366)));
+        for bad in [0, -60, 366 * 24 * 3600 + 1, i64::MAX / 1000, i64::MAX] {
+            assert_eq!(window_length_from_seconds(bad), None, "{bad}");
+        }
+    }
+
     use super::*;
 
     mod outlook {
