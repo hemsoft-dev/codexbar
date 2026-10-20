@@ -15,6 +15,10 @@ using NSubstitute;
 /// </summary>
 public class UsageRefreshServiceFullCoverageTests
 {
+    // A guard against hangs, not a timing budget: two cycles of a 50 ms loop took over 2 s on a slow GitHub Windows
+    // runner and failed CI (run 39356458890), while a passing wait still ends in milliseconds.
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     private static IUsageProvider CreateMockProvider(
         ProviderId id,
         bool available = true,
@@ -135,7 +139,7 @@ public class UsageRefreshServiceFullCoverageTests
         };
 
         service.Start();
-        await WaitUntilAsync(() => started.Task.IsCompleted, TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(() => started.Task.IsCompleted, HangGuard);
 
         Assert.True(started.Task.IsCompleted);
         Assert.NotNull(service.NextRefreshAtUtc);
@@ -157,7 +161,7 @@ public class UsageRefreshServiceFullCoverageTests
         service.NextRefreshChanged += val => lastChanged = val;
 
         service.Start();
-        await WaitUntilAsync(() => service.NextRefreshAtUtc is not null, TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(() => service.NextRefreshAtUtc is not null, HangGuard);
 
         Assert.NotNull(service.NextRefreshAtUtc);
 
@@ -262,7 +266,7 @@ public class UsageRefreshServiceFullCoverageTests
         service.RefreshInterval = TimeSpan.FromMilliseconds(50);
 
         service.Start();
-        await WaitUntilAsync(() => callCount >= 2, TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(() => callCount >= 2, HangGuard);
         await service.StopAsync();
 
         // Should have at least 2 fetches (initial + at least 1 loop)
