@@ -38,6 +38,7 @@ fn share_tick(value: f64) -> String {
         format!("{:.0}%", value * 100.0)
     }
 }
+use crate::smooth_plot::{Series, SmoothPlot};
 use crate::status::severity_color;
 
 /// One card. Built fresh each frame; the charts own their own hover state by id.
@@ -199,6 +200,14 @@ impl Card {
             .child(div().text_sm().text_color(muted).child(self.caption))
     }
 }
+
+/// The color the drawn copy of a smooth chart gives its series, so only the smooth curves over it show (#229).
+const CLEAR: Hsla = Hsla {
+    h: 0.,
+    s: 0.,
+    l: 0.,
+    a: 0.,
+};
 
 fn area_fill(color: Hsla) -> Background {
     linear_gradient(
@@ -480,26 +489,40 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
             .zip(curve.previous())
             .map(|((label, current), previous)| (SharedString::from(label.clone()), *current, *previous))
             .collect();
-        let chart = AreaChart::new(points)
-            .id("focus-window")
-            .x(|(label, _, _)| label.clone())
-            .y(|(_, current, _)| *current)
-            .stroke(current_color)
-            .fill(area_fill(current_color))
-            .name("This window")
-            .linear()
-            .y(|(_, _, previous)| *previous)
-            .stroke(previous_color)
-            .fill(area_fill(previous_color.opacity(0.5)))
-            .name("Previous window")
-            .linear()
-            .y_domain(0.0, SHARE_TOP)
-            .y_axis(true)
-            .y_padding(0., 0.)
-            .y_tick_count(SHARE_TICKS)
-            .point_count(curve.labels().len())
-            .tick_margin(6)
-            .y_tick_format(share_tick);
+        let count = curve.labels().len();
+        let window_chart = |strokes: [Hsla; 2], fills: [Background; 2]| {
+            AreaChart::new(points.clone())
+                .id("focus-window")
+                .x(|(label, _, _)| label.clone())
+                .y(|(_, current, _)| *current)
+                .stroke(strokes[0])
+                .fill(fills[0])
+                .name("This window")
+                .linear()
+                .y(|(_, _, previous)| *previous)
+                .stroke(strokes[1])
+                .fill(fills[1])
+                .name("Previous window")
+                .linear()
+                .y_domain(0.0, SHARE_TOP)
+                .y_axis(true)
+                .y_padding(0., 0.)
+                .y_tick_count(SHARE_TICKS)
+                .point_count(count)
+                .tick_margin(6)
+                .y_tick_format(share_tick)
+        };
+        let (current_fill, previous_fill) = (area_fill(current_color), area_fill(previous_color.opacity(0.5)));
+        // Smooth curves that stay between their readings (#229), over the chart's own axes and hover.
+        let chart = SmoothPlot::new(
+            window_chart([CLEAR; 2], [CLEAR.into(); 2]),
+            window_chart([current_color, previous_color], [current_fill, previous_fill]),
+            vec![
+                Series::area(current_color, current_fill),
+                Series::area(previous_color, previous_fill),
+            ],
+            true,
+        );
         let title = primary
             .map(|m| format!("{} usage", m.label()))
             .unwrap_or_else(|| "Usage".into());
@@ -528,23 +551,34 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
         } else {
             (0.0, SHARE_TOP)
         };
-        let chart = AreaChart::new(points)
-            .id("focus-trend")
-            .x(|(label, _)| label.clone())
-            .y(|(_, value)| *value)
-            .stroke(current_color)
-            .fill(area_fill(current_color))
-            .name(counted.clone().unwrap_or_else(|| "Pressure".into()))
-            .linear()
-            .y_domain(low, high)
-            .tick_margin(3)
-            .y_tick_format(move |value| trend_tick(kind, is_counted, value));
-        // A share trend takes the share ticks (#200), so the 100% line keeps its label and the headroom has none.
-        let chart = if is_counted {
-            chart
-        } else {
-            chart.y_tick_count(SHARE_TICKS)
+        let name = counted.clone().unwrap_or_else(|| "Pressure".into());
+        let trend_chart = |stroke: Hsla, fill: Background| {
+            let chart = AreaChart::new(points.clone())
+                .id("focus-trend")
+                .x(|(label, _)| label.clone())
+                .y(|(_, value)| *value)
+                .stroke(stroke)
+                .fill(fill)
+                .name(name.clone())
+                .linear()
+                .y_domain(low, high)
+                .tick_margin(3)
+                .y_tick_format(move |value| trend_tick(kind, is_counted, value));
+            // A share trend takes the share ticks (#200), so the 100% line keeps its label and the headroom has none.
+            if is_counted {
+                chart
+            } else {
+                chart.y_tick_count(SHARE_TICKS)
+            }
         };
+        let fill = area_fill(current_color);
+        // Smooth, and still inside the plot after a reset (#229).
+        let chart = SmoothPlot::new(
+            trend_chart(CLEAR, CLEAR.into()),
+            trend_chart(current_color, fill),
+            vec![Series::area(current_color, fill)],
+            true,
+        );
         let title = counted.unwrap_or_else(|| "Daily pressure".into());
         Card::new(title, "Last 14 days", chart)
     };
@@ -871,29 +905,32 @@ fn activity_card(account: &AccountSnapshot, view: Option<ActivityView>, cx: &App
     );
     // A line through the week's points, one marker per day, in the headline's unit (#180). The axis is pinned to the
     // unit's range with no pixel padding, so its ticks read 0, 33, 67, 100%: the chart spaces ticks over the padded
-    // extent, and padding made them read -8% and 108%. Segments are straight (#217): gpui-kit's smooth curve is a
-    // natural spline, which swings past 0% or 100% around a sharp change such as a reset and was clipped there, and
-    // it has no smooth curve that stays between its points.
-    let chart = LineChart::new(days)
-        .id("focus-days")
-        .x(|(label, _)| label.clone())
-        .y(|(_, value)| *value)
-        .stroke(color)
-        .linear()
-        .dot()
-        .y_domain(low, high)
-        .y_padding(0., 0.)
-        .y_axis(true)
-        .y_tick_count(ticks)
-        .y_tick_format(move |value| {
-            if kind == ValueKind::Percent {
-                share_tick(value)
-            } else {
-                kind.value(value)
-            }
-        })
-        .tooltip_value(move |_, value| kind.value(value).into())
-        .name(counted.clone().unwrap_or_else(|| "Pressure".into()));
+    // extent, and padding made them read -8% and 108%. The line is a monotone curve (#229): gpui-kit's own smooth
+    // curve is a natural spline, which swings past 0% or 100% around a sharp change such as a reset (#217).
+    let name = counted.clone().unwrap_or_else(|| "Pressure".into());
+    let days_chart = |stroke: Hsla| {
+        LineChart::new(days.clone())
+            .id("focus-days")
+            .x(|(label, _)| label.clone())
+            .y(|(_, value)| *value)
+            .stroke(stroke)
+            .linear()
+            .dot()
+            .y_domain(low, high)
+            .y_padding(0., 0.)
+            .y_axis(true)
+            .y_tick_count(ticks)
+            .y_tick_format(move |value| {
+                if kind == ValueKind::Percent {
+                    share_tick(value)
+                } else {
+                    kind.value(value)
+                }
+            })
+            .tooltip_value(move |_, value| kind.value(value).into())
+            .name(name.clone())
+    };
+    let chart = SmoothPlot::new(days_chart(CLEAR), days_chart(color), vec![Series::line(color)], true);
     let plot = div()
         .id("focus-days-plot")
         .role(Role::Note)

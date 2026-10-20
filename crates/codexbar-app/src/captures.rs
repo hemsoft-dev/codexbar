@@ -266,6 +266,26 @@ fn captures() {
     cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
     cx.run_until_parked();
     save(&mut cx, handle, &out, "usage-copilot-reset-dark");
+    // #229: the same reset as smooth curves at 150% zoom, scrolled to the cards.
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.update(|cx| zoom::set_level(1.5, cx));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "main-scroll",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-6000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "usage-copilot-reset-zoom150");
+    cx.update(|cx| zoom::set_level(1.0, cx));
+    cx.run_until_parked();
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
     cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
     cx.run_until_parked();
 
