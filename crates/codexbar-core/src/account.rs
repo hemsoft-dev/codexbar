@@ -129,11 +129,22 @@ impl WindowCurve {
     }
 }
 
+/// The history of one limit, for a focus card that graphs it (#230): its window curve when it is a window with
+/// history, and its daily trend.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LimitSeries {
+    pub curve: Option<WindowCurve>,
+    pub trend: Vec<f64>,
+}
+
 /// Detail series shown when an account is focused.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AccountDetail {
     window_curve: Option<WindowCurve>,
     requests_by_hour: Vec<u32>,
+    /// Each limit's own history, by metric key, for the limits other than the primary one (#230). The primary limit's
+    /// history is the account's window curve and trend.
+    limit_series: std::collections::BTreeMap<String, LimitSeries>,
 }
 
 impl AccountDetail {
@@ -153,6 +164,17 @@ impl AccountDetail {
 
     pub fn requests_by_hour(&self) -> &[u32] {
         &self.requests_by_hour
+    }
+
+    /// Keeps `series` as the history of the limit with metric key `key` (#230).
+    pub fn with_limit_series(mut self, key: impl Into<String>, series: LimitSeries) -> Self {
+        self.limit_series.insert(key.into(), series);
+        self
+    }
+
+    /// The history of the limit with metric key `key`, other than the primary one (#230).
+    pub fn limit_series(&self, key: &str) -> Option<&LimitSeries> {
+        self.limit_series.get(key)
     }
 }
 

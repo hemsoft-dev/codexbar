@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use codexbar_store::credentials::MemoryCredentialStore;
+use codexbar_store::focus::{LimitChoice, LimitView};
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -322,6 +323,65 @@ fn captures() {
         window.press("escape", cx)
     })
     .unwrap();
+    cx.run_until_parked();
+
+    // #230: Claude with the 5-hour window as a graph on the first card, Weekly as a gauge on the second, and the 5-hour
+    // window as a bar on the third, light and dark, with the first card's menu open, and at 150%.
+    let claude_choice = cx.update(|cx| crate::prefs_hub::PrefsHub::focus_choice(cx, "claude-personal"));
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude-personal", |choice| {
+            choice.rings = vec!["weekly".into()];
+            choice.limits = [
+                Some(LimitChoice {
+                    key: "5-hour-window".into(),
+                    view: LimitView::Graph,
+                }),
+                None,
+                Some(LimitChoice {
+                    key: "5-hour-window".into(),
+                    view: LimitView::Bar,
+                }),
+            ];
+        })
+    });
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-claude-limits");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-claude-limits-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("focus-card-menu", 0usize), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-claude-limits-menu");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| zoom::set_level(1.5, cx));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "main-scroll",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-6000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "focus-claude-limits-zoom150");
+    cx.update(|cx| zoom::set_level(1.0, cx));
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude-personal", |choice| *choice = claude_choice)
+    });
     cx.run_until_parked();
 
     // #219: the gauge ring of the first account, Codex personal, at its smallest and largest sizes, the largest in

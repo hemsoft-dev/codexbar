@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Local, Utc};
 use codexbar_core::{AccountSnapshot, Metric, Severity, format};
-use codexbar_store::focus::{ActivityView, FocusChoice, MAX_RINGS, UsageView};
+use codexbar_store::focus::{ActivityView, FocusChoice, LimitChoice, LimitView, MAX_RINGS, UsageView};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::chart::{AreaChart, BarChart, LineChart};
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
@@ -81,6 +81,15 @@ impl Card {
         self
     }
 
+    /// Keeps the card's id unique when it shows in `slot` rather than in the slot it was made for, `home` (#230):
+    /// a chosen limit can put the same kind of card on two slots.
+    fn in_slot(mut self, slot: usize, home: usize) -> Self {
+        if slot != home {
+            self.id = format!("{}-{slot}", self.id).into();
+        }
+        self
+    }
+
     fn menu(mut self, menu: AnyElement) -> Self {
         self.menu = Some(menu);
         self
@@ -121,6 +130,7 @@ impl Card {
             .id(ElementId::Name(self.id.clone()))
             .test_support()
             .when_some(self.hover_group, |this, group| this.group(group))
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
@@ -131,7 +141,8 @@ impl Card {
             .border_color(cx.theme().border)
             .rounded(cx.theme().radius_lg)
             // The legend sits beside the title when there is room, otherwise under it (#200): zoomed in, a wide
-            // legend used to run past the card's edge.
+            // legend used to run past the card's edge. The menu keeps the top right corner (#230), so the header
+            // leaves room for it and a long title or period wraps instead of pushing it onto a line of its own.
             .child(
                 h_flex()
                     .flex_wrap()
@@ -139,13 +150,14 @@ impl Card {
                     .justify_between()
                     .gap_x_3()
                     .gap_y_1()
+                    .when(self.menu.is_some(), |this| this.pr(rems(1.75)))
                     .child(
                         v_flex()
-                            .flex_shrink_0()
+                            .min_w_0()
                             .child(div().font_semibold().child(self.title))
                             .child(div().text_sm().text_color(muted).child(self.period)),
                     )
-                    .when(!self.legend.is_empty() || self.menu.is_some(), |this| {
+                    .when(!self.legend.is_empty(), |this| {
                         this.child(
                             h_flex()
                                 .min_w_0()
@@ -170,10 +182,13 @@ impl Card {
                                                     .child(label)
                                             })),
                                     )
-                                })
-                                .children(self.menu),
+                                }),
                         )
                     }),
+            )
+            .children(
+                self.menu
+                    .map(|menu| div().absolute().top(rems(1.)).right(rems(1.)).child(menu)),
             )
             // Never squeezed below what a chart needs (#200): the card grows and the dashboard scrolls instead.
             .child(
@@ -292,21 +307,136 @@ pub fn focus_cards(
     let id = account.id().as_str();
     let choice = crate::prefs_hub::PrefsHub::focus_choice(cx, id);
     let menus = card_menus(account, &choice, cx);
-    let [usage, rings, activity] = menus;
-    vec![
-        usage_card(account, now, usage_in_effect(account, choice.usage), cx)
-            .menu(usage)
-            .render(cx)
-            .into_any_element(),
-        share_card(account, now, &choice.rings, ring, cx)
-            .menu(rings)
-            .render(cx)
-            .into_any_element(),
-        activity_card(account, activity_in_effect(account, choice.activity), cx)
-            .menu(activity)
-            .render(cx)
-            .into_any_element(),
-    ]
+    menus
+        .into_iter()
+        .enumerate()
+        .map(|(slot, menu)| {
+            // A limit chosen for the card (#230) takes it over while the account reports it.
+            let card = match limit_in_effect(account, &choice.limits[slot]) {
+                Some((metric, view)) => limit_card(account, metric, view, now, slot, ring, cx),
+                None => match slot {
+                    0 => usage_card(account, now, usage_in_effect(account, choice.usage), cx),
+                    1 => share_card(account, now, &choice.rings, ring, 1, cx),
+                    _ => activity_card(account, activity_in_effect(account, choice.activity), cx),
+                },
+            };
+            card.menu(menu).render(cx).into_any_element()
+        })
+        .collect()
+}
+
+/// The limit chosen for a card and how to draw it, while the account still reports that limit (#230).
+fn limit_in_effect<'a>(account: &'a AccountSnapshot, chosen: &Option<LimitChoice>) -> Option<(&'a Metric, LimitView)> {
+    let chosen = chosen.as_ref()?;
+    limits(account)
+        .find(|metric| metric.key() == chosen.key)
+        .map(|metric| (metric, chosen.view))
+}
+
+/// A card showing one chosen limit (#230): over time, as a progress bar, or as a gauge.
+fn limit_card(
+    account: &AccountSnapshot,
+    metric: &Metric,
+    view: LimitView,
+    now: DateTime<Utc>,
+    slot: usize,
+    ring: &crate::ring_size::RingControl,
+    cx: &App,
+) -> Card {
+    match view {
+        LimitView::Gauge => share_card(account, now, &[metric.key()], ring, slot, cx),
+        LimitView::Bar => bar_card(metric, now, slot, cx),
+        LimitView::Graph => {
+            // The primary limit's history is the account's own; every other limit keeps its own (#230).
+            let primary = account.primary().is_some_and(|primary| primary.key() == metric.key());
+            let series = account.detail().limit_series(&metric.key());
+            let (curve, trend) = if primary {
+                (account.detail().window_curve(), account.trend())
+            } else {
+                (
+                    series.and_then(|series| series.curve.as_ref()),
+                    series.map_or(&[][..], |series| series.trend.as_slice()),
+                )
+            };
+            let graph = Graph {
+                metric: Some(metric),
+                curve,
+                trend,
+                kind: ValueKind::of(metric),
+                counted: None,
+                title: Some(window_title(metric)),
+                severity: codexbar_core::assess(metric, now).severity(),
+            };
+            graph_card(&graph, now, slot, cx)
+        }
+    }
+}
+
+/// A limit's title on a card: its label, with "window" added when it doesn't say so.
+fn window_title(metric: &Metric) -> String {
+    if metric.label().to_lowercase().contains("window") {
+        metric.label().to_owned()
+    } else {
+        format!("{} window", metric.label())
+    }
+}
+
+/// One limit as a large progress bar (#230): the share used, the bar with its projection as the table draws it, the
+/// window's period, pace and reset.
+fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card {
+    use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
+    let used = metric.used_fraction().unwrap_or_default();
+    let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
+    let projection = crate::usage_bar::Projection::of(metric, used, now);
+    let pace = metric.outlook(now).map(format::outlook_text);
+    let spoken = match &pace {
+        Some(pace) => format!("{}: {:.0}% used, {pace}", metric.label(), used * 100.0),
+        None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
+    };
+    let muted = cx.theme().muted_foreground;
+    let bar_height = crate::zoom::scaled(14., cx);
+    let body = v_flex()
+        .id(SharedString::from(format!("focus-bar-{slot}")))
+        .role(Role::Note)
+        .test_support()
+        .aria_label(spoken)
+        .size_full()
+        .justify_center()
+        .gap_3()
+        .child(
+            h_flex()
+                .items_baseline()
+                .gap_1()
+                .child(div().text_3xl().font_semibold().child(format!("{:.0}", used * 100.0)))
+                .child(div().text_sm().text_color(muted).child("% used")),
+        )
+        // The bar fills whatever box it is given, so it gets one of its own: twice its height, for the projection's
+        // tick above and below it.
+        .child(
+            div()
+                .w_full()
+                .h(bar_height * 2.)
+                .flex_none()
+                .child(crate::usage_bar::usage_bar(
+                    &format!("focus-bar-{slot}-bar"),
+                    &projection,
+                    color,
+                    bar_height,
+                    metric.label().to_owned(),
+                    cx,
+                )),
+        )
+        .children(pace.map(|pace| div().text_sm().text_color(muted).child(pace)));
+    let card = Card::new(window_title(metric), window_period(metric, now), body)
+        .id(format!("focus-bar-card-{slot}"))
+        .takeaway(pool_takeaway(1.0 - used))
+        .caption(reset_caption(metric, now));
+    let severity = codexbar_core::assess(metric, now).severity();
+    if severity >= Severity::AtRisk {
+        card.alert(severity_color(severity, cx))
+    } else {
+        card
+    }
 }
 
 /// One entry in a card's menu: what it shows and what choosing it does.
@@ -316,6 +446,8 @@ struct MenuEntry {
     checked: bool,
     /// Shown but not pickable: another ring once the gauge card has its most (#221).
     disabled: bool,
+    /// Starts a new group in the menu: the limits a card can show (#230).
+    separator_before: bool,
     action: MenuAction,
 }
 
@@ -327,6 +459,8 @@ enum MenuAction {
     /// Back to the ring's default size (#219).
     DefaultRingSize,
     Activity(Option<ActivityView>),
+    /// A limit for this card in a view (#230).
+    Limit(LimitChoice),
 }
 
 /// What each card can show for `account`, from what it reports (#218). The usage card offers the window curve when
@@ -337,6 +471,7 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice, sized: bool) ->
         label: label.to_owned(),
         checked,
         disabled: false,
+        separator_before: false,
         action,
     };
     // Each card checks what it shows, so a saved view the account can no longer draw reads as Automatic (#221).
@@ -385,7 +520,39 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice, sized: bool) ->
         activity_view == Some(ActivityView::Days),
         MenuAction::Activity(Some(ActivityView::Days)),
     ));
-    [usage, rings, activity]
+    let mut cards = [usage, rings, activity];
+    // Any limit as a graph, a bar or a gauge on any card (#230); the gauge card's own limits are its rings. While a
+    // limit is chosen for a card it is what the card shows, so nothing above it reads as checked.
+    let views = [
+        (LimitView::Graph, "as a graph"),
+        (LimitView::Bar, "as a bar"),
+        (LimitView::Gauge, "as a gauge"),
+    ];
+    for (slot, entries) in cards.iter_mut().enumerate() {
+        let here = limit_in_effect(account, &choice.limits[slot]).map(|(metric, view)| (metric.key(), view));
+        if here.is_some() {
+            entries.iter_mut().for_each(|entry| entry.checked = false);
+        }
+        let mut first = true;
+        for metric in limits(account) {
+            for (view, words) in views {
+                if slot == 1 && view == LimitView::Gauge {
+                    continue;
+                }
+                let key = metric.key();
+                let checked = here.as_ref() == Some(&(key.clone(), view));
+                entries.push(MenuEntry {
+                    separator_before: std::mem::take(&mut first),
+                    ..entry(
+                        &format!("{} {words}", metric.label()),
+                        checked,
+                        MenuAction::Limit(LimitChoice { key, view }),
+                    )
+                });
+            }
+        }
+    }
+    cards
 }
 
 /// The usage view a card shows: the chosen one while the account can draw it, otherwise automatic (#221), so the
@@ -440,6 +607,9 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
                     let account = account.clone();
                     let action = entry.action.clone();
                     let available = available.clone();
+                    if entry.separator_before {
+                        menu = menu.separator();
+                    }
                     let item = PopupMenuItem::new(entry.label.clone())
                         .checked(entry.checked)
                         .disabled(entry.disabled);
@@ -451,12 +621,17 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
                                 crate::prefs_hub::PrefsHub::set_ring_size(cx, None);
                                 return;
                             }
-                            crate::prefs_hub::PrefsHub::update_focus_choice(cx, &account, move |choice| match action {
-                                MenuAction::Usage(view) => choice.usage = view,
-                                MenuAction::Ring(None) => choice.rings.clear(),
-                                MenuAction::Ring(Some(key)) => choice.toggle_ring_among(&key, &available),
-                                MenuAction::Activity(view) => choice.activity = view,
-                                MenuAction::DefaultRingSize => {}
+                            crate::prefs_hub::PrefsHub::update_focus_choice(cx, &account, move |choice| {
+                                // Any other pick on a card is the card's own view again (#230).
+                                choice.limits[ix] = None;
+                                match action {
+                                    MenuAction::Usage(view) => choice.usage = view,
+                                    MenuAction::Ring(None) => choice.rings.clear(),
+                                    MenuAction::Ring(Some(key)) => choice.toggle_ring_among(&key, &available),
+                                    MenuAction::Activity(view) => choice.activity = view,
+                                    MenuAction::Limit(limit) => choice.limits[ix] = Some(limit),
+                                    MenuAction::DefaultRingSize => {}
+                                }
                             });
                         },
                     ));
@@ -470,17 +645,51 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
 
 /// The wide card: the current window against the previous one, or the 14-day trend when no curve exists.
 fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageView>, cx: &App) -> Card {
-    let current_color = cx.theme().chart_1;
-    let previous_color = cx.theme().chart_4;
-    let primary = account.primary();
-    let severity = account.assess(now).severity();
-
     // The window curve unless the trend was chosen (#218); a chosen window curve the provider no longer sends falls
     // back to the trend.
-    let curve = account
-        .detail()
-        .window_curve()
-        .filter(|_| view != Some(UsageView::Trend));
+    let graph = Graph {
+        metric: account.primary(),
+        curve: account
+            .detail()
+            .window_curve()
+            .filter(|_| view != Some(UsageView::Trend)),
+        trend: account.trend(),
+        kind: trend_kind(account),
+        counted: counted_name(account),
+        title: None,
+        severity: account.assess(now).severity(),
+    };
+    graph_card(&graph, now, 0, cx)
+}
+
+/// What a graph card draws: a limit's window curve, or its daily trend when there is no curve, in the limit's unit.
+struct Graph<'a> {
+    /// The limit the takeaway and caption describe.
+    metric: Option<&'a Metric>,
+    curve: Option<&'a codexbar_core::WindowCurve>,
+    trend: &'a [f64],
+    kind: ValueKind,
+    /// The name of a counted trend (credits, a count, money), which is its title.
+    counted: Option<String>,
+    /// The title of a chosen limit's graph (#230); the automatic card's titles otherwise.
+    title: Option<String>,
+    severity: Severity,
+}
+
+/// A graph card in `slot`. The usage card's slot is 0; elsewhere its ids take the slot (#230).
+fn graph_card(graph: &Graph, now: DateTime<Utc>, slot: usize, cx: &App) -> Card {
+    let current_color = cx.theme().chart_1;
+    let previous_color = cx.theme().chart_4;
+    let primary = graph.metric;
+    let severity = graph.severity;
+    let id = |base: &str| -> SharedString {
+        if slot == 0 {
+            base.to_owned().into()
+        } else {
+            format!("{base}-{slot}").into()
+        }
+    };
+    let curve = graph.curve;
     let card = if let Some(curve) = curve {
         let points: Vec<(SharedString, f64, f64)> = curve
             .labels()
@@ -492,7 +701,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
         let count = curve.labels().len();
         let window_chart = |strokes: [Hsla; 2], fills: [Background; 2]| {
             AreaChart::new(points.clone())
-                .id("focus-window")
+                .id(id("focus-window"))
                 .x(|(label, _, _)| label.clone())
                 .y(|(_, current, _)| *current)
                 .stroke(strokes[0])
@@ -528,33 +737,38 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
             .unwrap_or_else(|| "Usage".into());
         let start = curve.labels().first().cloned().unwrap_or_default();
         // Findable by the headless tests, as the day plot is (#200).
-        let plot = div().id("focus-window-plot").test_support().size_full().child(chart);
+        let plot = div()
+            .id(id("focus-window-plot"))
+            .test_support()
+            .size_full()
+            .child(chart);
         Card::new(title, format!("Today, {start} – now"), plot)
-            .id("focus-window-card")
+            .id(id("focus-window-card"))
             .legend(current_color, "This window")
             .legend(previous_color, "Previous window")
-    } else if account.trend().len() < 2 {
-        Card::new("Usage over time", "History", no_history(cx))
+    } else if graph.trend.len() < 2 {
+        let title = graph.title.clone().unwrap_or_else(|| "Usage over time".into());
+        Card::new(title, "History", no_history(cx)).id(id("focus-history-card"))
     } else {
-        let points: Vec<(SharedString, f64)> = account
-            .trend()
+        let points: Vec<(SharedString, f64)> = graph
+            .trend
             .iter()
             .enumerate()
-            .map(|(ix, value)| (SharedString::from(day_label(account.trend().len(), ix)), *value))
+            .map(|(ix, value)| (SharedString::from(day_label(graph.trend.len(), ix)), *value))
             .collect();
         // The trend is in the headline's own unit: a fraction, credits left (#150), a count (#103) or money (#104).
-        let kind = trend_kind(account);
-        let counted = counted_name(account);
+        let kind = graph.kind;
+        let counted = graph.counted.clone();
         let is_counted = counted.is_some();
         let (low, high) = if is_counted {
-            day_domain(account.trend(), kind)
+            day_domain(graph.trend, kind)
         } else {
             (0.0, SHARE_TOP)
         };
         let name = counted.clone().unwrap_or_else(|| "Pressure".into());
         let trend_chart = |stroke: Hsla, fill: Background| {
             let chart = AreaChart::new(points.clone())
-                .id("focus-trend")
+                .id(id("focus-trend"))
                 .x(|(label, _)| label.clone())
                 .y(|(_, value)| *value)
                 .stroke(stroke)
@@ -579,8 +793,10 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
             vec![Series::area(current_color, fill)],
             true,
         );
-        let title = counted.unwrap_or_else(|| "Daily pressure".into());
-        Card::new(title, "Last 14 days", chart)
+        let title = counted
+            .or_else(|| graph.title.clone())
+            .unwrap_or_else(|| "Daily pressure".into());
+        Card::new(title, "Last 14 days", chart).id(id("focus-trend-card"))
     };
 
     let card = match primary {
@@ -602,6 +818,7 @@ fn share_card(
     now: DateTime<Utc>,
     rings: &[String],
     control: &crate::ring_size::RingControl,
+    slot: usize,
     cx: &App,
 ) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
@@ -666,7 +883,11 @@ fn share_card(
     // Hovering it says what the table's bars say (#197).
     let hover: gpui_kit::SharedString = crate::usage_bar::Projection::of(metric, used, now).tooltip.into();
     let ring = div()
-        .id("focus-share")
+        .id(if slot == 1 {
+            SharedString::from("focus-share")
+        } else {
+            format!("focus-share-{slot}").into()
+        })
         .role(Role::Note)
         .test_support()
         .aria_label(spoken)
@@ -679,14 +900,14 @@ fn share_card(
                 .render(),
         );
     // The ring's size slider overlays its right edge and shows while the card is hovered or the slider is focused
-    // (#219).
-    let ring = div().relative().size_full().child(ring).child(control.render(cx));
+    // (#219). It lives on the gauge card's own slot; a gauge chosen for another card takes the same size (#230).
+    let ring = div()
+        .relative()
+        .size_full()
+        .child(ring)
+        .when(slot == 1, |this| this.child(control.render(cx)));
     let takeaway = pool_takeaway(1.0 - used);
-    let title = if metric.label().to_lowercase().contains("window") {
-        metric.label().to_owned()
-    } else {
-        format!("{} window", metric.label())
-    };
+    let title = window_title(metric);
     let mut caption = reset_caption(metric, now);
     if let Some(credits) = displaced_credits(account) {
         caption = if caption.is_empty() {
@@ -696,6 +917,7 @@ fn share_card(
         };
     }
     Card::new(title, window_period(metric, now), ring)
+        .in_slot(slot, 1)
         .hover_group(crate::ring_size::GROUP)
         .takeaway(takeaway)
         .caption(caption)
@@ -1300,11 +1522,30 @@ mod tests {
         let account = claude();
         let [usage, rings, activity] = menu_entries(&account, &FocusChoice::default(), false);
         let labels = |entries: &[MenuEntry]| entries.iter().map(|e| e.label.clone()).collect::<Vec<_>>();
-        // No window curve from this account, so only the trend; no requests by hour, so only usage by day.
-        assert_eq!(labels(&usage), ["Automatic", "Last 14 days"]);
-        assert_eq!(labels(&activity), ["Automatic", "Usage by day"]);
-        // A balance has no share of a limit, so it gets no ring.
-        assert_eq!(labels(&rings), ["Automatic", "Weekly", "5-hour window"]);
+        // No window curve from this account, so only the trend; no requests by hour, so only usage by day. Then each
+        // limit in each view (#230); a balance has no share of a limit, so it is not one.
+        let limit_entries = |gauge: bool| {
+            let mut entries = Vec::new();
+            for limit in ["Weekly", "5-hour window"] {
+                entries.push(format!("{limit} as a graph"));
+                entries.push(format!("{limit} as a bar"));
+                if gauge {
+                    entries.push(format!("{limit} as a gauge"));
+                }
+            }
+            entries
+        };
+        let with = |own: &[&str], gauge: bool| {
+            let mut all: Vec<String> = own.iter().map(|label| (*label).to_owned()).collect();
+            all.extend(limit_entries(gauge));
+            all
+        };
+        assert_eq!(labels(&usage), with(&["Automatic", "Last 14 days"], true));
+        assert_eq!(labels(&activity), with(&["Automatic", "Usage by day"], true));
+        // The gauge card's limits are its rings, so it offers no "as a gauge".
+        assert_eq!(labels(&rings), with(&["Automatic", "Weekly", "5-hour window"], false));
+        // The limits start a new group.
+        assert!(usage[2].separator_before && !usage[3].separator_before && !usage[1].separator_before);
         assert!(
             usage[0].checked && rings[0].checked && activity[0].checked,
             "automatic by default"
@@ -1315,6 +1556,31 @@ mod tests {
         let [_, rings, _] = menu_entries(&account, &choice, false);
         let checked: Vec<_> = rings.iter().filter(|e| e.checked).map(|e| e.label.as_str()).collect();
         assert_eq!(checked, ["5-hour window"]);
+    }
+
+    #[test]
+    fn a_limit_chosen_for_a_card_is_the_only_checked_entry_and_falls_back_when_unreported() {
+        let account = claude();
+        let mut choice = FocusChoice::default();
+        choice.limits[0] = Some(LimitChoice {
+            key: "5-hour-window".into(),
+            view: LimitView::Graph,
+        });
+        choice.limits[2] = Some(LimitChoice {
+            key: "gone".into(),
+            view: LimitView::Bar,
+        });
+        let [usage, _, activity] = menu_entries(&account, &choice, false);
+        let checked: Vec<_> = usage.iter().filter(|e| e.checked).map(|e| e.label.as_str()).collect();
+        assert_eq!(checked, ["5-hour window as a graph"]);
+        // A limit the account doesn't report: the card is automatic again, and its menu says so.
+        assert_eq!(limit_in_effect(&account, &choice.limits[2]), None);
+        let checked: Vec<_> = activity
+            .iter()
+            .filter(|e| e.checked)
+            .map(|e| e.label.as_str())
+            .collect();
+        assert_eq!(checked, ["Automatic"]);
     }
 
     #[test]

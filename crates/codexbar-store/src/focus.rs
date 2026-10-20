@@ -24,6 +24,25 @@ pub enum ActivityView {
     Days,
 }
 
+/// How a card draws a limit chosen for it (#230): over time, as a progress bar, or as a gauge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LimitView {
+    Graph,
+    Bar,
+    Gauge,
+}
+
+/// One limit, by metric key, and how a card draws it (#230).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LimitChoice {
+    pub key: String,
+    pub view: LimitView,
+}
+
+/// The number of focus cards.
+pub const CARDS: usize = 3;
+
 /// One account's choices. Every field left empty means "automatic".
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +54,14 @@ pub struct FocusChoice {
     pub rings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<ActivityView>,
+    /// A limit chosen for each card, left to right (#230). A card with one shows that limit in its view instead of
+    /// what the fields above choose for it.
+    #[serde(default, skip_serializing_if = "no_limits")]
+    pub limits: [Option<LimitChoice>; CARDS],
+}
+
+fn no_limits(limits: &[Option<LimitChoice>; CARDS]) -> bool {
+    limits.iter().all(Option::is_none)
 }
 
 impl FocusChoice {
@@ -187,5 +214,40 @@ mod tests {
         );
         // Empty entries an older writer left are dropped.
         assert_eq!(FocusChoices::from_json(&json!({"a": {}})), FocusChoices::default());
+    }
+
+    #[test]
+    fn a_chosen_limit_per_card_round_trips_and_older_files_still_read() {
+        // Claude: the 5-hour window as a graph on the first card, Weekly as a gauge on the second (#230).
+        let mut choices = FocusChoices::default();
+        choices.update("claude-1", |choice| {
+            choice.limits[0] = Some(LimitChoice {
+                key: "5-hour-window".into(),
+                view: LimitView::Graph,
+            });
+            choice.limits[1] = Some(LimitChoice {
+                key: "weekly".into(),
+                view: LimitView::Gauge,
+            });
+        });
+        let value = serde_json::to_value(&choices).unwrap();
+        assert_eq!(
+            value,
+            json!({"claude-1": {"limits": [
+                {"key": "5-hour-window", "view": "graph"},
+                {"key": "weekly", "view": "gauge"},
+                null
+            ]}})
+        );
+        assert_eq!(FocusChoices::from_json(&value), choices);
+
+        // A file from before #230 has no limits: every card keeps its view.
+        let older = FocusChoices::from_json(&json!({"codex-1": {"usage": "trend"}}));
+        assert_eq!(older.of("codex-1").limits, [None, None, None]);
+        assert_eq!(older.of("codex-1").usage, Some(UsageView::Trend));
+
+        // Clearing the limits makes the account automatic again, and it leaves the map.
+        choices.update("claude-1", |choice| choice.limits = Default::default());
+        assert_eq!(choices, FocusChoices::default());
     }
 }
