@@ -34,7 +34,7 @@ where
         let daily = if matches!(primary, Metric::Credits { .. }) {
             store.daily_last(&id, &key, TREND_DAYS, tz, now)
         } else {
-            store.daily_max(&id, &key, TREND_DAYS, tz, now)
+            daily_max(store, &id, &primary, tz, now)
         };
         match trend(&daily) {
             Some(trend) => account.with_trend(trend),
@@ -70,7 +70,7 @@ where
         }
         let series = LimitSeries {
             curve: window_curve(store, &id, metric, tz, style, now),
-            trend: trend(&store.daily_max(&id, &key, TREND_DAYS, tz, now)).unwrap_or_default(),
+            trend: trend(&daily_max(store, &id, metric, tz, now)).unwrap_or_default(),
         };
         if series.curve.is_some() || !series.trend.is_empty() {
             detail = detail.with_limit_series(key, series);
@@ -78,6 +78,22 @@ where
         }
     }
     if added { account.with_detail(detail) } else { account }
+}
+
+/// The highest reading of each of the last [`TREND_DAYS`] days. Spend is money, so only readings in the currency it
+/// bills in now count (#232).
+fn daily_max<Tz: TimeZone>(
+    store: &HistoryStore,
+    account: &str,
+    metric: &Metric,
+    tz: &Tz,
+    now: DateTime<Utc>,
+) -> Vec<Option<f64>> {
+    let key = metric.key();
+    match metric {
+        Metric::Spend { spent, .. } => store.daily_max_in(account, &key, spent.currency().code(), TREND_DAYS, tz, now),
+        _ => store.daily_max(account, &key, TREND_DAYS, tz, now),
+    }
 }
 
 /// Drops leading empty days and carries the last known value across gaps. Needs two points to draw a line.

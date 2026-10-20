@@ -481,9 +481,8 @@ fn claude_detail() -> AccountDetail {
             "extra-usage",
             LimitSeries {
                 curve: None,
-                trend: vec![
-                    0.0, 0.0, 0.02, 0.02, 0.05, 0.05, 0.08, 0.1, 0.1, 0.12, 0.15, 0.17, 0.19, 0.21,
-                ],
+                // Euros spent, as History keeps a spend, ending at the €4.20 spent now (#232).
+                trend: vec![0.0, 0.0, 0.4, 0.4, 0.9, 1.2, 1.6, 2.0, 2.3, 2.7, 3.1, 3.5, 3.9, 4.2],
             },
         )
 }

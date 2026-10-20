@@ -601,6 +601,8 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
     // The limits the account reports now, so a pick drops chosen ones it no longer reports (#221).
     let available: Vec<String> = limits(account).map(Metric::key).collect();
     let mut menus = entries.into_iter().enumerate().map(|(ix, entries)| {
+        // Whether a chosen limit covers this card now, as the card and its menu show it (#232).
+        let covered = limit_in_effect(account, &choice.limits[ix]).is_some();
         let account = account.id().as_str().to_owned();
         let available = available.clone();
         let spoken = format!("Choose what the {} shows", names[ix]);
@@ -631,7 +633,7 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
                                 return;
                             }
                             crate::prefs_hub::PrefsHub::update_focus_choice(cx, &account, move |choice| {
-                                apply_pick(choice, ix, action, &available)
+                                apply_pick(choice, ix, action, &available, covered)
                             });
                         },
                     ));
@@ -646,8 +648,10 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
 /// What picking `action` in card `slot`'s menu does to the account's choices. Any pick other than a limit is the
 /// card's own view again (#230). A ring picked while a limit covers the gauge card shows that ring: it may still be
 /// chosen underneath, unchecked in the menu, and toggling it would hide it instead (#232).
-fn apply_pick(choice: &mut FocusChoice, slot: usize, action: MenuAction, available: &[String]) {
-    let covered = choice.limits[slot].take().is_some();
+fn apply_pick(choice: &mut FocusChoice, slot: usize, action: MenuAction, available: &[String], covered: bool) {
+    // `covered` is whether the limit is in effect, not merely saved: one the account no longer reports leaves the
+    // card and its menu in their own state, so a checked ring there toggles as usual (#232).
+    choice.limits[slot] = None;
     match action {
         MenuAction::Usage(view) => choice.usage = view,
         MenuAction::Ring(None) => choice.rings.clear(),
@@ -1656,20 +1660,54 @@ mod tests {
             view: LimitView::Bar,
         });
         // Weekly is still chosen underneath, unchecked in the menu: picking it shows it rather than hiding it (#232).
-        apply_pick(&mut choice, 1, MenuAction::Ring(Some("weekly".into())), &available);
+        apply_pick(
+            &mut choice,
+            1,
+            MenuAction::Ring(Some("weekly".into())),
+            &available,
+            true,
+        );
         assert_eq!(choice.limits[1], None);
         assert_eq!(choice.rings, ["weekly"]);
         // Without a limit over the card, a pick toggles as before.
-        apply_pick(&mut choice, 1, MenuAction::Ring(Some("weekly".into())), &available);
+        apply_pick(
+            &mut choice,
+            1,
+            MenuAction::Ring(Some("weekly".into())),
+            &available,
+            false,
+        );
         assert!(choice.rings.is_empty());
+        // A saved limit the account no longer reports doesn't cover the card: its checked ring toggles off at once,
+        // and the stale limit goes too (#232).
+        choice.rings = vec!["weekly".into()];
+        choice.limits[1] = Some(LimitChoice {
+            key: "gone".into(),
+            view: LimitView::Bar,
+        });
+        apply_pick(
+            &mut choice,
+            1,
+            MenuAction::Ring(Some("weekly".into())),
+            &available,
+            false,
+        );
+        assert!(choice.rings.is_empty());
+        assert_eq!(choice.limits[1], None);
         // Any other pick clears the card's limit too, and a limit pick sets it.
         let limit = LimitChoice {
             key: "weekly".into(),
             view: LimitView::Graph,
         };
-        apply_pick(&mut choice, 0, MenuAction::Limit(limit.clone()), &available);
+        apply_pick(&mut choice, 0, MenuAction::Limit(limit.clone()), &available, false);
         assert_eq!(choice.limits[0], Some(limit));
-        apply_pick(&mut choice, 0, MenuAction::Usage(Some(UsageView::Trend)), &available);
+        apply_pick(
+            &mut choice,
+            0,
+            MenuAction::Usage(Some(UsageView::Trend)),
+            &available,
+            true,
+        );
         assert_eq!((choice.limits[0].clone(), choice.usage), (None, Some(UsageView::Trend)));
     }
 
