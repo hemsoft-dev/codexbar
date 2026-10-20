@@ -34,6 +34,7 @@ mod ring_size;
 mod self_capture;
 mod settings_hub;
 mod settings_view;
+mod smooth_plot;
 mod spend_view;
 mod status;
 mod theme;
