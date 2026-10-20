@@ -29,6 +29,7 @@ mod package;
 mod placement;
 mod prefs_hub;
 mod providers;
+mod ring_size;
 #[cfg(feature = "capture")]
 mod self_capture;
 mod settings_hub;

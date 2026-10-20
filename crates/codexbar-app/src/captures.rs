@@ -304,6 +304,79 @@ fn captures() {
     .unwrap();
     cx.run_until_parked();
 
+    // #219: the gauge ring of the first account, Codex personal, at its smallest and largest sizes, the largest in
+    // dark too, then with its size slider shown by keyboard focus.
+    let request = crate::handoff::FocusRequest {
+        account: "codex-personal".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    for (size, name) in [(0., "ring-size-min"), (100., "ring-size-max")] {
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(size)));
+        cx.run_until_parked();
+        save(&mut cx, handle, &out, name);
+    }
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "ring-size-max-dark");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(60.)));
+    let ring_focus = cx.update(|cx| dashboard.read(cx).ring_focus());
+    cx.update_window(handle, |_, window, cx| ring_focus.focus(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "ring-size-slider");
+
+    // The largest ring at 150% zoom in a 1440×960 window: it shrinks to fit its card.
+    let ring_zoomed = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let ring_zoomed: AnyWindowHandle = ring_zoomed.into();
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(100.));
+        zoom::set_level(1.5, cx);
+    });
+    cx.run_until_parked();
+    cx.update_window(ring_zoomed, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll(
+            "main-scroll",
+            gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-6000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, ring_zoomed, &out, "ring-size-max-zoom150");
+    // The pointer over the card's title, far from the ring, still reveals the slider (#222).
+    cx.update_window(ring_zoomed, |_, window, cx| {
+        let card = window.find("focus-card-weekly-window").bounds();
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: card.origin + point(px(40.), px(30.)),
+                pressed_button: None,
+                modifiers: gpui_kit::Modifiers::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, ring_zoomed, &out, "ring-size-hover-title-zoom150");
+    cx.update(|cx| {
+        zoom::set_level(1.0, cx);
+        crate::prefs_hub::PrefsHub::set_ring_size(cx, None);
+    });
+    cx.update_window(ring_zoomed, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+
     // The two rings at 150% zoom in a 1440×960 window, scrolled to the cards.
     let rings_zoomed = cx
         .open_window(size(px(1440.), px(960.)), |window, cx| {
