@@ -23,12 +23,14 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.91,
                     resets_at: now + Duration::minutes(38),
                     pace: Some(Pace::per_hour(0.216)),
+                    length: Some(Duration::hours(5)),
                 },
                 Metric::Window {
                     label: "Weekly".into(),
                     used: 0.47,
                     resets_at: thursday_nine,
                     pace: Some(Pace::per_day(0.09)),
+                    length: Some(Duration::days(7)),
                 },
             ],
             fetched,
@@ -47,6 +49,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                 limit: 1500,
                 resets_at: next_month,
                 pace: Some(Pace::per_day(0.0064)),
+                length: Some(Duration::days(30)),
             }],
             fetched,
         )
@@ -63,12 +66,14 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.82,
                     resets_at: thursday_nine,
                     pace: Some(Pace::per_day(0.05)),
+                    length: Some(Duration::days(7)),
                 },
                 Metric::Window {
                     label: "5-hour window".into(),
                     used: 0.64,
                     resets_at: now + Duration::minutes(72),
                     pace: Some(Pace::per_hour(0.12)),
+                    length: Some(Duration::hours(5)),
                 },
                 // #215: Extra usage bills in the account's own currency, so the Spend view totals euros apart.
                 Metric::Spend {
@@ -94,6 +99,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.71,
                     resets_at: in_days(14),
                     pace: Some(Pace::per_day(0.015)),
+                    length: Some(Duration::days(30)),
                 },
                 // #215: on-demand spend against its monthly limit, with a pace, so the Spend view projects it.
                 Metric::Spend {
@@ -118,6 +124,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                 limit: 1500,
                 resets_at: next_month,
                 pace: Some(Pace::per_day(0.012)),
+                length: Some(Duration::days(30)),
             }],
             fetched,
         )
@@ -150,6 +157,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.38,
                     resets_at: in_days(9),
                     pace: Some(Pace::per_day(0.02)),
+                    length: None,
                 },
                 Metric::Balance {
                     label: "Zen balance".into(),
@@ -171,12 +179,14 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.12,
                     resets_at: now + Duration::minutes(210),
                     pace: None,
+                    length: Some(Duration::hours(5)),
                 },
                 Metric::Window {
                     label: "Weekly".into(),
                     used: 1.0,
                     resets_at: thursday_nine,
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
                 Metric::Credits {
                     label: "Credits".into(),
@@ -201,6 +211,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 1.0,
                     resets_at: thursday_nine,
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
                 Metric::Credits {
                     label: "Credits".into(),
@@ -275,12 +286,14 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.41,
                     resets_at: next_month,
                     pace: None,
+                    length: Some(Duration::days(30)),
                 },
                 Metric::Window {
                     label: "Git LFS storage".into(),
                     used: 0.08,
                     resets_at: next_month,
                     pace: None,
+                    length: Some(Duration::days(30)),
                 },
             ],
             fetched,
@@ -308,12 +321,14 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.18,
                     resets_at: now + Duration::minutes(150),
                     pace: None,
+                    length: Some(Duration::hours(5)),
                 },
                 Metric::Window {
                     label: "Gemini Apps weekly".into(),
                     used: 0.41,
                     resets_at: thursday_nine,
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
                 // #107: coding quotas from the Antigravity CLI.
                 Metric::Window {
@@ -321,24 +336,28 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.0,
                     resets_at: now + Duration::minutes(290),
                     pace: None,
+                    length: Some(Duration::hours(5)),
                 },
                 Metric::Window {
                     label: "Gemini Models weekly".into(),
                     used: 0.12,
                     resets_at: thursday_nine,
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
                 Metric::Window {
                     label: "Other models five-hour".into(),
                     used: 0.04,
                     resets_at: now + Duration::minutes(290),
                     pace: None,
+                    length: Some(Duration::hours(5)),
                 },
                 Metric::Window {
                     label: "Other models weekly".into(),
                     used: 0.15,
                     resets_at: thursday_nine,
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
             ],
             fetched,
@@ -357,6 +376,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.27,
                     resets_at: thursday_nine,
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
                 Metric::Balance {
                     label: "Extra usage credits".into(),
@@ -381,12 +401,14 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
                     used: 0.12,
                     resets_at: in_days(6),
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
                 Metric::Window {
                     label: "Weekly Grok Bot limit".into(),
                     used: 0.58,
                     resets_at: in_days(2),
                     pace: None,
+                    length: Some(Duration::days(7)),
                 },
                 Metric::Balance {
                     label: "Extra usage credits".into(),

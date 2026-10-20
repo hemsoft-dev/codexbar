@@ -320,6 +320,20 @@ fn captures() {
     cx.run_until_parked();
     save(&mut cx, handle, &out, "ring-size-max-dark");
     cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+
+    // #223: the gauge card on the 5-hour window shows the window's own times, not a week of dates.
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::set_ring_size(cx, None);
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "codex-personal", |choice| {
+            choice.rings = vec!["5-hour-window".into()];
+        });
+    });
+    cx.run_until_parked();
+    save(&mut cx, handle, &out, "period-five-hour");
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "codex-personal", |choice| choice.rings.clear())
+    });
+    cx.run_until_parked();
     cx.update(|cx| crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(60.)));
     let ring_focus = cx.update(|cx| dashboard.read(cx).ring_focus());
     cx.update_window(handle, |_, window, cx| ring_focus.focus(window, cx))

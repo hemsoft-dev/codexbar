@@ -815,6 +815,7 @@ mod tests {
             used,
             resets_at: now() + resets_in,
             pace: Some(pace),
+            length: None,
         }
     }
 

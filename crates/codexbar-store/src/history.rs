@@ -559,6 +559,7 @@ mod tests {
                     used,
                     resets_at: now() + Duration::hours(resets_in_hours),
                     pace: None,
+                    length: None,
                 },
                 Metric::Balance {
                     label: "Credits".into(),

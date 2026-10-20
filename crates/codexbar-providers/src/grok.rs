@@ -234,6 +234,7 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
                         used,
                         resets_at: end,
                         pace: elapsed_pace(used, start, end, now),
+                        length: (start < end).then(|| end - start),
                     });
                 }
                 None => usage.messages.push("Grok's weekly usage is malformed.".to_owned()),
@@ -246,6 +247,7 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
                     used: 0.0,
                     resets_at: end,
                     pace: None,
+                    length: (start < end).then(|| end - start),
                 });
                 usage.messages.push(
                     "No included usage reported by Grok: 0% follows the Grok CLI's convention, not a measurement."

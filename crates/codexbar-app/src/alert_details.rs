@@ -116,6 +116,7 @@ mod tests {
                 used,
                 resets_at: now + Duration::days(5),
                 pace: per_hour.map(Pace::per_hour),
+                length: None,
             }],
             now,
         )

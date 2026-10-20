@@ -204,6 +204,16 @@ impl Pace {
     }
 }
 
+/// The longest window a provider can plausibly report: a year, with a day to spare.
+const MAX_WINDOW_DAYS: i64 = 366;
+
+/// A window length from a count of seconds read from outside (a provider's payload, a saved file), or `None` when it
+/// isn't a plausible window (#226): zero or less, or longer than a year, which also keeps `Duration::seconds` and the
+/// date arithmetic on the window's start from overflowing.
+pub fn window_length_from_seconds(seconds: i64) -> Option<Duration> {
+    (seconds > 0 && seconds <= MAX_WINDOW_DAYS * 24 * 3600).then(|| Duration::seconds(seconds))
+}
+
 /// One limit an account reports.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Metric {
@@ -213,6 +223,8 @@ pub enum Metric {
         used: f64,
         resets_at: DateTime<Utc>,
         pace: Option<Pace>,
+        /// How long one window lasts, when the provider says (#223): five hours, a week. `None` when unknown.
+        length: Option<Duration>,
     },
     /// A counted allowance, such as premium requests per month.
     Quota {
@@ -221,6 +233,8 @@ pub enum Metric {
         limit: u64,
         resets_at: DateTime<Utc>,
         pace: Option<Pace>,
+        /// How long one period lasts, when the provider says (#223). `None` when unknown.
+        length: Option<Duration>,
     },
     /// Money spent in a period, optionally against a spend limit (#75): a budget or a monthly cap.
     Spend {
@@ -356,6 +370,14 @@ impl Metric {
         }
     }
 
+    /// How long one window or period lasts, when the provider reports it (#223).
+    pub fn window_length(&self) -> Option<Duration> {
+        match self {
+            Self::Window { length, .. } | Self::Quota { length, .. } => *length,
+            _ => None,
+        }
+    }
+
     /// Time until the limit is exhausted at the current pace, when the pace is known.
     pub fn time_to_limit(&self) -> Option<Duration> {
         let (used, pace) = match self {
@@ -466,6 +488,16 @@ pub fn group_thousands(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_window_length_must_be_plausible() {
+        use super::window_length_from_seconds;
+        assert_eq!(window_length_from_seconds(18_000), Some(Duration::hours(5)));
+        assert_eq!(window_length_from_seconds(366 * 24 * 3600), Some(Duration::days(366)));
+        for bad in [0, -60, 366 * 24 * 3600 + 1, i64::MAX / 1000, i64::MAX] {
+            assert_eq!(window_length_from_seconds(bad), None, "{bad}");
+        }
+    }
+
     use super::*;
 
     mod outlook {
@@ -478,6 +510,7 @@ mod tests {
                 used,
                 resets_at: now + Duration::seconds((hours_left * 3600.0) as i64),
                 pace: per_hour.map(Pace::per_hour),
+                length: None,
             };
             metric.outlook(now)
         }
@@ -530,6 +563,7 @@ mod tests {
             used: 0.1,
             resets_at: now(),
             pace: None,
+            length: None,
         };
         assert_eq!(window("5-hour window").key(), "5-hour-window");
         assert_eq!(window("Weekly").key(), "weekly");
@@ -562,6 +596,7 @@ mod tests {
             limit: 0,
             resets_at: now(),
             pace: None,
+            length: None,
         };
         assert_eq!(metric.used_fraction(), None);
     }
@@ -573,6 +608,7 @@ mod tests {
             used: 0.91,
             resets_at: now() + Duration::minutes(38),
             pace: Some(Pace::per_hour(0.216)),
+            length: None,
         };
         let to_limit = metric.time_to_limit().unwrap();
         assert_eq!(to_limit.num_minutes(), 25);
@@ -586,6 +622,7 @@ mod tests {
             used: 0.4,
             resets_at: now() + Duration::hours(10),
             pace: Some(Pace::per_hour(0.03)),
+            length: None,
         };
         assert!((metric.projected_at_reset(now()).unwrap() - 0.7).abs() < 1e-9);
         // A pace that runs out first projects past the limit.
@@ -594,6 +631,7 @@ mod tests {
             used: 0.4,
             resets_at: now() + Duration::hours(10),
             pace: Some(Pace::per_hour(0.1)),
+            length: None,
         };
         assert!((fast.projected_at_reset(now()).unwrap() - 1.4).abs() < 1e-9);
     }
@@ -605,6 +643,7 @@ mod tests {
             used: 0.4,
             resets_at,
             pace,
+            length: None,
         };
         assert_eq!(window(now() + Duration::hours(1), None).projected_at_reset(now()), None);
         let pace = Some(Pace::per_hour(0.1));
@@ -644,6 +683,7 @@ mod tests {
             used: 0.99,
             resets_at: now() + Duration::days(1),
             pace: None,
+            length: None,
         };
         assert!(!metric.exhausts_before_reset(now()));
     }

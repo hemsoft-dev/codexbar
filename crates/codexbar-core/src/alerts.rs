@@ -534,6 +534,7 @@ mod tests {
                 used,
                 resets_at: now() + Duration::days(3),
                 pace: None,
+                length: None,
             }],
             now(),
         )
@@ -701,6 +702,7 @@ mod tests {
             used: 0.97,
             resets_at: now() + Duration::hours(2),
             pace: Some(Pace::per_hour(0.1)),
+            length: None,
         };
         assert_eq!(assess(&metric, now()).severity(), Severity::LimitSoon);
         let account = AccountSnapshot::new(AccountId::new("x"), Provider::Codex, vec![metric], now());
@@ -733,6 +735,7 @@ mod tests {
             used: 1.0,
             resets_at: now() + Duration::days(2),
             pace: None,
+            length: None,
         };
         let credits = |balance| Metric::Credits {
             label: "Credits".into(),
@@ -796,6 +799,7 @@ mod tests {
             used: 0.97,
             resets_at: now() + Duration::hours(2),
             pace: Some(Pace::per_hour(0.1)),
+            length: None,
         };
         let account = AccountSnapshot::new(AccountId::new("x"), Provider::Codex, vec![metric], now());
         let critical_only = AlertSettings {
@@ -880,6 +884,7 @@ mod tests {
             used: 0.6,
             resets_at: now() + Duration::hours(4),
             pace: Some(Pace::per_hour(per_hour)),
+            length: None,
         };
         let account = |metric| AccountSnapshot::new(AccountId::new("x"), Provider::Codex, vec![metric], now());
         let kinds = |settings: &AlertSettings, per_hour| {
@@ -931,6 +936,7 @@ mod window_tests {
                 used,
                 resets_at: now() + Duration::days(resets_in_days),
                 pace: None,
+                length: None,
             }],
             now(),
         )
@@ -975,6 +981,7 @@ mod window_tests {
                 used: 0.1,
                 resets_at: now() + Duration::days(3),
                 pace: None,
+                length: None,
             }],
             now(),
         );
@@ -998,6 +1005,7 @@ mod window_tests {
                     used: 0.9,
                     resets_at,
                     pace: None,
+                    length: None,
                 }],
                 now(),
             )
@@ -1032,6 +1040,7 @@ mod window_tests {
                     used: 0.9,
                     resets_at,
                     pace: None,
+                    length: None,
                 }],
                 now(),
             )
@@ -1074,6 +1083,7 @@ mod detail_tests {
             used,
             resets_at: now() + resets_in,
             pace: per_hour.map(Pace::per_hour),
+            length: None,
         }
     }
 

@@ -568,6 +568,7 @@ impl Window {
             used,
             resets_at: self.resets_at,
             pace: elapsed_pace(used, self.resets_at - self.length, self.resets_at, now),
+            length: Some(self.length),
         }
     }
 }
@@ -1150,6 +1151,27 @@ mod tests {
     }
 
     const SESSION_FLAT: &str = r#""five_hour":{"utilization":10,"resets_at":"2026-10-07T03:00:00Z"}"#;
+
+    #[test]
+    fn windows_carry_their_length() {
+        // The session lasts five hours and the weekly limits a week (#223).
+        let account = with(&format!(
+            r#"{SESSION_FLAT},"seven_day":{{"utilization":40,"resets_at":"2026-10-10T08:00:00Z"}}"#
+        ))
+        .unwrap();
+        let lengths: Vec<(&str, Option<Duration>)> = account
+            .metrics()
+            .iter()
+            .map(|metric| (metric.label(), metric.window_length()))
+            .collect();
+        assert_eq!(
+            lengths,
+            [
+                ("5-hour window", Some(Duration::hours(5))),
+                ("Weekly", Some(Duration::days(7)))
+            ]
+        );
+    }
 
     #[test]
     fn flat_fields_fill_in_without_promoting_codenames() {

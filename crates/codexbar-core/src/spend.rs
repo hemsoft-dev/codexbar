@@ -249,6 +249,7 @@ mod tests {
                 used: 0.4,
                 resets_at: now() + Duration::days(3),
                 pace: Some(Pace::per_day(0.1)),
+                length: None,
             }],
         )];
         let sheet = SpendSheet::of(&accounts);

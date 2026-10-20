@@ -157,6 +157,7 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
             used,
             resets_at,
             pace: pace(used),
+            length: start.map(|start| resets_at - start),
         })
     })
     .collect();

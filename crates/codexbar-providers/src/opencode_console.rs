@@ -518,6 +518,7 @@ pub fn parse_go_status(body: &str, user: &str, now: DateTime<Utc>) -> Result<GoS
             used,
             resets_at,
             pace: elapsed_pace(used, start, resets_at, now),
+            length: (start < resets_at).then(|| resets_at - start),
         });
     }
     Ok(GoStatus::Subscribed(metrics, notes))

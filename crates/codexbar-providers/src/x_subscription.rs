@@ -87,6 +87,7 @@ pub fn parse_grok_bot(body: &str, now: DateTime<Utc>) -> GrokBotUsage {
                 used,
                 resets_at: ends,
                 pace: None,
+                length: None,
             }),
             message: Some("The Grok Bot trial doesn't reset weekly; its date is when the trial ends.".to_owned()),
         };
@@ -103,6 +104,7 @@ pub fn parse_grok_bot(body: &str, now: DateTime<Utc>) -> GrokBotUsage {
             used,
             resets_at,
             pace,
+            length: Some(Duration::days(7)),
         }),
         message: None,
     }
@@ -166,12 +168,17 @@ impl<H: HttpClient> XSubscriptionProvider<H> {
         for metric in usage.metrics {
             match metric {
                 Metric::Window {
-                    used, resets_at, pace, ..
+                    used,
+                    resets_at,
+                    pace,
+                    length,
+                    ..
                 } => metrics.push(Metric::Window {
                     label: SUPERGROK_LABEL.into(),
                     used,
                     resets_at,
                     pace,
+                    length,
                 }),
                 other => rest.push(other),
             }
