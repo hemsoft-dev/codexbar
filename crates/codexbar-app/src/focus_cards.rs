@@ -346,30 +346,39 @@ fn limit_card(
     match view {
         LimitView::Gauge => share_card(account, now, &[metric.key()], ring, slot, cx),
         LimitView::Bar => bar_card(metric, now, slot, cx),
-        LimitView::Graph => {
-            // The primary limit's history is the account's own; every other limit keeps its own (#230).
-            let primary = account.primary().is_some_and(|primary| primary.key() == metric.key());
-            let series = account.detail().limit_series(&metric.key());
-            let (curve, trend) = if primary {
-                (account.detail().window_curve(), account.trend())
-            } else {
-                (
-                    series.and_then(|series| series.curve.as_ref()),
-                    series.map_or(&[][..], |series| series.trend.as_slice()),
-                )
-            };
-            let graph = Graph {
-                metric: Some(metric),
-                curve,
-                trend,
-                kind: ValueKind::of(metric),
-                counted: None,
-                title: Some(window_title(metric)),
-                severity: codexbar_core::assess(metric, now).severity(),
-            };
-            graph_card(&graph, now, slot, cx)
-        }
+        LimitView::Graph => graph_card(&limit_graph(account, metric, now), now, slot, cx),
     }
+}
+
+/// What a card graphs for one chosen limit (#230): its own window curve or daily trend, in its own unit. A capped
+/// spend's history is money, as History stores it (#232), so it is a counted series, not a share.
+fn limit_graph<'a>(account: &'a AccountSnapshot, metric: &'a Metric, now: DateTime<Utc>) -> Graph<'a> {
+    // The primary limit's history is the account's own; every other limit keeps its own (#230).
+    let primary = account.primary().is_some_and(|primary| primary.key() == metric.key());
+    let series = account.detail().limit_series(&metric.key());
+    let (curve, trend) = if primary {
+        (account.detail().window_curve(), account.trend())
+    } else {
+        (
+            series.and_then(|series| series.curve.as_ref()),
+            series.map_or(&[][..], |series| series.trend.as_slice()),
+        )
+    };
+    Graph {
+        metric: Some(metric),
+        curve: comparable(curve),
+        trend,
+        kind: ValueKind::of(metric),
+        counted: counted_metric(metric),
+        title: Some(window_title(metric)),
+        severity: codexbar_core::assess(metric, now).severity(),
+    }
+}
+
+/// A window curve the card can draw: one with both the current and the previous window (#232). In a limit's first
+/// window there is no previous one yet, and pairing the two would leave no points, so the card shows the trend.
+fn comparable(curve: Option<&codexbar_core::WindowCurve>) -> Option<&codexbar_core::WindowCurve> {
+    curve.filter(|curve| !curve.current().is_empty() && !curve.previous().is_empty())
 }
 
 /// A limit's title on a card: its label, with "window" added when it doesn't say so.
@@ -478,7 +487,7 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice, sized: bool) ->
     let usage_view = usage_in_effect(account, choice.usage);
     let activity_view = activity_in_effect(account, choice.activity);
     let mut usage = vec![entry("Automatic", usage_view.is_none(), MenuAction::Usage(None))];
-    if account.detail().window_curve().is_some() {
+    if comparable(account.detail().window_curve()).is_some() {
         usage.push(entry(
             "This window and the last",
             usage_view == Some(UsageView::Window),
@@ -559,7 +568,7 @@ fn menu_entries(account: &AccountSnapshot, choice: &FocusChoice, sized: bool) ->
 /// card and its menu agree on what is on screen.
 fn usage_in_effect(account: &AccountSnapshot, chosen: Option<UsageView>) -> Option<UsageView> {
     chosen.filter(|view| match view {
-        UsageView::Window => account.detail().window_curve().is_some(),
+        UsageView::Window => comparable(account.detail().window_curve()).is_some(),
         UsageView::Trend => account.trend().len() >= 2,
     })
 }
@@ -622,16 +631,7 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
                                 return;
                             }
                             crate::prefs_hub::PrefsHub::update_focus_choice(cx, &account, move |choice| {
-                                // Any other pick on a card is the card's own view again (#230).
-                                choice.limits[ix] = None;
-                                match action {
-                                    MenuAction::Usage(view) => choice.usage = view,
-                                    MenuAction::Ring(None) => choice.rings.clear(),
-                                    MenuAction::Ring(Some(key)) => choice.toggle_ring_among(&key, &available),
-                                    MenuAction::Activity(view) => choice.activity = view,
-                                    MenuAction::Limit(limit) => choice.limits[ix] = Some(limit),
-                                    MenuAction::DefaultRingSize => {}
-                                }
+                                apply_pick(choice, ix, action, &available)
                             });
                         },
                     ));
@@ -643,16 +643,29 @@ fn card_menus(account: &AccountSnapshot, choice: &FocusChoice, cx: &App) -> [Any
     [menus.next().unwrap(), menus.next().unwrap(), menus.next().unwrap()]
 }
 
+/// What picking `action` in card `slot`'s menu does to the account's choices. Any pick other than a limit is the
+/// card's own view again (#230). A ring picked while a limit covers the gauge card shows that ring: it may still be
+/// chosen underneath, unchecked in the menu, and toggling it would hide it instead (#232).
+fn apply_pick(choice: &mut FocusChoice, slot: usize, action: MenuAction, available: &[String]) {
+    let covered = choice.limits[slot].take().is_some();
+    match action {
+        MenuAction::Usage(view) => choice.usage = view,
+        MenuAction::Ring(None) => choice.rings.clear(),
+        MenuAction::Ring(Some(key)) if covered && choice.rings.contains(&key) => {}
+        MenuAction::Ring(Some(key)) => choice.toggle_ring_among(&key, available),
+        MenuAction::Activity(view) => choice.activity = view,
+        MenuAction::Limit(limit) => choice.limits[slot] = Some(limit),
+        MenuAction::DefaultRingSize => {}
+    }
+}
+
 /// The wide card: the current window against the previous one, or the 14-day trend when no curve exists.
 fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageView>, cx: &App) -> Card {
     // The window curve unless the trend was chosen (#218); a chosen window curve the provider no longer sends falls
     // back to the trend.
     let graph = Graph {
         metric: account.primary(),
-        curve: account
-            .detail()
-            .window_curve()
-            .filter(|_| view != Some(UsageView::Trend)),
+        curve: comparable(account.detail().window_curve()).filter(|_| view != Some(UsageView::Trend)),
         trend: account.trend(),
         kind: trend_kind(account),
         counted: counted_name(account),
@@ -1246,7 +1259,12 @@ fn on_credits(account: &AccountSnapshot) -> bool {
 /// What the trend holds when the headline isn't a fraction: credits left (#150), an activity count such as completed
 /// reviews (#103), or money left or spent (#104).
 fn counted_name(account: &AccountSnapshot) -> Option<String> {
-    match account.primary()? {
+    account.primary().and_then(counted_metric)
+}
+
+/// The name of a metric whose history is counted rather than a share: credits, a count, a balance or spend.
+fn counted_metric(metric: &Metric) -> Option<String> {
+    match metric {
         Metric::Credits { .. } => Some("Credits left".to_owned()),
         Metric::Activity { label, .. } | Metric::Spend { label, .. } | Metric::Balance { label, .. } => {
             Some(label.clone())
@@ -1581,6 +1599,78 @@ mod tests {
             .map(|e| e.label.as_str())
             .collect();
         assert_eq!(checked, ["Automatic"]);
+    }
+
+    #[test]
+    fn a_chosen_spend_graph_stays_in_money() {
+        // Claude's Extra usage is a capped spend in euros; its history is money, not a share (#232).
+        use codexbar_core::{AccountId, Currency, LimitSeries, Money, Provider};
+        let extra = Metric::Spend {
+            label: "Extra usage".into(),
+            spent: Money::new(420, Currency::Eur),
+            limit: Some(Money::new(2000, Currency::Eur)),
+            resets_at: None,
+            pace: None,
+        };
+        let account = AccountSnapshot::new(
+            AccountId::new("claude"),
+            Provider::Claude,
+            vec![window(0.5, 0.01), extra.clone()],
+            now(),
+        )
+        .with_detail(codexbar_core::AccountDetail::default().with_limit_series(
+            "extra-usage",
+            LimitSeries {
+                curve: None,
+                trend: vec![1.0, 2.5, 4.2],
+            },
+        ));
+        let graph = limit_graph(&account, &account.metrics()[1], now());
+        assert_eq!(graph.counted.as_deref(), Some("Extra usage"));
+        assert_eq!(graph.kind, ValueKind::Money(Currency::Eur));
+        assert_eq!(graph.trend, [1.0, 2.5, 4.2]);
+        // A share keeps the share axis.
+        assert_eq!(limit_graph(&account, &account.metrics()[0], now()).counted, None);
+    }
+
+    #[test]
+    fn a_curve_needs_both_windows() {
+        // In a limit's first window there is no previous one yet (#232): the card falls back to its trend.
+        let first = codexbar_core::WindowCurve::new(vec!["10:00".into(), "10:10".into()], vec![0.1, 0.2], vec![]);
+        assert!(comparable(Some(&first)).is_none());
+        let both =
+            codexbar_core::WindowCurve::new(vec!["10:00".into(), "10:10".into()], vec![0.1, 0.2], vec![0.1, 0.3]);
+        assert!(comparable(Some(&both)).is_some());
+        assert!(comparable(None).is_none());
+    }
+
+    #[test]
+    fn a_ring_picked_under_a_limit_shows_that_ring() {
+        let available = vec!["weekly".to_owned(), "5-hour-window".to_owned()];
+        let mut choice = FocusChoice {
+            rings: vec!["weekly".into()],
+            ..FocusChoice::default()
+        };
+        choice.limits[1] = Some(LimitChoice {
+            key: "5-hour-window".into(),
+            view: LimitView::Bar,
+        });
+        // Weekly is still chosen underneath, unchecked in the menu: picking it shows it rather than hiding it (#232).
+        apply_pick(&mut choice, 1, MenuAction::Ring(Some("weekly".into())), &available);
+        assert_eq!(choice.limits[1], None);
+        assert_eq!(choice.rings, ["weekly"]);
+        // Without a limit over the card, a pick toggles as before.
+        apply_pick(&mut choice, 1, MenuAction::Ring(Some("weekly".into())), &available);
+        assert!(choice.rings.is_empty());
+        // Any other pick clears the card's limit too, and a limit pick sets it.
+        let limit = LimitChoice {
+            key: "weekly".into(),
+            view: LimitView::Graph,
+        };
+        apply_pick(&mut choice, 0, MenuAction::Limit(limit.clone()), &available);
+        assert_eq!(choice.limits[0], Some(limit));
+        apply_pick(&mut choice, 0, MenuAction::Usage(Some(UsageView::Trend)), &available);
+        assert_eq!((choice.limits[0].clone(), choice.usage), (None, Some(UsageView::Trend)));
     }
 
     #[test]
