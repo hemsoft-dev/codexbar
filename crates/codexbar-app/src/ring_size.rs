@@ -2,11 +2,14 @@
 //! slider has keyboard focus, sets the ring's largest radius. The ring still fits its card (`Gauge` shrinks to the
 //! box), so a size larger than the card only fills it.
 
-use gpui_kit::component::slider::{Slider, SliderState};
+use gpui_kit::base::{SliderIndicator, SliderThumb, SliderTrack};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::slider::SliderState;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AccessibleAction, AnyElement, App, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
-    Orientation, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
-    div, rems,
+    AccessibleAction, AnyElement, App, Axis, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, MouseUpEvent, Orientation, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _, Window, div, px, relative, rems,
 };
 
 /// The smallest radius the slider sets, in pixels: the gauge's own smallest ring.
@@ -64,6 +67,58 @@ fn move_to(state: &Entity<SliderState>, size: f32, window: &mut Window, cx: &mut
     crate::prefs_hub::PrefsHub::set_ring_size(cx, Some(size));
 }
 
+/// gpui-kit's slider track, fill and thumb, styled as its vertical slider draws them, without the slider root and its
+/// accessibility node (#228). A read-only slider shows its fill but no thumb, as gpui-kit's disabled slider does.
+fn track(state: &Entity<SliderState>, read_only: bool, cx: &App) -> AnyElement {
+    let bar = cx.theme().tokens.slider_bar;
+    let thumb_bg = cx.theme().tokens.slider_thumb;
+    let filled = state.read(cx).percentage().end;
+    let thumb = SliderThumb::new(state)
+        .axis(Axis::Vertical)
+        .disabled(read_only)
+        .absolute()
+        .bottom(relative(filled))
+        .left(px(-5.))
+        .mb(-px(8.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .rounded_full()
+        .bg(bar.opacity(0.5))
+        .size_4()
+        .p(px(1.))
+        .child(div().flex_shrink_0().size_full().rounded_full().bg(thumb_bg));
+    SliderTrack::new(state)
+        .axis(Axis::Vertical)
+        .disabled(read_only)
+        .flex()
+        .justify_center()
+        .w_6()
+        .h_full()
+        .flex_shrink_0()
+        .child(
+            SliderIndicator::new(state)
+                .relative()
+                .h_full()
+                .w_1p5()
+                .bg(bar.opacity(0.2))
+                .active(|this| this.bg(bar.opacity(0.4)))
+                .rounded_full()
+                .child(
+                    div()
+                        .absolute()
+                        .w_full()
+                        .bottom_0()
+                        .top(relative(1. - filled))
+                        .bg(bar)
+                        .rounded_full(),
+                )
+                .when(!read_only, |this| this.child(thumb)),
+        )
+        .into_any_element()
+}
+
 /// The slider's state, its focus stop, and whether it shows without hover (it has keyboard focus).
 #[derive(Clone)]
 pub struct RingControl {
@@ -90,9 +145,10 @@ impl RingControl {
     /// content, so half of it sits in the card's padding. Taking a column of its own squeezed the Limits card's rings
     /// at 150% zoom until their labels broke mid-word and the rings had no height left.
     ///
-    /// The focus stop is the slider screen readers meet: named "Ring size", with the value, range and step, and the
-    /// increment and decrement actions. gpui-kit's own slider node inside it can't take focus or keys (still so in
-    /// 0.8), so it stays a second slider node; since 0.8 it carries the same name (#224).
+    /// The focus stop is the only slider screen readers meet: named "Ring size", with the value, range and step, and
+    /// the increment and decrement actions. gpui-kit's slider root can't take focus or keys (still so in 0.8) and
+    /// always adds a slider node of its own, so the focus stop hosts gpui-kit's track, fill and thumb directly instead
+    /// (#228); they carry no role, and dragging still runs on gpui-kit's code.
     ///
     /// While the preferences are read-only (a newer `dashboard.json`), nothing moves it, since the size couldn't be
     /// saved.
@@ -133,6 +189,16 @@ impl RingControl {
                     move_to(&state, next, window, cx);
                 }
             })
+            // The release a drag ends with, which the dashboard saves, as gpui-kit's slider root would send it.
+            .when(!read_only, |this| {
+                let release = |state: Entity<SliderState>| {
+                    move |_: &MouseUpEvent, _: &mut Window, cx: &mut App| {
+                        state.update(cx, |state, cx| state.handle_release(cx))
+                    }
+                };
+                this.on_mouse_up(MouseButton::Left, release(state.clone()))
+                    .on_mouse_up_out(MouseButton::Left, release(state.clone()))
+            })
             .on_key_down(move |event: &KeyDownEvent, window: &mut Window, cx: &mut App| {
                 if event.keystroke.modifiers.modified() {
                     return;
@@ -144,13 +210,7 @@ impl RingControl {
                 cx.stop_propagation();
                 move_to(&state, next, window, cx);
             })
-            .child(
-                Slider::new(&self.state)
-                    .vertical()
-                    .accessibility_label(LABEL)
-                    .disabled(read_only)
-                    .h_full(),
-            );
+            .child(track(&self.state, read_only, cx));
         div()
             .absolute()
             .top_0()
