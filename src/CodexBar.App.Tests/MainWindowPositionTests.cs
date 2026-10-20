@@ -319,6 +319,10 @@ public sealed class WpfUiCollectionDefinition : ICollectionFixture<WpfApplicatio
 
 public sealed class WpfApplicationFixture : IDisposable
 {
+    // A guard against hangs, not a performance budget: the first Show() of a XAML window took over 10 s on a cold
+    // GitHub Windows runner and failed main's CI (run 39348106450), while a passing test still returns in milliseconds.
+    private static readonly TimeSpan HangTimeout = TimeSpan.FromSeconds(60);
+
     private readonly ManualResetEventSlim ready = new(false);
     private readonly Thread thread;
     private Application? application;
@@ -337,7 +341,7 @@ public sealed class WpfApplicationFixture : IDisposable
         this.thread.SetApartmentState(ApartmentState.STA);
         this.thread.Start();
 
-        Assert.True(this.ready.Wait(TimeSpan.FromSeconds(10)), "WPF test application timed out during startup.");
+        Assert.True(this.ready.Wait(HangTimeout), "WPF test application timed out during startup.");
 
         if (this.startupException is not null)
         {
@@ -367,7 +371,7 @@ public sealed class WpfApplicationFixture : IDisposable
         }
 
         var operation = this.dispatcher.InvokeAsync(action);
-        Assert.True(operation.Task.Wait(TimeSpan.FromSeconds(10)), "STA test timed out.");
+        Assert.True(operation.Task.Wait(HangTimeout), "STA test timed out.");
         operation.Task.GetAwaiter().GetResult();
     }
 
