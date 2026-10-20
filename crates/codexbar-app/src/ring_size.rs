@@ -91,7 +91,8 @@ impl RingControl {
     /// at 150% zoom until their labels broke mid-word and the rings had no height left.
     ///
     /// The focus stop is the slider screen readers meet: named "Ring size", with the value, range and step, and the
-    /// increment and decrement actions. gpui-kit 0.7.1's own slider node inside it can't be named (#222).
+    /// increment and decrement actions. gpui-kit's own slider node inside it can't take focus or keys (still so in
+    /// 0.8), so it stays a second slider node; since 0.8 it carries the same name (#224).
     ///
     /// While the preferences are read-only (a newer `dashboard.json`), nothing moves it, since the size couldn't be
     /// saved.
@@ -143,7 +144,13 @@ impl RingControl {
                 cx.stop_propagation();
                 move_to(&state, next, window, cx);
             })
-            .child(Slider::new(&self.state).vertical().disabled(read_only).h_full());
+            .child(
+                Slider::new(&self.state)
+                    .vertical()
+                    .accessibility_label(LABEL)
+                    .disabled(read_only)
+                    .h_full(),
+            );
         div()
             .absolute()
             .top_0()

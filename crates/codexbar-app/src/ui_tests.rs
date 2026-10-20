@@ -2601,9 +2601,10 @@ fn every_settings_section_can_be_opened(cx: &mut TestAppContext) {
                 .map(str::to_owned)
         })
         .unwrap();
+    // Since gpui-kit 0.8 a settings field's control is named after its setting as well as its value (#224).
     assert_eq!(
         refresh.as_deref(),
-        Some("Every 2 minutes"),
+        Some("Auto refresh: Every 2 minutes"),
         "General shows auto refresh"
     );
 }
@@ -7079,6 +7080,17 @@ fn the_ring_size_slider_moves_by_keyboard_saves_and_resets_from_the_menu(cx: &mu
         .unwrap();
     assert_eq!(role, Some(gpui_kit::Role::Slider));
     assert_eq!(label.as_deref(), Some("Ring size"));
+    // gpui-kit's own slider node inside the focus stop can't take focus, so it stays; since 0.8 it is named too (#224).
+    let unnamed_sliders = cx
+        .update_window(handle, |_, window, _| {
+            gpui_kit::base::test_support::snapshots(window)
+                .iter()
+                .filter(|node| node.role() == Some(gpui_kit::Role::Slider) && node.visible())
+                .filter(|node| node.label() != Some("Ring size"))
+                .count()
+        })
+        .unwrap();
+    assert_eq!(unnamed_sliders, 0, "every slider on screen is named");
 
     let focus = cx.update(|cx| dashboard.read(cx).ring_focus());
     cx.update_window(handle, |_, window, cx| focus.focus(window, cx))
