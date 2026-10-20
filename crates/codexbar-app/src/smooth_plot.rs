@@ -148,52 +148,56 @@ impl<P: Plot + 'static> Plot for SmoothPlot<P> {
             } else {
                 0.
             });
-        window.with_content_mask(self.reveal(bounds), |window| {
-            for (ix, series) in self.series.iter().enumerate() {
-                let points: Vec<Point<Pixels>> = readings
-                    .iter()
-                    .filter_map(|(x, ys)| ys.get(ix).map(|y| origin + point(px(*x), px(*y))))
-                    .collect();
-                let Some(&start) = points.first() else {
-                    continue;
-                };
-                let segments = monotone(&points);
-                if let Some(fill) = series.fill {
-                    let mut area = PathBuilder::fill();
-                    area.move_to(start);
+        // Inside the plot, as gpui-kit's charts keep a pinned series (#231), and under the reveal while it appears.
+        let plot = plot_mask(bounds, floor);
+        window.with_content_mask(Some(plot), |window| {
+            window.with_content_mask(self.reveal(bounds), |window| {
+                for (ix, series) in self.series.iter().enumerate() {
+                    let points: Vec<Point<Pixels>> = readings
+                        .iter()
+                        .filter_map(|(x, ys)| ys.get(ix).map(|y| origin + point(px(*x), px(*y))))
+                        .collect();
+                    let Some(&start) = points.first() else {
+                        continue;
+                    };
+                    let segments = monotone(&points);
+                    if let Some(fill) = series.fill {
+                        let mut area = PathBuilder::fill();
+                        area.move_to(start);
+                        for [a, b, to] in &segments {
+                            area.cubic_bezier_to(*to, *a, *b);
+                        }
+                        let end = *points.last().unwrap_or(&start);
+                        area.line_to(point(end.x, floor));
+                        area.line_to(point(start.x, floor));
+                        area.close();
+                        if let Ok(path) = area.build() {
+                            window.paint_path(path, fill);
+                        }
+                    }
+                    let mut line = PathBuilder::stroke(series.width);
+                    line.move_to(start);
                     for [a, b, to] in &segments {
-                        area.cubic_bezier_to(*to, *a, *b);
+                        line.cubic_bezier_to(*to, *a, *b);
                     }
-                    let end = *points.last().unwrap_or(&start);
-                    area.line_to(point(end.x, floor));
-                    area.line_to(point(start.x, floor));
-                    area.close();
-                    if let Ok(path) = area.build() {
-                        window.paint_path(path, fill);
+                    if let Ok(path) = line.build() {
+                        window.paint_path(path, series.stroke);
                     }
-                }
-                let mut line = PathBuilder::stroke(series.width);
-                line.move_to(start);
-                for [a, b, to] in &segments {
-                    line.cubic_bezier_to(*to, *a, *b);
-                }
-                if let Ok(path) = line.build() {
-                    window.paint_path(path, series.stroke);
-                }
-                if series.dots {
-                    let size_px = px(8.);
-                    for dot in &points {
-                        window.paint_quad(quad(
-                            Bounds::new(*dot - point(size_px / 2., size_px / 2.), size(size_px, size_px)),
-                            size_px / 2.,
-                            series.stroke,
-                            px(1.),
-                            series.stroke,
-                            BorderStyle::default(),
-                        ));
+                    if series.dots {
+                        let size_px = px(8.);
+                        for dot in &points {
+                            window.paint_quad(quad(
+                                Bounds::new(*dot - point(size_px / 2., size_px / 2.), size(size_px, size_px)),
+                                size_px / 2.,
+                                series.stroke,
+                                px(1.),
+                                series.stroke,
+                                BorderStyle::default(),
+                            ));
+                        }
                     }
                 }
-            }
+            })
         });
     }
 
@@ -232,6 +236,18 @@ impl<P: Plot + 'static> Plot for SmoothPlot<P> {
         cx: &mut App,
     ) -> Option<AnyElement> {
         self.hover.tooltip(state, cursor, bounds, window, cx)
+    }
+}
+
+/// The area the curves may paint in: the plot, above the x axis's labels at `floor`, bleeding by half a hover dot so
+/// a stroke or dot on the plot's edge stays whole, as gpui-kit's charts clip a series pinned to its domain (#231).
+fn plot_mask(bounds: Bounds<Pixels>, floor: Pixels) -> ContentMask<Pixels> {
+    let bleed = px(4.);
+    ContentMask {
+        bounds: Bounds::from_corners(
+            bounds.origin - point(bleed, bleed),
+            point(bounds.right() + bleed, floor + bleed),
+        ),
     }
 }
 
@@ -393,6 +409,15 @@ mod tests {
         l: 0.,
         a: 0.,
     };
+
+    #[test]
+    fn the_curves_stay_in_the_plot_with_room_for_a_dot_on_its_edge() {
+        // A 200×100 plot at (10, 20) with the x axis's 18px of labels below it: the floor is at y = 102.
+        let bounds = Bounds::new(point(px(10.), px(20.)), size(px(200.), px(100.)));
+        let mask = plot_mask(bounds, px(102.));
+        assert_eq!(mask.bounds.origin, point(px(6.), px(16.)));
+        assert_eq!(mask.bounds.bottom_right(), point(px(214.), px(106.)));
+    }
 
     #[test]
     fn fewer_than_two_points_make_no_curve() {
