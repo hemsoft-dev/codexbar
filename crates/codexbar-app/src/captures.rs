@@ -352,6 +352,23 @@ fn captures() {
     .unwrap();
     cx.run_until_parked();
     save(&mut cx, ring_zoomed, &out, "ring-size-max-zoom150");
+    // The pointer over the card's title, far from the ring, still reveals the slider (#222).
+    cx.update_window(ring_zoomed, |_, window, cx| {
+        let card = window.find("focus-card-weekly-window").bounds();
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: card.origin + point(px(40.), px(30.)),
+                pressed_button: None,
+                modifiers: gpui_kit::Modifiers::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    save(&mut cx, ring_zoomed, &out, "ring-size-hover-title-zoom150");
     cx.update(|cx| {
         zoom::set_level(1.0, cx);
         crate::prefs_hub::PrefsHub::set_ring_size(cx, None);

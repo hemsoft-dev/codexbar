@@ -17,7 +17,7 @@ const MAX_RADIUS: f32 = 488.;
 pub const DEFAULT: f32 = (120. - MIN_RADIUS) / (MAX_RADIUS - MIN_RADIUS) * 100.;
 /// One arrow-key step along the slider.
 pub const STEP: f32 = 5.;
-/// The group the gauge card's body belongs to, so hovering anywhere over it reveals the slider.
+/// The gauge card's hover group: hovering anywhere on the card, header and takeaway included, reveals the slider.
 pub const GROUP: &str = "focus-ring-area";
 
 /// The ring's largest radius, in unzoomed pixels, for a size along the slider (0 to 100).
@@ -86,7 +86,7 @@ impl RingControl {
     /// The vertical slider beside the ring. Hidden until the card is hovered or the slider is focused; the arrow
     /// keys, Home and End move it, and every change is saved.
     ///
-    /// It overlays the right edge of its parent, which must be `relative()`, centered on the edge of the card's
+    /// It overlays the right edge of its parent, which must be `relative()` inside a card with the [`GROUP`] hover group, centered on the edge of the card's
     /// content, so half of it sits in the card's padding. Taking a column of its own squeezed the Limits card's rings
     /// at 150% zoom until their labels broke mid-word and the rings had no height left.
     ///
@@ -118,8 +118,6 @@ impl RingControl {
             .py_1()
             .opacity(if revealed { 1. } else { 0. })
             .group_hover(GROUP, |style| style.opacity(1.))
-            // Half of it lies outside the card's body, so hovering that half keeps it shown too.
-            .hover(|style| style.opacity(1.))
             .on_a11y_action(AccessibleAction::Increment, {
                 let state = state.clone();
                 move |_, window, cx| {

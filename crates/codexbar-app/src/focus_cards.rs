@@ -54,6 +54,8 @@ struct Card {
     caption: SharedString,
     /// What the card can show instead, at the header's end (#218).
     menu: Option<AnyElement>,
+    /// A hover group spanning the whole card, so hovering anywhere on it reveals what listens to the group (#219).
+    hover_group: Option<&'static str>,
 }
 
 impl Card {
@@ -69,7 +71,13 @@ impl Card {
             alert: None,
             caption: SharedString::default(),
             menu: None,
+            hover_group: None,
         }
+    }
+
+    fn hover_group(mut self, group: &'static str) -> Self {
+        self.hover_group = Some(group);
+        self
     }
 
     fn menu(mut self, menu: AnyElement) -> Self {
@@ -111,6 +119,7 @@ impl Card {
         v_flex()
             .id(ElementId::Name(self.id.clone()))
             .test_support()
+            .when_some(self.hover_group, |this, group| this.group(group))
             .flex_1()
             .min_w_0()
             .h_full()
@@ -637,12 +646,7 @@ fn share_card(
         );
     // The ring's size slider overlays its right edge and shows while the card is hovered or the slider is focused
     // (#219).
-    let ring = div()
-        .group(crate::ring_size::GROUP)
-        .relative()
-        .size_full()
-        .child(ring)
-        .child(control.render(cx));
+    let ring = div().relative().size_full().child(ring).child(control.render(cx));
     let takeaway = pool_takeaway(1.0 - used);
     let title = if metric.label().to_lowercase().contains("window") {
         metric.label().to_owned()
@@ -658,6 +662,7 @@ fn share_card(
         };
     }
     Card::new(title, window_period(metric, now), ring)
+        .hover_group(crate::ring_size::GROUP)
         .takeaway(takeaway)
         .caption(caption)
 }
@@ -734,7 +739,6 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, control: &crate::ring_siz
     });
     // Labels and resets wrap rather than cut off when the card is narrow or zoomed in.
     let body = h_flex()
-        .group(crate::ring_size::GROUP)
         .relative()
         .size_full()
         .gap_3()
@@ -758,6 +762,7 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, control: &crate::ring_siz
         .unwrap_or_default();
     Card::new("Limits", format!("{} limits", metrics.len()), body)
         .id("focus-card-limits")
+        .hover_group(crate::ring_size::GROUP)
         .takeaway(takeaway)
 }
 
