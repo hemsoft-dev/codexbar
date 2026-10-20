@@ -169,6 +169,7 @@ mod tests {
             used,
             resets_at: now() + resets_in,
             pace,
+            length: None,
         }
     }
 
@@ -186,6 +187,7 @@ mod tests {
             limit: 1500,
             resets_at: now() + Duration::days(25),
             pace: Some(Pace::per_day(0.0064)),
+            length: None,
         };
         assert_eq!(assess(&metric, now()).severity(), Severity::AtRisk);
     }

@@ -379,6 +379,7 @@ pub fn metrics(usage: &AppsUsage, now: DateTime<Utc>) -> Vec<Metric> {
             used: window.fraction_used,
             resets_at: window.resets_at,
             pace: elapsed_pace(window.fraction_used, window.resets_at - length, window.resets_at, now),
+            length: Some(length),
         })
     })
     .collect()

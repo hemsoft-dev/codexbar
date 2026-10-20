@@ -186,6 +186,7 @@ mod tests {
                 used,
                 resets_at,
                 pace: None,
+                length: None,
             }],
             at,
         )

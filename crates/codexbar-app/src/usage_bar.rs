@@ -295,6 +295,7 @@ mod tests {
             used,
             resets_at: now() + Duration::days(2),
             pace,
+            length: None,
         }
     }
 
@@ -438,6 +439,7 @@ mod tests {
             used: 0.5,
             resets_at: now() - Duration::minutes(1),
             pace: Some(Pace::per_hour(0.01)),
+            length: None,
         };
         assert!(
             Projection::of(&due, 0.5, now())

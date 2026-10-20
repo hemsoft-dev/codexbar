@@ -236,6 +236,7 @@ impl Window {
             used: self.used,
             resets_at: self.resets_at,
             pace: self.pace(now),
+            length: Some(Duration::seconds(self.duration_secs)),
         }
     }
 }
@@ -605,6 +606,8 @@ mod tests {
         );
         let account = parse_usage(&payload, now()).unwrap();
         assert_eq!(account.primary().unwrap().time_to_limit(), None);
+        // The window's length comes from `limit_window_seconds` (#223).
+        assert_eq!(account.primary().unwrap().window_length(), Some(Duration::hours(5)));
     }
 
     #[test]

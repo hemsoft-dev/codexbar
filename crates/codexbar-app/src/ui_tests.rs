@@ -1128,6 +1128,7 @@ impl UsageProvider for FakeProvider {
                     used,
                     resets_at: fake_resets_at(),
                     pace: None,
+                    length: None,
                 }],
                 now,
             )]),
@@ -1476,6 +1477,7 @@ fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut Tes
         used,
         resets_at: now + chrono::Duration::hours(3),
         pace: None,
+        length: None,
     };
     let both = AccountSnapshot::new(
         AccountId::new("codex-1"),
@@ -1498,6 +1500,7 @@ fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut Tes
             limit: 1500,
             resets_at: now + chrono::Duration::days(12),
             pace: None,
+            length: None,
         }],
         now,
     );
@@ -1587,6 +1590,7 @@ fn a_wide_table_shows_each_windows_own_reset(cx: &mut TestAppContext) {
         used,
         resets_at: now + resets_in,
         pace: None,
+        length: None,
     };
     let codex = AccountSnapshot::new(
         AccountId::new("codex-1"),
@@ -1612,6 +1616,7 @@ fn a_wide_table_shows_each_windows_own_reset(cx: &mut TestAppContext) {
             limit: 1500,
             resets_at: now + chrono::Duration::days(12),
             pace: None,
+            length: None,
         }],
         now,
     );
@@ -1727,6 +1732,7 @@ fn the_resets_column_always_shows_time_left(cx: &mut TestAppContext) {
                 used: 0.4,
                 resets_at: now + ahead,
                 pace: None,
+                length: None,
             }],
             now,
         )
@@ -1767,6 +1773,7 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
                 used: 0.42,
                 resets_at: now + chrono::Duration::days(2),
                 pace,
+                length: None,
             }],
             now,
         )
@@ -1782,6 +1789,7 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
             used: 0.91,
             resets_at: now + chrono::Duration::hours(1),
             pace: Some(codexbar_core::Pace::per_hour(0.2)),
+            length: None,
         }],
         now,
     );
@@ -2085,6 +2093,7 @@ impl UsageProvider for FakeMultiProvider {
                             used: *used,
                             resets_at: fake_resets_at(),
                             pace: None,
+                            length: None,
                         }],
                         now,
                     )

@@ -338,6 +338,7 @@ mod credits_tests {
             used,
             resets_at: now() + Duration::days(3),
             pace: None,
+            length: None,
         }
     }
 

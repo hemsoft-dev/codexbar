@@ -442,6 +442,10 @@ impl<H: HttpClient> GreptileProvider<H> {
                         pace: quota
                             .period_start
                             .and_then(|start| elapsed_pace(used, start, resets_at, now)),
+                        length: quota
+                            .period_start
+                            .filter(|start| *start < resets_at)
+                            .map(|start| resets_at - start),
                     });
                 }
                 None => messages.push(format!(

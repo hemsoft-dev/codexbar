@@ -107,6 +107,7 @@ mod tests {
                     used: 0.42,
                     resets_at: now() + chrono::Duration::days(2),
                     pace: None,
+                    length: None,
                 }],
                 fetched,
             )
@@ -120,6 +121,7 @@ mod tests {
                     limit: 1500,
                     resets_at: now() + chrono::Duration::days(20),
                     pace: None,
+                    length: None,
                 }],
                 fetched,
             ),
@@ -158,6 +160,7 @@ mod tests {
                 used: 0.42,
                 resets_at: now() + chrono::Duration::days(2),
                 pace: Some(codexbar_core::Pace::per_hour(0.01)),
+                length: None,
             }],
             now(),
         );
@@ -214,6 +217,7 @@ mod tests {
                         used: 1.0,
                         resets_at: now() + chrono::Duration::days(2),
                         pace: None,
+                        length: None,
                     },
                     Metric::Credits {
                         label: "Credits".into(),

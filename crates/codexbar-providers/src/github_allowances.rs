@@ -605,6 +605,7 @@ pub fn show(
                     used: fraction,
                     resets_at,
                     pace: elapsed_pace(fraction, month_start, resets_at, now),
+                    length: (month_start < resets_at).then(|| resets_at - month_start),
                 });
                 let left = if used <= included {
                     format!("{} left", amount(included - used, unit))

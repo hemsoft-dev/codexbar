@@ -137,6 +137,7 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
                     used,
                     resets_at,
                     pace: elapsed_pace(used, resets_at - Duration::hours(hours), resets_at, now),
+                    length: Some(Duration::hours(hours)),
                 });
             }
             (true, Some(_), Some(_)) => usage.notes.push(format!("{label}: its reset time has passed.")),

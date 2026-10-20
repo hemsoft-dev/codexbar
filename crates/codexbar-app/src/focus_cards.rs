@@ -1127,21 +1127,44 @@ fn reset_caption(metric: &Metric, now: DateTime<Utc>) -> String {
 
 /// "Oct 2 – Oct 9" for a window that resets within a week; otherwise its reset date.
 fn window_period(metric: &Metric, now: DateTime<Utc>) -> String {
-    match metric.resets_at() {
-        Some(at) if at - now <= chrono::Duration::days(7) => {
-            let start = (at - chrono::Duration::days(7)).with_timezone(&Local);
-            let end = at.with_timezone(&Local);
-            format!(
-                "{} – {}",
-                crate::locale::style().month_day(start.date_naive()),
-                crate::locale::style().month_day(end.date_naive())
-            )
+    period_in(metric, now, &Local)
+}
+
+/// The stretch of time a window covers, from the length the provider reports (#223): start and end times for a window
+/// of a day or less, with dates only when it crosses midnight, and start and end dates for longer ones. Without a
+/// length there is no start to show, so only the end: its date, or its time when that is today.
+fn period_in<Tz: chrono::TimeZone>(metric: &Metric, now: DateTime<Utc>, tz: &Tz) -> String {
+    let style = crate::locale::style();
+    let Some(end) = metric.resets_at() else {
+        return String::new();
+    };
+    let end = end.with_timezone(tz);
+    match metric.window_length() {
+        Some(length) if length <= chrono::Duration::days(1) => {
+            let start = end.clone() - length;
+            if start.date_naive() == end.date_naive() {
+                format!(
+                    "{} – {}",
+                    style.time(start.naive_local()),
+                    style.time(end.naive_local())
+                )
+            } else {
+                format!(
+                    "{} – {}",
+                    style.month_day_time(start.naive_local()),
+                    style.month_day_time(end.naive_local())
+                )
+            }
         }
-        Some(at) => format!(
-            "Until {}",
-            crate::locale::style().month_day(at.with_timezone(&Local).date_naive())
+        Some(length) => format!(
+            "{} – {}",
+            style.month_day((end.clone() - length).date_naive()),
+            style.month_day(end.date_naive())
         ),
-        None => String::new(),
+        None if end.date_naive() == now.with_timezone(tz).date_naive() => {
+            format!("Until {}", style.time(end.naive_local()))
+        }
+        None => format!("Until {}", style.month_day(end.date_naive())),
     }
 }
 
@@ -1163,11 +1186,50 @@ mod tests {
             used,
             resets_at: now() + Duration::hours(10),
             pace: Some(Pace::per_hour(per_hour)),
+            length: None,
         }
     }
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    /// A window resetting at `resets_at` (UTC), with the given length if known.
+    fn lasting(resets_at: &str, length: Option<Duration>) -> Metric {
+        Metric::Window {
+            label: "Limit".into(),
+            used: 0.5,
+            resets_at: resets_at.parse().unwrap(),
+            pace: None,
+            length,
+        }
+    }
+
+    #[test]
+    fn the_period_follows_the_window_s_own_length() {
+        // US Eastern in October: four hours behind UTC.
+        let eastern = chrono::FixedOffset::west_opt(4 * 3600).unwrap();
+        let now: DateTime<Utc> = "2026-10-19T14:00:00Z".parse().unwrap();
+        // A 5-hour window shows times, not a week of dates (it read "Oct 12 – Oct 19").
+        let five_hours = lasting("2026-10-19T19:22:00Z", Some(Duration::hours(5)));
+        assert_eq!(period_in(&five_hours, now, &eastern), "10:22 – 15:22");
+        // Across midnight, both ends carry their date.
+        let late = lasting("2026-10-20T07:00:00Z", Some(Duration::hours(5)));
+        assert_eq!(period_in(&late, now, &eastern), "Oct 19 22:00 – Oct 20 03:00");
+        // A weekly window keeps its dates.
+        let weekly = lasting("2026-10-22T13:00:00Z", Some(Duration::days(7)));
+        assert_eq!(period_in(&weekly, now, &eastern), "Oct 15 – Oct 22");
+        // Without a length there is no start to show: only the end, as a time when it is today.
+        let unknown = lasting("2026-10-22T13:00:00Z", None);
+        assert_eq!(period_in(&unknown, now, &eastern), "Until Oct 22");
+        let unknown_today = lasting("2026-10-19T19:22:00Z", None);
+        assert_eq!(period_in(&unknown_today, now, &eastern), "Until 15:22");
+        // An activity count has no reset and no period.
+        let count = Metric::Activity {
+            label: "Reviews".into(),
+            count: 3,
+        };
+        assert_eq!(period_in(&count, now, &eastern), "");
     }
 
     fn claude() -> AccountSnapshot {
@@ -1177,6 +1239,7 @@ mod tests {
             used,
             resets_at: now() + Duration::hours(10),
             pace: None,
+            length: None,
         };
         AccountSnapshot::new(
             AccountId::new("claude"),
@@ -1374,6 +1437,7 @@ mod tests {
                 limit: 2000,
                 resets_at: now() + Duration::days(10),
                 pace: None,
+                length: None,
             },
         ]);
         assert_eq!(share_metric(&billing, now()).unwrap().label(), "Actions minutes");

@@ -95,6 +95,7 @@ fn quota_metric(quota: &Value, label: &str, resets_at: DateTime<Utc>, now: DateT
         limit: entitlement,
         resets_at,
         pace,
+        length: (start < resets_at).then(|| resets_at - start),
     })
 }
 
@@ -189,6 +190,7 @@ fn credits_metric(label: &str, used: f64, limit: u64, now: DateTime<Utc>) -> Met
         limit,
         resets_at: end,
         pace: elapsed_pace(used as f64 / limit as f64, start, end, now),
+        length: (start < end).then(|| end - start),
     }
 }
 

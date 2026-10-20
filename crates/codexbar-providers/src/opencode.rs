@@ -50,6 +50,7 @@ pub fn parse_go(html: &str, now: DateTime<Utc>) -> Vec<Metric> {
                 used,
                 resets_at,
                 pace,
+                length: Some(*length),
             })
         })
         .collect()
