@@ -12,7 +12,7 @@ publish = false
 codexbar-core = { path = "crates/codexbar-core" }
 codexbar-providers = { path = "crates/codexbar-providers" }
 codexbar-store = { path = "crates/codexbar-store" }
-gpui-kit = "0.7.1"
+gpui-kit = "0.8.0"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }

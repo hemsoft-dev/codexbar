@@ -2601,9 +2601,10 @@ fn every_settings_section_can_be_opened(cx: &mut TestAppContext) {
                 .map(str::to_owned)
         })
         .unwrap();
+    // Since gpui-kit 0.8 a settings field's control is named after its setting as well as its value (#224).
     assert_eq!(
         refresh.as_deref(),
-        Some("Every 2 minutes"),
+        Some("Auto refresh: Every 2 minutes"),
         "General shows auto refresh"
     );
 }
@@ -7079,6 +7080,18 @@ fn the_ring_size_slider_moves_by_keyboard_saves_and_resets_from_the_menu(cx: &mu
         .unwrap();
     assert_eq!(role, Some(gpui_kit::Role::Slider));
     assert_eq!(label.as_deref(), Some("Ring size"));
+    // The focus stop is the only slider node in the window, shown or not: gpui-kit's slider root, which would add a
+    // second one, isn't drawn (#224, #228).
+    let sliders: Vec<Option<String>> = cx
+        .update_window(handle, |_, window, _| {
+            gpui_kit::base::test_support::snapshots(window)
+                .iter()
+                .filter(|node| node.role() == Some(gpui_kit::Role::Slider))
+                .map(|node| node.label().map(str::to_owned))
+                .collect()
+        })
+        .unwrap();
+    assert_eq!(sliders, [Some("Ring size".to_owned())], "one named slider on screen");
 
     let focus = cx.update(|cx| dashboard.read(cx).ring_focus());
     cx.update_window(handle, |_, window, cx| focus.focus(window, cx))
@@ -7111,6 +7124,14 @@ fn the_ring_size_slider_moves_by_keyboard_saves_and_resets_from_the_menu(cx: &mu
             && ring.origin.y + ring.size.height <= card.origin.y + card.size.height,
         "ring {ring:?} inside card {card:?}"
     );
+
+    // The pointer moves it through gpui-kit's own track, and letting go saves it: a click in the middle of the
+    // track lands on 50% (#228).
+    click(cx, handle, "ring-size");
+    assert_eq!(value_of(cx, "ring-size").as_deref(), Some("50%"));
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap()).unwrap();
+    assert_eq!(saved["ringSize"], serde_json::json!(50.0));
 
     // The gauge card's menu: Automatic, 5-hour window, Weekly, then Default ring size once it was resized.
     pick_card_menu(cx, handle, 1, 3);
