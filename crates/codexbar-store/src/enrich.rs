@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use codexbar_core::format::DateStyle;
-use codexbar_core::{AccountSnapshot, Metric, WindowCurve};
+use codexbar_core::{AccountSnapshot, LimitSeries, Metric, WindowCurve};
 
 use crate::HistoryStore;
 
@@ -34,7 +34,7 @@ where
         let daily = if matches!(primary, Metric::Credits { .. }) {
             store.daily_last(&id, &key, TREND_DAYS, tz, now)
         } else {
-            store.daily_max(&id, &key, TREND_DAYS, tz, now)
+            daily_max(store, &id, &primary, tz, now)
         };
         match trend(&daily) {
             Some(trend) => account.with_trend(trend),
@@ -44,15 +44,55 @@ where
         account
     };
 
-    if account.detail().window_curve().is_some() {
-        return account;
-    }
-    match window_curve(store, &id, &primary, tz, style, now) {
-        Some(curve) => {
-            let detail = account.detail().clone().with_window_curve(curve);
-            account.with_detail(detail)
+    let account = if account.detail().window_curve().is_some() {
+        account
+    } else {
+        match window_curve(store, &id, &primary, tz, style, now) {
+            Some(curve) => {
+                let detail = account.detail().clone().with_window_curve(curve);
+                account.with_detail(detail)
+            }
+            None => account,
         }
-        None => account,
+    };
+
+    // Every other limit's own history, so a focus card can graph it (#230). Series the provider sent are kept.
+    let mut detail = account.detail().clone();
+    let mut added = false;
+    for metric in account
+        .metrics()
+        .iter()
+        .filter(|metric| metric.used_fraction().is_some())
+    {
+        let key = metric.key();
+        if key == primary.key() || detail.limit_series(&key).is_some() {
+            continue;
+        }
+        let series = LimitSeries {
+            curve: window_curve(store, &id, metric, tz, style, now),
+            trend: trend(&daily_max(store, &id, metric, tz, now)).unwrap_or_default(),
+        };
+        if series.curve.is_some() || !series.trend.is_empty() {
+            detail = detail.with_limit_series(key, series);
+            added = true;
+        }
+    }
+    if added { account.with_detail(detail) } else { account }
+}
+
+/// The highest reading of each of the last [`TREND_DAYS`] days. Spend is money, so only readings in the currency it
+/// bills in now count (#232).
+fn daily_max<Tz: TimeZone>(
+    store: &HistoryStore,
+    account: &str,
+    metric: &Metric,
+    tz: &Tz,
+    now: DateTime<Utc>,
+) -> Vec<Option<f64>> {
+    let key = metric.key();
+    match metric {
+        Metric::Spend { spent, .. } => store.daily_max_in(account, &key, spent.currency().code(), TREND_DAYS, tz, now),
+        _ => store.daily_max(account, &key, TREND_DAYS, tz, now),
     }
 }
 
@@ -225,6 +265,62 @@ mod tests {
         assert_eq!(curve.current().len(), 13);
         assert_eq!(*curve.current().last().unwrap(), 0.5);
         assert!(curve.previous().iter().all(|value| *value <= 0.6));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn every_other_limit_gets_its_own_curve_and_trend() {
+        // Claude-like: Weekly is the primary limit, the 5-hour window a second one (#230).
+        let tz = FixedOffset::west_opt(4 * 3600).unwrap();
+        let path = temp_file("limit-series");
+        let mut store = HistoryStore::open(&path, Duration::days(30), now());
+        let weekly_reset = now() + Duration::days(3);
+        let claude = |weekly: f64, session: f64, session_reset: DateTime<Utc>, at: DateTime<Utc>| {
+            let window = |label: &str, used: f64, resets_at: DateTime<Utc>, hours: i64| Metric::Window {
+                label: label.into(),
+                used,
+                resets_at,
+                pace: None,
+                length: Some(Duration::hours(hours)),
+            };
+            AccountSnapshot::new(
+                AccountId::new("claude"),
+                Provider::Claude,
+                vec![
+                    window("Weekly", weekly, weekly_reset, 168),
+                    window("5-hour window", session, session_reset, 5),
+                ],
+                at,
+            )
+        };
+        let previous_reset = now() - Duration::hours(2);
+        let current_reset = previous_reset + Duration::hours(5);
+        // A reading two days earlier, so the daily trend has two days.
+        let earlier = now() - Duration::days(2);
+        store
+            .record(&[claude(0.3, 0.7, earlier + Duration::hours(1), earlier)], earlier)
+            .unwrap();
+        for (hours_before, used) in [(4, 0.1), (3, 0.3), (1, 0.6)] {
+            let at = previous_reset - Duration::hours(hours_before);
+            store.record(&[claude(0.5, used, previous_reset, at)], at).unwrap();
+        }
+        for (minutes, used) in [(30, 0.2), (90, 0.4), (120, 0.5)] {
+            let at = previous_reset + Duration::minutes(minutes);
+            store.record(&[claude(0.55, used, current_reset, at)], at).unwrap();
+        }
+
+        let account = enrich(&store, claude(0.55, 0.5, current_reset, now()), &tz, &English, now());
+        let session = account
+            .detail()
+            .limit_series("5-hour-window")
+            .expect("the 5-hour window's own series");
+        let curve = session.curve.as_ref().expect("a window curve");
+        assert_eq!(curve.current().len(), 13);
+        assert_eq!(*curve.current().last().unwrap(), 0.5);
+        assert!(!session.trend.is_empty());
+        // The primary limit's history stays where it was: the account's own trend and curve.
+        assert!(account.detail().limit_series("weekly").is_none());
+        assert!(!account.trend().is_empty());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

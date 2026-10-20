@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc, Weekday};
 
-use crate::account::{AccountDetail, AccountId, AccountSnapshot, Provider, WindowCurve};
+use crate::account::{AccountDetail, AccountId, AccountSnapshot, LimitSeries, Provider, WindowCurve};
 use crate::metric::{Currency, Metric, Money, Pace};
 
 /// The eight demo accounts of the approved dashboard comp, relative to `now`, plus two Codex accounts whose weekly
@@ -89,7 +89,8 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         .with_label("personal")
         .with_trend(vec![
             0.4, 0.44, 0.5, 0.47, 0.55, 0.6, 0.58, 0.63, 0.66, 0.7, 0.72, 0.76, 0.79, 0.82,
-        ]),
+        ])
+        .with_detail(claude_detail()),
         AccountSnapshot::new(
             AccountId::new("cursor"),
             Provider::Cursor,
@@ -447,6 +448,43 @@ fn codex_detail() -> AccountDetail {
     AccountDetail::default()
         .with_window_curve(WindowCurve::new(labels, current, previous))
         .with_requests_by_hour(requests)
+}
+
+/// Claude's limits other than Weekly, each with its own history (#230): the 5-hour window's curve, almost four hours
+/// into the window that resets in 72 minutes, and daily trends for it and for Extra usage.
+fn claude_detail() -> AccountDetail {
+    let labels = (0..=30)
+        .map(|i| {
+            let minutes = 11 * 60 + i * 10;
+            format!("{}:{:02}", minutes / 60, minutes % 60)
+        })
+        .collect();
+    let current = vec![
+        0.03, 0.06, 0.1, 0.12, 0.15, 0.19, 0.22, 0.24, 0.27, 0.3, 0.31, 0.34, 0.38, 0.4, 0.43, 0.45, 0.48, 0.5, 0.53,
+        0.56, 0.58, 0.6, 0.62, 0.64,
+    ];
+    let previous = vec![
+        0.02, 0.05, 0.07, 0.11, 0.14, 0.16, 0.2, 0.25, 0.29, 0.33, 0.36, 0.4, 0.45, 0.49, 0.52, 0.55, 0.6, 0.64, 0.67,
+        0.7, 0.74, 0.77, 0.8, 0.83, 0.85, 0.88, 0.9, 0.91, 0.93, 0.94, 0.95,
+    ];
+    AccountDetail::default()
+        .with_limit_series(
+            "5-hour-window",
+            LimitSeries {
+                curve: Some(WindowCurve::new(labels, current, previous)),
+                trend: vec![
+                    0.55, 0.7, 0.92, 0.48, 0.66, 0.81, 0.97, 0.6, 0.74, 0.88, 0.52, 0.79, 0.95, 0.64,
+                ],
+            },
+        )
+        .with_limit_series(
+            "extra-usage",
+            LimitSeries {
+                curve: None,
+                // Euros spent, as History keeps a spend, ending at the €4.20 spent now (#232).
+                trend: vec![0.0, 0.0, 0.4, 0.4, 0.9, 1.2, 1.6, 2.0, 2.3, 2.7, 3.1, 3.5, 3.9, 4.2],
+            },
+        )
 }
 
 fn first_of_next_month<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> DateTime<Utc> {

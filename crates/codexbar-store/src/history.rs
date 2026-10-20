@@ -294,9 +294,38 @@ impl HistoryStore {
         tz: &Tz,
         now: DateTime<Utc>,
     ) -> Vec<Option<f64>> {
+        self.daily_max_where(account, metric, days, tz, now, |_| true)
+    }
+
+    /// [`Self::daily_max`] for a money series, counting only readings in `currency` (#232): an account that changed
+    /// currency would otherwise mix euros and pounds on one axis. Readings stored before currencies were recorded
+    /// count under it, as in [`Self::daily_total`].
+    pub fn daily_max_in<Tz: TimeZone>(
+        &self,
+        account: &str,
+        metric: &str,
+        currency: &str,
+        days: usize,
+        tz: &Tz,
+        now: DateTime<Utc>,
+    ) -> Vec<Option<f64>> {
+        self.daily_max_where(account, metric, days, tz, now, |sample| {
+            sample.c.as_deref().is_none_or(|code| code == currency)
+        })
+    }
+
+    fn daily_max_where<Tz: TimeZone>(
+        &self,
+        account: &str,
+        metric: &str,
+        days: usize,
+        tz: &Tz,
+        now: DateTime<Utc>,
+        keep: impl Fn(&Sample) -> bool,
+    ) -> Vec<Option<f64>> {
         let today = now.with_timezone(tz).date_naive();
         let mut out = vec![None; days];
-        for sample in self.series(account, metric) {
+        for sample in self.series(account, metric).filter(|sample| keep(sample)) {
             let day = sample.at().with_timezone(tz).date_naive();
             let Ok(age) = usize::try_from((today - day).num_days()) else {
                 continue;
@@ -788,6 +817,34 @@ mod tests {
             }],
             now(),
         )
+    }
+
+    #[test]
+    fn a_daily_max_in_one_currency_leaves_the_other_out() {
+        // An account billed in euros, then in pounds (#232): the pound trend keeps only the pound readings.
+        use codexbar_core::Currency::{Eur, Gbp};
+        let tz = FixedOffset::west_opt(0).unwrap();
+        let mut store = HistoryStore::in_memory(retention());
+        let day = |n: i64| now() - Duration::days(n);
+        let reset = now() + Duration::days(20);
+        store.record(&[spend("a", 1000, Eur, reset)], day(3)).unwrap();
+        store.record(&[spend("a", 1500, Eur, reset)], day(2)).unwrap();
+        store.record(&[spend("a", 300, Gbp, reset)], day(1)).unwrap();
+        store.record(&[spend("a", 450, Gbp, reset)], day(0)).unwrap();
+        let key = "on-demand";
+        assert_eq!(
+            store.daily_max_in("a", key, "GBP", 4, &tz, now()),
+            [None, None, Some(3.0), Some(4.5)]
+        );
+        assert_eq!(
+            store.daily_max_in("a", key, "EUR", 4, &tz, now()),
+            [Some(10.0), Some(15.0), None, None]
+        );
+        // Unfiltered, the two are mixed.
+        assert_eq!(
+            store.daily_max("a", key, 4, &tz, now()),
+            [Some(10.0), Some(15.0), Some(3.0), Some(4.5)]
+        );
     }
 
     #[test]

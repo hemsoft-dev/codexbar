@@ -6982,6 +6982,108 @@ fn pick_card_menu(cx: &mut TestAppContext, handle: AnyWindowHandle, card: usize,
     cx.run_until_parked();
 }
 
+/// Opens card `card`'s menu and picks the entry labelled `label`.
+fn pick_card_menu_entry(cx: &mut TestAppContext, handle: AnyWindowHandle, card: usize, label: &str) {
+    scroll_to_cards(cx, handle);
+    click(cx, handle, ("focus-card-menu", card));
+    let item = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (0..64usize).find(|ix| {
+                window
+                    .within("popup-menu")
+                    .try_find(*ix)
+                    .is_some_and(|found| found.label() == Some(label))
+            })
+        })
+        .unwrap()
+        .unwrap_or_else(|| panic!("no menu entry {label:?} on card {card}"));
+    cx.update_window(handle, |_, window, cx| window.within("popup-menu").click(item, cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn each_card_shows_the_limit_and_view_chosen_from_its_menu(cx: &mut TestAppContext) {
+    // Claude: the 5-hour window as a graph, Weekly as a gauge, and the 5-hour window as a bar (#230).
+    let settings = TempSettings::new("focus-limits", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let request = crate::handoff::FocusRequest {
+        account: "claude-personal".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    // Automatic: Claude's primary limit, Weekly, has a trend and no window curve.
+    assert!(exists(cx, handle, "focus-trend-card"));
+    assert!(!exists(cx, handle, "focus-window-card"));
+
+    pick_card_menu_entry(cx, handle, 0, "5-hour window as a graph");
+    // The 5-hour window's own curve, not the primary limit's trend.
+    assert!(exists(cx, handle, "focus-window-card"));
+    assert!(!exists(cx, handle, "focus-trend-card"));
+
+    pick_card_menu_entry(cx, handle, 1, "Weekly");
+    let ring = label_of(cx, "focus-share").unwrap();
+    assert!(ring.starts_with("Weekly: 82% used"), "{ring}");
+
+    pick_card_menu_entry(cx, handle, 2, "5-hour window as a bar");
+    let bar = label_of(cx, "focus-bar-2").unwrap();
+    assert!(bar.starts_with("5-hour window: 64% used"), "{bar}");
+
+    // Saved per account and per card.
+    let saved = std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        json["focusCards"]["claude-personal"]["limits"],
+        serde_json::json!([
+            {"key": "5-hour-window", "view": "graph"},
+            null,
+            {"key": "5-hour-window", "view": "bar"}
+        ])
+    );
+    assert_eq!(
+        json["focusCards"]["claude-personal"]["rings"],
+        serde_json::json!(["weekly"])
+    );
+
+    // Back to the card's own view: picking it clears the card's limit.
+    pick_card_menu_entry(cx, handle, 2, "Usage by day");
+    assert!(label_of(cx, "focus-bar-2").is_none());
+    let saved = std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        json["focusCards"]["claude-personal"]["limits"],
+        serde_json::json!([{"key": "5-hour-window", "view": "graph"}, null, null])
+    );
+}
+
+#[gpui_kit::test]
+fn a_gauge_on_another_card_has_its_own_ids_and_no_second_size_slider(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("focus-limit-gauge", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let request = crate::handoff::FocusRequest {
+        account: "claude-personal".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    pick_card_menu_entry(cx, handle, 0, "5-hour window as a gauge");
+    let first = label_of(cx, "focus-share-0").unwrap();
+    assert!(first.starts_with("5-hour window: 64% used"), "{first}");
+    // The gauge card keeps its own ring, and the one size slider stays on it (#219, #230).
+    assert!(label_of(cx, "focus-share").is_some());
+    let sliders = cx
+        .update_window(handle, |_, window, _| {
+            gpui_kit::base::test_support::snapshots(window)
+                .iter()
+                .filter(|node| node.role() == Some(gpui_kit::Role::Slider))
+                .count()
+        })
+        .unwrap();
+    assert_eq!(sliders, 1);
+}
+
 #[gpui_kit::test]
 fn the_gauge_card_shows_the_limits_chosen_from_its_menu(cx: &mut TestAppContext) {
     let settings = TempSettings::new("focus-rings", "{}");
