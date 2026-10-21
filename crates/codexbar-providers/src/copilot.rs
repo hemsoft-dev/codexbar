@@ -287,6 +287,65 @@ fn budget_covers(budget: &Budget) -> BudgetCovers {
     }
 }
 
+/// What the tokens configured for one organization have read of it: its credits, its pool and its Copilot budgets,
+/// each from whichever token could read it.
+struct OrgRead {
+    billing: OrgBilling,
+    /// The month's credits, or the error the tokens met when none could read them.
+    credits: Result<Credits, ProviderError>,
+    pool: Option<u64>,
+    /// The Copilot budgets and every product's net AI-credit spend; `None` until a token reads them. An organization
+    /// read through its enterprise has none.
+    budgets: Option<(Vec<Budget>, Option<f64>)>,
+}
+
+impl OrgRead {
+    /// The organization's account. An organization billed on its own also shows its Copilot budgets; ones that
+    /// couldn't be read never hide the credits.
+    fn outcome(&self, now: DateTime<Utc>) -> AccountOutcome {
+        let id = org_account_id(&self.billing.organization);
+        let consumed = match &self.credits {
+            Ok(consumed) => consumed,
+            Err(error) => {
+                return AccountOutcome::Failed {
+                    account: id,
+                    label: Some(self.billing.organization.clone()),
+                    error: error.clone(),
+                };
+            }
+        };
+        let pool_used_up = self.pool.is_some_and(|pool| consumed.used >= pool as f64);
+        let mut org = match self.pool {
+            Some(pool) => AccountSnapshot::new(
+                id,
+                Provider::Copilot,
+                vec![credits_metric("AI credits", consumed.used, pool, now)],
+                now,
+            ),
+            None => AccountSnapshot::new(id, Provider::Copilot, Vec::new(), now).with_message(format!(
+                "{:.0} AI credits used this month. Set the pool total in Settings to see how much is left.",
+                consumed.used
+            )),
+        };
+        if self.billing.enterprise.is_none() {
+            match &self.budgets {
+                Some((budgets, all)) => {
+                    for budget in budgets {
+                        let spent = match budget_covers(budget) {
+                            BudgetCovers::AllAiCredits => *all,
+                            BudgetCovers::Copilot => Some(consumed.net),
+                            BudgetCovers::Sku => None,
+                        };
+                        org = org.with_message(budget_line(budget, spent, pool_used_up));
+                    }
+                }
+                None => org = org.with_message(BUDGETS_UNREAD),
+            }
+        }
+        AccountOutcome::Fresh(org.with_label(&self.billing.organization))
+    }
+}
+
 /// One line per Copilot budget: what it caps, how much of that this month's usage has spent when it can be measured,
 /// and whether it stops usage. A budget caps metered spend, which starts only once the included pool is used up, so a
 /// $0 budget (paid overage switched off) is reached only then: `pool_used_up` says whether it is.
@@ -513,7 +572,8 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             + chrono::Duration::seconds(
                 response
                     .retry_after_secs
-                    .map_or(RATE_LIMIT_WAIT, |secs| secs.min(3600) as i64),
+                    // GitHub's whole wait, however long (a year at most, so the time stays representable).
+                    .map_or(RATE_LIMIT_WAIT, |secs| secs.min(365 * 24 * 3600) as i64),
             );
         let rate_limited = response.retry_after_secs.is_some() || response.body.to_lowercase().contains("rate limit");
         match response.status {
@@ -693,62 +753,21 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         Ok(total)
     }
 
-    /// The organization's account, from one user's token. An organization billed on its own also shows its Copilot
-    /// budgets; one that can't be read never hides the credits.
-    fn org_outcome(
+    /// An organization's Copilot budgets, with every product's AI-credit spend when one covers every AI credit: read
+    /// only then, and one that can't be read leaves that budget unmeasured rather than low.
+    fn read_budgets(
         &self,
         billing: &OrgBilling,
-        consumed: &Result<Credits, ProviderError>,
         token: &str,
         now: DateTime<Utc>,
-    ) -> AccountOutcome {
-        let id = org_account_id(&billing.organization);
-        match consumed {
-            Ok(consumed) => {
-                let pool = self.pool(billing, token, now);
-                let pool_used_up = pool.is_some_and(|pool| consumed.used >= pool as f64);
-                let mut org = match pool {
-                    Some(pool) => AccountSnapshot::new(
-                        id,
-                        Provider::Copilot,
-                        vec![credits_metric("AI credits", consumed.used, pool, now)],
-                        now,
-                    ),
-                    None => AccountSnapshot::new(id, Provider::Copilot, Vec::new(), now).with_message(format!(
-                        "{:.0} AI credits used this month. Set the pool total in Settings to see how much is left.",
-                        consumed.used
-                    )),
-                };
-                if billing.enterprise.is_none() {
-                    match self.copilot_budgets(billing, token, now) {
-                        Ok(budgets) => {
-                            // A budget on every AI credit is measured against every product's, read only when one
-                            // exists; one that can't be read leaves it unmeasured rather than low.
-                            let all = budgets
-                                .iter()
-                                .any(|budget| budget_covers(budget) == BudgetCovers::AllAiCredits)
-                                .then(|| self.all_ai_credits_net(billing, token, now).ok())
-                                .flatten();
-                            for budget in budgets {
-                                let spent = match budget_covers(&budget) {
-                                    BudgetCovers::AllAiCredits => all,
-                                    BudgetCovers::Copilot => Some(consumed.net),
-                                    BudgetCovers::Sku => None,
-                                };
-                                org = org.with_message(budget_line(&budget, spent, pool_used_up));
-                            }
-                        }
-                        Err(_) => org = org.with_message(BUDGETS_UNREAD),
-                    }
-                }
-                AccountOutcome::Fresh(org.with_label(&billing.organization))
-            }
-            Err(error) => AccountOutcome::Failed {
-                account: id,
-                label: Some(billing.organization.clone()),
-                error: error.clone(),
-            },
-        }
+    ) -> Result<(Vec<Budget>, Option<f64>), ProviderError> {
+        let budgets = self.copilot_budgets(billing, token, now)?;
+        let all = budgets
+            .iter()
+            .any(|budget| budget_covers(budget) == BudgetCovers::AllAiCredits)
+            .then(|| self.all_ai_credits_net(billing, token, now).ok())
+            .flatten();
+        Ok((budgets, all))
     }
 
     /// The org billing set for `username`.
@@ -759,42 +778,44 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             .map(|(_, billing)| billing)
     }
 
-    /// Reads the organization's AI credits with `token` and keeps its account in `orgs`, one per organization. A later
-    /// user's token completes what an earlier one couldn't: it replaces a failure, and a card that is missing its pool
-    /// (the seat count is for owners only, so a billing manager's token reads the credits but not the limit) or its
-    /// budgets with one that has more of them.
+    /// Reads the organization's AI credits with `token` and keeps what it reads in `orgs`, one per organization. Each
+    /// part comes from whichever configured token can read it: a later token fills in the credits after a failure, the
+    /// pool (the seat count is for owners only) and the budgets (billing managers can read them) that an earlier one
+    /// couldn't, so the card never depends on the order the accounts are configured in.
     fn add_org(
         &self,
         billing: &OrgBilling,
         token: &str,
         now: DateTime<Utc>,
-        orgs: &mut Vec<(String, AccountOutcome)>,
+        orgs: &mut Vec<OrgRead>,
     ) -> Result<Credits, ProviderError> {
         let consumed = self.org_consumed(billing, token, now);
-        match orgs
-            .iter_mut()
-            .find(|(org, _)| org.eq_ignore_ascii_case(&billing.organization))
+        let index = match orgs
+            .iter()
+            .position(|org| org.billing.organization.eq_ignore_ascii_case(&billing.organization))
         {
-            Some((_, outcome)) => {
-                // What a card has: its pool, and its budgets read. A failure has neither and can't be the better one.
-                let parts = |outcome: &AccountOutcome| match outcome {
-                    AccountOutcome::Failed { .. } => None,
-                    AccountOutcome::Fresh(card) => Some(
-                        u8::from(!card.metrics().is_empty())
-                            + u8::from(!card.messages().iter().any(|m| m == BUDGETS_UNREAD)),
-                    ),
-                };
-                if parts(outcome).is_none_or(|parts| parts < 2) && consumed.is_ok() {
-                    let read = self.org_outcome(billing, &consumed, token, now);
-                    if parts(&read) > parts(outcome) {
-                        *outcome = read;
-                    }
-                }
+            Some(index) => index,
+            None => {
+                orgs.push(OrgRead {
+                    billing: billing.clone(),
+                    credits: consumed.clone(),
+                    pool: None,
+                    budgets: None,
+                });
+                orgs.len() - 1
             }
-            None => orgs.push((
-                billing.organization.clone(),
-                self.org_outcome(billing, &consumed, token, now),
-            )),
+        };
+        let org = &mut orgs[index];
+        if let Ok(credits) = &consumed {
+            if org.credits.is_err() {
+                org.credits = Ok(*credits);
+            }
+            if org.pool.is_none() {
+                org.pool = self.pool(billing, token, now);
+            }
+            if org.budgets.is_none() && billing.enterprise.is_none() {
+                org.budgets = self.read_budgets(billing, token, now).ok();
+            }
         }
         consumed
     }
@@ -809,7 +830,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         seat: &Seat,
         token: &str,
         now: DateTime<Utc>,
-        orgs: &mut Vec<(String, AccountOutcome)>,
+        orgs: &mut Vec<OrgRead>,
     ) -> AccountSnapshot {
         let username = account.label().unwrap_or_default().to_owned();
         let Some(billing) = self.billing_for(&username) else {
@@ -1027,7 +1048,7 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                 }
             }
         }
-        outcomes.extend(orgs.into_iter().map(|(_, outcome)| outcome));
+        outcomes.extend(orgs.iter().map(|org| org.outcome(now)));
         Ok(outcomes)
     }
 }
@@ -2121,6 +2142,36 @@ mod tests {
             budget_line(&hard_zero, Some(0.0), true),
             "AI credits budget: $0.00 of $0.00 spent this month, usage is stopped until the month resets."
         );
+    }
+
+    #[test]
+    fn complementary_tokens_each_fill_in_the_part_they_can_read() {
+        // The owner, first, reads the seats but its budget list fails; the billing manager, second, reads the budgets
+        // but not the owner-only seats. The card has both.
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            ("ai_credit/usage", ok(ORG_REPORT)),
+            ("/copilot/billing|Bearer gho_first_owner", ok(BUSINESS_BILLING)),
+            ("/copilot/billing", HttpResponse::new(403, "")),
+            ("/budgets|Bearer gho_second_manager", ok(BUDGETS)),
+            ("/budgets", HttpResponse::new(500, "")),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_first_owner")
+            .with_login("manager", "gho_second_manager")
+            .with_billing("owner", business(None))
+            .with_billing("manager", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("org")
+        };
+        let Some(Metric::Quota { limit, .. }) = org.primary() else {
+            panic!("the owner's pool")
+        };
+        assert_eq!(*limit, 3800);
+        assert_eq!(org.messages().len(), 3, "the manager's budgets: {:?}", org.messages());
+        assert!(!org.messages().iter().any(|m| m == BUDGETS_UNREAD));
     }
 
     #[test]
