@@ -20,7 +20,7 @@ account in again with another identity replaces it without asking (see
 | `externalAccountId` | A Copilot account's GitHub username; for an account CodexBar signed in, the identity it holds (an OpenCode user id) |
 | `workspaceId` | The OpenCode workspace (`wrk_…`): typed in for a cookie account, set by the sign-in for an OAuth one |
 | `legacyCardKey` | Kept from older CodexBar versions for ordering |
-| `copilotEnterprise`, `copilotOrganization`, `copilotPoolTotal` | Copilot org billing for an Enterprise seat; written only when set |
+| `copilotEnterprise`, `copilotOrganization`, `copilotPoolTotal` | Copilot org billing: the organization alone for a Copilot Business organization (#233), plus the enterprise for an Enterprise seat; written only when set |
 | `githubBillingOrganization` | The organization a GitHub Billing account follows; absent for the signed-in user's own billing |
 | `geminiCodingFromCli` | A Gemini account also shows the Antigravity CLI's coding quotas; written only when on |
 

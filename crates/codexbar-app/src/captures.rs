@@ -111,6 +111,82 @@ impl codexbar_providers::UsageProvider for RunwayAccounts {
     }
 }
 
+/// GitHub for a Copilot Business organization with no enterprise (#233), answered from recorded fixtures so no request
+/// leaves the harness. `owner` owns the organization without a Copilot seat; the report is GitHub's live answer for
+/// hemsoft-dev on 2026-10-21 with a metered model added, renamed, and `empty` is a month with no usage yet.
+struct BusinessOrgGitHub {
+    empty: bool,
+}
+
+const BUSINESS_REPORT: &str = r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme-biz","product":"copilot",
+    "usageItems":[{"product":"Copilot","sku":"Copilot AI Credits","model":"Code Review model","unitType":"ai-credits",
+    "pricePerUnit":0.01,"grossQuantity":101.238535,"grossAmount":1.01238535,"discountQuantity":101.238535,
+    "discountAmount":1.01238535,"netQuantity":0.0,"netAmount":0.0},{"product":"Copilot","sku":"Copilot AI Credits",
+    "model":"Claude Sonnet 4.5","unitType":"ai-credits","pricePerUnit":0.01,"grossQuantity":2650.0,"grossAmount":26.5,
+    "discountQuantity":2650.0,"discountAmount":26.5,"netQuantity":0.0,"netAmount":0.0}]}"#;
+const BUSINESS_EMPTY_REPORT: &str =
+    r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme-biz","product":"copilot","usageItems":[]}"#;
+const BUSINESS_SEATS: &str = r#"{"seat_breakdown":{"total":2,"active_this_cycle":2},"plan_type":"business"}"#;
+const BUSINESS_BUDGETS: &str = r#"{"budgets":[{"budget_type":"BundlePricing","budget_product_sku":"ai_credits",
+    "budget_scope":"organization","budget_amount":25,"prevent_further_usage":true,"budget_entity_name":"acme-biz",
+    "budget_alerting":{"will_alert":true}}],"has_next_page":false}"#;
+
+impl codexbar_providers::HttpClient for BusinessOrgGitHub {
+    fn get(
+        &self,
+        url: &str,
+        _: &[(&str, &str)],
+    ) -> Result<codexbar_providers::HttpResponse, codexbar_providers::ProviderError> {
+        let body = if url.contains("/organizations/acme-biz/settings/billing/ai_credit/usage") {
+            if self.empty {
+                BUSINESS_EMPTY_REPORT
+            } else {
+                BUSINESS_REPORT
+            }
+        } else if url.contains("/orgs/acme-biz/copilot/billing") {
+            BUSINESS_SEATS
+        } else if url.contains("/organizations/acme-biz/settings/billing/budgets") {
+            BUSINESS_BUDGETS
+        } else {
+            // copilot_internal/user among them: the owner has no Copilot seat.
+            return Ok(codexbar_providers::HttpResponse::new(404, ""));
+        };
+        Ok(codexbar_providers::HttpResponse::new(200, body))
+    }
+}
+
+/// No GitHub CLI: the capture's account brings its own token.
+struct NoCommands;
+
+impl codexbar_providers::CommandRunner for NoCommands {
+    fn run(
+        &self,
+        _: &str,
+        _: &[&str],
+        _: std::time::Duration,
+    ) -> Result<codexbar_providers::CommandOutput, codexbar_providers::CommandError> {
+        Err(codexbar_providers::CommandError::NotFound)
+    }
+}
+
+/// The real Copilot provider over the fixture, billing acme-biz with no enterprise.
+fn business_org_provider(empty: bool) -> Arc<dyn codexbar_providers::UsageProvider> {
+    use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
+    Arc::new(
+        CopilotProvider::new(BusinessOrgGitHub { empty }, NoCommands)
+            .without_cli()
+            .with_login("owner", "gho_capture")
+            .with_billing(
+                "owner",
+                OrgBilling {
+                    enterprise: None,
+                    organization: "acme-biz".to_owned(),
+                    pool_total: None,
+                },
+            ),
+    )
+}
+
 fn save(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, dir: &Path, name: &str) {
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
@@ -870,5 +946,99 @@ fn captures() {
         SettingsHub::use_environment(cx, |_| None);
         crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System);
     });
+
+    // #233: a Copilot Business organization with no enterprise, read by its owner who has no Copilot seat, through the
+    // real Copilot provider over recorded GitHub answers: this month's AI credits against 2 Business seats and its
+    // AI-credit budget, then a month with no usage yet, light and dark, each focused on the organization's card.
+    for (empty, name) in [(false, "copilot-business-org"), (true, "copilot-business-org-empty")] {
+        let mut business_view = None;
+        let business = cx
+            .open_window(size(px(1440.), px(1100.)), |window, cx| {
+                let source = DataSource::Live {
+                    history: Arc::new(std::sync::Mutex::new(codexbar_store::HistoryStore::in_memory(
+                        chrono::Duration::days(30),
+                    ))),
+                    providers: Arc::new(move |_| vec![business_org_provider(empty)]),
+                };
+                let view = cx.new(|cx| Dashboard::new(source, window, cx));
+                business_view = Some(view.clone());
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .unwrap();
+        let business: AnyWindowHandle = business.into();
+        let business_view = business_view.unwrap();
+        cx.run_until_parked();
+        let request = crate::handoff::FocusRequest {
+            account: "copilotorg-acme-biz".into(),
+            metric: None,
+        };
+        cx.update(|cx| business_view.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+        cx.run_until_parked();
+        save(&mut cx, business, &out, name);
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+        cx.run_until_parked();
+        save(&mut cx, business, &out, &format!("{name}-dark"));
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+        cx.run_until_parked();
+        if empty {
+            cx.update_window(business, |_, window, _| window.remove_window())
+                .unwrap();
+            cx.run_until_parked();
+            continue;
+        }
+        // The account's settings form: the organization set, the enterprise left blank, and the help text that no
+        // longer says Enterprise only.
+        let mut record = codexbar_store::settings::AccountRecord::new(
+            codexbar_store::settings::names::COPILOT,
+            "Business",
+            codexbar_store::settings::AuthMethod::CommandLine,
+        );
+        record.external_id = Some("owner".into());
+        record.copilot_organization = Some("acme-biz".into());
+        let record_id = record.id.clone();
+        cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(record)))
+            .unwrap();
+        cx.update(|cx| business_view.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+        cx.run_until_parked();
+        let copilot_group = crate::catalog::PROVIDERS
+            .iter()
+            .position(|info| info.id == codexbar_store::settings::names::COPILOT)
+            .unwrap();
+        for entry in ["0-1".to_owned(), format!("0-1-{copilot_group}")] {
+            cx.update_window(business, |_, window, cx| {
+                window.render_frame(cx);
+                window.within("settings-sidebar").click(entry, cx)
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
+        cx.update_window(business, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(format!("edit-{record_id}"), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        save(&mut cx, business, &out, "copilot-business-settings");
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+        cx.run_until_parked();
+        save(&mut cx, business, &out, "copilot-business-settings-dark");
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+        cx.update_window(business, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("escape", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            SettingsHub::update(cx, |settings| {
+                settings.remove(&record_id);
+                Ok(())
+            })
+        })
+        .unwrap();
+        cx.update_window(business, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+    }
     let _ = std::fs::remove_dir_all(&settings);
 }

@@ -51,7 +51,8 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         display: "Copilot",
         sign_in: "Automatic and Command line use the GitHub CLI's accounts (`gh auth login`); set a username to fetch \
                   one. OAuth signs an account in with your browser through the GitHub CLI, kept apart from its own \
-                  accounts. Enterprise seats can also show their organization's AI credits.",
+                  accounts. An organization's AI credits can show too: a Copilot Business organization for its owners and \
+                  billing managers, or an enterprise's organization for its Enterprise seats.",
         secret: None,
         default_method: AuthMethod::CommandLine,
         setup_method: AuthMethod::CommandLine,

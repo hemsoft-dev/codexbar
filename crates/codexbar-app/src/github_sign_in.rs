@@ -80,7 +80,10 @@ pub fn token(
 const BILLING_SCOPE: &str = "manage_billing:enterprise";
 
 /// The extra scopes a sign-in for `record` asks for. A user's own billing needs `user`; an organization's is read with
-/// the GitHub CLI's `repo`, so it asks for nothing more.
+/// the GitHub CLI's `repo`, so it asks for nothing more. So is a Copilot Business organization's (#233): GitHub accepts
+/// `admin:org` or `repo` for its AI-credit report and budgets and `read:org` for its seat count (their
+/// `X-Accepted-OAuth-Scopes`, 2026-10-21), and `gh auth login` grants `repo` and `read:org` by default. Only an
+/// enterprise's billing needs more.
 fn scopes(record: &AccountRecord) -> Vec<&'static str> {
     if is_billing(record) {
         return match billing_organization(record) {

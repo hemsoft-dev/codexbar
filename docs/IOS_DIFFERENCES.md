@@ -16,8 +16,12 @@ differences that remain, and why.
 | Google Gemini: Gemini Apps limits | Yes | Yes, experimental | Windows signs in through a temporary Edge or Chrome profile instead of a web view ([GEMINI.md](GEMINI.md)) |
 | Google Gemini: coding quotas | Yes | Yes, experimental | Windows reads them through Google's Antigravity CLI (`agy`) instead of its own OAuth client; one Gemini account can show them ([GEMINI.md](GEMINI.md)) |
 
-Copilot organization billing on Windows covers Copilot Enterprise seats:
-the organization's AI credits and each user's share, configured per account.
+Copilot organization billing on Windows is configured per account. With an
+enterprise set, it covers Copilot Enterprise seats: the organization's AI
+credits and each user's share. With only an organization set, it reads a
+Copilot Business organization's own AI-credit report, as iOS does, for an owner
+or billing manager with or without a seat there, and also lists the
+organization's Copilot budgets and whether they stop usage (#233).
 
 ## Signing in
 

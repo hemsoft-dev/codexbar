@@ -348,8 +348,9 @@ pub fn implicit_opencode_workspace(hub: &SettingsHub) -> Option<String> {
 /// and Copilot without a username keep showing through the provider's own sign-in after their record is removed, so
 /// they own nothing here.
 pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
-    // A Copilot organization card (#79) is owned while an enabled record has its org billing set, under a key of
-    // its own beside the record's user, so removing the last such record forgets the card.
+    // A Copilot organization card (#79) is owned while an enabled record has its org billing set (an organization,
+    // with or without an enterprise, #233), under a key of its own beside the record's user, so removing the last
+    // such record forgets the card.
     let orgs = hub.settings().accounts().iter().filter_map(|record| {
         let set = |value: &Option<String>| {
             value
@@ -358,10 +359,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
                 .filter(|v| !v.is_empty())
                 .map(str::to_owned)
         };
-        let billed = record.enabled
-            && record.provider == names::COPILOT
-            && set(&record.copilot_enterprise).is_some()
-            && set(&record.external_id).is_some();
+        let billed = record.enabled && record.provider == names::COPILOT && set(&record.external_id).is_some();
         let organization = set(&record.copilot_organization).filter(|_| billed)?;
         Some((
             format!("{}#org", record.id),
@@ -472,15 +470,12 @@ fn copilot(hub: &SettingsHub) -> Option<Arc<dyn UsageProvider>> {
                 .filter(|v| !v.is_empty())
                 .map(str::to_owned)
         };
-        if let (Some(user), Some(enterprise), Some(organization)) = (
-            field(&record.external_id),
-            field(&record.copilot_enterprise),
-            field(&record.copilot_organization),
-        ) {
+        // Without an enterprise the organization is billed on its own (Copilot Business, #233).
+        if let (Some(user), Some(organization)) = (field(&record.external_id), field(&record.copilot_organization)) {
             provider = provider.with_billing(
                 &user,
                 OrgBilling {
-                    enterprise,
+                    enterprise: field(&record.copilot_enterprise),
                     organization,
                     pool_total: record.copilot_pool_total,
                 },

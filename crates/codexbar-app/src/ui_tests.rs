@@ -4677,13 +4677,49 @@ fn an_organization_card_is_owned_while_an_account_bills_it(cx: &mut TestAppConte
               "copilotEnterprise": "acme", "copilotOrganization": "Acme-Eng" },
             { "id": "cli-2", "providerId": "Copilot", "displayLabel": "Off", "enabled": false,
               "authenticationMethod": "CommandLine", "externalAccountId": "other",
-              "copilotEnterprise": "acme", "copilotOrganization": "other-org" } ] }"#,
+              "copilotEnterprise": "acme", "copilotOrganization": "other-org" },
+            { "id": "cli-3", "providerId": "Copilot", "displayLabel": "Business", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "owner",
+              "copilotOrganization": "hemsoft-dev" } ] }"#,
     );
     cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
     let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
     assert_eq!(owned.get("cli-1").map(String::as_str), Some("copilot-dev"));
     assert_eq!(owned.get("cli-1#org").map(String::as_str), Some("copilotorg-acme-eng"));
     assert!(!owned.contains_key("cli-2#org"), "a switched-off account bills nothing");
+    // #233: an organization billed on its own, with no enterprise, has its card too.
+    assert_eq!(
+        owned.get("cli-3#org").map(String::as_str),
+        Some("copilotorg-hemsoft-dev")
+    );
+}
+
+#[gpui_kit::test]
+fn org_billing_without_an_enterprise_is_saved_and_asks_for_no_enterprise_access(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-billing-business",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cli-1", "providerId": "Copilot", "displayLabel": "Business", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "owner" },
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Signed in", "enabled": true,
+              "authenticationMethod": "OAuth", "copilotOrganization": "hemsoft-dev" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "edit-cli-1");
+    // Name, method, username, Enterprise (left blank), then Organization.
+    for _ in 0..4 {
+        press(cx, handle, "tab");
+    }
+    type_text(cx, handle, "hemsoft-dev");
+    click(cx, handle, "account-save");
+    let saved = saved_settings(&settings);
+    let record = &saved.accounts()[0];
+    assert_eq!(record.copilot_enterprise, None);
+    assert_eq!(record.copilot_organization.as_deref(), Some("hemsoft-dev"));
+    // An organization's own billing is read with the GitHub CLI's scopes; only an enterprise needs more.
+    click(cx, handle, "sign-in-gh-1");
+    assert!(fake.0.scopes.lock().unwrap().is_empty(), "no enterprise billing scope");
 }
 
 // Claude accounts CodexBar signs in (#80): a Claude Code window for the account's own folder, its identity, sign-out,

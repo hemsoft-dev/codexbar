@@ -9,6 +9,9 @@ pub struct HttpResponse {
     pub body: String,
     /// `Retry-After` in seconds, when the server sent one.
     pub retry_after_secs: Option<u64>,
+    /// When GitHub's primary rate limit resets, when it is used up (`x-ratelimit-remaining: 0` with
+    /// `x-ratelimit-reset`, in epoch seconds).
+    pub rate_limit_reset: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl HttpResponse {
@@ -17,6 +20,7 @@ impl HttpResponse {
             status,
             body: body.into(),
             retry_after_secs: None,
+            rate_limit_reset: None,
         }
     }
 }
@@ -139,6 +143,8 @@ fn read_response(mut response: ureq::http::Response<ureq::Body>) -> Result<HttpR
         .get("retry-after")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| retry_after(value, chrono::Utc::now()));
+    let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok());
+    let rate_limit_reset = rate_limit_reset(header("x-ratelimit-remaining"), header("x-ratelimit-reset"));
     let body = response
         .body_mut()
         .read_to_string()
@@ -147,12 +153,33 @@ fn read_response(mut response: ureq::http::Response<ureq::Body>) -> Result<HttpR
         status,
         body,
         retry_after_secs,
+        rate_limit_reset,
     })
+}
+
+/// When a used-up primary rate limit resets: GitHub's `x-ratelimit-reset` (epoch seconds), only when
+/// `x-ratelimit-remaining` is 0.
+fn rate_limit_reset(remaining: Option<&str>, reset: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    if remaining?.trim() != "0" {
+        return None;
+    }
+    chrono::DateTime::from_timestamp(reset?.trim().parse::<i64>().ok()?, 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_used_up_primary_rate_limit_says_when_it_resets() {
+        assert_eq!(
+            rate_limit_reset(Some("0"), Some("1792578000")),
+            chrono::DateTime::from_timestamp(1_792_578_000, 0)
+        );
+        assert_eq!(rate_limit_reset(Some("12"), Some("1792578000")), None, "not used up");
+        assert_eq!(rate_limit_reset(Some("0"), None), None);
+        assert_eq!(rate_limit_reset(None, Some("1792578000")), None);
+    }
 
     #[test]
     fn retry_after_reads_seconds_and_http_dates() {
