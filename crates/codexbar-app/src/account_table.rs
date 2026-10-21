@@ -177,13 +177,17 @@ impl WindowKind {
 
 /// The metric an account's row shows: its primary one, except that a Claude row shows the weekly window when the
 /// primary is the 5-hour one (#246). The week is what paces a Claude subscription; the 5-hour window resets several
-/// times a day. Everything else (focus cards, the tooltip, alerts, widgets) keeps the primary metric.
+/// times a day. Only the all-model "Weekly" window counts: a model-scoped one ("Weekly Opus") doesn't pace the whole
+/// subscription. Everything else (focus cards, the tooltip, alerts, widgets) keeps the primary metric.
 pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
     let primary = account.primary()?;
     if account.provider() == Provider::Claude
         && WindowKind::of(primary.label()) == Some(WindowKind::FiveHour)
         && matches!(primary, Metric::Window { .. })
-        && let Some(weekly) = WindowKind::Weekly.in_account(account)
+        && let Some(weekly) = account
+            .metrics()
+            .iter()
+            .find(|metric| matches!(metric, Metric::Window { .. }) && metric.label().eq_ignore_ascii_case("weekly"))
     {
         return Some(weekly);
     }
@@ -1048,6 +1052,9 @@ mod tests {
         let row = claude(vec![five_hour.clone()]);
         assert_eq!(row_metric(&row), Some(&five_hour));
         assert_eq!(row_metric(&claude(Vec::new())), None);
+        // A model-scoped weekly limit isn't the subscription's week.
+        let opus = window("Weekly Opus", 0.3, Duration::days(2), Pace::per_day(0.02));
+        assert_eq!(row_metric(&claude(vec![five_hour.clone(), opus])), Some(&five_hour));
     }
 
     /// Credits lead when a window is used up and they can still be spent (#150); the row keeps showing them.
@@ -1077,7 +1084,7 @@ mod tests {
 
     /// The row's sparkline follows the row's metric: Weekly's stored series for Claude, the account's own trend else.
     #[test]
-    fn a_claude_rows_trend_is_the_weekly_windows() {
+    fn a_claude_row_trend_follows_the_weekly_window() {
         use codexbar_core::{AccountDetail, LimitSeries};
         let five_hour = window("5-hour window", 0.64, Duration::minutes(72), Pace::per_hour(0.12));
         let weekly = window("Weekly", 0.82, Duration::days(2), Pace::per_day(0.05));

@@ -7637,6 +7637,12 @@ fn the_claude_row_shows_the_weekly_window(cx: &mut TestAppContext) {
         !resets.contains("1h 12m"),
         "the weekly reset, not the 5-hour one: {resets}"
     );
+    // The 14-day summary reads the weekly window's stored history, which ends at 82%; the 5-hour window's ends at 64%.
+    let trend = label(cx, handle, "trend-cell-claude-personal").unwrap();
+    assert!(
+        trend.starts_with("Claude · personal trend. Last 14 days: Latest 82%"),
+        "{trend}"
+    );
 
     let (wide, _) = open_dashboard_sized(cx, &settings, size(px(2600.), px(960.)));
     assert_eq!(
@@ -7646,5 +7652,14 @@ fn the_claude_row_shows_the_weekly_window(cx: &mut TestAppContext) {
     assert_eq!(
         label(cx, wide, "window-weekly-claude-personal").as_deref(),
         Some("Weekly: 82%")
+    );
+    // Both windows have their own columns, so the primary-metric pair is blank for the row.
+    assert_eq!(
+        label(cx, wide, "percent-claude-personal").as_deref(),
+        Some("Primary metric: not applicable")
+    );
+    assert_eq!(
+        label(cx, wide, "resets-claude-personal").as_deref(),
+        Some("Resets: not applicable")
     );
 }
