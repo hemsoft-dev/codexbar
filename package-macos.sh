@@ -71,9 +71,12 @@ cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 DMG="$OUT/CodexBar-$VERSION.dmg"
 rm -f "$DMG"
+# hdiutil's own estimate of the image size from -srcfolder can fall short of the app, which then fails inside the image
+# with "No space left on device" (#248). Size it from the staged folder, with room to spare.
+SIZE_MB=$(( $(du -sm "$STAGE" | cut -f1) * 5 / 4 + 16 ))
 # hdiutil sometimes finds the disk-image driver busy right after a build (seen on GitHub's macOS runners); try again.
 for attempt in 1 2 3; do
-    if hdiutil create -volname CodexBar -srcfolder "$STAGE" -ov -format UDZO "$DMG"; then
+    if hdiutil create -volname CodexBar -srcfolder "$STAGE" -size "${SIZE_MB}m" -ov -format UDZO "$DMG"; then
         break
     fi
     if [ "$attempt" = 3 ]; then
