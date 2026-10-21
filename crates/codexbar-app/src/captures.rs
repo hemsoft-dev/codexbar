@@ -111,7 +111,6 @@ impl codexbar_providers::UsageProvider for RunwayAccounts {
     }
 }
 
-
 /// GitHub for a Copilot Business organization with no enterprise (#233), answered from recorded fixtures so no request
 /// leaves the harness. `owner` owns the organization without a Copilot seat; the report is GitHub's live answer for
 /// hemsoft-dev on 2026-10-21 with a metered model added, renamed, and `empty` is a month with no usage yet.
