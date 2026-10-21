@@ -29,6 +29,7 @@ const RATE_LIMIT_WAIT: i64 = 60;
 const NO_SEAT: &str = "no Copilot subscription on this account";
 const ORG_NO_ACCESS: &str = "This account can't read the organization's Copilot billing. It needs to be an owner or \
                              billing manager of the organization.";
+const BUDGETS_UNREAD: &str = "Its Copilot budgets couldn't be read.";
 const ORG_NOT_FOUND: &str = "GitHub doesn't know that organization. Check its name in Settings > Accounts.";
 /// The hint for an account CodexBar signed in.
 pub const MANAGED_LOGIN: &str = "Sign in again in Settings > Accounts.";
@@ -224,7 +225,11 @@ fn caps_copilot(budget: &Budget, organization: &str) -> bool {
             budget.targets.is_empty() || targets(&|t| t == "ai_credits" || t.starts_with("copilot"))
         }
         kind if kind.eq_ignore_ascii_case("ProductPricing") => targets(&|t| t == "copilot"),
-        kind if kind.eq_ignore_ascii_case("SkuPricing") => targets(&|t| t.starts_with("copilot")),
+        // GitHub's Copilot SKUs: `copilot_ai_credit`, `copilot_for_business` and the like, and the cloud agent's
+        // `coding_agent_ai_credit`, which has no prefix.
+        kind if kind.eq_ignore_ascii_case("SkuPricing") => {
+            targets(&|t| t.starts_with("copilot") || t == "coding_agent_ai_credit")
+        }
         _ => false,
     };
     own && copilot
@@ -252,8 +257,9 @@ fn budget_covers(budget: &Budget) -> BudgetCovers {
 }
 
 /// One line per Copilot budget: what it caps, how much of that this month's usage has spent when it can be measured,
-/// and whether it stops usage.
-fn budget_line(budget: &Budget, spent: Option<f64>) -> String {
+/// and whether it stops usage. A budget caps metered spend, which starts only once the included pool is used up, so a
+/// $0 budget (paid overage switched off) is reached only then: `pool_used_up` says whether it is.
+fn budget_line(budget: &Budget, spent: Option<f64>, pool_used_up: bool) -> String {
     let dollars = |amount: f64| format!("${amount:.2}");
     let name = match budget_covers(budget) {
         BudgetCovers::AllAiCredits => "AI credits budget".to_owned(),
@@ -271,9 +277,15 @@ fn budget_line(budget: &Budget, spent: Option<f64>) -> String {
             dollars(budget.amount)
         );
     };
-    let state = match (budget.stops_usage, spent >= budget.amount) {
+    let reached = if budget.amount > 0.0 {
+        spent >= budget.amount
+    } else {
+        spent > 0.0 || pool_used_up
+    };
+    let state = match (budget.stops_usage, reached) {
         (true, true) => "usage is stopped until the month resets",
-        (true, false) => "stops usage at the limit",
+        (true, false) if budget.amount > 0.0 => "stops usage at the limit",
+        (true, false) => "stops usage once the included AI credits run out",
         (false, true) => "past its limit; it doesn't stop usage",
         (false, false) => "doesn't stop usage",
     };
@@ -654,7 +666,9 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         let id = org_account_id(&billing.organization);
         match consumed {
             Ok(consumed) => {
-                let mut org = match self.pool(billing, token, now) {
+                let pool = self.pool(billing, token, now);
+                let pool_used_up = pool.is_some_and(|pool| consumed.used >= pool as f64);
+                let mut org = match pool {
                     Some(pool) => AccountSnapshot::new(
                         id,
                         Provider::Copilot,
@@ -682,10 +696,10 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                                     BudgetCovers::Copilot => Some(consumed.net),
                                     BudgetCovers::Sku => None,
                                 };
-                                org = org.with_message(budget_line(&budget, spent));
+                                org = org.with_message(budget_line(&budget, spent, pool_used_up));
                             }
                         }
-                        Err(_) => org = org.with_message("Its Copilot budgets couldn't be read."),
+                        Err(_) => org = org.with_message(BUDGETS_UNREAD),
                     }
                 }
                 AccountOutcome::Fresh(org.with_label(&billing.organization))
@@ -707,8 +721,9 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
     }
 
     /// Reads the organization's AI credits with `token` and keeps its account in `orgs`, one per organization. A later
-    /// user's token completes what an earlier one couldn't: it replaces a failure, and a card without its pool (the
-    /// seat count is for owners only, so a billing manager's token reads the credits but not the limit).
+    /// user's token completes what an earlier one couldn't: it replaces a failure, and a card that is missing its pool
+    /// (the seat count is for owners only, so a billing manager's token reads the credits but not the limit) or its
+    /// budgets with one that has more of them.
     fn add_org(
         &self,
         billing: &OrgBilling,
@@ -722,15 +737,17 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             .find(|(org, _)| org.eq_ignore_ascii_case(&billing.organization))
         {
             Some((_, outcome)) => {
-                let incomplete = match outcome {
-                    AccountOutcome::Failed { .. } => true,
-                    AccountOutcome::Fresh(card) => card.metrics().is_empty(),
+                // What a card has: its pool, and its budgets read. A failure has neither and can't be the better one.
+                let parts = |outcome: &AccountOutcome| match outcome {
+                    AccountOutcome::Failed { .. } => None,
+                    AccountOutcome::Fresh(card) => Some(
+                        u8::from(!card.metrics().is_empty())
+                            + u8::from(!card.messages().iter().any(|m| m == BUDGETS_UNREAD)),
+                    ),
                 };
-                if incomplete && consumed.is_ok() {
+                if parts(outcome).is_none_or(|parts| parts < 2) && consumed.is_ok() {
                     let read = self.org_outcome(billing, &consumed, token, now);
-                    let better = matches!(outcome, AccountOutcome::Failed { .. })
-                        || matches!(&read, AccountOutcome::Fresh(card) if !card.metrics().is_empty());
-                    if better {
+                    if parts(&read) > parts(outcome) {
                         *outcome = read;
                     }
                 }
@@ -1904,15 +1921,81 @@ mod tests {
             &budget("BundlePricing", &["ai_credits"], "organization", "other"),
             "acme-biz"
         ));
+        assert!(caps_copilot(
+            &budget("SkuPricing", &["coding_agent_ai_credit"], "organization", ""),
+            "acme-biz"
+        ));
+        assert!(!caps_copilot(
+            &budget("SkuPricing", &["spark_ai_credits"], "organization", ""),
+            "acme-biz"
+        ));
         assert_eq!(
-            budget_line(&budget("ProductPricing", &["copilot"], "organization", ""), Some(2.5)),
+            budget_line(
+                &budget("ProductPricing", &["copilot"], "organization", ""),
+                Some(2.5),
+                false
+            ),
             "Copilot budget: $2.50 of $10.00 spent this month, doesn't stop usage."
         );
         // A bundle whose every-product report couldn't be read is unmeasured, not shown at zero.
         assert_eq!(
-            budget_line(&budget("BundlePricing", &["ai_credits"], "organization", ""), None),
+            budget_line(
+                &budget("BundlePricing", &["ai_credits"], "organization", ""),
+                None,
+                false
+            ),
             "AI credits budget: $10.00, doesn't stop usage. Its spend isn't measured here."
         );
+    }
+
+    /// A $0 budget that stops usage switches paid overage off: usage goes on until the included pool runs out, and
+    /// only then is it stopped.
+    #[test]
+    fn a_zero_dollar_budget_stops_usage_only_once_the_pool_is_used_up() {
+        let hard_zero = Budget {
+            scope: "organization".into(),
+            kind: "BundlePricing".into(),
+            targets: vec!["ai_credits".into()],
+            entity: String::new(),
+            amount: 0.0,
+            stops_usage: true,
+            alerts: None,
+        };
+        assert_eq!(
+            budget_line(&hard_zero, Some(0.0), false),
+            "AI credits budget: $0.00 of $0.00 spent this month, stops usage once the included AI credits run out."
+        );
+        assert_eq!(
+            budget_line(&hard_zero, Some(0.0), true),
+            "AI credits budget: $0.00 of $0.00 spent this month, usage is stopped until the month resets."
+        );
+    }
+
+    #[test]
+    fn a_later_token_that_reads_the_budgets_completes_the_card() {
+        // Both tokens read the credits and the pool; only the second can read the budgets.
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            ("ai_credit/usage", ok(ORG_REPORT)),
+            ("/copilot/billing", ok(BUSINESS_BILLING)),
+            (
+                "/budgets|Bearer gho_owner",
+                ok(r#"{"budgets":[],"has_next_page":false}"#),
+            ),
+            ("/budgets", HttpResponse::new(403, "")),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("manager", "gho_manager")
+            .with_login("owner", "gho_owner")
+            .with_billing("manager", business(None))
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("org")
+        };
+        assert!(org.primary().is_some());
+        assert!(org.messages().is_empty(), "{:?}", org.messages());
     }
 
     #[test]
