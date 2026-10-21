@@ -213,7 +213,16 @@ fn main() {
         github_sign_in::clean_up(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
         if is_demo() {
-            prefs_hub::PrefsHub::init_in_memory(cx);
+            // A capture run keeps the demo's preferences in its own folder, so a second run shows what the first
+            // saved, such as dragged column widths (#245). Otherwise the demo never writes them.
+            #[cfg(feature = "capture")]
+            let saved = self_capture::prefs_dir();
+            #[cfg(not(feature = "capture"))]
+            let saved: Option<std::path::PathBuf> = None;
+            match saved {
+                Some(saved) => prefs_hub::PrefsHub::init(cx, &saved),
+                None => prefs_hub::PrefsHub::init_in_memory(cx),
+            }
         } else {
             prefs_hub::PrefsHub::init(cx, &dir);
         }
