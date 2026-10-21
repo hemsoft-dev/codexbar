@@ -4,6 +4,7 @@
 //! own (Copilot Business, no enterprise) is read from the organization's billing API instead, by an owner or billing
 //! manager with or without a seat there (#233).
 
+use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Datelike as _, Months, NaiveDate, TimeZone as _, Utc};
@@ -29,6 +30,8 @@ const RATE_LIMIT_WAIT: i64 = 60;
 const NO_SEAT: &str = "no Copilot subscription on this account";
 const ORG_NO_ACCESS: &str = "This account can't read the organization's Copilot billing. It needs to be an owner or \
                              billing manager of the organization.";
+/// The most budget pages read: 10,000 budgets.
+const MAX_BUDGET_PAGES: u32 = 100;
 const BUDGETS_UNREAD: &str = "Its Copilot budgets couldn't be read.";
 const ORG_NOT_FOUND: &str = "GitHub doesn't know that organization. Check its name in Settings > Accounts.";
 /// The hint for an account CodexBar signed in.
@@ -167,6 +170,33 @@ fn parse_seat(payload: &str) -> Seat {
             .map(|list| list.iter().filter_map(Value::as_str).map(str::to_owned).collect())
             .unwrap_or_default(),
     }
+}
+
+/// When GitHub limited the rate of a token on organization billing, by a hash of the token (never the token itself):
+/// no organization billing request is made with it before then, as GitHub asks. The provider is rebuilt on every
+/// refresh, so this outlives it, as Claude's backoff does.
+static BACKOFF: Mutex<Vec<(u64, DateTime<Utc>)>> = Mutex::new(Vec::new());
+
+fn token_key(token: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    token.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The retry time still ahead for `key`, if GitHub limited its rate.
+fn backed_off(key: u64, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let mut backoff = BACKOFF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    backoff.retain(|(_, until)| *until > now);
+    backoff.iter().find(|(known, _)| *known == key).map(|(_, until)| *until)
+}
+
+/// Remembers `retry_at` for `key` and returns the rate-limit error that says it.
+fn back_off(key: u64, retry_at: DateTime<Utc>) -> ProviderError {
+    let mut backoff = BACKOFF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    backoff.retain(|(known, _)| *known != key);
+    backoff.push((key, retry_at));
+    ProviderError::RateLimited { retry_at }
 }
 
 /// The organization's dashboard account. Users are `copilot-<user>`; organizations use another prefix, so a user
@@ -471,7 +501,13 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
 
     /// Like `rest`, for an organization's own billing API (#233): a missing permission, a rate limit and an unknown
     /// organization each say so.
+    /// Once GitHub limits the rate, no request goes out with that token before its retry time, even from the next
+    /// refresh's provider.
     fn org_rest(&self, path: &str, token: &str, now: DateTime<Utc>) -> Result<String, ProviderError> {
+        let key = token_key(token);
+        if let Some(retry_at) = backed_off(key, now) {
+            return Err(ProviderError::RateLimited { retry_at });
+        }
         let response = self.get(path, token)?;
         let retry_at = now
             + chrono::Duration::seconds(
@@ -482,8 +518,8 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         let rate_limited = response.retry_after_secs.is_some() || response.body.to_lowercase().contains("rate limit");
         match response.status {
             200..=299 => Ok(response.body),
-            429 => Err(ProviderError::RateLimited { retry_at }),
-            403 if rate_limited => Err(ProviderError::RateLimited { retry_at }),
+            429 => Err(back_off(key, retry_at)),
+            403 if rate_limited => Err(back_off(key, retry_at)),
             403 => Err(ProviderError::Refused { reason: ORG_NO_ACCESS }),
             404 => Err(ProviderError::Refused { reason: ORG_NOT_FOUND }),
             status => Err(ProviderError::Http { status }),
@@ -613,7 +649,9 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             detail: "unreadable budget list",
         };
         let mut all = Vec::new();
-        for page in 1..=10 {
+        // Every page: the list holds user and repository budgets too, so an organization's own can come late. The cap
+        // only stops a list that never ends.
+        for page in 1..=MAX_BUDGET_PAGES {
             let body = self.org_rest(
                 &format!(
                     "/organizations/{}/settings/billing/budgets?per_page=100&page={page}",
@@ -968,14 +1006,20 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                         .filter(|billing| billing.enterprise.is_none());
                     match org_only {
                         Some(billing) if error == (ProviderError::Unexpected { detail: NO_SEAT }) => {
-                            let _ = self.add_org(billing, &token, now, &mut orgs);
+                            let message = match self.add_org(billing, &token, now, &mut orgs) {
+                                Ok(_) => format!(
+                                    "No Copilot seat on this account. It shows {}'s AI credits.",
+                                    billing.organization
+                                ),
+                                Err(_) => format!(
+                                    "No Copilot seat on this account. {}'s AI credits couldn't be read with it.",
+                                    billing.organization
+                                ),
+                            };
                             outcomes.push(AccountOutcome::Fresh(
                                 AccountSnapshot::new(account_id(username), Provider::Copilot, Vec::new(), now)
                                     .with_label(username)
-                                    .with_message(format!(
-                                        "No Copilot seat on this account. It shows {}'s AI credits.",
-                                        billing.organization
-                                    )),
+                                    .with_message(message),
                             ));
                         }
                         _ => outcomes.push(failed(error)),
@@ -1828,6 +1872,105 @@ mod tests {
     }
 
     #[test]
+    fn a_rate_limited_token_waits_for_githubs_retry_time_across_refreshes() {
+        let limited = || {
+            Routes::new(vec![
+                ("copilot_internal/user", ok(BUSINESS_USER)),
+                (
+                    "ai_credit/usage",
+                    HttpResponse {
+                        retry_after_secs: Some(1800),
+                        ..HttpResponse::new(429, "")
+                    },
+                ),
+            ])
+        };
+        let provider = |http| {
+            CopilotProvider::new(http, NoGh)
+                .without_cli()
+                .with_login("owner", "gho_rate_limited")
+                .with_billing("owner", business(None))
+        };
+        let first = provider(limited());
+        first.fetch_outcomes(now()).unwrap();
+        assert_eq!(first.http.urls("ai_credit/usage"), 1);
+        // The next refresh builds a new provider; ten minutes on, GitHub's 30-minute wait still holds.
+        let later = provider(limited());
+        let outcomes = later.fetch_outcomes(now() + chrono::Duration::minutes(10)).unwrap();
+        assert_eq!(
+            later.http.urls("/organizations/"),
+            0,
+            "no request before the retry time"
+        );
+        let AccountOutcome::Failed { error, .. } = org_card(&outcomes) else {
+            panic!("org")
+        };
+        assert_eq!(
+            error,
+            &ProviderError::RateLimited {
+                retry_at: now() + chrono::Duration::minutes(30)
+            }
+        );
+        // Past it, the token asks again.
+        let after = provider(limited());
+        after.fetch_outcomes(now() + chrono::Duration::minutes(31)).unwrap();
+        assert_eq!(after.http.urls("ai_credit/usage"), 1);
+    }
+
+    #[test]
+    fn a_seatless_owner_whose_organization_cant_be_read_isnt_told_it_shows() {
+        let http = Routes::new(vec![("ai_credit/usage", HttpResponse::new(403, ""))]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_refused")
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(user) = &outcomes[0] else {
+            panic!("user")
+        };
+        assert_eq!(
+            user.messages(),
+            ["No Copilot seat on this account. acme-biz's AI credits couldn't be read with it."]
+        );
+        assert!(matches!(org_card(&outcomes), AccountOutcome::Failed { .. }));
+    }
+
+    #[test]
+    fn budgets_past_the_tenth_page_are_still_read() {
+        let page = |more: bool, product: &str| {
+            ok(&format!(
+                r#"{{"budgets":[{{"budget_type":"ProductPricing","budget_product_sku":"{product}",
+                "budget_scope":"organization","budget_amount":5,"prevent_further_usage":true,
+                "budget_entity_name":"acme-biz"}}],"has_next_page":{more}}}"#
+            ))
+        };
+        // Eleven pages of other budgets, then the Copilot one on the twelfth. The last page's route comes first, as
+        // "page=1" also matches "page=10" and "page=11".
+        let mut routes = vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            ("ai_credit/usage", ok(EMPTY_REPORT)),
+            ("/copilot/billing", ok(BUSINESS_BILLING)),
+            ("budgets?per_page=100&page=12", page(false, "copilot")),
+        ];
+        for n in 1..=11 {
+            let fragment: &'static str = Box::leak(format!("budgets?per_page=100&page={n}").into_boxed_str());
+            routes.push((fragment, page(true, "actions")));
+        }
+        let provider = CopilotProvider::new(Routes::new(routes), NoGh)
+            .without_cli()
+            .with_login("owner", "gho_many_budgets")
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("org")
+        };
+        assert_eq!(
+            org.messages(),
+            ["Copilot budget: $0.00 of $5.00 spent this month, stops usage at the limit."]
+        );
+    }
+
+    #[test]
     fn a_seatless_account_without_org_billing_still_fails() {
         let provider = CopilotProvider::new(Routes::new(Vec::new()), NoGh)
             .without_cli()
@@ -1865,14 +2008,15 @@ mod tests {
                 },
             ),
         ];
-        for (response, expected) in cases {
+        // Each case its own token: a rate limit is remembered per token.
+        for (ix, (response, expected)) in cases.into_iter().enumerate() {
             let http = Routes::new(vec![
                 ("copilot_internal/user", ok(BUSINESS_USER)),
                 ("ai_credit/usage", response),
             ]);
             let provider = CopilotProvider::new(http, NoGh)
                 .without_cli()
-                .with_login("owner", "gho_own")
+                .with_login("owner", format!("gho_failure_case_{ix}"))
                 .with_billing("owner", business(None));
             let outcomes = provider.fetch_outcomes(now()).unwrap();
             assert!(
