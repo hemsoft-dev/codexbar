@@ -58,6 +58,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        # The app shows a version with the commit count (#244), which a shallow clone would make 1.
+        with:
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
@@ -88,6 +91,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        # The app shows a version with the commit count (#244), which a shallow clone would make 1.
+        with:
+          fetch-depth: 0
 
       - name: Install Linux build dependencies
         run: |
