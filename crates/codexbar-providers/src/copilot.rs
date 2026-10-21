@@ -652,10 +652,12 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         if let Some(total) = billing.pool_total.filter(|total| *total > 0) {
             return Some(total);
         }
+        // Through the same rate-limit guard as the rest of the organization's billing, so a limited token waits.
         let body = self
-            .rest(
+            .org_rest(
                 &format!("/orgs/{}/copilot/billing", encode(&billing.organization)),
                 token,
+                now,
             )
             .ok()?;
         let json = serde_json::from_str::<Value>(&body).ok()?;
@@ -1020,14 +1022,17 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                     outcomes.push(AccountOutcome::Fresh(snapshot));
                 }
                 Err(error) => {
-                    // An owner or billing manager with no Copilot seat at all still reads an organization billed on
-                    // its own (#233); the account says why it has no quotas instead of failing.
+                    // An organization billed on its own is read through its own billing API, apart from the account's
+                    // quotas (#233): a seatless owner or billing manager still reads it, and so does any account
+                    // whose quota request failed, which keeps its own failure. A seatless account says why it has no
+                    // quotas instead of failing.
                     let org_only = self
                         .billing_for(username)
                         .filter(|billing| billing.enterprise.is_none());
-                    match org_only {
-                        Some(billing) if error == (ProviderError::Unexpected { detail: NO_SEAT }) => {
-                            let message = match self.add_org(billing, &token, now, &mut orgs) {
+                    let read = org_only.map(|billing| (billing, self.add_org(billing, &token, now, &mut orgs)));
+                    match read {
+                        Some((billing, read)) if error == (ProviderError::Unexpected { detail: NO_SEAT }) => {
+                            let message = match read {
                                 Ok(_) => format!(
                                     "No Copilot seat on this account. It shows {}'s AI credits.",
                                     billing.organization
@@ -1988,6 +1993,63 @@ mod tests {
         assert_eq!(
             org.messages(),
             ["Copilot budget: $0.00 of $5.00 spent this month, stops usage at the limit."]
+        );
+    }
+
+    #[test]
+    fn a_failed_quota_request_still_reads_the_organization() {
+        // copilot_internal/user fails with a 502; the organization's own billing API answers.
+        let http = Routes::new(vec![
+            ("copilot_internal/user", HttpResponse::new(502, "")),
+            ("ai_credit/usage", ok(ORG_REPORT)),
+            ("/copilot/billing", ok(BUSINESS_BILLING)),
+            ("/budgets", ok(r#"{"budgets":[],"has_next_page":false}"#)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_quota_down")
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        assert!(
+            matches!(
+                &outcomes[0],
+                AccountOutcome::Failed {
+                    error: ProviderError::Http { status: 502 },
+                    ..
+                }
+            ),
+            "the account keeps its own failure"
+        );
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("the organization is still read")
+        };
+        assert!(org.primary().is_some());
+    }
+
+    #[test]
+    fn a_rate_limited_seat_count_holds_back_the_budget_request() {
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            ("ai_credit/usage", ok(ORG_REPORT)),
+            (
+                "/copilot/billing",
+                HttpResponse {
+                    retry_after_secs: Some(600),
+                    ..HttpResponse::new(429, "")
+                },
+            ),
+            ("/budgets", ok(r#"{"budgets":[],"has_next_page":false}"#)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_seats_limited")
+            .with_billing("owner", business(None));
+        provider.fetch_outcomes(now()).unwrap();
+        assert_eq!(provider.http.urls("/copilot/billing"), 1);
+        assert_eq!(
+            provider.http.urls("/budgets"),
+            0,
+            "nothing more before GitHub's retry time"
         );
     }
 
