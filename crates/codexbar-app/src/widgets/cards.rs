@@ -269,7 +269,7 @@ impl TileView {
         // written before the wording travelled with it still carries the figure, so the widget keeps it.
         let line = Some(match (&found.outlook, found.projected_percent) {
             (Some(outlook), _) => format!("{}: {}, {outlook}", found.label, found.value),
-            (None, Some(projected)) => format!("{}: {}, on pace for {projected:.0}%", found.label, found.value),
+            (None, Some(projected)) => format!("{}: {}, {projected:.0}% at reset", found.label, found.value),
             (None, None) => format!("{}: {}", found.label, found.value),
         });
         let percent_text = found.used_percent.map(|p| format!("{p:.0}%"));
@@ -826,15 +826,18 @@ mod tests {
     fn a_projected_metric_says_so_on_its_line() {
         // Adaptive Cards can't fade a bar, so the projection is a figure on the line (#197).
         let mut snapshot = snapshot().unwrap();
-        snapshot.accounts[0].metrics[0].outlook = Some("2d 12h early".into());
+        snapshot.accounts[0].metrics[0].outlook = Some("112% at reset · runs out in 5d 4h".into());
         let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
-        assert_eq!(view.line.as_deref(), Some("Weekly: 82% used, 2d 12h early"));
+        assert_eq!(
+            view.line.as_deref(),
+            Some("Weekly: 82% used, 112% at reset · runs out in 5d 4h")
+        );
         assert_eq!(view.percent, Some(82.0), "the bar itself stays the used share");
         // A snapshot from before the wording travelled with it (#206) keeps its figure.
         snapshot.accounts[0].metrics[0].outlook = None;
         snapshot.accounts[0].metrics[0].projected_percent = Some(90.0);
         let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
-        assert_eq!(view.line.as_deref(), Some("Weekly: 82% used, on pace for 90%"));
+        assert_eq!(view.line.as_deref(), Some("Weekly: 82% used, 90% at reset"));
         snapshot.accounts[0].metrics[0].projected_percent = None;
         let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
         assert_eq!(view.line.as_deref(), Some("Weekly: 82% used"));

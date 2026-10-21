@@ -245,8 +245,9 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         if let Some(at) = metric.resets_at().filter(|at| *at > now) {
             detail.push(format!("resets in {}", format::countdown(at - now)));
         }
-        if let Some(outlook) = metric.outlook(now) {
-            detail.push(format::outlook_text(outlook));
+        // The share at the reset and when the limit runs out (#234), as the bars say it.
+        if let Some(forecast) = crate::usage_bar::Forecast::of(metric, now) {
+            detail.push(forecast.text());
         }
         // What is left under a spend limit, derived from spend and limit; never presented as a balance.
         if let Some(headroom) = metric.headroom() {
@@ -395,13 +396,13 @@ fn window_title(metric: &Metric) -> String {
 fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     let used = metric.used_fraction().unwrap_or_default();
-    let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
     let projection = crate::usage_bar::Projection::of(metric, used, now);
-    let pace = metric.outlook(now).map(format::outlook_text);
-    let spoken = match &pace {
-        Some(pace) => format!("{}: {:.0}% used, {pace}", metric.label(), used * 100.0),
-        None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
-    };
+    // The share at the reset and when the limit runs out (#234), as the table's "At reset" column says it.
+    let pace = crate::usage_bar::Forecast::of(metric, now)
+        .map(|forecast| forecast.text())
+        // A used-up limit with no pace left to project still says so, as the table's "At reset" column does.
+        .or_else(|| (used >= 1.0).then(|| "limit reached".to_owned()));
+    let spoken = format!("{}: {}", metric.label(), projection.label);
     let muted = cx.theme().muted_foreground;
     let bar_height = crate::zoom::scaled(14., cx);
     let body = v_flex()
@@ -429,7 +430,7 @@ fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
                 .child(crate::usage_bar::usage_bar(
                     &format!("focus-bar-{slot}-bar"),
                     &projection,
-                    color,
+                    cx.theme().chart_1,
                     bar_height,
                     metric.label().to_owned(),
                     cx,

@@ -79,7 +79,8 @@ fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
         status: codexbar_core::assess(metric, now).label().map(str::to_owned),
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
         projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
-        outlook: metric.outlook(now).map(codexbar_core::format::outlook_text),
+        // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
+        outlook: crate::usage_bar::Forecast::of(metric, now).map(|forecast| forecast.text()),
     }
 }
 
