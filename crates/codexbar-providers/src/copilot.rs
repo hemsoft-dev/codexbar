@@ -230,9 +230,47 @@ fn caps_copilot(budget: &Budget, organization: &str) -> bool {
     own && copilot
 }
 
-/// One line per Copilot budget: how much of it this month's AI credits have spent and whether it stops usage.
-fn budget_line(budget: &Budget, spent: f64) -> String {
+/// Which usage a Copilot budget caps, so it is measured against that usage and no other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BudgetCovers {
+    /// Every AI-credit SKU, whatever the product (`BundlePricing`).
+    AllAiCredits,
+    /// The Copilot product (`ProductPricing`), as the Copilot report counts it.
+    Copilot,
+    /// One Copilot SKU (`SkuPricing`), which the reports don't name the same way: shown, never measured.
+    Sku,
+}
+
+fn budget_covers(budget: &Budget) -> BudgetCovers {
+    if budget.kind.eq_ignore_ascii_case("BundlePricing") {
+        BudgetCovers::AllAiCredits
+    } else if budget.kind.eq_ignore_ascii_case("ProductPricing") {
+        BudgetCovers::Copilot
+    } else {
+        BudgetCovers::Sku
+    }
+}
+
+/// One line per Copilot budget: what it caps, how much of that this month's usage has spent when it can be measured,
+/// and whether it stops usage.
+fn budget_line(budget: &Budget, spent: Option<f64>) -> String {
     let dollars = |amount: f64| format!("${amount:.2}");
+    let name = match budget_covers(budget) {
+        BudgetCovers::AllAiCredits => "AI credits budget".to_owned(),
+        BudgetCovers::Copilot => "Copilot budget".to_owned(),
+        BudgetCovers::Sku => format!("Budget on {}", budget.targets.join(", ")),
+    };
+    let Some(spent) = spent else {
+        let state = if budget.stops_usage {
+            "stops usage at the limit"
+        } else {
+            "doesn't stop usage"
+        };
+        return format!(
+            "{name}: {}, {state}. Its spend isn't measured here.",
+            dollars(budget.amount)
+        );
+    };
     let state = match (budget.stops_usage, spent >= budget.amount) {
         (true, true) => "usage is stopped until the month resets",
         (true, false) => "stops usage at the limit",
@@ -240,7 +278,7 @@ fn budget_line(budget: &Budget, spent: f64) -> String {
         (false, false) => "doesn't stop usage",
     };
     format!(
-        "Copilot budget: {} of {} spent this month, {state}.",
+        "{name}: {} of {} spent this month, {state}.",
         dollars(spent.max(0.0)),
         dollars(budget.amount)
     )
@@ -523,6 +561,34 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         Some(seats * per_seat)
     }
 
+    /// What an organization billed on its own spent this month on every AI credit past its pool, whatever the product:
+    /// its AI-credit report without the product filter.
+    fn all_ai_credits_net(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> Result<f64, ProviderError> {
+        let body = self.org_rest(
+            &format!(
+                "/organizations/{}/settings/billing/ai_credit/usage?year={}&month={}",
+                encode(&billing.organization),
+                now.year(),
+                now.month()
+            ),
+            token,
+            now,
+        )?;
+        let json: Value = serde_json::from_str(&body).map_err(|_| ProviderError::Unexpected {
+            detail: "unreadable AI-credit report",
+        })?;
+        let items = json
+            .get("usageItems")
+            .and_then(Value::as_array)
+            .ok_or(ProviderError::Unexpected {
+                detail: "unreadable AI-credit report",
+            })?;
+        Ok(items
+            .iter()
+            .filter_map(|item| item.get("netAmount").and_then(Value::as_f64))
+            .sum())
+    }
+
     /// The Copilot budgets of an organization billed on its own, from every page of its budget list.
     fn copilot_budgets(
         &self,
@@ -603,8 +669,20 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                 if billing.enterprise.is_none() {
                     match self.copilot_budgets(billing, token, now) {
                         Ok(budgets) => {
+                            // A budget on every AI credit is measured against every product's, read only when one
+                            // exists; one that can't be read leaves it unmeasured rather than low.
+                            let all = budgets
+                                .iter()
+                                .any(|budget| budget_covers(budget) == BudgetCovers::AllAiCredits)
+                                .then(|| self.all_ai_credits_net(billing, token, now).ok())
+                                .flatten();
                             for budget in budgets {
-                                org = org.with_message(budget_line(&budget, consumed.net));
+                                let spent = match budget_covers(&budget) {
+                                    BudgetCovers::AllAiCredits => all,
+                                    BudgetCovers::Copilot => Some(consumed.net),
+                                    BudgetCovers::Sku => None,
+                                };
+                                org = org.with_message(budget_line(&budget, spent));
                             }
                         }
                         Err(_) => org = org.with_message("Its Copilot budgets couldn't be read."),
@@ -1524,12 +1602,20 @@ mod tests {
     const BUSINESS_BILLING: &str = r#"{"seat_breakdown":{"pending_invitation":0,"pending_cancellation":0,
         "added_this_cycle":1,"total":2,"active_this_cycle":1,"inactive_this_cycle":0},
         "seat_management_setting":"assign_selected","plan_type":"business"}"#;
+    /// Every product's AI credits: the Copilot items and a Spark one.
+    const ALL_PRODUCTS_REPORT: &str = r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme-biz",
+        "usageItems":[{"product":"Copilot","sku":"Copilot AI Credits","grossQuantity":4101.24,"netAmount":21.0},
+        {"product":"Spark","sku":"Spark AI Credits","grossQuantity":250.0,"netAmount":2.5}]}"#;
     const BUDGETS: &str = r#"{"budgets":[{"id":"1","budget_type":"ProductPricing","budget_product_sku":"actions",
         "budget_scope":"organization","budget_amount":0,"prevent_further_usage":true,"budget_entity_name":"acme-biz",
         "budget_alerting":{"will_alert":true}},{"id":"2","budget_type":"BundlePricing",
         "budget_product_sku":"ai_credits","budget_scope":"organization","budget_amount":20,
-        "prevent_further_usage":true,"budget_entity_name":"acme-biz","budget_alerting":{"will_alert":true}}],
-        "has_next_page":false,"total_count":2}"#;
+        "prevent_further_usage":true,"budget_entity_name":"acme-biz","budget_alerting":{"will_alert":true}},
+        {"id":"3","budget_type":"ProductPricing","budget_product_sku":"copilot","budget_scope":"organization",
+        "budget_amount":50,"prevent_further_usage":false,"budget_entity_name":"acme-biz"},
+        {"id":"4","budget_type":"SkuPricing","budget_product_sku":"copilot_premium_request",
+        "budget_scope":"organization","budget_amount":5,"prevent_further_usage":true,"budget_entity_name":"acme-biz"}],
+        "has_next_page":false,"total_count":4}"#;
 
     fn business(pool_total: Option<u64>) -> OrgBilling {
         OrgBilling {
@@ -1556,6 +1642,10 @@ mod tests {
             (
                 "/organizations/acme-biz/settings/billing/ai_credit/usage?year=2026&month=10&product=Copilot",
                 ok(ORG_REPORT),
+            ),
+            (
+                "/organizations/acme-biz/settings/billing/ai_credit/usage?year=2026&month=10",
+                ok(ALL_PRODUCTS_REPORT),
             ),
             ("/orgs/acme-biz/copilot/billing", ok(BUSINESS_BILLING)),
             ("/organizations/acme-biz/settings/billing/budgets", ok(BUDGETS)),
@@ -1588,10 +1678,15 @@ mod tests {
         assert_eq!((label.as_str(), *used, *limit), ("AI credits", 4101, 3800));
         assert!(pace.is_some(), "a month-end projection");
         assert_eq!(org.label(), Some("acme-biz"));
-        // Its AI-credit budget, not the Actions one, with what this month's AI credits cost past the pool.
+        // Its Copilot budgets, not the Actions one, each measured against the usage it covers: the AI-credit bundle
+        // against every product's (Spark too), the product budget against Copilot's, the SKU budget not at all.
         assert_eq!(
             org.messages(),
-            ["Copilot budget: $21.00 of $20.00 spent this month, usage is stopped until the month resets."]
+            [
+                "AI credits budget: $23.50 of $20.00 spent this month, usage is stopped until the month resets.",
+                "Copilot budget: $21.00 of $50.00 spent this month, doesn't stop usage.",
+                "Budget on copilot_premium_request: $5.00, stops usage at the limit. Its spend isn't measured here.",
+            ]
         );
         assert_eq!(provider.http.urls("/enterprises/"), 0);
         assert_eq!(provider.http.urls("user=owner"), 0, "no enterprise share to read");
@@ -1766,8 +1861,13 @@ mod tests {
             "acme-biz"
         ));
         assert_eq!(
-            budget_line(&budget("ProductPricing", &["copilot"], "organization", ""), 2.5),
+            budget_line(&budget("ProductPricing", &["copilot"], "organization", ""), Some(2.5)),
             "Copilot budget: $2.50 of $10.00 spent this month, doesn't stop usage."
+        );
+        // A bundle whose every-product report couldn't be read is unmeasured, not shown at zero.
+        assert_eq!(
+            budget_line(&budget("BundlePricing", &["ai_credits"], "organization", ""), None),
+            "AI credits budget: $10.00, doesn't stop usage. Its spend isn't measured here."
         );
     }
 
