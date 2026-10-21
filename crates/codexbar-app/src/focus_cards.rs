@@ -245,9 +245,12 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         if let Some(at) = metric.resets_at().filter(|at| *at > now) {
             detail.push(format!("resets in {}", format::countdown(at - now)));
         }
-        // The share at the reset and when the limit runs out (#234), as the bars say it.
+        // The share at the reset and when the limit runs out (#234), as the bars say it; a used-up limit with no pace
+        // left to project says so, unless the account's credits carry it (#150).
         if let Some(forecast) = crate::usage_bar::Forecast::of(metric, now) {
             detail.push(forecast.text());
+        } else if metric.used_fraction().is_some_and(|used| used >= 1.0) && !account.credits_cover(metric) {
+            detail.push("limit reached".to_owned());
         }
         // What is left under a spend limit, derived from spend and limit; never presented as a balance.
         if let Some(headroom) = metric.headroom() {

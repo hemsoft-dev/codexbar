@@ -168,11 +168,14 @@ pub struct Forecast {
 impl Forecast {
     /// The forecast for `metric` at `now`, when its pace allows one.
     pub fn of(metric: &Metric, now: DateTime<Utc>) -> Option<Self> {
-        let at_reset = metric.projected_at_reset(now)?;
+        let projected = metric.projected_at_reset(now)?;
         let used = metric.used_fraction()?;
-        let (runs_out_in, early) = match metric.outlook(now) {
-            Some(Outlook::Early(early)) if used < 1.0 => (metric.time_to_limit(), Some(early)),
-            _ => (None, None),
+        // A limit hit within a minute of the reset is a full share, not an overrun (#206), so it reads "100% at reset"
+        // and grades as tight rather than at risk.
+        let (at_reset, runs_out_in, early) = match metric.outlook(now) {
+            Some(Outlook::Early(early)) if used < 1.0 => (projected, metric.time_to_limit(), Some(early)),
+            Some(Outlook::Share(_)) if used < 1.0 => (projected.min(1.0), None, None),
+            _ => (projected, None, None),
         };
         Some(Self {
             at_reset,
@@ -635,6 +638,22 @@ mod tests {
             "{}",
             projection.tooltip
         );
+    }
+
+    /// The limit hit within a minute of the reset (#206): a full share, tight, never "runs out" at the reset.
+    #[test]
+    fn a_limit_hit_at_the_reset_is_a_full_share_not_an_overrun() {
+        // 0.5%/h with 10% left and the reset 20h 0m 30s away: the limit comes 30s early.
+        let metric = Metric::Window {
+            label: "Weekly".into(),
+            used: 0.9,
+            resets_at: now() + Duration::seconds(20 * 3600 + 30),
+            pace: Some(Pace::per_hour(0.005)),
+            length: None,
+        };
+        let forecast = Forecast::of(&metric, now()).unwrap();
+        assert_eq!(forecast.runway(), Runway::Tight);
+        assert_eq!(forecast.text(), "100% at reset · near limit");
     }
 
     #[test]

@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn a_paced_window_carries_its_projection_and_an_unpaced_one_none() {
-        // 1%/h with 48h left on top of 42%: on pace for 90% by the reset (#197).
+        // 1%/h with 48h left on top of 42%: 90% at the reset (#197), near the limit (#234).
         let paced = AccountSnapshot::new(
             AccountId::new("claude-2"),
             Provider::Claude,
@@ -172,7 +172,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.accounts[0].metrics[0].outlook.as_deref(),
-            Some("on pace for 90%")
+            Some("90% at reset · near limit")
         );
         assert_eq!(
             snapshot.accounts[1].metrics[0].projected_percent, None,
