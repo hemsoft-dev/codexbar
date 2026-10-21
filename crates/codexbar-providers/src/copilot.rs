@@ -225,10 +225,11 @@ fn caps_copilot(budget: &Budget, organization: &str) -> bool {
             budget.targets.is_empty() || targets(&|t| t == "ai_credits" || t.starts_with("copilot"))
         }
         kind if kind.eq_ignore_ascii_case("ProductPricing") => targets(&|t| t == "copilot"),
-        // GitHub's Copilot SKUs: `copilot_ai_credit`, `copilot_for_business` and the like, and the cloud agent's
-        // `coding_agent_ai_credit`, which has no prefix.
+        // GitHub's Copilot AI-credit SKUs: `copilot_ai_credit` and the cloud agent's `coding_agent_ai_credit`. Its
+        // license SKUs (`copilot_for_business`, `copilot_enterprise`, `copilot_standalone`) are budgeted in seats,
+        // not dollars, and aren't AI credits, so they stay off this card.
         kind if kind.eq_ignore_ascii_case("SkuPricing") => {
-            targets(&|t| t.starts_with("copilot") || t == "coding_agent_ai_credit")
+            targets(&|t| t == "coding_agent_ai_credit" || (t.starts_with("copilot") && t.contains("ai_credit")))
         }
         _ => false,
     };
@@ -1640,7 +1641,7 @@ mod tests {
         "prevent_further_usage":true,"budget_entity_name":"acme-biz","budget_alerting":{"will_alert":true}},
         {"id":"3","budget_type":"ProductPricing","budget_product_sku":"copilot","budget_scope":"organization",
         "budget_amount":50,"prevent_further_usage":false,"budget_entity_name":"acme-biz"},
-        {"id":"4","budget_type":"SkuPricing","budget_product_sku":"copilot_premium_request",
+        {"id":"4","budget_type":"SkuPricing","budget_product_sku":"copilot_ai_credit",
         "budget_scope":"organization","budget_amount":5,"prevent_further_usage":true,"budget_entity_name":"acme-biz"}],
         "has_next_page":false,"total_count":4}"#;
 
@@ -1712,7 +1713,7 @@ mod tests {
             [
                 "AI credits budget: $23.50 of $20.00 spent this month, usage is stopped until the month resets.",
                 "Copilot budget: $21.00 of $50.00 spent this month, doesn't stop usage.",
-                "Budget on copilot_premium_request: $5.00, stops usage at the limit. Its spend isn't measured here.",
+                "Budget on copilot_ai_credit: $5.00, stops usage at the limit. Its spend isn't measured here.",
             ]
         );
         assert_eq!(provider.http.urls("/enterprises/"), 0);
@@ -1906,9 +1907,16 @@ mod tests {
             "acme-biz"
         ));
         assert!(caps_copilot(
-            &budget("SkuPricing", &["copilot_premium_request"], "organization", "acme-biz"),
+            &budget("SkuPricing", &["copilot_ai_credit"], "organization", "acme-biz"),
             "acme-biz"
         ));
+        assert!(
+            !caps_copilot(
+                &budget("SkuPricing", &["copilot_for_business"], "organization", "acme-biz"),
+                "acme-biz"
+            ),
+            "a license budget counts seats, not AI credits"
+        );
         assert!(!caps_copilot(
             &budget("ProductPricing", &["actions"], "organization", "acme-biz"),
             "acme-biz"
