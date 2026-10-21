@@ -33,7 +33,9 @@ const ORG_NO_ACCESS: &str = "This account can't read the organization's Copilot 
 /// The most budget pages read: 10,000 budgets.
 const MAX_BUDGET_PAGES: u32 = 100;
 const BUDGETS_UNREAD: &str = "Its Copilot budgets couldn't be read.";
-const ORG_NOT_FOUND: &str = "GitHub doesn't know that organization. Check its name in Settings > Accounts.";
+const ORG_NOT_FOUND: &str = "GitHub has no such organization, or this account can't see its billing. Check the \
+                             organization's name in Settings > Accounts, and that this account is an owner or billing \
+                             manager there.";
 /// The hint for an account CodexBar signed in.
 pub const MANAGED_LOGIN: &str = "Sign in again in Settings > Accounts.";
 const HOST: &str = "github.com";
@@ -367,20 +369,22 @@ fn budget_line(budget: &Budget, spent: Option<f64>, pool_used_up: bool) -> Strin
             dollars(budget.amount)
         );
     };
-    let reached = if budget.amount > 0.0 {
-        spent >= budget.amount
-    } else {
-        spent > 0.0 || pool_used_up
-    };
-    let state = match (budget.stops_usage, reached) {
-        (true, true) => "usage is stopped until the month resets",
-        (true, false) if budget.amount > 0.0 => "stops usage at the limit",
+    // A budget counts spend only from when it was created, which GitHub doesn't say, so the month's spend can't tell
+    // whether one is reached: its own setting is shown, and only a $0 budget is known to stop usage, once the pool
+    // is used up.
+    let state = match (budget.stops_usage, budget.amount > 0.0) {
+        (true, true) => "stops usage at the limit",
+        (true, false) if pool_used_up => "usage is stopped until the month resets",
         (true, false) => "stops usage once the included AI credits run out",
-        (false, true) => "past its limit; it doesn't stop usage",
-        (false, false) => "doesn't stop usage",
+        (false, _) => "doesn't stop usage",
+    };
+    let earlier = if budget.amount > 0.0 && spent >= budget.amount {
+        " Spend from before the budget was created doesn't count toward it."
+    } else {
+        ""
     };
     format!(
-        "{name}: {} of {} spent this month, {state}.",
+        "{name}: {} of {} spent this month, {state}.{earlier}",
         dollars(spent.max(0.0)),
         dollars(budget.amount)
     )
@@ -568,14 +572,17 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             return Err(ProviderError::RateLimited { retry_at });
         }
         let response = self.get(path, token)?;
-        let retry_at = now
-            + chrono::Duration::seconds(
-                response
-                    .retry_after_secs
-                    // GitHub's whole wait, however long (a year at most, so the time stays representable).
-                    .map_or(RATE_LIMIT_WAIT, |secs| secs.min(365 * 24 * 3600) as i64),
-            );
-        let rate_limited = response.retry_after_secs.is_some() || response.body.to_lowercase().contains("rate limit");
+        // GitHub's whole wait: its Retry-After (a year at most, so the time stays representable), else the reset of a
+        // used-up primary limit, else a minute.
+        let reset = response.rate_limit_reset.filter(|reset| *reset > now);
+        let retry_at = match (response.retry_after_secs, reset) {
+            (Some(secs), _) => now + chrono::Duration::seconds(secs.min(365 * 24 * 3600) as i64),
+            (None, Some(reset)) => reset,
+            (None, None) => now + chrono::Duration::seconds(RATE_LIMIT_WAIT),
+        };
+        let rate_limited = response.retry_after_secs.is_some()
+            || reset.is_some()
+            || response.body.to_lowercase().contains("rate limit");
         match response.status {
             200..=299 => Ok(response.body),
             429 => Err(back_off(key, retry_at)),
@@ -772,12 +779,40 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         Ok((budgets, all))
     }
 
-    /// The org billing set for `username`.
-    fn billing_for(&self, username: &str) -> Option<&OrgBilling> {
+    /// Every organization billed on its own that `username` is set to read: one GitHub account can be an owner or
+    /// billing manager of several (#233).
+    fn org_only_billing(&self, username: &str) -> Vec<&OrgBilling> {
         self.billing
             .iter()
-            .find(|(user, _)| user.eq_ignore_ascii_case(username))
+            .filter(|(user, billing)| user.eq_ignore_ascii_case(username) && billing.enterprise.is_none())
             .map(|(_, billing)| billing)
+            .collect()
+    }
+
+    /// The enterprise billing set for `username`: its seat's own share, so one at most.
+    fn enterprise_billing(&self, username: &str) -> Option<&OrgBilling> {
+        self.billing
+            .iter()
+            .find(|(user, billing)| user.eq_ignore_ascii_case(username) && billing.enterprise.is_some())
+            .map(|(_, billing)| billing)
+    }
+
+    /// A configured organization whose token couldn't be had keeps its card as a failure, with its last good usage,
+    /// rather than dropping off the dashboard.
+    fn org_unreadable(&self, username: &str, error: &ProviderError, orgs: &mut Vec<OrgRead>) {
+        for billing in self.org_only_billing(username) {
+            if !orgs
+                .iter()
+                .any(|org| org.billing.organization.eq_ignore_ascii_case(&billing.organization))
+            {
+                orgs.push(OrgRead {
+                    billing: billing.clone(),
+                    credits: Err(error.clone()),
+                    pool: None,
+                    budgets: None,
+                });
+            }
+        }
     }
 
     /// Reads the organization's AI credits with `token` and keeps what it reads in `orgs`, one per organization. Each
@@ -835,13 +870,12 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         orgs: &mut Vec<OrgRead>,
     ) -> AccountSnapshot {
         let username = account.label().unwrap_or_default().to_owned();
-        let Some(billing) = self.billing_for(&username) else {
+        for billing in self.org_only_billing(&username) {
+            let _ = self.add_org(billing, token, now, orgs);
+        }
+        let Some(billing) = self.enterprise_billing(&username) else {
             return account;
         };
-        if billing.enterprise.is_none() {
-            let _ = self.add_org(billing, token, now, orgs);
-            return account;
-        }
         let eligible = seat
             .plan
             .as_deref()
@@ -1012,6 +1046,7 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
             let token = match self.token(username) {
                 Ok(token) => token,
                 Err(error) => {
+                    self.org_unreadable(username, &error, &mut orgs);
                     outcomes.push(failed(error));
                     continue;
                 }
@@ -1026,29 +1061,32 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                     // quotas (#233): a seatless owner or billing manager still reads it, and so does any account
                     // whose quota request failed, which keeps its own failure. A seatless account says why it has no
                     // quotas instead of failing.
-                    let org_only = self
-                        .billing_for(username)
-                        .filter(|billing| billing.enterprise.is_none());
-                    let read = org_only.map(|billing| (billing, self.add_org(billing, &token, now, &mut orgs)));
-                    match read {
-                        Some((billing, read)) if error == (ProviderError::Unexpected { detail: NO_SEAT }) => {
-                            let message = match read {
-                                Ok(_) => format!(
-                                    "No Copilot seat on this account. It shows {}'s AI credits.",
-                                    billing.organization
-                                ),
-                                Err(_) => format!(
-                                    "No Copilot seat on this account. {}'s AI credits couldn't be read with it.",
-                                    billing.organization
-                                ),
-                            };
-                            outcomes.push(AccountOutcome::Fresh(
-                                AccountSnapshot::new(account_id(username), Provider::Copilot, Vec::new(), now)
-                                    .with_label(username)
-                                    .with_message(message),
+                    let (mut shown, mut unread) = (Vec::new(), Vec::new());
+                    for billing in self.org_only_billing(username) {
+                        match self.add_org(billing, &token, now, &mut orgs) {
+                            Ok(_) => shown.push(billing.organization.clone()),
+                            Err(_) => unread.push(billing.organization.clone()),
+                        }
+                    }
+                    let seatless = error == (ProviderError::Unexpected { detail: NO_SEAT });
+                    if seatless && !(shown.is_empty() && unread.is_empty()) {
+                        let mut message = "No Copilot seat on this account.".to_owned();
+                        if !shown.is_empty() {
+                            message.push_str(&format!(" It shows {}'s AI credits.", shown.join(" and ")));
+                        }
+                        if !unread.is_empty() {
+                            message.push_str(&format!(
+                                " {}'s AI credits couldn't be read with it.",
+                                unread.join(" and ")
                             ));
                         }
-                        _ => outcomes.push(failed(error)),
+                        outcomes.push(AccountOutcome::Fresh(
+                            AccountSnapshot::new(account_id(username), Provider::Copilot, Vec::new(), now)
+                                .with_label(username)
+                                .with_message(message),
+                        ));
+                    } else {
+                        outcomes.push(failed(error));
                     }
                 }
             }
@@ -1781,7 +1819,8 @@ mod tests {
         assert_eq!(
             org.messages(),
             [
-                "AI credits budget: $23.50 of $20.00 spent this month, usage is stopped until the month resets.",
+                "AI credits budget: $23.50 of $20.00 spent this month, stops usage at the limit. Spend from before the \
+                 budget was created doesn't count toward it.",
                 "Copilot budget: $21.00 of $50.00 spent this month, doesn't stop usage.",
                 "Budget on copilot_ai_credit: $5.00, stops usage at the limit. Its spend isn't measured here.",
             ]
@@ -2054,6 +2093,48 @@ mod tests {
     }
 
     #[test]
+    fn one_account_reads_every_organization_it_is_set_for() {
+        let http = Routes::new(vec![
+            ("ai_credit/usage", ok(EMPTY_REPORT)),
+            ("/budgets", ok(r#"{"budgets":[]}"#)),
+        ]);
+        let other = OrgBilling {
+            organization: "acme-two".to_owned(),
+            ..business(Some(1000))
+        };
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_two_orgs")
+            .with_billing("owner", business(Some(1000)))
+            .with_billing("owner", other);
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let ids: Vec<&str> = fresh(&outcomes).iter().map(|a| a.id().as_str()).collect();
+        assert_eq!(ids, ["copilot-owner", "copilotorg-acme-biz", "copilotorg-acme-two"]);
+        let AccountOutcome::Fresh(user) = &outcomes[0] else {
+            panic!("user")
+        };
+        assert_eq!(
+            user.messages(),
+            ["No Copilot seat on this account. It shows acme-biz and acme-two's AI credits."]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_token_keeps_the_organization_card_as_a_failure() {
+        // The GitHub CLI lists fhemmerrelias, but its token can't be had; its organization's card stays, failed.
+        let gh = FakeGh {
+            tokens: HashMap::from([("HemSoft", "tok-a")]),
+        };
+        let provider = CopilotProvider::new(Routes::new(vec![("copilot_internal/user", ok(USER))]), gh)
+            .with_billing("fhemmerrelias", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Failed { error, .. } = org_card(&outcomes) else {
+            panic!("the organization's card stays, failed")
+        };
+        assert_eq!(error, &ProviderError::NotSignedIn { hint: GH_LOGIN });
+    }
+
+    #[test]
     fn a_seatless_account_without_org_billing_still_fails() {
         let provider = CopilotProvider::new(Routes::new(Vec::new()), NoGh)
             .without_cli()
@@ -2074,6 +2155,15 @@ mod tests {
             (
                 HttpResponse::new(404, r#"{"message":"Not Found"}"#),
                 ProviderError::Refused { reason: ORG_NOT_FOUND },
+            ),
+            (
+                HttpResponse {
+                    rate_limit_reset: Some(now() + chrono::Duration::minutes(47)),
+                    ..HttpResponse::new(403, r#"{"message":"API rate limit exceeded"}"#)
+                },
+                ProviderError::RateLimited {
+                    retry_at: now() + chrono::Duration::minutes(47),
+                },
             ),
             (
                 HttpResponse {
