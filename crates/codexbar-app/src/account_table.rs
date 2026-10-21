@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::usage_bar::{Forecast, Projection, usage_bar};
 use chrono::{DateTime, Utc};
-use codexbar_core::{AccountSnapshot, Metric, format};
+use codexbar_core::{AccountSnapshot, Metric, Provider, format};
 use codexbar_store::summary::HistorySummary;
 use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
@@ -175,6 +175,33 @@ impl WindowKind {
     }
 }
 
+/// The metric an account's row shows: its primary one, except that a Claude row shows the weekly window when the
+/// primary is the 5-hour one (#246). The week is what paces a Claude subscription; the 5-hour window resets several
+/// times a day. Everything else (focus cards, the tooltip, alerts, widgets) keeps the primary metric.
+pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
+    let primary = account.primary()?;
+    if account.provider() == Provider::Claude
+        && WindowKind::of(primary.label()) == Some(WindowKind::FiveHour)
+        && matches!(primary, Metric::Window { .. })
+        && let Some(weekly) = WindowKind::Weekly.in_account(account)
+    {
+        return Some(weekly);
+    }
+    Some(primary)
+}
+
+/// The daily trend of the metric an account's row shows (#246): the account's own trend for its primary metric, else
+/// that limit's stored series.
+fn row_trend(account: &AccountSnapshot) -> &[f64] {
+    match (row_metric(account), account.primary()) {
+        (Some(metric), Some(primary)) if metric.key() != primary.key() => account
+            .detail()
+            .limit_series(&metric.key())
+            .map_or(&[], |series| series.trend.as_slice()),
+        _ => account.trend(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum WindowCell {
     Percent,
@@ -183,7 +210,7 @@ enum WindowCell {
     Resets,
 }
 
-/// The columns at the usual width: one metric per row, its primary one.
+/// The columns at the usual width: one metric per row, the one `row_metric` picks.
 const NARROW: [Col; 8] = [
     Col::Account,
     Col::Limit,
@@ -242,7 +269,7 @@ const TREND_WIDTH: f32 = 140.;
 const WINDOW_PERCENT_WIDTH: f32 = 72.;
 const WINDOW_BAR_WIDTH: f32 = 140.;
 
-/// Each account's stored history summary for its primary metric, by account id.
+/// Each account's stored history summary for the metric its row shows (#246), by account id.
 pub type Compact = HashMap<String, (HistorySummary, ValueKind)>;
 
 /// Where an account's shown usage comes from (#76).
@@ -511,7 +538,7 @@ impl TableDelegate for AccountTable {
         };
         let assessment = row.assess(self.now);
         let severity = assessment.severity();
-        let primary = row.primary();
+        let primary = row_metric(row);
         let muted = cx.theme().muted_foreground;
         // Wide, a standard window has its own columns; the primary pair then shows only what is neither (#195).
         let own_pair = if self.wide {
@@ -928,7 +955,8 @@ fn limit_label(metric: &Metric) -> String {
 /// A 14-day pressure trend. A sparkline shows shape, not level (the progress column shows level),
 /// so each row fits its own range.
 fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> gpui_kit::AnyElement {
-    if row.trend().len() < 2 {
+    let trend = row_trend(row);
+    if trend.len() < 2 {
         // Real providers have no history until #85 stores it.
         return div()
             .text_color(cx.theme().muted_foreground)
@@ -936,13 +964,12 @@ fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> g
             .into_any_element();
     }
     let color = cx.theme().chart_1;
-    let points: Vec<(SharedString, f64)> = row
-        .trend()
+    let points: Vec<(SharedString, f64)> = trend
         .iter()
         .enumerate()
         .map(|(ix, value)| (SharedString::from(ix.to_string()), *value))
         .collect();
-    let (low, high) = row.trend().iter().fold((f64::MAX, f64::MIN), |(low, high), value| {
+    let (low, high) = trend.iter().fold((f64::MAX, f64::MIN), |(low, high), value| {
         (low.min(*value), high.max(*value))
     });
     let pad = ((high - low) * 0.15).max(0.01);
@@ -994,6 +1021,93 @@ mod tests {
 
     fn account(metrics: Vec<Metric>) -> AccountSnapshot {
         AccountSnapshot::new(AccountId::new("codex-1"), Provider::Codex, metrics, now())
+    }
+
+    fn claude(metrics: Vec<Metric>) -> AccountSnapshot {
+        AccountSnapshot::new(AccountId::new("claude-1"), Provider::Claude, metrics, now())
+    }
+
+    /// #246: Claude lists its 5-hour window first; its row shows the weekly one, which paces the subscription.
+    #[test]
+    fn a_claude_row_shows_the_weekly_window_not_the_five_hour_one() {
+        let five_hour = window("5-hour window", 0.64, Duration::minutes(72), Pace::per_hour(0.12));
+        let weekly = window("Weekly", 0.82, Duration::days(2), Pace::per_day(0.05));
+        let opus = window("Weekly Opus", 0.3, Duration::days(2), Pace::per_day(0.02));
+        let row = claude(vec![five_hour.clone(), weekly.clone(), opus]);
+        assert_eq!(row_metric(&row), Some(&weekly));
+        assert_eq!(
+            row.primary(),
+            Some(&five_hour),
+            "everything else keeps the 5-hour window"
+        );
+    }
+
+    #[test]
+    fn a_claude_row_without_a_weekly_window_shows_its_first_metric() {
+        let five_hour = window("5-hour window", 0.64, Duration::minutes(72), Pace::per_hour(0.12));
+        let row = claude(vec![five_hour.clone()]);
+        assert_eq!(row_metric(&row), Some(&five_hour));
+        assert_eq!(row_metric(&claude(Vec::new())), None);
+    }
+
+    /// Credits lead when a window is used up and they can still be spent (#150); the row keeps showing them.
+    #[test]
+    fn a_claude_row_led_by_its_credits_keeps_showing_them() {
+        let credits = Metric::Credits {
+            label: "Extra usage".into(),
+            balance: Some(12.0),
+            start: None,
+        };
+        let row = claude(vec![
+            credits.clone(),
+            window("5-hour window", 1.0, Duration::minutes(30), Pace::per_hour(0.2)),
+            window("Weekly", 0.82, Duration::days(2), Pace::per_day(0.05)),
+        ]);
+        assert_eq!(row_metric(&row), Some(&credits));
+    }
+
+    /// Other providers' rows keep their primary metric, even with the same two windows.
+    #[test]
+    fn other_providers_rows_keep_their_primary_metric() {
+        let five_hour = window("5-hour window", 0.91, Duration::minutes(38), Pace::per_hour(0.216));
+        let weekly = window("Weekly", 0.53, Duration::days(6), Pace::per_hour(0.00007));
+        let row = account(vec![five_hour.clone(), weekly]);
+        assert_eq!(row_metric(&row), Some(&five_hour));
+    }
+
+    /// The row's sparkline follows the row's metric: Weekly's stored series for Claude, the account's own trend else.
+    #[test]
+    fn a_claude_rows_trend_is_the_weekly_windows() {
+        use codexbar_core::{AccountDetail, LimitSeries};
+        let five_hour = window("5-hour window", 0.64, Duration::minutes(72), Pace::per_hour(0.12));
+        let weekly = window("Weekly", 0.82, Duration::days(2), Pace::per_day(0.05));
+        let row = claude(vec![five_hour, weekly])
+            .with_trend(vec![0.9, 0.5, 0.95])
+            .with_detail(AccountDetail::default().with_limit_series(
+                "weekly",
+                LimitSeries {
+                    curve: None,
+                    trend: vec![0.7, 0.76, 0.82],
+                },
+            ));
+        assert_eq!(row_trend(&row), [0.7, 0.76, 0.82]);
+        let codex = account(vec![window(
+            "5-hour window",
+            0.2,
+            Duration::hours(1),
+            Pace::per_hour(0.1),
+        )])
+        .with_trend(vec![0.1, 0.2]);
+        assert_eq!(row_trend(&codex), [0.1, 0.2]);
+        let no_series = claude(vec![
+            window("5-hour window", 0.64, Duration::minutes(72), Pace::per_hour(0.12)),
+            window("Weekly", 0.82, Duration::days(2), Pace::per_day(0.05)),
+        ])
+        .with_trend(vec![0.9, 0.5]);
+        assert!(
+            row_trend(&no_series).is_empty(),
+            "never the 5-hour window's trend under the weekly window"
+        );
     }
 
     /// The screenshot on #203: the 5-hour window about to run out, the weekly window on pace for 54%.

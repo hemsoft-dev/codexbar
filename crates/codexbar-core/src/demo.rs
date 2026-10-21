@@ -60,20 +60,21 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
         AccountSnapshot::new(
             AccountId::new("claude-personal"),
             Provider::Claude,
+            // In the provider's order (#246): 5-hour first, then Weekly, which the usage table's row shows.
             vec![
-                Metric::Window {
-                    label: "Weekly".into(),
-                    used: 0.82,
-                    resets_at: thursday_nine,
-                    pace: Some(Pace::per_day(0.05)),
-                    length: Some(Duration::days(7)),
-                },
                 Metric::Window {
                     label: "5-hour window".into(),
                     used: 0.64,
                     resets_at: now + Duration::minutes(72),
                     pace: Some(Pace::per_hour(0.12)),
                     length: Some(Duration::hours(5)),
+                },
+                Metric::Window {
+                    label: "Weekly".into(),
+                    used: 0.82,
+                    resets_at: thursday_nine,
+                    pace: Some(Pace::per_day(0.05)),
+                    length: Some(Duration::days(7)),
                 },
                 // #215: Extra usage bills in the account's own currency, so the Spend view totals euros apart.
                 Metric::Spend {
@@ -87,8 +88,9 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             fetched,
         )
         .with_label("personal")
+        // The primary metric's trend, the 5-hour window's daily peaks; Weekly's is a limit series (#246).
         .with_trend(vec![
-            0.4, 0.44, 0.5, 0.47, 0.55, 0.6, 0.58, 0.63, 0.66, 0.7, 0.72, 0.76, 0.79, 0.82,
+            0.55, 0.7, 0.92, 0.48, 0.66, 0.81, 0.97, 0.6, 0.74, 0.88, 0.52, 0.79, 0.95, 0.64,
         ])
         .with_detail(claude_detail()),
         AccountSnapshot::new(
@@ -467,13 +469,15 @@ fn claude_detail() -> AccountDetail {
         0.02, 0.05, 0.07, 0.11, 0.14, 0.16, 0.2, 0.25, 0.29, 0.33, 0.36, 0.4, 0.45, 0.49, 0.52, 0.55, 0.6, 0.64, 0.67,
         0.7, 0.74, 0.77, 0.8, 0.83, 0.85, 0.88, 0.9, 0.91, 0.93, 0.94, 0.95,
     ];
+    // The 5-hour window is the primary metric, as the provider lists it (#246), so its curve is the account's own.
     AccountDetail::default()
+        .with_window_curve(WindowCurve::new(labels, current, previous))
         .with_limit_series(
-            "5-hour-window",
+            "weekly",
             LimitSeries {
-                curve: Some(WindowCurve::new(labels, current, previous)),
+                curve: None,
                 trend: vec![
-                    0.55, 0.7, 0.92, 0.48, 0.66, 0.81, 0.97, 0.6, 0.74, 0.88, 0.52, 0.79, 0.95, 0.64,
+                    0.4, 0.44, 0.5, 0.47, 0.55, 0.6, 0.58, 0.63, 0.66, 0.7, 0.72, 0.76, 0.79, 0.82,
                 ],
             },
         )

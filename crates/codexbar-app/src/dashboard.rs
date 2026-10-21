@@ -1451,14 +1451,14 @@ impl Dashboard {
         });
     }
 
-    /// The compact history for each account's primary metric over the trend's 14 days (#86).
+    /// The compact history for the metric each account's table row shows (#246) over the trend's 14 days (#86).
     fn compact_history(&self, accounts: &[AccountSnapshot]) -> Compact {
         let since = self.now - Duration::days(TREND_DAYS as i64);
         let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         accounts
             .iter()
             .filter_map(|account| {
-                let metric = account.primary()?;
+                let metric = crate::account_table::row_metric(account)?;
                 let points = history.points(account.id().as_str(), &metric.key(), since, self.now);
                 let summary = summarize(&points, self.now, GAP_THRESHOLD)?;
                 Some((account.id().as_str().to_owned(), (summary, ValueKind::of(metric))))
