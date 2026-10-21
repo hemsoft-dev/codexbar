@@ -272,6 +272,12 @@ fn the_title_bar_shows_the_version_on_every_view(cx: &mut TestAppContext) {
     let settings = TempSettings::new("title-version", "{}");
     let (handle, dashboard) = open_dashboard(cx, &settings);
     let expected = format!("CodexBar {}", crate::version::current());
+    let native = gpui_kit::VisualTestContext::from_window(handle, cx).window_title();
+    assert_eq!(
+        native.as_deref(),
+        Some(expected.as_str()),
+        "the taskbar and Alt+Tab show it too"
+    );
     assert!(
         crate::version::current().starts_with(&crate::version_scheme::package_style(env!("CARGO_PKG_VERSION"), None))
     );

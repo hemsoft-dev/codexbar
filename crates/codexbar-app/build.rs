@@ -68,14 +68,18 @@ fn embed_windows_icon() {
 /// is left out; the build doesn't fail over it.
 fn stamp_version() {
     println!("cargo:rerun-if-env-changed=CODEXBAR_VERSION");
-    let version = match std::env::var("CODEXBAR_VERSION") {
-        Ok(version) if !version.trim().is_empty() => version.trim().to_owned(),
+    let (version, source) = match std::env::var("CODEXBAR_VERSION") {
+        Ok(version) if !version.trim().is_empty() => (version.trim().to_owned(), "stamped"),
         _ => {
             let commits = git(&["rev-list", "--count", "HEAD"]).and_then(|count| count.parse().ok());
-            version_scheme::package_style(&std::env::var("CARGO_PKG_VERSION").expect("cargo sets it"), commits)
+            let cargo = std::env::var("CARGO_PKG_VERSION").expect("cargo sets it");
+            let source = if commits.is_some() { "git" } else { "no-git" };
+            (version_scheme::package_style(&cargo, commits), source)
         }
     };
     println!("cargo:rustc-env=CODEXBAR_VERSION={version}");
+    // Where the version came from, so the app's tests can check it exactly.
+    println!("cargo:rustc-env=CODEXBAR_VERSION_SOURCE={source}");
     watch_git_head();
 }
 
