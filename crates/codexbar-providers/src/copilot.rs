@@ -706,8 +706,9 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             .map(|(_, billing)| billing)
     }
 
-    /// Reads the organization's AI credits with `token` and keeps its account in `orgs`, one per organization; a later
-    /// user whose token can read it replaces an earlier failure.
+    /// Reads the organization's AI credits with `token` and keeps its account in `orgs`, one per organization. A later
+    /// user's token completes what an earlier one couldn't: it replaces a failure, and a card without its pool (the
+    /// seat count is for owners only, so a billing manager's token reads the credits but not the limit).
     fn add_org(
         &self,
         billing: &OrgBilling,
@@ -721,8 +722,17 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             .find(|(org, _)| org.eq_ignore_ascii_case(&billing.organization))
         {
             Some((_, outcome)) => {
-                if matches!(outcome, AccountOutcome::Failed { .. }) && consumed.is_ok() {
-                    *outcome = self.org_outcome(billing, &consumed, token, now);
+                let incomplete = match outcome {
+                    AccountOutcome::Failed { .. } => true,
+                    AccountOutcome::Fresh(card) => card.metrics().is_empty(),
+                };
+                if incomplete && consumed.is_ok() {
+                    let read = self.org_outcome(billing, &consumed, token, now);
+                    let better = matches!(outcome, AccountOutcome::Failed { .. })
+                        || matches!(&read, AccountOutcome::Fresh(card) if !card.metrics().is_empty());
+                    if better {
+                        *outcome = read;
+                    }
                 }
             }
             None => orgs.push((
@@ -1710,6 +1720,40 @@ mod tests {
         );
         assert_eq!(provider.http.urls("/organizations/"), 0);
         assert_eq!(provider.http.urls("product=Copilot"), 0);
+    }
+
+    #[test]
+    fn an_owner_configured_after_a_billing_manager_completes_the_pool() {
+        // Both bill acme-biz with no pool total. The billing manager's token reads the credits but not the owner-only
+        // seat count; the owner's, read second, can, and its pool replaces the card without one.
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            ("ai_credit/usage", ok(ORG_REPORT)),
+            ("/orgs/acme-biz/copilot/billing|Bearer gho_owner", ok(BUSINESS_BILLING)),
+            ("/orgs/acme-biz/copilot/billing", HttpResponse::new(403, "")),
+            ("/budgets", ok(r#"{"budgets":[],"has_next_page":false}"#)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("manager", "gho_manager")
+            .with_login("owner", "gho_owner")
+            .with_billing("manager", business(None))
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let cards = outcomes
+            .iter()
+            .filter(
+                |outcome| matches!(outcome, AccountOutcome::Fresh(card) if card.id().as_str() == "copilotorg-acme-biz"),
+            )
+            .count();
+        assert_eq!(cards, 1, "one card per organization");
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("org")
+        };
+        let Some(Metric::Quota { used, limit, .. }) = org.primary() else {
+            panic!("the owner's token completes the pool: {:?}", org.messages())
+        };
+        assert_eq!((*used, *limit), (4101, 3800));
     }
 
     #[test]
