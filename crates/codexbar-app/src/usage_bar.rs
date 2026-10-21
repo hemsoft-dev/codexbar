@@ -112,8 +112,8 @@ pub struct BarLayout {
     pub track_from: f32,
     /// The tick at the projected share, and whether the projection runs past the limit.
     pub tick: Option<Tick>,
-    /// The limit marker's position: 100% of the limit, 0.8 of the bar.
-    pub limit: f32,
+    /// The limit marker's position: 100% of the limit, 0.8 of the bar. `None` on a bar with no limit behind it.
+    pub limit: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -130,7 +130,7 @@ impl BarLayout {
     pub fn of(used: f64, projected: Option<f64>) -> Self {
         let used = used.clamp(0.0, 1.0);
         let used_at = position(used);
-        let limit = position(1.0);
+        let limit = Some(position(1.0));
         let projected = projected.filter(|share| share.is_finite() && *share > used);
         let Some(share) = projected else {
             return Self {
@@ -157,6 +157,20 @@ impl BarLayout {
                 past_limit: share > 1.0,
             }),
             limit,
+        }
+    }
+
+    /// A bar with no limit behind it (#234): a credit pool's spend, a balance's or an account's pressure. It runs the
+    /// whole width at 100%, as its percentage says, with no marker and nothing projected.
+    pub fn plain(used: f64) -> Self {
+        Self {
+            used: used.clamp(0.0, 1.0) as f32,
+            run: None,
+            over: None,
+            clipped: false,
+            track_from: 0.,
+            tick: None,
+            limit: None,
         }
     }
 }
@@ -262,6 +276,9 @@ pub struct Projection {
     pub projected: Option<f64>,
     /// How the bar stands, which picks its color.
     pub runway: Runway,
+    /// Whether the bar stands for a limit: drawn on the runway's 0 to 125% scale with the limit marked. A credit pool,
+    /// a balance or an account's pressure isn't one and runs the plain 0 to 100% width.
+    pub limited: bool,
     /// "42% used, 78% at reset", "91% used, 112% at reset · runs out in 25m" (#234), or "42% used" with nothing
     /// projected: the accessibility label.
     pub label: String,
@@ -314,6 +331,10 @@ impl Projection {
             projected,
             // Credits have no limit to run into (#150): their bar runs on the spend since the last top-up and stays
             // calm, as `codexbar_core::assess` keeps them.
+            limited: matches!(
+                metric,
+                Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { limit: Some(_), .. }
+            ),
             runway: match metric {
                 Metric::Credits { .. } => Runway::Ok,
                 // A balance has no limit: its bar runs on the pressure of its days left, graded by its severity.
@@ -334,6 +355,7 @@ impl Projection {
             used,
             projected: None,
             runway: Runway::of(used, None),
+            limited: false,
             label: share.clone(),
             tooltip: share,
         }
@@ -429,7 +451,11 @@ pub fn usage_bar(
     spoken_name: impl Into<SharedString>,
     cx: &App,
 ) -> AnyElement {
-    let layout = BarLayout::of(projection.used, projection.projected);
+    let layout = if projection.limited {
+        BarLayout::of(projection.used, projection.projected)
+    } else {
+        BarLayout::plain(projection.used)
+    };
     let color = projection.runway.color(calm, cx);
     let tooltip: SharedString = projection.tooltip.clone().into();
     let spoken: SharedString = spoken_name.into();
@@ -506,18 +532,20 @@ pub fn usage_bar(
                         .child(solid),
                 )
                 // The limit marker and the tick stand outside the clipped bar, so they stand proud of it.
-                .child(
-                    div()
-                        .id(ElementId::Name(format!("{id}-limit").into()))
-                        .test_support()
-                        .absolute()
-                        .top(px(-LIMIT_OVERHANG))
-                        .left(relative(layout.limit))
-                        .ml(px(-LIMIT_WIDTH / 2.))
-                        .w(px(LIMIT_WIDTH))
-                        .h(height + px(2. * LIMIT_OVERHANG))
-                        .bg(muted.opacity(0.7)),
-                )
+                .when_some(layout.limit, |this, limit| {
+                    this.child(
+                        div()
+                            .id(ElementId::Name(format!("{id}-limit").into()))
+                            .test_support()
+                            .absolute()
+                            .top(px(-LIMIT_OVERHANG))
+                            .left(relative(limit))
+                            .ml(px(-LIMIT_WIDTH / 2.))
+                            .w(px(LIMIT_WIDTH))
+                            .h(height + px(2. * LIMIT_OVERHANG))
+                            .bg(muted.opacity(0.7)),
+                    )
+                })
                 .when_some(layout.tick, |this, tick| {
                     let tint = if tick.past_limit { danger } else { text };
                     this.child(
@@ -579,7 +607,7 @@ mod tests {
         assert!(close(position(1.0), 0.8));
         assert!(close(position(1.25), 1.0));
         assert!(close(position(3.0), 1.0), "past the end clips");
-        assert!(close(BarLayout::of(0.3, None).limit, 0.8));
+        assert!(close(BarLayout::of(0.3, None).limit.unwrap(), 0.8));
     }
 
     /// Under the limit (#213): solid to the share used, hatched run to the projection, track after, tick at the end
@@ -674,7 +702,7 @@ mod tests {
             assert_eq!(layout.over, None, "{projected:?}");
             assert_eq!(layout.tick, None, "{projected:?}");
             assert_eq!(layout.track_from, 0., "the whole track, under the pill end");
-            assert!(close(layout.limit, 0.8));
+            assert!(close(layout.limit.unwrap(), 0.8));
         }
     }
 
@@ -879,6 +907,25 @@ mod tests {
         assert_eq!(projection.tooltip, "100% used · resets in 2d · covered by credits");
         let layout = BarLayout::of(projection.used, projection.projected);
         assert_eq!((layout.over, layout.tick), (None, None));
+    }
+
+    /// A credit pool, a balance or an account's pressure has no limit: its bar runs the whole width at 100%, with
+    /// no marker.
+    #[test]
+    fn a_bar_with_no_limit_runs_the_whole_width() {
+        let credits = Metric::Credits {
+            label: "Credits".into(),
+            balance: Some(0.0),
+            start: Some(50_000.),
+        };
+        let projection = Projection::of(&credits, 1.0, now());
+        assert!(!projection.limited);
+        assert!(!Projection::bare(0.5).limited);
+        assert!(Projection::of(&window(0.5, None), 0.5, now()).limited);
+        let layout = BarLayout::plain(0.5);
+        assert!(close(layout.used, 0.5));
+        assert_eq!(layout.limit, None);
+        assert!(close(BarLayout::plain(1.0).used, 1.0));
     }
 
     #[test]

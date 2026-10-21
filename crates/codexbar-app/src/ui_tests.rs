@@ -519,13 +519,16 @@ fn the_share_ring_leads_the_second_card(cx: &mut TestAppContext) {
     focus(cx, "codex-personal");
     let ring = label(cx, handle, "focus-share").unwrap();
     assert!(
-        ring.starts_with("Weekly: 47% used, on pace for ") && ring.ends_with("% by the reset"),
+        ring.starts_with("Weekly: 47% used, ") && ring.ends_with("% at reset"),
         "{ring}"
     );
 
-    // The team account's credits lead (#150); the ring shows the used-up weekly window, with no pace to project.
+    // The team account's credits lead (#150); the ring shows the used-up weekly window, which they carry.
     focus(cx, "codex-team");
-    assert_eq!(label(cx, handle, "focus-share").as_deref(), Some("Weekly: 100% used"));
+    assert_eq!(
+        label(cx, handle, "focus-share").as_deref(),
+        Some("Weekly: 100% used, covered by credits")
+    );
 }
 
 #[gpui_kit::test]
