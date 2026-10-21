@@ -239,7 +239,6 @@ impl Projection {
     /// What `metric` shows at `now`, with `used` as the bar's own share (a credits bar runs on the spend since the
     /// remembered start, not the metric's used fraction, so the caller says what the fill is).
     pub fn of(metric: &Metric, used: f64, now: DateTime<Utc>) -> Self {
-        let projected = metric.projected_at_reset(now);
         let share = format!("{:.0}% used", used * 100.0);
         let resets = metric
             .resets_at()
@@ -248,8 +247,10 @@ impl Projection {
             Metric::Window { pace, .. } | Metric::Quota { pace, .. } | Metric::Spend { pace, .. } => *pace,
             Metric::Balance { .. } | Metric::Activity { .. } | Metric::Credits { .. } => None,
         };
-        // The share at the reset and when the limit runs out (#234), with how early that is (#206) and the pace.
+        // The share at the reset and when the limit runs out (#234), with how early that is (#206) and the pace. The
+        // bar draws the same share the words say, so a limit hit at the reset is a full bar, not an overrun.
         let forecast = Forecast::of(metric, now);
+        let projected = forecast.map(|forecast| forecast.at_reset);
         let outlook = match forecast {
             Some(forecast) => {
                 let mut told = forecast.text();
@@ -275,7 +276,12 @@ impl Projection {
         Self {
             used,
             projected,
-            runway: Runway::of(used, projected),
+            // Credits have no limit to run into (#150): their bar runs on the spend since the last top-up and stays
+            // calm, as `codexbar_core::assess` keeps them.
+            runway: match metric {
+                Metric::Credits { .. } => Runway::Ok,
+                _ => Runway::of(used, projected),
+            },
             label,
             tooltip,
         }
@@ -750,6 +756,22 @@ mod tests {
         );
     }
 
+    /// The bar draws the forecast's share: a limit hit within a minute of the reset is a full bar, graded tight.
+    #[test]
+    fn the_bar_draws_the_share_the_words_say() {
+        let metric = Metric::Window {
+            label: "Weekly".into(),
+            used: 0.9,
+            resets_at: now() + Duration::seconds(20 * 3600 + 30),
+            pace: Some(Pace::per_hour(0.005)),
+            length: None,
+        };
+        let projection = Projection::of(&metric, 0.9, now());
+        assert_eq!(projection.projected, Some(1.0));
+        assert_eq!(projection.runway, Runway::Tight);
+        assert_eq!(BarLayout::of(projection.used, projection.projected).over, None);
+    }
+
     #[test]
     fn credits_have_no_projection_and_say_so() {
         let credits = Metric::Credits {
@@ -759,6 +781,11 @@ mod tests {
         };
         let projection = Projection::of(&credits, 0.63, now());
         assert_eq!(projection.projected, None);
+        assert_eq!(
+            Projection::of(&credits, 1.0, now()).runway,
+            Runway::Ok,
+            "a spent credit pool stays calm"
+        );
         assert_eq!(projection.label, "63% used");
         assert_eq!(
             projection.tooltip,
