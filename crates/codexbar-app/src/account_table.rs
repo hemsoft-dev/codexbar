@@ -732,11 +732,31 @@ fn at_reset_cell(
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
     let muted = cx.theme().muted_foreground;
+    let plain = |text: &str, spoken: String, color: gpui_kit::Hsla| {
+        div()
+            .id(ElementId::Name(id.to_owned().into()))
+            .test_support()
+            .aria_label(spoken)
+            .text_color(color)
+            .truncate()
+            .child(text.to_owned())
+            .into_any_element()
+    };
+    // A used-up window the account's credits carry (#150) neither runs out nor is reached: the credits pay for it.
+    if row.credits_cover(metric) {
+        return plain(
+            "covered by credits",
+            format!("{name} at reset: covered by credits"),
+            muted,
+        );
+    }
     let Some(forecast) = Forecast::of(metric, now) else {
-        let limited = matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
-            || matches!(metric, Metric::Spend { limit: Some(_), .. });
+        // Only a limit with a reset ahead can be forecast; one without (a money-only spend cap) is not applicable.
+        let limited = (matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
+            || matches!(metric, Metric::Spend { limit: Some(_), .. }))
+            && metric.resets_at().is_some();
         // A used-up limit with no pace left to project still says so, as the Pi dashboard does.
-        let used_up = metric.used_fraction().is_some_and(|used| used >= 1.0) && !row.credits_cover(metric);
+        let used_up = metric.used_fraction().is_some_and(|used| used >= 1.0);
         let (text, spoken) = if used_up {
             ("limit reached", format!("{name} at reset: limit reached"))
         } else if limited {
@@ -744,20 +764,9 @@ fn at_reset_cell(
         } else {
             ("—", format!("{name} at reset: not applicable"))
         };
-        return div()
-            .id(ElementId::Name(id.to_owned().into()))
-            .test_support()
-            .aria_label(spoken)
-            .text_color(if used_up { cx.theme().danger } else { muted })
-            .truncate()
-            .child(text)
-            .into_any_element();
+        return plain(text, spoken, if used_up { cx.theme().danger } else { muted });
     };
-    let runway = if row.credits_cover(metric) {
-        crate::usage_bar::Runway::Ok
-    } else {
-        forecast.runway()
-    };
+    let runway = forecast.runway();
     let tint = match runway {
         crate::usage_bar::Runway::Ok => cx.theme().foreground,
         crate::usage_bar::Runway::Tight => cx.theme().warning,

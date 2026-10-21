@@ -57,7 +57,7 @@ so it shows your whole AI usage across tools, not one vendor's view.
 - Light and dark themes with provider branding and accessibility (#92).
 - Parity backlog: issue #70.
 - Usage bars share one scale, 0 to 125% of the plan limit, with the limit marked at 100% (#234), as the Pi dashboard's
-  usage runway does. The share used is solid, the projection runs on hatched up to the limit and in the warning color
+  usage runway does. The share used is solid, the projection runs on hatched up to the limit and in the danger color
   past it, and the row says the share at the reset and, when the limit comes first, when it runs out ("112% at reset ·
   runs out in 5d 4h"). Bars grade as the runway does: out at 100% used, at risk when projected past 100%, tight from
   85%. This revises #206, which kept shares above 100% out of the wording ("91% used, 21m early"); both the share and

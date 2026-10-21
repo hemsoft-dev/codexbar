@@ -1793,12 +1793,54 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
         }],
         now,
     );
-    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![paced, young, over]));
+    // A used-up window the account's credits carry (#150), and a spend cap with no reset (Claude's extra usage).
+    let covered = AccountSnapshot::new(
+        AccountId::new("covered"),
+        Provider::Codex,
+        vec![
+            Metric::Window {
+                label: "5-hour window".into(),
+                used: 1.0,
+                resets_at: now + chrono::Duration::hours(2),
+                pace: Some(codexbar_core::Pace::per_hour(0.2)),
+                length: None,
+            },
+            Metric::Credits {
+                label: "Credits".into(),
+                balance: Some(12.0),
+                start: None,
+            },
+        ],
+        now,
+    );
+    let capped = AccountSnapshot::new(
+        AccountId::new("capped"),
+        Provider::Claude,
+        vec![Metric::Spend {
+            label: "Extra usage".into(),
+            spent: codexbar_core::Money::from_cents(420),
+            limit: Some(codexbar_core::Money::from_cents(2000)),
+            resets_at: None,
+            pace: None,
+        }],
+        now,
+    );
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![paced, young, over, covered, capped]));
     let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
     cx.run_until_parked();
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
+    assert_eq!(
+        label(cx, handle, "at-reset-covered").as_deref(),
+        Some("5-hour window at reset: covered by credits"),
+        "credits carry it: neither runs out nor reached"
+    );
+    assert_eq!(
+        label(cx, handle, "at-reset-capped").as_deref(),
+        Some("Extra usage at reset: not applicable"),
+        "no reset, nothing to forecast"
+    );
     assert_eq!(
         label(cx, handle, "progress-cell-paced").as_deref(),
         Some("42% used, 90% at reset · near limit")
