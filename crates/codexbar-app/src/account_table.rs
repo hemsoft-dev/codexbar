@@ -712,12 +712,7 @@ fn blank_cell(id: &str, name: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyEleme
 /// 53% stays calm while the 5-hour window beside it is about to run out. A used-up window the account's credits carry
 /// it past (#150) stays calm too, as it does for the account.
 fn bar_projection(metric: &Metric, used: f64, row: &AccountSnapshot, now: DateTime<Utc>) -> Projection {
-    let projection = Projection::of(metric, used, now);
-    if row.credits_cover(metric) {
-        projection.calm()
-    } else {
-        projection
-    }
+    Projection::of_account(metric, used, row, now)
 }
 
 /// The share at the reset and what it means (#234), as the Pi dashboard's "At reset" column says it: the share in the
@@ -745,8 +740,8 @@ fn at_reset_cell(
     // A used-up window the account's credits carry (#150) neither runs out nor is reached: the credits pay for it.
     if row.credits_cover(metric) {
         return plain(
-            "covered by credits",
-            format!("{name} at reset: covered by credits"),
+            crate::usage_bar::COVERED,
+            format!("{name} at reset: {}", crate::usage_bar::COVERED),
             muted,
         );
     }

@@ -43,7 +43,7 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
                     .then(|| account.assess(now).label().map(str::to_owned))
                     .flatten(),
                 metrics: if has_usage {
-                    account.metrics().iter().map(|m| metric(m, now)).collect()
+                    account.metrics().iter().map(|m| metric(account, m, now)).collect()
                 } else {
                     Vec::new()
                 },
@@ -53,7 +53,7 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
     WidgetSnapshot::new(now, groups, accounts)
 }
 
-fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
+fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
     let value = match metric {
         Metric::Window { .. } => format!("{} used", metric.used_display()),
         Metric::Quota { limit, .. } => format!(
@@ -80,7 +80,7 @@ fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
         projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
-        outlook: crate::usage_bar::Forecast::of(metric, now).map(|forecast| forecast.text()),
+        outlook: crate::usage_bar::outlook(metric, account, now),
     }
 }
 
@@ -179,6 +179,47 @@ mod tests {
             "too young to project"
         );
         assert_eq!(snapshot.accounts[1].metrics[0].outlook, None);
+    }
+
+    /// A used-up window the account's credits carry says so, and one with no pace left says the limit is reached
+    /// (#234), as the dashboard does.
+    #[test]
+    fn a_used_up_window_says_covered_or_reached() {
+        let five_hour = |pace| Metric::Window {
+            label: "5-hour window".into(),
+            used: 1.0,
+            resets_at: now() + chrono::Duration::hours(2),
+            pace,
+            length: None,
+        };
+        let covered = AccountSnapshot::new(
+            AccountId::new("codex-covered"),
+            Provider::Codex,
+            vec![
+                five_hour(Some(codexbar_core::Pace::per_hour(0.2))),
+                Metric::Credits {
+                    label: "Credits".into(),
+                    balance: Some(12.0),
+                    start: None,
+                },
+            ],
+            now(),
+        );
+        let reached = AccountSnapshot::new(
+            AccountId::new("codex-out"),
+            Provider::Codex,
+            vec![five_hour(None)],
+            now(),
+        );
+        let snapshot = build(&[covered, reached], &States::new(), &layout(), now());
+        assert_eq!(
+            snapshot.accounts[0].metrics[0].outlook.as_deref(),
+            Some("covered by credits")
+        );
+        assert_eq!(
+            snapshot.accounts[1].metrics[0].outlook.as_deref(),
+            Some("limit reached")
+        );
     }
 
     #[test]

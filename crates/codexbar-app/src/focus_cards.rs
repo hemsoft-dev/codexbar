@@ -245,12 +245,9 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         if let Some(at) = metric.resets_at().filter(|at| *at > now) {
             detail.push(format!("resets in {}", format::countdown(at - now)));
         }
-        // The share at the reset and when the limit runs out (#234), as the bars say it; a used-up limit with no pace
-        // left to project says so, unless the account's credits carry it (#150).
-        if let Some(forecast) = crate::usage_bar::Forecast::of(metric, now) {
-            detail.push(forecast.text());
-        } else if metric.used_fraction().is_some_and(|used| used >= 1.0) && !account.credits_cover(metric) {
-            detail.push("limit reached".to_owned());
+        // The share at the reset and when the limit runs out (#234), as the bars say it.
+        if let Some(outlook) = crate::usage_bar::outlook(metric, account, now) {
+            detail.push(outlook);
         }
         // What is left under a spend limit, derived from spend and limit; never presented as a balance.
         if let Some(headroom) = metric.headroom() {
@@ -349,7 +346,7 @@ fn limit_card(
 ) -> Card {
     match view {
         LimitView::Gauge => share_card(account, now, &[metric.key()], ring, slot, cx),
-        LimitView::Bar => bar_card(metric, now, slot, cx),
+        LimitView::Bar => bar_card(account, metric, now, slot, cx),
         LimitView::Graph => graph_card(&limit_graph(account, metric, now), now, slot, cx),
     }
 }
@@ -396,20 +393,14 @@ fn window_title(metric: &Metric) -> String {
 
 /// One limit as a large progress bar (#230): the share used, the bar with its projection as the table draws it, the
 /// window's period, pace and reset.
-fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card {
+fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     let used = metric.used_fraction().unwrap_or_default();
-    let projection = crate::usage_bar::Projection::of(metric, used, now);
+    // Calm when the account's credits carry it (#150), as the table's bar is.
+    let projection = crate::usage_bar::Projection::of_account(metric, used, account, now);
     // The share at the reset and when the limit runs out (#234), as the table's "At reset" column says it.
-    let pace = crate::usage_bar::Forecast::of(metric, now)
-        .map(|forecast| forecast.text())
-        // A used-up limit with no pace left to project still says so, as the table's "At reset" column does.
-        .or_else(|| (used >= 1.0).then(|| "limit reached".to_owned()));
-    // The card names what it shows; a used-up limit with no forecast says so to screen readers as it does on screen.
-    let spoken = match (&pace, crate::usage_bar::Forecast::of(metric, now)) {
-        (Some(pace), None) => format!("{}: {}, {pace}", metric.label(), projection.label),
-        _ => format!("{}: {}", metric.label(), projection.label),
-    };
+    let pace = crate::usage_bar::outlook(metric, account, now);
+    let spoken = format!("{}: {}", metric.label(), projection.label);
     let muted = cx.theme().muted_foreground;
     let bar_height = crate::zoom::scaled(14., cx);
     let body = v_flex()

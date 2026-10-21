@@ -228,6 +228,30 @@ impl Forecast {
     }
 }
 
+/// What a used-up window the account's credits carry says (#150): it neither runs out nor is reached.
+pub const COVERED: &str = "covered by credits";
+const REACHED: &str = "limit reached";
+
+/// Whether `metric` is a limit used up: a window, quota or capped spend at 100%.
+fn used_up(metric: &Metric) -> bool {
+    matches!(
+        metric,
+        Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { limit: Some(_), .. }
+    ) && metric.used_fraction().is_some_and(|used| used >= 1.0)
+}
+
+/// What `account`'s `metric` says about its reset (#234), in the words every surface uses (the focus card's tiles and
+/// bar, the widgets): the forecast ("112% at reset · runs out in 5d 4h"), "covered by credits" for a used-up window
+/// the account's credits carry (#150), "limit reached" for a used-up limit with no pace left, or nothing.
+pub fn outlook(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
+    if account.credits_cover(metric) {
+        return Some(COVERED.to_owned());
+    }
+    Forecast::of(metric, now)
+        .map(|forecast| forecast.text())
+        .or_else(|| used_up(metric).then(|| REACHED.to_owned()))
+}
+
 /// What a bar says about its metric: the share used, the share projected by the reset when the pace allows one, and
 /// the words for both.
 #[derive(Clone, Debug, PartialEq)]
@@ -272,10 +296,12 @@ impl Projection {
                     None => told,
                 }
             }
+            None if used_up(metric) => REACHED.to_owned(),
             None => no_projection(metric, pace, now).to_owned(),
         };
         let label = match forecast {
             Some(forecast) => format!("{share}, {}", forecast.text()),
+            None if used_up(metric) => format!("{share}, {REACHED}"),
             None => share.clone(),
         };
         let tooltip = [Some(share), resets, Some(outlook)]
@@ -318,7 +344,35 @@ impl Projection {
     pub fn calm(mut self) -> Self {
         self.runway = Runway::Ok;
         self.projected = self.projected.map(|share| share.min(1.0));
+        // The words say so too: the reset stays, the forecast gives way to the credits.
+        let share = format!("{:.0}% used", self.used * 100.0);
+        let resets = self
+            .tooltip
+            .split(" · ")
+            .find(|part| part.starts_with("resets "))
+            .map(str::to_owned);
+        self.label = format!("{share}, {COVERED}");
+        self.tooltip = [Some(share), resets, Some(COVERED.to_owned())]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
         self
+    }
+
+    /// The bar for `account`'s `metric`: calm when the account's credits carry it (#150).
+    pub fn of_account(
+        metric: &Metric,
+        used: f64,
+        account: &codexbar_core::AccountSnapshot,
+        now: DateTime<Utc>,
+    ) -> Self {
+        let projection = Self::of(metric, used, now);
+        if account.credits_cover(metric) {
+            projection.calm()
+        } else {
+            projection
+        }
     }
 
     /// The same bar graded by `severity` rather than as a limit: an account's pressure has no limit to run into.
@@ -684,6 +738,14 @@ mod tests {
         assert_eq!(forecast.text(), "100% at reset · near limit");
     }
 
+    /// Used up with no pace left: the label and tooltip say the limit is reached, not that it is too early.
+    #[test]
+    fn a_used_up_limit_without_a_pace_says_it_is_reached() {
+        let projection = Projection::of(&window(1.0, None), 1.0, now());
+        assert_eq!(projection.label, "100% used, limit reached");
+        assert_eq!(projection.tooltip, "100% used · resets in 2d · limit reached");
+    }
+
     #[test]
     fn a_used_up_limit_says_so() {
         let forecast = Forecast::of(&window(1.0, Some(Pace::per_hour(0.01))), now()).unwrap();
@@ -808,11 +870,13 @@ mod tests {
         assert_ne!(projection.runway, Runway::Out, "{severity:?}");
     }
 
-    /// A used-up window the credits carry (#150) is calm and draws nothing past the marker.
+    /// A used-up window the credits carry (#150) is calm, draws nothing past the marker, and says so.
     #[test]
     fn a_calm_bar_draws_no_overrun() {
         let projection = Projection::of(&window(1.0, Some(Pace::per_hour(0.01))), 1.0, now()).calm();
         assert_eq!(projection.runway, Runway::Ok);
+        assert_eq!(projection.label, "100% used, covered by credits");
+        assert_eq!(projection.tooltip, "100% used · resets in 2d · covered by credits");
         let layout = BarLayout::of(projection.used, projection.projected);
         assert_eq!((layout.over, layout.tick), (None, None));
     }

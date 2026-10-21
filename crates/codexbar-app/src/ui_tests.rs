@@ -539,7 +539,8 @@ fn a_used_up_window_without_credits_is_blocked_with_no_pill(cx: &mut TestAppCont
     assert_eq!(label(cx, handle, "used-codex-work").as_deref(), Some("Weekly: 100%"));
     assert_eq!(
         label(cx, handle, "progress-cell-codex-work").as_deref(),
-        Some("100% used")
+        Some("100% used, limit reached"),
+        "used up with no pace: the bar says the limit is reached (#234)"
     );
     assert!(
         label(cx, handle, "severity-tag-codex-work").is_none(),
