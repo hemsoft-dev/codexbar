@@ -631,8 +631,10 @@ pub fn open_account_dialog(provider: &'static str, existing: Option<AccountRecor
                             Input::new(&form.pool_total).into_any_element(),
                         ))
                         .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
-                            "Org billing: for a Copilot Enterprise seat, shows the organization's AI credits this \
-                             month and this account's share. Leave blank to skip.",
+                            "Org billing: shows the organization's AI credits this month. For a Copilot Business \
+                             organization, set only the organization; you need to be its owner or billing manager, \
+                             not a Copilot user there. For a Copilot Enterprise seat, also set the enterprise to see \
+                             this account's share. Leave blank to skip.",
                         ))
                     })
                     .when(info.id == names::OPENCODE_GO && !oauth, |this| {

@@ -1,6 +1,8 @@
 //! GitHub Copilot premium-request quotas for every account signed in to the GitHub CLI, and for accounts CodexBar
 //! signed in itself (#79). An account on a Copilot Enterprise seat can also show its organization's AI credits this
-//! month and its own share, from the enterprise billing API (configured per account).
+//! month and its own share, from the enterprise billing API (configured per account). An organization billed on its
+//! own (Copilot Business, no enterprise) is read from the organization's billing API instead, by an owner or billing
+//! manager with or without a seat there (#233).
 
 use std::time::Duration as StdDuration;
 
@@ -9,6 +11,7 @@ use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider};
 use serde_json::Value;
 
 use crate::AccountOutcome;
+use crate::github_allowances::{Budget, parse_budgets};
 use crate::pace::elapsed_pace;
 use crate::{CommandError, CommandRunner, HttpClient, ProviderError, UsageProvider};
 
@@ -16,9 +19,17 @@ const USER_ENDPOINT: &str = "https://api.github.com/copilot_internal/user";
 const REST_API: &str = "https://api.github.com";
 const REST_API_VERSION: &str = "2026-03-10";
 const USER_AGENT: &str = "CodexBar";
-/// AI credits per seat each month; June to August 2026 had a promotional allowance.
+/// AI credits per seat each month by plan; June to August 2026 had a promotional allowance.
 const CREDITS_PER_SEAT: u64 = 3900;
 const PROMOTIONAL_CREDITS_PER_SEAT: u64 = 7000;
+const BUSINESS_CREDITS_PER_SEAT: u64 = 1900;
+const PROMOTIONAL_BUSINESS_CREDITS_PER_SEAT: u64 = 3000;
+/// How long to wait when GitHub limits the rate without saying for how long.
+const RATE_LIMIT_WAIT: i64 = 60;
+const NO_SEAT: &str = "no Copilot subscription on this account";
+const ORG_NO_ACCESS: &str = "This account can't read the organization's Copilot billing. It needs to be an owner or \
+                             billing manager of the organization.";
+const ORG_NOT_FOUND: &str = "GitHub doesn't know that organization. Check its name in Settings > Accounts.";
 /// The hint for an account CodexBar signed in.
 pub const MANAGED_LOGIN: &str = "Sign in again in Settings > Accounts.";
 const HOST: &str = "github.com";
@@ -111,11 +122,12 @@ fn reset_date(json: &Value) -> Option<DateTime<Utc>> {
     Some(date.and_hms_opt(0, 0, 0)?.and_utc())
 }
 
-/// Where an account on a Copilot Enterprise seat reads its organization's AI credits: the enterprise and organization
-/// slugs, and optionally the pool size (otherwise seats times the monthly allowance per seat).
+/// Where an account reads its organization's AI credits: the enterprise and organization slugs, and optionally the pool
+/// size (otherwise seats times the monthly allowance per seat). Without an enterprise the organization is billed on its
+/// own (Copilot Business) and read from its own billing API (#233).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrgBilling {
-    pub enterprise: String,
+    pub enterprise: Option<String>,
     pub organization: String,
     pub pool_total: Option<u64>,
 }
@@ -162,13 +174,76 @@ pub fn org_account_id(organization: &str) -> AccountId {
     AccountId::new(format!("copilotorg-{}", organization.to_lowercase()))
 }
 
-/// AI credits each seat gets in this month.
+/// AI credits each Copilot Enterprise seat gets in this month.
 pub fn credits_per_seat(year: i32, month: u32) -> u64 {
-    if year == 2026 && (6..=8).contains(&month) {
+    if promotional(year, month) {
         PROMOTIONAL_CREDITS_PER_SEAT
     } else {
         CREDITS_PER_SEAT
     }
+}
+
+/// AI credits each Copilot Business seat gets in this month.
+pub fn business_credits_per_seat(year: i32, month: u32) -> u64 {
+    if promotional(year, month) {
+        PROMOTIONAL_BUSINESS_CREDITS_PER_SEAT
+    } else {
+        BUSINESS_CREDITS_PER_SEAT
+    }
+}
+
+/// The first three months of usage-based billing, June to August 2026, came with more AI credits per seat.
+fn promotional(year: i32, month: u32) -> bool {
+    year == 2026 && (6..=8).contains(&month)
+}
+
+/// The allowance per seat for a Copilot plan as GitHub names it (`business`, `enterprise`).
+fn plan_credits_per_seat(plan: &str, now: DateTime<Utc>) -> u64 {
+    if plan.eq_ignore_ascii_case("business") {
+        business_credits_per_seat(now.year(), now.month())
+    } else {
+        credits_per_seat(now.year(), now.month())
+    }
+}
+
+/// What an AI-credit report counts: the credits used and what they cost past the included pool, in dollars.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Credits {
+    used: f64,
+    net: f64,
+}
+
+/// Whether `budget` caps the organization's Copilot AI credits: an organization budget on all AI credits
+/// (`BundlePricing`), on the Copilot product, or on a Copilot SKU.
+fn caps_copilot(budget: &Budget, organization: &str) -> bool {
+    let own = budget.scope.eq_ignore_ascii_case("organization")
+        && (budget.entity.is_empty() || budget.entity.eq_ignore_ascii_case(organization));
+    let targets = |wanted: &dyn Fn(&str) -> bool| budget.targets.iter().any(|t| wanted(&t.to_lowercase()));
+    let copilot = match budget.kind.as_str() {
+        kind if kind.eq_ignore_ascii_case("BundlePricing") => {
+            budget.targets.is_empty() || targets(&|t| t == "ai_credits" || t.starts_with("copilot"))
+        }
+        kind if kind.eq_ignore_ascii_case("ProductPricing") => targets(&|t| t == "copilot"),
+        kind if kind.eq_ignore_ascii_case("SkuPricing") => targets(&|t| t.starts_with("copilot")),
+        _ => false,
+    };
+    own && copilot
+}
+
+/// One line per Copilot budget: how much of it this month's AI credits have spent and whether it stops usage.
+fn budget_line(budget: &Budget, spent: f64) -> String {
+    let dollars = |amount: f64| format!("${amount:.2}");
+    let state = match (budget.stops_usage, spent >= budget.amount) {
+        (true, true) => "usage is stopped until the month resets",
+        (true, false) => "stops usage at the limit",
+        (false, true) => "past its limit; it doesn't stop usage",
+        (false, false) => "doesn't stop usage",
+    };
+    format!(
+        "Copilot budget: {} of {} spent this month, {state}.",
+        dollars(spent.max(0.0)),
+        dollars(budget.amount)
+    )
 }
 
 /// The calendar month `now` is in, in UTC, as the billing API counts it.
@@ -295,9 +370,9 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
     fn fetch_account(
         &self,
         username: &str,
+        token: &str,
         now: DateTime<Utc>,
-    ) -> Result<(AccountSnapshot, Seat, String), ProviderError> {
-        let token = self.token(username)?;
+    ) -> Result<(AccountSnapshot, Seat), ProviderError> {
         let expired = if self.login(username).is_some() {
             MANAGED_LOGIN
         } else {
@@ -313,20 +388,16 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         ];
         let response = self.http.get(USER_ENDPOINT, &headers)?;
         match response.status {
-            200..=299 => {
-                parse_user(&response.body, username, now).map(|account| (account, parse_seat(&response.body), token))
-            }
+            200..=299 => parse_user(&response.body, username, now).map(|account| (account, parse_seat(&response.body))),
             401 | 403 => Err(ProviderError::Expired { hint: expired }),
             // 404: this account has no Copilot seat.
-            404 => Err(ProviderError::Unexpected {
-                detail: "no Copilot subscription on this account",
-            }),
+            404 => Err(ProviderError::Unexpected { detail: NO_SEAT }),
             status => Err(ProviderError::Http { status }),
         }
     }
 
-    /// A GitHub REST API GET with `token`; the body on success.
-    fn rest(&self, path: &str, token: &str) -> Result<String, ProviderError> {
+    /// A GitHub REST API GET with `token`.
+    fn get(&self, path: &str, token: &str) -> Result<crate::HttpResponse, ProviderError> {
         let url = format!("{REST_API}{path}");
         let bearer = format!("Bearer {token}");
         let headers = [
@@ -335,15 +406,42 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             ("X-GitHub-Api-Version", REST_API_VERSION),
             ("User-Agent", USER_AGENT),
         ];
-        let response = self.http.get(&url, &headers)?;
+        self.http.get(&url, &headers)
+    }
+
+    /// A GitHub REST API GET with `token`; the body on success.
+    fn rest(&self, path: &str, token: &str) -> Result<String, ProviderError> {
+        let response = self.get(path, token)?;
         match response.status {
             200..=299 => Ok(response.body),
             status => Err(ProviderError::Http { status }),
         }
     }
 
-    /// AI credits this month from the enterprise AI-credit report, filtered by `filter` (`organization=…` or
-    /// `user=…`), on `day` or for the whole month.
+    /// Like `rest`, for an organization's own billing API (#233): a missing permission, a rate limit and an unknown
+    /// organization each say so.
+    fn org_rest(&self, path: &str, token: &str, now: DateTime<Utc>) -> Result<String, ProviderError> {
+        let response = self.get(path, token)?;
+        let retry_at = now
+            + chrono::Duration::seconds(
+                response
+                    .retry_after_secs
+                    .map_or(RATE_LIMIT_WAIT, |secs| secs.min(3600) as i64),
+            );
+        let rate_limited = response.retry_after_secs.is_some() || response.body.to_lowercase().contains("rate limit");
+        match response.status {
+            200..=299 => Ok(response.body),
+            429 => Err(ProviderError::RateLimited { retry_at }),
+            403 if rate_limited => Err(ProviderError::RateLimited { retry_at }),
+            403 => Err(ProviderError::Refused { reason: ORG_NO_ACCESS }),
+            404 => Err(ProviderError::Refused { reason: ORG_NOT_FOUND }),
+            status => Err(ProviderError::Http { status }),
+        }
+    }
+
+    /// AI credits this month on `day` or for the whole month. An enterprise's report is narrowed by `filter`
+    /// (`organization=…` or `user=…`); an organization billed on its own has a report of its own, read for Copilot as
+    /// codexbar-ios does, and `filter` doesn't apply to it.
     fn ai_credits(
         &self,
         billing: &OrgBilling,
@@ -351,15 +449,26 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         day: Option<u32>,
         token: &str,
         now: DateTime<Utc>,
-    ) -> Result<Option<f64>, ProviderError> {
+    ) -> Result<Option<Credits>, ProviderError> {
         let day = day.map(|day| format!("&day={day}")).unwrap_or_default();
-        let path = format!(
-            "/enterprises/{}/settings/billing/ai_credit/usage?year={}&month={}{day}&{filter}",
-            encode(&billing.enterprise),
-            now.year(),
-            now.month(),
-        );
-        let body = self.rest(&path, token)?;
+        let (year, month) = (now.year(), now.month());
+        let body = match &billing.enterprise {
+            Some(enterprise) => self.rest(
+                &format!(
+                    "/enterprises/{}/settings/billing/ai_credit/usage?year={year}&month={month}{day}&{filter}",
+                    encode(enterprise),
+                ),
+                token,
+            )?,
+            None => self.org_rest(
+                &format!(
+                    "/organizations/{}/settings/billing/ai_credit/usage?year={year}&month={month}{day}&product=Copilot",
+                    encode(&billing.organization),
+                ),
+                token,
+                now,
+            )?,
+        };
         let json: Value = serde_json::from_str(&body).map_err(|_| ProviderError::Unexpected {
             detail: "unreadable AI-credit report",
         })?;
@@ -372,21 +481,26 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         if items.is_empty() {
             return Ok(None);
         }
-        Ok(Some(
+        let sum = |key: &str| {
             items
                 .iter()
-                .filter_map(|item| item.get("grossQuantity").and_then(Value::as_f64))
-                .sum(),
-        ))
+                .filter_map(|item| item.get(key).and_then(Value::as_f64))
+                .sum()
+        };
+        Ok(Some(Credits {
+            used: sum("grossQuantity"),
+            net: sum("netAmount"),
+        }))
     }
 
-    /// The organization's AI credits this month.
-    fn org_consumed(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> Result<f64, ProviderError> {
+    /// The organization's AI credits this month; a month with no usage yet is zero.
+    fn org_consumed(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> Result<Credits, ProviderError> {
         let filter = format!("organization={}", encode(&billing.organization));
-        Ok(self.ai_credits(billing, &filter, None, token, now)?.unwrap_or(0.0))
+        Ok(self.ai_credits(billing, &filter, None, token, now)?.unwrap_or_default())
     }
 
-    /// The organization's monthly pool: the configured total, else seats times the allowance per seat.
+    /// The organization's monthly pool: the configured total, else seats times the allowance per seat. An enterprise's
+    /// seats are Enterprise seats; an organization billed on its own says which plan its seats are on.
     fn pool(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> Option<u64> {
         if let Some(total) = billing.pool_total.filter(|total| *total > 0) {
             return Some(total);
@@ -397,12 +511,46 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                 token,
             )
             .ok()?;
-        let seats = serde_json::from_str::<Value>(&body)
-            .ok()?
+        let json = serde_json::from_str::<Value>(&body).ok()?;
+        let seats = json
             .pointer("/seat_breakdown/total")?
             .as_u64()
             .filter(|seats| *seats > 0)?;
-        Some(seats * credits_per_seat(now.year(), now.month()))
+        let per_seat = match &billing.enterprise {
+            Some(_) => credits_per_seat(now.year(), now.month()),
+            None => plan_credits_per_seat(json.get("plan_type").and_then(Value::as_str).unwrap_or("business"), now),
+        };
+        Some(seats * per_seat)
+    }
+
+    /// The Copilot budgets of an organization billed on its own, from every page of its budget list.
+    fn copilot_budgets(
+        &self,
+        billing: &OrgBilling,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<Budget>, ProviderError> {
+        let unreadable = ProviderError::Unexpected {
+            detail: "unreadable budget list",
+        };
+        let mut all = Vec::new();
+        for page in 1..=10 {
+            let body = self.org_rest(
+                &format!(
+                    "/organizations/{}/settings/billing/budgets?per_page=100&page={page}",
+                    encode(&billing.organization)
+                ),
+                token,
+                now,
+            )?;
+            let (budgets, more) = parse_budgets(&body).map_err(|_| unreadable.clone())?;
+            all.extend(budgets);
+            if !more {
+                all.retain(|budget| caps_copilot(budget, &billing.organization));
+                return Ok(all);
+            }
+        }
+        Err(unreadable)
     }
 
     /// The user's AI credits this month: the month's report, or, when that comes back empty (as month-wide user
@@ -417,37 +565,51 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
     ) -> Result<f64, ProviderError> {
         let filter = format!("user={}", encode(username));
         if let Some(month) = self.ai_credits(billing, &filter, None, token, now)? {
-            return Ok(month);
+            return Ok(month.used);
         }
         let mut total = 0.0;
         for day in 1..=now.day() {
-            total += self.ai_credits(billing, &filter, Some(day), token, now)?.unwrap_or(0.0);
+            total += self
+                .ai_credits(billing, &filter, Some(day), token, now)?
+                .map_or(0.0, |credits| credits.used);
         }
         Ok(total)
     }
 
-    /// The organization's account, from one user's token.
+    /// The organization's account, from one user's token. An organization billed on its own also shows its Copilot
+    /// budgets; one that can't be read never hides the credits.
     fn org_outcome(
         &self,
         billing: &OrgBilling,
-        consumed: &Result<f64, ProviderError>,
+        consumed: &Result<Credits, ProviderError>,
         token: &str,
         now: DateTime<Utc>,
     ) -> AccountOutcome {
         let id = org_account_id(&billing.organization);
         match consumed {
             Ok(consumed) => {
-                let org = match self.pool(billing, token, now) {
+                let mut org = match self.pool(billing, token, now) {
                     Some(pool) => AccountSnapshot::new(
                         id,
                         Provider::Copilot,
-                        vec![credits_metric("AI credits", *consumed, pool, now)],
+                        vec![credits_metric("AI credits", consumed.used, pool, now)],
                         now,
                     ),
                     None => AccountSnapshot::new(id, Provider::Copilot, Vec::new(), now).with_message(format!(
-                        "{consumed:.0} AI credits used this month. Set the pool total in Settings to see how much is left."
+                        "{:.0} AI credits used this month. Set the pool total in Settings to see how much is left.",
+                        consumed.used
                     )),
                 };
+                if billing.enterprise.is_none() {
+                    match self.copilot_budgets(billing, token, now) {
+                        Ok(budgets) => {
+                            for budget in budgets {
+                                org = org.with_message(budget_line(&budget, consumed.net));
+                            }
+                        }
+                        Err(_) => org = org.with_message("Its Copilot budgets couldn't be read."),
+                    }
+                }
                 AccountOutcome::Fresh(org.with_label(&billing.organization))
             }
             Err(error) => AccountOutcome::Failed {
@@ -458,9 +620,45 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         }
     }
 
-    /// Adds org billing to a fetched account on an Enterprise seat in the configured organization: the user's AI
-    /// credits as the first metric and the share of the organization's as a note. The organization's own account is
-    /// kept in `orgs`, one per organization; a later user whose token can read it replaces an earlier failure.
+    /// The org billing set for `username`.
+    fn billing_for(&self, username: &str) -> Option<&OrgBilling> {
+        self.billing
+            .iter()
+            .find(|(user, _)| user.eq_ignore_ascii_case(username))
+            .map(|(_, billing)| billing)
+    }
+
+    /// Reads the organization's AI credits with `token` and keeps its account in `orgs`, one per organization; a later
+    /// user whose token can read it replaces an earlier failure.
+    fn add_org(
+        &self,
+        billing: &OrgBilling,
+        token: &str,
+        now: DateTime<Utc>,
+        orgs: &mut Vec<(String, AccountOutcome)>,
+    ) -> Result<Credits, ProviderError> {
+        let consumed = self.org_consumed(billing, token, now);
+        match orgs
+            .iter_mut()
+            .find(|(org, _)| org.eq_ignore_ascii_case(&billing.organization))
+        {
+            Some((_, outcome)) => {
+                if matches!(outcome, AccountOutcome::Failed { .. }) && consumed.is_ok() {
+                    *outcome = self.org_outcome(billing, &consumed, token, now);
+                }
+            }
+            None => orgs.push((
+                billing.organization.clone(),
+                self.org_outcome(billing, &consumed, token, now),
+            )),
+        }
+        consumed
+    }
+
+    /// Adds org billing to a fetched account. An organization billed on its own (#233) is read by its owners and
+    /// billing managers whatever their seat, and the account itself is left as it is. Through an enterprise, the
+    /// account must be on an Enterprise seat in the organization: its AI credits become the first metric and its share
+    /// of the organization's a note.
     fn add_billing(
         &self,
         account: AccountSnapshot,
@@ -470,13 +668,13 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         orgs: &mut Vec<(String, AccountOutcome)>,
     ) -> AccountSnapshot {
         let username = account.label().unwrap_or_default().to_owned();
-        let Some((_, billing)) = self
-            .billing
-            .iter()
-            .find(|(user, _)| user.eq_ignore_ascii_case(&username))
-        else {
+        let Some(billing) = self.billing_for(&username) else {
             return account;
         };
+        if billing.enterprise.is_none() {
+            let _ = self.add_org(billing, token, now, orgs);
+            return account;
+        }
         let eligible = seat
             .plan
             .as_deref()
@@ -491,21 +689,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                 billing.organization
             ));
         }
-        let org_consumed = self.org_consumed(billing, token, now);
-        match orgs
-            .iter_mut()
-            .find(|(org, _)| org.eq_ignore_ascii_case(&billing.organization))
-        {
-            Some((_, outcome)) => {
-                if matches!(outcome, AccountOutcome::Failed { .. }) && org_consumed.is_ok() {
-                    *outcome = self.org_outcome(billing, &org_consumed, token, now);
-                }
-            }
-            None => orgs.push((
-                billing.organization.clone(),
-                self.org_outcome(billing, &org_consumed, token, now),
-            )),
-        }
+        let org_consumed = self.add_org(billing, token, now, orgs);
         let Ok(consumed) = self.user_consumed(billing, &username, token, now) else {
             return account.with_message(
                 "Enterprise billing couldn't be read for this account. Its token needs access to enterprise billing.",
@@ -521,7 +705,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         for message in account.messages() {
             billed = billed.with_message(message.clone());
         }
-        if let Some(org) = org_consumed.ok().filter(|org| *org > 0.0) {
+        if let Some(org) = org_consumed.ok().map(|org| org.used).filter(|org| *org > 0.0) {
             billed = billed.with_message(format!(
                 "{:.0}% of {}'s AI credits this month.",
                 (consumed / org * 100.0).clamp(0.0, 100.0),
@@ -653,16 +837,44 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
         }
         let mut orgs = Vec::new();
         for username in &accounts {
-            match self.fetch_account(username, now) {
-                Ok((snapshot, seat, token)) => {
+            let failed = |error| AccountOutcome::Failed {
+                account: account_id(username),
+                label: Some(username.clone()),
+                error,
+            };
+            let token = match self.token(username) {
+                Ok(token) => token,
+                Err(error) => {
+                    outcomes.push(failed(error));
+                    continue;
+                }
+            };
+            match self.fetch_account(username, &token, now) {
+                Ok((snapshot, seat)) => {
                     let snapshot = self.add_billing(snapshot, &seat, &token, now, &mut orgs);
                     outcomes.push(AccountOutcome::Fresh(snapshot));
                 }
-                Err(error) => outcomes.push(AccountOutcome::Failed {
-                    account: account_id(username),
-                    label: Some(username.clone()),
-                    error,
-                }),
+                Err(error) => {
+                    // An owner or billing manager with no Copilot seat at all still reads an organization billed on
+                    // its own (#233); the account says why it has no quotas instead of failing.
+                    let org_only = self
+                        .billing_for(username)
+                        .filter(|billing| billing.enterprise.is_none());
+                    match org_only {
+                        Some(billing) if error == (ProviderError::Unexpected { detail: NO_SEAT }) => {
+                            let _ = self.add_org(billing, &token, now, &mut orgs);
+                            outcomes.push(AccountOutcome::Fresh(
+                                AccountSnapshot::new(account_id(username), Provider::Copilot, Vec::new(), now)
+                                    .with_label(username)
+                                    .with_message(format!(
+                                        "No Copilot seat on this account. It shows {}'s AI credits.",
+                                        billing.organization
+                                    )),
+                            ));
+                        }
+                        _ => outcomes.push(failed(error)),
+                    }
+                }
             }
         }
         outcomes.extend(orgs.into_iter().map(|(_, outcome)| outcome));
@@ -909,7 +1121,7 @@ mod tests {
 
     fn billing(pool_total: Option<u64>) -> OrgBilling {
         OrgBilling {
-            enterprise: "acme".to_owned(),
+            enterprise: Some("acme".to_owned()),
             organization: "acme-eng".to_owned(),
             pool_total,
         }
@@ -1295,6 +1507,270 @@ mod tests {
         assert_eq!(provider.http.urls("/enterprises/"), 0);
     }
 
+    // Copilot Business on an organization with no enterprise (#233). The reports are recorded from GitHub's live
+    // `/organizations/hemsoft-dev/...` answers of 2026-10-21, renamed.
+    const BUSINESS_USER: &str = r#"{"login":"owner","copilot_plan":"business","organization_login_list":["acme-biz"],
+        "access_type_sku":"copilot_for_business_seat_quota","quota_reset_date":"2026-11-01","quota_snapshots":{
+        "premium_interactions":{"entitlement":300,"remaining":200,"unlimited":false}}}"#;
+    const ORG_REPORT: &str = r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme-biz","product":"copilot",
+        "usageItems":[{"product":"Copilot","sku":"Copilot AI Credits","model":"Code Review model",
+        "unitType":"ai-credits","pricePerUnit":0.01,"grossQuantity":101.238535,"grossAmount":1.01238535,
+        "discountQuantity":101.238535,"discountAmount":1.01238535,"netQuantity":0.0,"netAmount":0.0},
+        {"product":"Copilot","sku":"Copilot AI Credits","model":"Claude Sonnet 4.5","unitType":"ai-credits",
+        "pricePerUnit":0.01,"grossQuantity":4000.0,"grossAmount":40.0,"discountQuantity":1900.0,
+        "discountAmount":19.0,"netQuantity":2100.0,"netAmount":21.0}]}"#;
+    const EMPTY_REPORT: &str = r#"{"timePeriod":{"year":2026,"month":10},"organization":"acme-biz",
+        "product":"copilot","usageItems":[]}"#;
+    const BUSINESS_BILLING: &str = r#"{"seat_breakdown":{"pending_invitation":0,"pending_cancellation":0,
+        "added_this_cycle":1,"total":2,"active_this_cycle":1,"inactive_this_cycle":0},
+        "seat_management_setting":"assign_selected","plan_type":"business"}"#;
+    const BUDGETS: &str = r#"{"budgets":[{"id":"1","budget_type":"ProductPricing","budget_product_sku":"actions",
+        "budget_scope":"organization","budget_amount":0,"prevent_further_usage":true,"budget_entity_name":"acme-biz",
+        "budget_alerting":{"will_alert":true}},{"id":"2","budget_type":"BundlePricing",
+        "budget_product_sku":"ai_credits","budget_scope":"organization","budget_amount":20,
+        "prevent_further_usage":true,"budget_entity_name":"acme-biz","budget_alerting":{"will_alert":true}}],
+        "has_next_page":false,"total_count":2}"#;
+
+    fn business(pool_total: Option<u64>) -> OrgBilling {
+        OrgBilling {
+            enterprise: None,
+            organization: "acme-biz".to_owned(),
+            pool_total,
+        }
+    }
+
+    fn org_card(outcomes: &[AccountOutcome]) -> &AccountOutcome {
+        outcomes
+            .iter()
+            .find(|outcome| match outcome {
+                AccountOutcome::Fresh(account) => account.id().as_str() == "copilotorg-acme-biz",
+                AccountOutcome::Failed { account, .. } => account.as_str() == "copilotorg-acme-biz",
+            })
+            .expect("the organization's card")
+    }
+
+    #[test]
+    fn an_organization_without_an_enterprise_reads_its_own_ai_credit_report() {
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            (
+                "/organizations/acme-biz/settings/billing/ai_credit/usage?year=2026&month=10&product=Copilot",
+                ok(ORG_REPORT),
+            ),
+            ("/orgs/acme-biz/copilot/billing", ok(BUSINESS_BILLING)),
+            ("/organizations/acme-biz/settings/billing/budgets", ok(BUDGETS)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_own")
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        // The user keeps its own quotas: no enterprise share, no Enterprise-seat warning.
+        let AccountOutcome::Fresh(user) = &outcomes[0] else {
+            panic!("user")
+        };
+        assert_eq!(user.primary().map(Metric::label), Some("Premium requests"));
+        assert!(user.messages().is_empty(), "{:?}", user.messages());
+        // The organization: 4,101 credits of 2 Business seats x 1,900, on a month-end projection.
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("org")
+        };
+        let Some(Metric::Quota {
+            label,
+            used,
+            limit,
+            pace,
+            ..
+        }) = org.primary()
+        else {
+            panic!("pool")
+        };
+        assert_eq!((label.as_str(), *used, *limit), ("AI credits", 4101, 3800));
+        assert!(pace.is_some(), "a month-end projection");
+        assert_eq!(org.label(), Some("acme-biz"));
+        // Its AI-credit budget, not the Actions one, with what this month's AI credits cost past the pool.
+        assert_eq!(
+            org.messages(),
+            ["Copilot budget: $21.00 of $20.00 spent this month, usage is stopped until the month resets."]
+        );
+        assert_eq!(provider.http.urls("/enterprises/"), 0);
+        assert_eq!(provider.http.urls("user=owner"), 0, "no enterprise share to read");
+    }
+
+    #[test]
+    fn an_enterprise_set_beside_the_organization_keeps_the_enterprise_report() {
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(ENTERPRISE_USER)),
+            ("organization=acme-eng", credits(10.0)),
+            ("user=dev", credits(1.0)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("dev", "gho_own")
+            .with_billing("dev", billing(Some(100)));
+        provider.fetch_outcomes(now()).unwrap();
+        assert_eq!(
+            provider.http.urls("/enterprises/acme/settings/billing/ai_credit/usage"),
+            2
+        );
+        assert_eq!(provider.http.urls("/organizations/"), 0);
+        assert_eq!(provider.http.urls("product=Copilot"), 0);
+    }
+
+    #[test]
+    fn an_empty_month_for_an_organization_is_zero_not_an_error() {
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            ("ai_credit/usage", ok(EMPTY_REPORT)),
+            ("/copilot/billing", ok(BUSINESS_BILLING)),
+            ("/budgets", ok(r#"{"budgets":[],"has_next_page":false}"#)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_own")
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("an empty month is fresh")
+        };
+        let Some(Metric::Quota { used, limit, .. }) = org.primary() else {
+            panic!("pool")
+        };
+        assert_eq!((*used, *limit), (0, 3800));
+        assert!(org.messages().is_empty());
+    }
+
+    #[test]
+    fn an_owner_with_no_copilot_seat_still_sees_the_organization() {
+        // copilot_internal/user answers 404: no seat anywhere. The configured pool skips the seat count.
+        let http = Routes::new(vec![
+            ("ai_credit/usage", ok(ORG_REPORT)),
+            ("/budgets", HttpResponse::new(500, "")),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_own")
+            .with_billing("owner", business(Some(10_000)));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(user) = &outcomes[0] else {
+            panic!("a seatless owner isn't a failure")
+        };
+        assert!(user.metrics().is_empty());
+        assert_eq!(
+            user.messages(),
+            ["No Copilot seat on this account. It shows acme-biz's AI credits."]
+        );
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("org")
+        };
+        let Some(Metric::Quota { used, limit, .. }) = org.primary() else {
+            panic!("pool")
+        };
+        assert_eq!((*used, *limit), (4101, 10_000));
+        assert_eq!(org.messages(), ["Its Copilot budgets couldn't be read."]);
+    }
+
+    #[test]
+    fn a_seatless_account_without_org_billing_still_fails() {
+        let provider = CopilotProvider::new(Routes::new(Vec::new()), NoGh)
+            .without_cli()
+            .with_login("owner", "gho_own");
+        assert_eq!(
+            provider.fetch(now()),
+            Err(ProviderError::Unexpected { detail: NO_SEAT })
+        );
+    }
+
+    #[test]
+    fn organization_billing_failures_say_what_went_wrong() {
+        let cases = [
+            (
+                HttpResponse::new(403, r#"{"message":"Must have admin rights"}"#),
+                ProviderError::Refused { reason: ORG_NO_ACCESS },
+            ),
+            (
+                HttpResponse::new(404, r#"{"message":"Not Found"}"#),
+                ProviderError::Refused { reason: ORG_NOT_FOUND },
+            ),
+            (
+                HttpResponse {
+                    retry_after_secs: Some(120),
+                    ..HttpResponse::new(429, "")
+                },
+                ProviderError::RateLimited {
+                    retry_at: now() + chrono::Duration::seconds(120),
+                },
+            ),
+            (
+                HttpResponse::new(403, r#"{"message":"API rate limit exceeded for user ID 1."}"#),
+                ProviderError::RateLimited {
+                    retry_at: now() + chrono::Duration::seconds(RATE_LIMIT_WAIT),
+                },
+            ),
+        ];
+        for (response, expected) in cases {
+            let http = Routes::new(vec![
+                ("copilot_internal/user", ok(BUSINESS_USER)),
+                ("ai_credit/usage", response),
+            ]);
+            let provider = CopilotProvider::new(http, NoGh)
+                .without_cli()
+                .with_login("owner", "gho_own")
+                .with_billing("owner", business(None));
+            let outcomes = provider.fetch_outcomes(now()).unwrap();
+            assert!(
+                matches!(&outcomes[0], AccountOutcome::Fresh(_)),
+                "the user keeps its quotas"
+            );
+            let AccountOutcome::Failed { error, label, .. } = org_card(&outcomes) else {
+                panic!("org failure")
+            };
+            assert_eq!(error, &expected);
+            assert_eq!(label.as_deref(), Some("acme-biz"));
+        }
+    }
+
+    #[test]
+    fn only_copilot_budgets_of_the_organization_are_shown() {
+        let budget = |kind: &str, targets: &[&str], scope: &str, entity: &str| Budget {
+            scope: scope.to_owned(),
+            kind: kind.to_owned(),
+            targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+            entity: entity.to_owned(),
+            amount: 10.0,
+            stops_usage: false,
+            alerts: None,
+        };
+        assert!(caps_copilot(
+            &budget("BundlePricing", &["ai_credits"], "organization", "Acme-Biz"),
+            "acme-biz"
+        ));
+        assert!(caps_copilot(
+            &budget("ProductPricing", &["copilot"], "organization", ""),
+            "acme-biz"
+        ));
+        assert!(caps_copilot(
+            &budget("SkuPricing", &["copilot_premium_request"], "organization", "acme-biz"),
+            "acme-biz"
+        ));
+        assert!(!caps_copilot(
+            &budget("ProductPricing", &["actions"], "organization", "acme-biz"),
+            "acme-biz"
+        ));
+        assert!(!caps_copilot(
+            &budget("BundlePricing", &["ai_credits"], "user", "owner"),
+            "acme-biz"
+        ));
+        assert!(!caps_copilot(
+            &budget("BundlePricing", &["ai_credits"], "organization", "other"),
+            "acme-biz"
+        ));
+        assert_eq!(
+            budget_line(&budget("ProductPricing", &["copilot"], "organization", ""), 2.5),
+            "Copilot budget: $2.50 of $10.00 spent this month, doesn't stop usage."
+        );
+    }
+
     #[test]
     fn the_allowance_per_seat_follows_the_month() {
         assert_eq!(credits_per_seat(2026, 5), 3900);
@@ -1302,6 +1778,8 @@ mod tests {
         assert_eq!(credits_per_seat(2026, 8), 7000);
         assert_eq!(credits_per_seat(2026, 9), 3900);
         assert_eq!(credits_per_seat(2027, 7), 3900);
+        assert_eq!(business_credits_per_seat(2026, 7), 3000);
+        assert_eq!(business_credits_per_seat(2026, 10), 1900);
     }
 
     #[test]

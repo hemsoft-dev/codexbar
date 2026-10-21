@@ -17,7 +17,7 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | --- | --- | --- |
 | ChatGPT / Codex | `https://chatgpt.com/backend-api/wham/usage` | The Codex sign-in (`auth.json`) |
 | Claude | `https://api.anthropic.com/api/oauth/usage` | The Claude Code sign-in (`.credentials.json`) |
-| Copilot | `https://api.github.com/copilot_internal/user`, and for org billing `https://api.github.com/enterprises/…/settings/billing/ai_credit/usage` and `https://api.github.com/orgs/…/copilot/billing` | A GitHub CLI token |
+| Copilot | `https://api.github.com/copilot_internal/user`, and for org billing `https://api.github.com/enterprises/…/settings/billing/ai_credit/usage` (with an enterprise) or `https://api.github.com/organizations/…/settings/billing/ai_credit/usage` and `https://api.github.com/organizations/…/settings/billing/budgets` (a Copilot Business organization without one), and `https://api.github.com/orgs/…/copilot/billing` | A GitHub CLI token |
 | Cursor | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` | The Cursor sign-in (`auth.json`) |
 | OpenRouter | `https://openrouter.ai/api/v1/credits` | Your API key |
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
