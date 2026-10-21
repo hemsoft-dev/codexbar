@@ -405,7 +405,11 @@ fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
         .map(|forecast| forecast.text())
         // A used-up limit with no pace left to project still says so, as the table's "At reset" column does.
         .or_else(|| (used >= 1.0).then(|| "limit reached".to_owned()));
-    let spoken = format!("{}: {}", metric.label(), projection.label);
+    // The card names what it shows; a used-up limit with no forecast says so to screen readers as it does on screen.
+    let spoken = match (&pace, crate::usage_bar::Forecast::of(metric, now)) {
+        (Some(pace), None) => format!("{}: {}, {pace}", metric.label(), projection.label),
+        _ => format!("{}: {}", metric.label(), projection.label),
+    };
     let muted = cx.theme().muted_foreground;
     let bar_height = crate::zoom::scaled(14., cx);
     let body = v_flex()

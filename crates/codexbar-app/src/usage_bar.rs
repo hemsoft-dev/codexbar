@@ -74,6 +74,16 @@ impl Runway {
         }
     }
 
+    /// The grade for a bar with no limit behind it (a balance, or an account's pressure): its severity's colors, as
+    /// the bar had before the runway (#203), so a balance with days of credit left is never drawn used up.
+    pub fn of_severity(severity: codexbar_core::Severity) -> Self {
+        match severity {
+            codexbar_core::Severity::LimitSoon => Self::Out,
+            codexbar_core::Severity::AtRisk | codexbar_core::Severity::Watch => Self::Tight,
+            codexbar_core::Severity::Normal => Self::Ok,
+        }
+    }
+
     /// The solid fill's color: the bar's own calm color when it is fine, the warning color when tight or at risk, the
     /// danger color once the limit is used up. The run past the limit is always in the danger color.
     pub fn color(self, calm: Hsla, cx: &App) -> Hsla {
@@ -280,6 +290,10 @@ impl Projection {
             // calm, as `codexbar_core::assess` keeps them.
             runway: match metric {
                 Metric::Credits { .. } => Runway::Ok,
+                // A balance has no limit: its bar runs on the pressure of its days left, graded by its severity.
+                Metric::Balance { .. } | Metric::Activity { .. } => {
+                    Runway::of_severity(codexbar_core::assess(metric, now).severity())
+                }
                 _ => Runway::of(used, projected),
             },
             label,
@@ -299,9 +313,17 @@ impl Projection {
         }
     }
 
-    /// The same bar drawn calm whatever its share: a used-up window the account's credits carry it past (#150).
+    /// The same bar drawn calm whatever its share: a used-up window the account's credits carry it past (#150). The
+    /// credits carry the pace past the limit too, so nothing is drawn past the marker.
     pub fn calm(mut self) -> Self {
         self.runway = Runway::Ok;
+        self.projected = self.projected.map(|share| share.min(1.0));
+        self
+    }
+
+    /// The same bar graded by `severity` rather than as a limit: an account's pressure has no limit to run into.
+    pub fn graded(mut self, severity: codexbar_core::Severity) -> Self {
+        self.runway = Runway::of_severity(severity);
         self
     }
 }
@@ -770,6 +792,29 @@ mod tests {
         assert_eq!(projection.projected, Some(1.0));
         assert_eq!(projection.runway, Runway::Tight);
         assert_eq!(BarLayout::of(projection.used, projection.projected).over, None);
+    }
+
+    #[test]
+    fn a_balance_bar_is_graded_by_its_severity_not_as_a_used_up_limit() {
+        // Four days of credit left: pressure 1.0, but the balance only needs watching.
+        let balance = Metric::Balance {
+            label: "$ balance".into(),
+            remaining: codexbar_core::Money::from_cents(400),
+            burn_per_day: Some(codexbar_core::Money::from_cents(100)),
+        };
+        let severity = codexbar_core::assess(&balance, now()).severity();
+        let projection = Projection::of(&balance, 1.0, now());
+        assert_eq!(projection.runway, Runway::of_severity(severity));
+        assert_ne!(projection.runway, Runway::Out, "{severity:?}");
+    }
+
+    /// A used-up window the credits carry (#150) is calm and draws nothing past the marker.
+    #[test]
+    fn a_calm_bar_draws_no_overrun() {
+        let projection = Projection::of(&window(1.0, Some(Pace::per_hour(0.01))), 1.0, now()).calm();
+        assert_eq!(projection.runway, Runway::Ok);
+        let layout = BarLayout::of(projection.used, projection.projected);
+        assert_eq!((layout.over, layout.tick), (None, None));
     }
 
     #[test]

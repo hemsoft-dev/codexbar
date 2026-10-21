@@ -550,7 +550,7 @@ impl TableDelegate for AccountTable {
                     Some(metric) => bar_cell(metric, row, &assessment, self.now, &id, cx),
                     // Wide, the row's window sits in its own columns; narrow, a row always has a primary metric.
                     None if self.wide && primary.is_some() => blank_cell(&id, "Primary metric", muted),
-                    None => bar_cell_without_metric(&id, &assessment, row, cx),
+                    None => bar_cell_without_metric(&id, &assessment, severity, row, cx),
                 }
             }
             Col::AtReset => {
@@ -816,10 +816,11 @@ fn bar_cell(
 fn bar_cell_without_metric(
     id: &str,
     assessment: &codexbar_core::Assessment,
+    severity: codexbar_core::Severity,
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
-    bar(id, &Projection::bare(assessment.pressure()), row, cx)
+    bar(id, &Projection::bare(assessment.pressure()).graded(severity), row, cx)
 }
 
 fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
