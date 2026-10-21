@@ -339,7 +339,6 @@ impl OrgRead {
                 };
             }
         };
-        let pool_used_up = self.pool.is_some_and(|pool| consumed.used >= pool as f64);
         let mut org = match self.pool {
             Some(pool) => AccountSnapshot::new(
                 id,
@@ -361,7 +360,7 @@ impl OrgRead {
                             BudgetCovers::Copilot => Some(consumed.net),
                             BudgetCovers::Sku => None,
                         };
-                        org = org.with_message(budget_line(budget, spent, pool_used_up));
+                        org = org.with_message(budget_line(budget, spent));
                     }
                 }
                 None => org = org.with_message(BUDGETS_UNREAD),
@@ -372,17 +371,20 @@ impl OrgRead {
 }
 
 /// One line per Copilot budget: what it caps, how much of that this month's usage has spent when it can be measured,
-/// and whether it stops usage. A budget caps metered spend, which starts only once the included pool is used up, so a
-/// $0 budget (paid overage switched off) is reached only then: `pool_used_up` says whether it is.
-fn budget_line(budget: &Budget, spent: Option<f64>, pool_used_up: bool) -> String {
+/// and whether it stops usage.
+fn budget_line(budget: &Budget, spent: Option<f64>) -> String {
     let dollars = |amount: f64| format!("${amount:.2}");
     let name = match budget_covers(budget) {
         BudgetCovers::AllAiCredits => "AI credits budget".to_owned(),
         BudgetCovers::Copilot => "Copilot budget".to_owned(),
         BudgetCovers::Sku => format!("Budget on {}", budget.targets.join(", ")),
     };
+    // GitHub: "Any budget set to $0 USD stops usage immediately for the users it applies to."
+    let zero_stop = budget.stops_usage && budget.amount <= 0.0;
     let Some(spent) = spent else {
-        let state = if budget.stops_usage {
+        let state = if zero_stop {
+            "usage is stopped: a $0 budget stops it at once"
+        } else if budget.stops_usage {
             "stops usage at the limit"
         } else {
             "doesn't stop usage"
@@ -393,12 +395,10 @@ fn budget_line(budget: &Budget, spent: Option<f64>, pool_used_up: bool) -> Strin
         );
     };
     // A budget counts spend only from when it was created, which GitHub doesn't say, so the month's spend can't tell
-    // whether one is reached: its own setting is shown, and only a $0 budget is known to stop usage, once the pool
-    // is used up.
-    let state = match (budget.stops_usage, budget.amount > 0.0) {
-        (true, true) => "stops usage at the limit",
-        (true, false) if pool_used_up => "usage is stopped until the month resets",
-        (true, false) => "stops usage once the included AI credits run out",
+    // whether one is reached: its own setting is shown. Only a $0 budget is known to stop usage, at once.
+    let state = match (budget.stops_usage, zero_stop) {
+        (true, true) => "usage is stopped: a $0 budget stops it at once",
+        (true, false) => "stops usage at the limit",
         (false, _) => "doesn't stop usage",
     };
     let earlier = if budget.amount > 0.0 && spent >= budget.amount {
@@ -1009,8 +1009,21 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                 // accounts report the failure (keeping their last usage). With every gh account wanted, which
                 // ones they are is unknown, so the provider fails as a whole and nothing is dropped.
                 // No GitHub CLI installed: it has no accounts to lose.
-                Err(ProviderError::NotSignedIn { hint: GH_MISSING })
-                    if !self.logins.is_empty() || !self.unreadable.is_empty() => {}
+                // The organizations its configured accounts bill keep their cards, as failures.
+                Err(err @ ProviderError::NotSignedIn { hint: GH_MISSING })
+                    if !self.logins.is_empty() || !self.unreadable.is_empty() =>
+                {
+                    let cli_users: Vec<&String> = self
+                        .billing
+                        .iter()
+                        .map(|(user, _)| user)
+                        .filter(|user| self.login(user).is_none())
+                        .filter(|user| !self.unreadable.iter().any(|u| u.eq_ignore_ascii_case(user)))
+                        .collect();
+                    for user in cli_users {
+                        self.org_unreadable(user, &err, &mut orgs);
+                    }
+                }
                 Err(err) => match &self.only {
                     Some(only) if !self.logins.is_empty() || !self.unreadable.is_empty() => {
                         // The organizations those accounts bill keep their cards as failures too.
@@ -2256,6 +2269,19 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_github_cli_keeps_its_accounts_organization_cards() {
+        let provider = CopilotProvider::new(Routes::new(vec![("copilot_internal/user", ok(USER))]), NoGh)
+            .only_accounts(vec!["cliuser".into(), "HemSoft".into()])
+            .with_login("HemSoft", "gho_managed_two")
+            .with_billing("cliuser", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Failed { error, .. } = org_card(&outcomes) else {
+            panic!("the organization's card stays, failed: {outcomes:?}")
+        };
+        assert_eq!(error, &ProviderError::NotSignedIn { hint: GH_MISSING });
+    }
+
+    #[test]
     fn a_seatless_account_without_org_billing_still_fails() {
         let provider = CopilotProvider::new(Routes::new(Vec::new()), NoGh)
             .without_cli()
@@ -2376,28 +2402,19 @@ mod tests {
             "acme-biz"
         ));
         assert_eq!(
-            budget_line(
-                &budget("ProductPricing", &["copilot"], "organization", ""),
-                Some(2.5),
-                false
-            ),
+            budget_line(&budget("ProductPricing", &["copilot"], "organization", ""), Some(2.5)),
             "Copilot budget: $2.50 of $10.00 spent this month, doesn't stop usage."
         );
         // A bundle whose every-product report couldn't be read is unmeasured, not shown at zero.
         assert_eq!(
-            budget_line(
-                &budget("BundlePricing", &["ai_credits"], "organization", ""),
-                None,
-                false
-            ),
+            budget_line(&budget("BundlePricing", &["ai_credits"], "organization", ""), None),
             "AI credits budget: $10.00, doesn't stop usage. Its spend isn't measured here."
         );
     }
 
-    /// A $0 budget that stops usage switches paid overage off: usage goes on until the included pool runs out, and
-    /// only then is it stopped.
+    /// GitHub: any budget set to $0 USD stops usage immediately for the users it applies to.
     #[test]
-    fn a_zero_dollar_budget_stops_usage_only_once_the_pool_is_used_up() {
+    fn a_zero_dollar_budget_stops_usage_at_once() {
         let hard_zero = Budget {
             scope: "organization".into(),
             kind: "BundlePricing".into(),
@@ -2408,12 +2425,12 @@ mod tests {
             alerts: None,
         };
         assert_eq!(
-            budget_line(&hard_zero, Some(0.0), false),
-            "AI credits budget: $0.00 of $0.00 spent this month, stops usage once the included AI credits run out."
+            budget_line(&hard_zero, Some(0.0)),
+            "AI credits budget: $0.00 of $0.00 spent this month, usage is stopped: a $0 budget stops it at once."
         );
         assert_eq!(
-            budget_line(&hard_zero, Some(0.0), true),
-            "AI credits budget: $0.00 of $0.00 spent this month, usage is stopped until the month resets."
+            budget_line(&hard_zero, None),
+            "AI credits budget: $0.00, usage is stopped: a $0 budget stops it at once. Its spend isn't measured here."
         );
     }
 
