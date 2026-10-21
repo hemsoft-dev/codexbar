@@ -208,6 +208,21 @@ impl PrefsHub {
         cx.refresh_windows();
     }
 
+    /// The width the user gave a usage-table column (#245), in unzoomed pixels; `None` keeps its default.
+    pub fn column_width(cx: &App, column: &str) -> Option<f32> {
+        cx.try_global::<Self>().and_then(|hub| hub.prefs.column_width(column))
+    }
+
+    /// Remembers the usage table's column widths (#245), in unzoomed pixels (`None` for the default), and saves when
+    /// one changed.
+    pub fn set_column_widths(cx: &mut App, widths: &[(String, Option<f32>)]) {
+        Self::edit(cx, |prefs| {
+            for (column, width) in widths {
+                prefs.set_column_width(column, *width);
+            }
+        });
+    }
+
     /// Gives a fresh account's credits their starting balance (#150): remembers the balance just read (a first one,
     /// or a top-up, becomes the start) and saves when the start moved.
     pub fn with_credit_start(cx: &mut App, account: AccountSnapshot) -> AccountSnapshot {

@@ -1,6 +1,7 @@
 //! Dashboard preferences that only the Rust app uses: which accounts show history (#86), alert settings and the
 //! alerts currently active (#87), account groups with the manual card order (#89), the widget builder's tiles and
-//! refresh choice (#95), and each account's remembered starting credit balance (#150).
+//! refresh choice (#95), each account's remembered starting credit balance (#150), and the usage table's column widths
+//! (#245).
 //!
 //! They live in `dashboard.json`, not `settings.json`: the WPF app reads `settings.json` into typed settings and writes
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
@@ -91,6 +92,12 @@ pub struct DashboardPrefs {
     /// The dashboard window's last placement (#194). Saved as a whole when changed: only one CodexBar runs per user.
     placement: Option<WindowPlacement>,
     placement_dirty: bool,
+    /// The usage table's column widths the user dragged (#245), in unzoomed pixels, by column key. Columns not listed
+    /// keep their default width.
+    column_widths: BTreeMap<String, f32>,
+    /// Column widths changed and not yet saved: a new width, or `None` for the default. Merged by column like
+    /// `pending`, so a save keeps widths this version doesn't know.
+    pending_column_widths: BTreeMap<String, Option<f32>>,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -132,6 +139,8 @@ impl DashboardPrefs {
             pending_credit_starts: BTreeMap::new(),
             placement: doc.get("window").and_then(placement_from_json),
             placement_dirty: false,
+            column_widths: column_widths_from_json(doc.get("columnWidths")),
+            pending_column_widths: BTreeMap::new(),
             read_only: version > VERSION,
         }
     }
@@ -147,6 +156,27 @@ impl DashboardPrefs {
             self.placement = Some(placement);
             self.placement_dirty = true;
         }
+    }
+
+    /// The width the user gave a usage-table column (#245), in unzoomed pixels; `None` keeps its default.
+    pub fn column_width(&self, column: &str) -> Option<f32> {
+        self.column_widths.get(column).copied()
+    }
+
+    /// Remembers a column's width, or `None` to go back to the default. A width that isn't a usable size is ignored,
+    /// and an unchanged one isn't saved.
+    pub fn set_column_width(&mut self, column: &str, width: Option<f32>) {
+        if width.is_some_and(|width| !usable_column_width(f64::from(width))) {
+            return;
+        }
+        if self.column_widths.get(column).copied() == width {
+            return;
+        }
+        match width {
+            Some(width) => self.column_widths.insert(column.to_owned(), width),
+            None => self.column_widths.remove(column),
+        };
+        self.pending_column_widths.insert(column.to_owned(), width);
     }
 
     pub fn layout(&self) -> &Layout {
@@ -286,6 +316,7 @@ impl DashboardPrefs {
             || self.ring_size_dirty
             || !self.pending_credit_starts.is_empty()
             || self.placement_dirty
+            || !self.pending_column_widths.is_empty()
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -445,6 +476,27 @@ impl DashboardPrefs {
             };
         }
         doc.insert("creditStarts".into(), json!(credit_starts));
+        let mut column_widths = column_widths_from_json(doc.get("columnWidths"));
+        if !self.pending_column_widths.is_empty() {
+            for (column, width) in &self.pending_column_widths {
+                match width {
+                    Some(width) => column_widths.insert(column.clone(), *width),
+                    None => column_widths.remove(column),
+                };
+            }
+            // Widths this version doesn't read (another column's, or a bad value) are kept as they were.
+            let mut saved = match doc.get("columnWidths") {
+                Some(Value::Object(saved)) => saved.clone(),
+                _ => Map::new(),
+            };
+            for (column, width) in &self.pending_column_widths {
+                match width {
+                    Some(width) => saved.insert(column.clone(), json!(width)),
+                    None => saved.remove(column),
+                };
+            }
+            doc.insert("columnWidths".into(), Value::Object(saved));
+        }
         if self.layout_dirty {
             layout_to_json(&self.layout, &mut doc);
         }
@@ -516,6 +568,8 @@ impl DashboardPrefs {
         self.pending_active.clear();
         self.credit_starts = credit_starts;
         self.pending_credit_starts.clear();
+        self.column_widths = column_widths;
+        self.pending_column_widths.clear();
         Ok(())
     }
 }
@@ -530,6 +584,27 @@ fn credit_starts_from_json(value: Option<&Value>) -> BTreeMap<String, f64> {
                 .filter_map(|(account, start)| {
                     let start = start.as_f64().filter(|start| start.is_finite() && *start >= 0.0)?;
                     Some((account.clone(), start))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A column width worth keeping: a finite, positive size no wider than any screen.
+fn usable_column_width(width: f64) -> bool {
+    width.is_finite() && width > 0.0 && width <= 10_000.0
+}
+
+/// `columnWidths`: column key to its width in unzoomed pixels. Anything else is skipped.
+fn column_widths_from_json(value: Option<&Value>) -> BTreeMap<String, f32> {
+    value
+        .and_then(Value::as_object)
+        .map(|widths| {
+            widths
+                .iter()
+                .filter_map(|(column, width)| {
+                    let width = width.as_f64().filter(|width| usable_column_width(*width))?;
+                    Some((column.clone(), width as f32))
                 })
                 .collect()
         })
@@ -1034,6 +1109,69 @@ mod tests {
         assert_eq!(DashboardPrefs::load(&dir.0).window_placement(), Some(&placement));
         prefs.set_window_placement(placement);
         assert!(!prefs.is_dirty(), "the same placement again changes nothing");
+    }
+
+    #[test]
+    fn column_widths_are_saved_and_read_back_by_column() {
+        let dir = Dir::new("column-widths");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.column_width("account"), None, "the default until dragged");
+        prefs.set_column_width("account", Some(320.));
+        prefs.set_column_width("limit", Some(96.5));
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.column_width("account"), Some(320.));
+        assert_eq!(loaded.column_width("limit"), Some(96.5));
+        assert_eq!(
+            loaded.column_width("used"),
+            None,
+            "an untouched column keeps its default"
+        );
+        prefs.set_column_width("account", Some(320.));
+        assert!(!prefs.is_dirty(), "the same width again changes nothing");
+        prefs.set_column_width("limit", None);
+        prefs.save(&dir.0).unwrap();
+        assert_eq!(
+            DashboardPrefs::load(&dir.0).column_width("limit"),
+            None,
+            "back to the default"
+        );
+    }
+
+    #[test]
+    fn column_widths_merge_with_other_writers_and_skip_bad_values() {
+        let dir = Dir::new("column-widths-merge");
+        dir.write(r#"{ "version": 1, "columnWidths": { "account": 300, "used": -4, "percent": "wide" } }"#);
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.column_width("account"), Some(300.));
+        assert_eq!(prefs.column_width("used"), None, "a negative width is the default");
+        assert_eq!(prefs.column_width("percent"), None, "not a number");
+        prefs.set_column_width("trend", Some(f32::NAN));
+        assert!(!prefs.is_dirty(), "an unusable width is ignored");
+        // Another CodexBar widens the account column meanwhile; this one only changes the limit column.
+        dir.write(r#"{ "version": 1, "columnWidths": { "account": 350, "future-column": 80, "percent": "wide" } }"#);
+        prefs.set_column_width("limit", Some(120.));
+        prefs.save(&dir.0).unwrap();
+        let saved = dir.read();
+        assert_eq!(
+            saved["columnWidths"]["account"], 350,
+            "the other writer's width survives"
+        );
+        assert_eq!(
+            saved["columnWidths"]["future-column"], 80,
+            "a column this version doesn't know survives"
+        );
+        assert_eq!(
+            saved["columnWidths"]["percent"], "wide",
+            "a value this version can't read is left alone"
+        );
+        assert_eq!(saved["columnWidths"]["limit"], 120.0);
+        assert_eq!(
+            prefs.column_width("account"),
+            Some(350.),
+            "the merged result is what this instance holds"
+        );
     }
 
     #[test]

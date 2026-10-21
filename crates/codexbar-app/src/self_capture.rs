@@ -3,6 +3,10 @@
 //! Built only with `--features capture`. With `CODEXBAR_CAPTURE_DIR=<folder>` set, the app renders each view of its
 //! real window to a PNG through GPUI's offscreen rendering, exercises the tray's hide and show, records what it saw in
 //! `report.json`, and quits. Run it with `--demo`, so it never reads real accounts.
+//!
+//! The demo's preferences live in `<folder>/prefs`, never the user's own, so a second run into the same folder starts
+//! from what the first saved. With `CODEXBAR_CAPTURE_RESIZE=1` it also drags the usage table's column borders (#245)
+//! and saves a frame per step (`resize-NNN.png`) for a recording.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -32,6 +36,12 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
     .detach();
 }
 
+/// Where a capture run keeps the demo's preferences: inside the capture folder, so the user's own are never touched.
+pub fn prefs_dir() -> Option<PathBuf> {
+    let dir = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(PathBuf::from)?;
+    crate::is_demo().then(|| dir.join("prefs"))
+}
+
 async fn settle(cx: &mut AsyncApp) {
     cx.background_executor().timer(Duration::from_millis(800)).await;
 }
@@ -46,6 +56,75 @@ fn save(cx: &mut AsyncApp, handle: AnyWindowHandle, dir: &std::path::Path, name:
     .ok()
     .and_then(Result::ok)
     .is_some_and(|image| image.save(dir.join(format!("{name}.png"))).is_ok())
+}
+
+/// Drags the usage table's column borders as a user would (#245): the account column down to its minimum and back
+/// out, then the limit column narrower. Saves a frame per step and the `columns-minimum` and `columns-resized` states.
+async fn resize_columns(
+    cx: &mut AsyncApp,
+    handle: AnyWindowHandle,
+    dashboard: &Entity<Dashboard>,
+    dir: &std::path::Path,
+) -> Vec<String> {
+    use gpui_kit::test::TestEventExt as _;
+    use gpui_kit::{MouseButton, point, px};
+
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, Appearance::Light));
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Usage, cx)));
+    settle(cx).await;
+    let mut saved = Vec::new();
+    let mut frame = 0;
+    let mut save_frame = |cx: &mut AsyncApp| {
+        save(cx, handle, dir, &format!("resize-{frame:03}"));
+        frame += 1;
+    };
+    for _ in 0..6 {
+        save_frame(cx);
+    }
+    let drags: [(usize, f32, Option<&str>); 3] = [
+        (0, -400., Some("columns-minimum")),
+        (0, 260., None),
+        (1, -90., Some("columns-resized")),
+    ];
+    for (column, dx, state) in drags {
+        // The border's grab band sits just inside the header's right edge.
+        let start = cx
+            .update(|cx| {
+                cx.update_window(handle, |_, window, cx| {
+                    window.render_frame(cx);
+                    let header = window.find(("col-header", column)).bounds();
+                    let start = point(header.right() - px(2.), header.center().y);
+                    window.pointer_down(start, MouseButton::Left, cx);
+                    start
+                })
+            })
+            .ok();
+        let Some(start) = start else {
+            continue;
+        };
+        const STEPS: usize = 12;
+        for step in 1..=STEPS {
+            let at = start + point(px(dx * step as f32 / STEPS as f32), px(0.));
+            let _ = cx.update(|cx| {
+                cx.update_window(handle, |_, window, cx| {
+                    window.pointer_move(at, Some(MouseButton::Left), cx)
+                })
+            });
+            save_frame(cx);
+        }
+        let end = start + point(px(dx), px(0.));
+        let _ = cx.update(|cx| cx.update_window(handle, |_, window, cx| window.pointer_up(end, MouseButton::Left, cx)));
+        cx.background_executor().timer(Duration::from_millis(300)).await;
+        for _ in 0..6 {
+            save_frame(cx);
+        }
+        if let Some(state) = state
+            && save(cx, handle, dir, state)
+        {
+            saved.push(state.to_owned());
+        }
+    }
+    saved
 }
 
 fn shown(cx: &mut AsyncApp, handle: AnyWindowHandle) -> Option<bool> {
@@ -83,6 +162,9 @@ async fn run(
     settle(cx).await;
     if save(cx, handle, dir, "settings-about-dark") {
         saved.push("settings-about-dark".into());
+    }
+    if std::env::var_os("CODEXBAR_CAPTURE_RESIZE").is_some() {
+        saved.extend(resize_columns(cx, handle, dashboard, dir).await);
     }
     cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, Appearance::System));
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Usage, cx)));
