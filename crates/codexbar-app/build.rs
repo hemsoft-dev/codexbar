@@ -98,13 +98,19 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 /// Reruns the build script when a commit, checkout or pull moves HEAD, so the commit count stays current. HEAD's reflog
-/// changes with every move; HEAD itself and the branch's ref cover a repository without reflogs.
+/// changes with every move; HEAD itself and the branch's ref cover a repository without reflogs. A shallow clone's
+/// boundary file changes, or goes, when the clone is deepened, which changes the count without moving HEAD. Only files
+/// that exist are watched: Cargo reruns the script on every build for a missing one.
 fn watch_git_head() {
     let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) else {
         return;
     };
     let git_dir = std::path::PathBuf::from(git_dir);
-    for path in [git_dir.join("HEAD"), git_dir.join("logs").join("HEAD")] {
+    let shallow = git(&["rev-parse", "--path-format=absolute", "--git-path", "shallow"]).map(std::path::PathBuf::from);
+    for path in [git_dir.join("HEAD"), git_dir.join("logs").join("HEAD")]
+        .into_iter()
+        .chain(shallow)
+    {
         if path.exists() {
             println!("cargo:rerun-if-changed={}", path.display());
         }

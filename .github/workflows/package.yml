@@ -14,6 +14,8 @@ on:
       # The shared icon drawing and the build script that embeds it (#182) feed every package's icon.
       - crates/codexbar-app/src/mark.rs
       - crates/codexbar-app/build.rs
+      # The version every package shows (#244), which build.rs works out with it.
+      - crates/codexbar-app/src/version_scheme.rs
       - Cargo.toml
       - Cargo.lock
       - crates/*/Cargo.toml
