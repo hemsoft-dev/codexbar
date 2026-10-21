@@ -24,7 +24,7 @@ use gpui_kit::{
 use crate::account_table::{AccountState, States};
 use crate::history_view::{ValueKind, describe};
 use crate::prefs_hub::PrefsHub;
-use crate::status::{severity_color, severity_dot_color};
+use crate::status::severity_dot_color;
 use crate::usage_bar::{Projection, usage_bar};
 
 /// Days the spend trend covers; the history's retention.
@@ -910,7 +910,6 @@ fn spend_row(
 ) -> AnyElement {
     let metric = row.counted;
     let capped = metric.used_fraction();
-    let severity = codexbar_core::assess(metric, now).severity();
     let name = row.account.display_name();
     let breakdown = breakdown_text(row);
     let detail = Some(metric.label().to_owned());
@@ -936,7 +935,7 @@ fn spend_row(
         Some(projection) => usage_bar(
             &format!("spend-bar-{ix}"),
             projection,
-            severity_color(severity, cx),
+            cx.theme().chart_1,
             crate::usage_bar::small(),
             name.clone(),
             cx,
@@ -972,7 +971,6 @@ fn spend_row(
         .filter_map(|(j, metric)| {
             let used = metric.used_fraction()?;
             let projection = Projection::of(metric, used, now);
-            let severity = codexbar_core::assess(metric, now).severity();
             Some(
                 h_flex()
                     .gap_2()
@@ -987,7 +985,7 @@ fn spend_row(
                     .child(div().flex_1().min_w(rems(4.)).child(usage_bar(
                         &format!("spend-bar-{ix}-{j}"),
                         &projection,
-                        severity_color(severity, cx),
+                        cx.theme().chart_1,
                         crate::usage_bar::small(),
                         format!("{name}, {}", metric.label()),
                         cx,

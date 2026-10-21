@@ -1,19 +1,24 @@
-//! One bar for a limit (#197): the share used as a solid fill, the share projected by the reset as a hatched run past
-//! it with a tick where it ends (#213), and a tooltip that says both. The table, the focus card and the ring gauge all
-//! describe their metric through [`Projection`], so the hover text and the accessibility label read the same
-//! everywhere.
+//! One bar for a limit (#197), drawn as the Pi dashboard's usage runway (#234): every bar shares one scale, 0 to 125% of
+//! the plan limit, with the limit marked at 100%. The share used is the solid fill; the share projected by the reset
+//! runs on from it hatched up to the limit (#213) and past the marker in the danger color, so an overrun shows how
+//! far it goes; one past 125% fades out at the end. A tick marks where the projection ends. The table, the focus card
+//! and the ring gauge all describe their metric through [`Projection`], so the hover text and the accessibility label
+//! read the same everywhere: the share used, the share at the reset and, when the limit comes first, when it runs out.
 
-use chrono::{DateTime, Utc};
-use codexbar_core::{Metric, Pace, format};
+use chrono::{DateTime, Duration, Utc};
+use codexbar_core::{Metric, Outlook, Pace, format};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
     AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, pattern_slash, prelude::FluentBuilder as _, px,
-    relative,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div, linear_color_stop, linear_gradient, pattern_slash,
+    prelude::FluentBuilder as _, px, relative,
 };
 
+/// The end of every bar's scale, as a share of the limit (#234): the Pi dashboard's 125%, so a projected overrun has
+/// room to show past the limit and overruns line up down a column.
+pub const SCALE_MAX: f64 = 1.25;
 /// The empty track past the projection: the bar's color, faint (#213 measured the old faded run at 1.4:1 against it).
 const TRACK_OPACITY: f32 = 0.15;
 /// The projected run is hatched in the bar's own color (#213): the stripes' gaps show the row behind them, so the run
@@ -24,56 +29,241 @@ const HATCH_GAP: f32 = 3.;
 /// a pixel wide, and it is this wide.
 const TICK_OVERHANG: f32 = 2.;
 const TICK_WIDTH: f32 = 2.;
+/// The limit marker stands this far above and below the bar, a hairline in the muted text color, as the Pi
+/// dashboard's does.
+const LIMIT_OVERHANG: f32 = 4.;
+const LIMIT_WIDTH: f32 = 1.;
+/// A projection past the scale's end fades out over this last share of the bar, the overflow indication.
+const FADE: f32 = 0.08;
+/// The run past the limit is the danger color, translucent like the Pi dashboard's ember run: solid enough to read as
+/// red beside the hatched run before the marker, light enough that the tick at its end stands out.
+const OVER_OPACITY: f32 = 0.55;
+/// The shares the runway grades a bar at (#234), as the Pi dashboard does: tight from 85%, out at 100% used.
+const TIGHT: f64 = 0.85;
 
-/// Where a bar's parts go, as shares of its width (#213): the solid share, the hatched run from it to the projection,
-/// the faint track after that, and the tick at the projection's end.
+/// Where `share` of the limit sits on the bar, 0 to 1 of its width.
+pub fn position(share: f64) -> f32 {
+    (share.clamp(0.0, SCALE_MAX) / SCALE_MAX) as f32
+}
+
+/// How a bar stands against its limit, graded as the Pi dashboard's runway board does (#234). It picks the bar's color
+/// and the forecast's words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Runway {
+    /// Comfortably under the limit.
+    Ok,
+    /// 85% or more used, or projected to reach 85% by the reset.
+    Tight,
+    /// Projected past the limit before the reset.
+    Risk,
+    /// The limit is used up.
+    Out,
+}
+
+impl Runway {
+    pub fn of(used: f64, projected: Option<f64>) -> Self {
+        let projected = projected.filter(|share| share.is_finite());
+        if used >= 1.0 {
+            Self::Out
+        } else if projected.is_some_and(|share| share > 1.0) {
+            Self::Risk
+        } else if used >= TIGHT || projected.is_some_and(|share| share >= TIGHT) {
+            Self::Tight
+        } else {
+            Self::Ok
+        }
+    }
+
+    /// The grade for a bar with no limit behind it (a balance, or an account's pressure): its severity's colors, as
+    /// the bar had before the runway (#203), so a balance with days of credit left is never drawn used up.
+    pub fn of_severity(severity: codexbar_core::Severity) -> Self {
+        match severity {
+            codexbar_core::Severity::LimitSoon => Self::Out,
+            codexbar_core::Severity::AtRisk | codexbar_core::Severity::Watch => Self::Tight,
+            codexbar_core::Severity::Normal => Self::Ok,
+        }
+    }
+
+    /// The solid fill's color: the bar's own calm color when it is fine, the warning color when tight or at risk, the
+    /// danger color once the limit is used up. The run past the limit is always in the danger color.
+    pub fn color(self, calm: Hsla, cx: &App) -> Hsla {
+        match self {
+            Self::Ok => calm,
+            Self::Tight | Self::Risk => cx.theme().warning,
+            Self::Out => cx.theme().danger,
+        }
+    }
+}
+
+/// Where a bar's parts go, as shares of its width on the 0 to 125% scale (#234): the solid share, the hatched run from
+/// it up to the limit, the run past the limit marker, the faint track after that, the tick at the projection's end and
+/// the marker itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BarLayout {
-    /// 0 to 1: the solid fill's width.
+    /// The solid fill's width; at most the limit's position.
     pub used: f32,
-    /// The hatched run, as start and end, when the pace projects past the solid share.
+    /// The hatched run under the limit, as start and end, when the pace projects past the solid share.
     pub run: Option<(f32, f32)>,
+    /// The run past the limit marker, in the danger color, when the projection overruns the limit.
+    pub over: Option<(f32, f32)>,
+    /// The projection runs past the scale's end: the overrun fades out there instead of ending in a tick.
+    pub clipped: bool,
     /// Where the faint track starts; it runs to the end. A plain bar keeps it whole, under its pill end.
     pub track_from: f32,
     /// The tick at the projected share, and whether the projection runs past the limit.
     pub tick: Option<Tick>,
+    /// The limit marker's position: 100% of the limit, 0.8 of the bar. `None` on a bar with no limit behind it.
+    pub limit: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tick {
     /// 0 to 1: the tick's centre.
     pub at: f32,
-    /// The pace runs the limit out before the reset: the tick sits at the end in the warning color.
+    /// The pace runs the limit out before the reset: the tick is in the danger color.
     pub past_limit: bool,
 }
 
 impl BarLayout {
     /// The parts for a share used and a projection, both as fractions of the limit. A projection at or below the
-    /// solid share draws nothing past it; one past the limit fills the bar and flags the tick.
+    /// solid share draws nothing past it; one past the limit continues beyond the marker, clipped at 125%.
     pub fn of(used: f64, projected: Option<f64>) -> Self {
-        let used_share = used.clamp(0.0, 1.0) as f32;
+        let used = used.clamp(0.0, 1.0);
+        let used_at = position(used);
+        let limit = Some(position(1.0));
         let projected = projected.filter(|share| share.is_finite() && *share > used);
-        match projected {
-            Some(share) => {
-                let end = share.clamp(0.0, 1.0) as f32;
-                Self {
-                    used: used_share,
-                    run: (end > used_share).then_some((used_share, end)),
-                    track_from: end,
-                    tick: Some(Tick {
-                        at: end,
-                        past_limit: share > 1.0,
-                    }),
-                }
-            }
-            None => Self {
-                used: used_share,
+        let Some(share) = projected else {
+            return Self {
+                used: used_at,
                 run: None,
+                over: None,
+                clipped: false,
                 track_from: 0.,
                 tick: None,
-            },
+                limit,
+            };
+        };
+        let end = position(share);
+        let under = position(share.min(1.0));
+        let clipped = share > SCALE_MAX;
+        Self {
+            used: used_at,
+            run: (under > used_at).then_some((used_at, under)),
+            over: (share > 1.0).then(|| (position(used.max(1.0)), end)),
+            clipped,
+            track_from: end,
+            tick: (!clipped).then_some(Tick {
+                at: end,
+                past_limit: share > 1.0,
+            }),
+            limit,
         }
     }
+
+    /// A bar with no limit behind it (#234): a credit pool's spend, a balance's or an account's pressure. It runs the
+    /// whole width at 100%, as its percentage says, with no marker and nothing projected.
+    pub fn plain(used: f64) -> Self {
+        Self {
+            used: used.clamp(0.0, 1.0) as f32,
+            run: None,
+            over: None,
+            clipped: false,
+            track_from: 0.,
+            tick: None,
+            limit: None,
+        }
+    }
+}
+
+/// Where the pace lands by the reset and, when the limit comes first, when it runs out (#234), worded as the Pi
+/// dashboard's runway board words it: "112% at reset · runs out in 5d 4h".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Forecast {
+    /// The share used by the reset, past 1 when the pace overruns the limit.
+    pub at_reset: f64,
+    /// The share used now.
+    pub used: f64,
+    /// How long until the limit runs out, when that comes before the reset.
+    pub runs_out_in: Option<Duration>,
+    /// How long before the reset that is (#206).
+    pub early: Option<Duration>,
+}
+
+impl Forecast {
+    /// The forecast for `metric` at `now`, when its pace allows one.
+    pub fn of(metric: &Metric, now: DateTime<Utc>) -> Option<Self> {
+        let projected = metric.projected_at_reset(now)?;
+        let used = metric.used_fraction()?;
+        // A limit hit within a minute of the reset is a full share, not an overrun (#206), so it reads "100% at reset"
+        // and grades as tight rather than at risk.
+        let (at_reset, runs_out_in, early) = match metric.outlook(now) {
+            Some(Outlook::Early(early)) if used < 1.0 => (projected, metric.time_to_limit(), Some(early)),
+            Some(Outlook::Share(_)) if used < 1.0 => (projected.min(1.0), None, None),
+            _ => (projected, None, None),
+        };
+        Some(Self {
+            at_reset,
+            used,
+            runs_out_in,
+            early,
+        })
+    }
+
+    /// How the bar stands: out, at risk, tight or fine.
+    pub fn runway(&self) -> Runway {
+        Runway::of(self.used, Some(self.at_reset))
+    }
+
+    /// "112%": the share at the reset.
+    pub fn share(&self) -> String {
+        format!("{:.0}%", self.at_reset.max(0.0) * 100.0)
+    }
+
+    /// What the runway says beside the share: "runs out in 5d 4h", "limit reached", "near limit", or nothing.
+    pub fn phrase(&self) -> Option<String> {
+        match self.runway() {
+            Runway::Out => Some("limit reached".to_owned()),
+            Runway::Risk => Some(match self.runs_out_in {
+                Some(left) if left >= Duration::minutes(1) => format!("runs out in {}", format::countdown(left)),
+                Some(_) => "at the limit now".to_owned(),
+                None => "runs out at the reset".to_owned(),
+            }),
+            Runway::Tight => Some("near limit".to_owned()),
+            Runway::Ok => None,
+        }
+    }
+
+    /// The whole forecast: "112% at reset · runs out in 5d 4h", "56% at reset".
+    pub fn text(&self) -> String {
+        match self.phrase() {
+            Some(phrase) => format!("{} at reset · {phrase}", self.share()),
+            None => format!("{} at reset", self.share()),
+        }
+    }
+}
+
+/// What a used-up window the account's credits carry says (#150): it neither runs out nor is reached.
+pub const COVERED: &str = "covered by credits";
+const REACHED: &str = "limit reached";
+
+/// Whether `metric` is a limit used up: a window, quota or capped spend at 100%.
+fn used_up(metric: &Metric) -> bool {
+    matches!(
+        metric,
+        Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { limit: Some(_), .. }
+    ) && metric.used_fraction().is_some_and(|used| used >= 1.0)
+}
+
+/// What `account`'s `metric` says about its reset (#234), in the words every surface uses (the focus card's tiles and
+/// bar, the widgets): the forecast ("112% at reset · runs out in 5d 4h"), "covered by credits" for a used-up window
+/// the account's credits carry (#150), "limit reached" for a used-up limit with no pace left, or nothing.
+pub fn outlook(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
+    if account.credits_cover(metric) {
+        return Some(COVERED.to_owned());
+    }
+    Forecast::of(metric, now)
+        .map(|forecast| forecast.text())
+        .or_else(|| used_up(metric).then(|| REACHED.to_owned()))
 }
 
 /// What a bar says about its metric: the share used, the share projected by the reset when the pace allows one, and
@@ -84,10 +274,15 @@ pub struct Projection {
     pub used: f64,
     /// 0 up, past 1 when the limit runs out before the reset; `None` with nothing to project.
     pub projected: Option<f64>,
-    /// "42% used, on pace for 78%", "91% used, 21m early" (#206), or "42% used" with nothing projected: the
-    /// accessibility label.
+    /// How the bar stands, which picks its color.
+    pub runway: Runway,
+    /// Whether the bar stands for a limit: drawn on the runway's 0 to 125% scale with the limit marked. A credit pool,
+    /// a balance or an account's pressure isn't one and runs the plain 0 to 100% width.
+    pub limited: bool,
+    /// "42% used, 78% at reset", "91% used, 112% at reset · runs out in 25m" (#234), or "42% used" with nothing
+    /// projected: the accessibility label.
     pub label: String,
-    /// The hover text: the share, when the window resets, and the projection with its pace, or why there is none.
+    /// The hover text: the share, when the window resets, and the forecast with its pace, or why there is none.
     pub tooltip: String,
 }
 
@@ -95,7 +290,6 @@ impl Projection {
     /// What `metric` shows at `now`, with `used` as the bar's own share (a credits bar runs on the spend since the
     /// remembered start, not the metric's used fraction, so the caller says what the fill is).
     pub fn of(metric: &Metric, used: f64, now: DateTime<Utc>) -> Self {
-        let projected = metric.projected_at_reset(now);
         let share = format!("{:.0}% used", used * 100.0);
         let resets = metric
             .resets_at()
@@ -104,19 +298,27 @@ impl Projection {
             Metric::Window { pace, .. } | Metric::Quota { pace, .. } | Metric::Spend { pace, .. } => *pace,
             Metric::Balance { .. } | Metric::Activity { .. } | Metric::Credits { .. } => None,
         };
-        // The share by the reset, or how early the limit runs out (#206).
-        let outlook = metric.outlook(now);
-        let told = outlook.map(|outlook| match outlook {
-            codexbar_core::Outlook::Share(_) => format!("{} by the reset", format::outlook_text(outlook)),
-            codexbar_core::Outlook::Early(_) => format::outlook_text(outlook),
-        });
-        let outlook = match (told, pace) {
-            (Some(told), Some(pace)) => format!("{told} ({})", pace_text(pace)),
-            (Some(told), None) => told,
-            (None, _) => no_projection(metric, pace, now).to_owned(),
+        // The share at the reset and when the limit runs out (#234), with how early that is (#206) and the pace. The
+        // bar draws the same share the words say, so a limit hit at the reset is a full bar, not an overrun.
+        let forecast = Forecast::of(metric, now);
+        let projected = forecast.map(|forecast| forecast.at_reset);
+        let outlook = match forecast {
+            Some(forecast) => {
+                let mut told = forecast.text();
+                if let Some(early) = forecast.early {
+                    told = format!("{told}, {} early", format::time_left(early));
+                }
+                match pace {
+                    Some(pace) => format!("{told} ({})", pace_text(pace)),
+                    None => told,
+                }
+            }
+            None if used_up(metric) => REACHED.to_owned(),
+            None => no_projection(metric, pace, now).to_owned(),
         };
-        let label = match metric.outlook(now) {
-            Some(outlook) => format!("{share}, {}", format::outlook_text(outlook)),
+        let label = match forecast {
+            Some(forecast) => format!("{share}, {}", forecast.text()),
+            None if used_up(metric) => format!("{share}, {REACHED}"),
             None => share.clone(),
         };
         let tooltip = [Some(share), resets, Some(outlook)]
@@ -127,6 +329,20 @@ impl Projection {
         Self {
             used,
             projected,
+            // Credits have no limit to run into (#150): their bar runs on the spend since the last top-up and stays
+            // calm, as `codexbar_core::assess` keeps them.
+            limited: matches!(
+                metric,
+                Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { limit: Some(_), .. }
+            ),
+            runway: match metric {
+                Metric::Credits { .. } => Runway::Ok,
+                // A balance has no limit: its bar runs on the pressure of its days left, graded by its severity.
+                Metric::Balance { .. } | Metric::Activity { .. } => {
+                    Runway::of_severity(codexbar_core::assess(metric, now).severity())
+                }
+                _ => Runway::of(used, projected),
+            },
             label,
             tooltip,
         }
@@ -138,9 +354,53 @@ impl Projection {
         Self {
             used,
             projected: None,
+            runway: Runway::of(used, None),
+            limited: false,
             label: share.clone(),
             tooltip: share,
         }
+    }
+
+    /// The same bar drawn calm whatever its share: a used-up window the account's credits carry it past (#150). The
+    /// credits carry the pace past the limit too, so nothing is drawn past the marker.
+    pub fn calm(mut self) -> Self {
+        self.runway = Runway::Ok;
+        self.projected = self.projected.map(|share| share.min(1.0));
+        // The words say so too: the reset stays, the forecast gives way to the credits.
+        let share = format!("{:.0}% used", self.used * 100.0);
+        let resets = self
+            .tooltip
+            .split(" · ")
+            .find(|part| part.starts_with("resets "))
+            .map(str::to_owned);
+        self.label = format!("{share}, {COVERED}");
+        self.tooltip = [Some(share), resets, Some(COVERED.to_owned())]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        self
+    }
+
+    /// The bar for `account`'s `metric`: calm when the account's credits carry it (#150).
+    pub fn of_account(
+        metric: &Metric,
+        used: f64,
+        account: &codexbar_core::AccountSnapshot,
+        now: DateTime<Utc>,
+    ) -> Self {
+        let projection = Self::of(metric, used, now);
+        if account.credits_cover(metric) {
+            projection.calm()
+        } else {
+            projection
+        }
+    }
+
+    /// The same bar graded by `severity` rather than as a limit: an account's pressure has no limit to run into.
+    pub fn graded(mut self, severity: codexbar_core::Severity) -> Self {
+        self.runway = Runway::of_severity(severity);
+        self
     }
 }
 
@@ -177,22 +437,29 @@ fn pace_text(pace: Pace) -> String {
     }
 }
 
-/// The bar: `height` tall, the solid share in `color`, the projected run hatched in it, the faint track after, and a
-/// tick in the text color where the projection ends (#213), in the warning color at the end when the pace runs the
-/// limit out first. The tooltip shows on hover and `projection.label` serves screen readers and the headless tests.
-/// `id` names the hoverable cell; the bar itself is `<id>-bar` and the tick `<id>-projected`.
+/// The bar: `height` tall, on the 0 to 125% scale with the limit marked at 100% (#234). The solid share is colored by
+/// its [`Runway`] (`calm` while it is fine), the projected run hatched in that color up to the limit and a translucent
+/// run in the danger color past it, and a tick in the text color where the projection ends (#213), in the danger color past the limit. A
+/// projection past 125% fades out at the end instead. The tooltip shows on hover and `projection.label` serves screen
+/// readers and the headless tests. `id` names the hoverable cell; the bar itself is `<id>-bar`, the tick
+/// `<id>-projected`, the overrun `<id>-over` and the marker `<id>-limit`.
 pub fn usage_bar(
     id: &str,
     projection: &Projection,
-    color: Hsla,
+    calm: Hsla,
     height: Pixels,
     spoken_name: impl Into<SharedString>,
     cx: &App,
 ) -> AnyElement {
-    let layout = BarLayout::of(projection.used, projection.projected);
+    let layout = if projection.limited {
+        BarLayout::of(projection.used, projection.projected)
+    } else {
+        BarLayout::plain(projection.used)
+    };
+    let color = projection.runway.color(calm, cx);
     let tooltip: SharedString = projection.tooltip.clone().into();
     let spoken: SharedString = spoken_name.into();
-    let (text, danger) = (cx.theme().foreground, cx.theme().danger);
+    let (text, danger, muted) = (cx.theme().foreground, cx.theme().danger, cx.theme().muted_foreground);
     // Each part rounds its own outer ends: GPUI clips children to a rectangle, not to the parent's rounded corners.
     // The bar's left end belongs to whichever part starts at 0, its right end to whichever reaches 1, and a run past
     // the solid share starts square so the texture begins at a clean edge.
@@ -208,11 +475,16 @@ pub fn usage_bar(
         if to >= 1. { part.rounded_r(radius) } else { part }
     };
     let solid = span(0., layout.used).bg(color);
-    let solid = if layout.run.is_some() {
+    let solid = if layout.run.is_some() || layout.over.is_some() {
         solid
     } else {
         solid.rounded(radius)
     };
+    // Past the scale's end the overrun stops hatched short of it and fades out over the last stretch.
+    let over = layout.over.map(|(from, to)| {
+        let fade_from = if layout.clipped { (to - FADE).max(from) } else { to };
+        (from, fade_from, to)
+    });
     div()
         .id(ElementId::Name(id.to_owned().into()))
         .test_support()
@@ -228,7 +500,7 @@ pub fn usage_bar(
                 .aria_label(format!("{spoken}: {}", projection.label))
                 .aria_min_numeric_value(0.)
                 .aria_max_numeric_value(100.)
-                .aria_numeric_value(f64::from(layout.used) * 100.0)
+                .aria_numeric_value(projection.used.clamp(0.0, 1.0) * 100.0)
                 .test_support()
                 .relative()
                 .w_full()
@@ -242,15 +514,40 @@ pub fn usage_bar(
                         .when_some(layout.run, |this, (from, to)| {
                             this.child(span(from, to).bg(pattern_slash(color, HATCH_STRIPE, HATCH_GAP)))
                         })
+                        .when_some(over, |this, (from, fade_from, to)| {
+                            this.child(
+                                span(from, fade_from)
+                                    .id(ElementId::Name(format!("{id}-over").into()))
+                                    .test_support()
+                                    .bg(danger.opacity(OVER_OPACITY)),
+                            )
+                            .when(layout.clipped, |this| {
+                                this.child(span(fade_from, to).bg(linear_gradient(
+                                    90.,
+                                    linear_color_stop(danger.opacity(OVER_OPACITY), 0.),
+                                    linear_color_stop(danger.opacity(0.), 1.),
+                                )))
+                            })
+                        })
                         .child(solid),
                 )
-                // Outside the clipped bar, so it stands proud of it and reads at any width of run.
+                // The limit marker and the tick stand outside the clipped bar, so they stand proud of it.
+                .when_some(layout.limit, |this, limit| {
+                    this.child(
+                        div()
+                            .id(ElementId::Name(format!("{id}-limit").into()))
+                            .test_support()
+                            .absolute()
+                            .top(px(-LIMIT_OVERHANG))
+                            .left(relative(limit))
+                            .ml(px(-LIMIT_WIDTH / 2.))
+                            .w(px(LIMIT_WIDTH))
+                            .h(height + px(2. * LIMIT_OVERHANG))
+                            .bg(muted.opacity(0.7)),
+                    )
+                })
                 .when_some(layout.tick, |this, tick| {
-                    let (shift, tint) = if tick.past_limit {
-                        (px(-TICK_WIDTH), danger)
-                    } else {
-                        (px(-TICK_WIDTH / 2.), text)
-                    };
+                    let tint = if tick.past_limit { danger } else { text };
                     this.child(
                         div()
                             .id(ElementId::Name(format!("{id}-projected").into()))
@@ -258,7 +555,7 @@ pub fn usage_bar(
                             .absolute()
                             .top(px(-TICK_OVERHANG))
                             .left(relative(tick.at))
-                            .ml(shift)
+                            .ml(px(-TICK_WIDTH / 2.))
                             .w(px(TICK_WIDTH))
                             .h(height + px(2. * TICK_OVERHANG))
                             .rounded(px(1.))
@@ -283,7 +580,6 @@ pub fn medium() -> Pixels {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
@@ -299,49 +595,92 @@ mod tests {
         }
     }
 
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    /// The scale (#234): 0 to 125% of the limit, so the limit sits at 0.8 of the bar and 125% at its end.
+    #[test]
+    fn every_bar_shares_one_scale_with_the_limit_at_four_fifths() {
+        assert!(close(position(0.0), 0.0));
+        assert!(close(position(0.5), 0.4));
+        assert!(close(position(1.0), 0.8));
+        assert!(close(position(1.25), 1.0));
+        assert!(close(position(3.0), 1.0), "past the end clips");
+        assert!(close(BarLayout::of(0.3, None).limit.unwrap(), 0.8));
+    }
+
     /// Under the limit (#213): solid to the share used, hatched run to the projection, track after, tick at the end
-    /// of the run.
+    /// of the run, nothing past the marker.
     #[test]
     fn a_projection_under_the_limit_runs_to_its_tick_and_leaves_the_track() {
         let layout = BarLayout::of(0.42, Some(0.9));
-        assert!((layout.used - 0.42).abs() < 1e-6);
+        assert!(close(layout.used, 0.336));
         let (from, to) = layout.run.unwrap();
-        assert!((from - 0.42).abs() < 1e-6 && (to - 0.9).abs() < 1e-6);
-        assert!((layout.track_from - 0.9).abs() < 1e-6);
+        assert!(close(from, 0.336) && close(to, 0.72));
+        assert_eq!(layout.over, None);
+        assert!(!layout.clipped);
+        assert!(close(layout.track_from, 0.72));
         let tick = layout.tick.unwrap();
-        assert!((tick.at - 0.9).abs() < 1e-6);
+        assert!(close(tick.at, 0.72));
         assert!(!tick.past_limit);
     }
 
-    /// Exactly at the limit is not past it: the run fills the bar, the tick is the ordinary one.
+    /// Exactly at the limit is not past it: the run ends at the marker, the tick is the ordinary one, no overrun.
     #[test]
-    fn a_projection_at_the_limit_fills_the_bar_without_the_warning() {
+    fn a_projection_at_the_limit_ends_at_the_marker_without_the_warning() {
         let layout = BarLayout::of(0.5, Some(1.0));
-        assert_eq!(layout.run, Some((0.5, 1.0)));
+        assert_eq!(layout.run, Some((0.4, 0.8)));
+        assert_eq!(layout.over, None);
         assert_eq!(
             layout.tick,
             Some(Tick {
-                at: 1.0,
+                at: 0.8,
                 past_limit: false
             })
         );
     }
 
-    /// Past the limit, the run fills the bar and the tick sits at the end, flagged, so it looks different without a
-    /// hover; the solid share stays where it is.
+    /// Between 100% and 125% (#234): hatched to the marker, the overrun past it to the projection, the tick there in
+    /// the danger color, the track after it.
     #[test]
-    fn a_projection_past_the_limit_flags_the_tick_at_the_end() {
+    fn a_projection_past_the_limit_runs_on_beyond_the_marker() {
+        let layout = BarLayout::of(0.17, Some(1.12));
+        assert!(close(layout.used, 0.136));
+        let (from, to) = layout.run.unwrap();
+        assert!(close(from, 0.136) && close(to, 0.8));
+        let (from, to) = layout.over.unwrap();
+        assert!(close(from, 0.8) && close(to, 0.896));
+        assert!(!layout.clipped);
+        assert!(close(layout.track_from, 0.896));
+        let tick = layout.tick.unwrap();
+        assert!(close(tick.at, 0.896) && tick.past_limit);
+    }
+
+    /// Past 125%: the overrun reaches the end and is clipped there, with no tick (it fades out instead); the solid
+    /// share stays where it is.
+    #[test]
+    fn a_projection_past_the_scale_is_clipped_at_the_end() {
         let layout = BarLayout::of(0.91, Some(3.31));
-        assert!((layout.used - 0.91).abs() < 1e-6);
-        assert_eq!(layout.run.map(|(_, to)| to), Some(1.0));
+        assert!(close(layout.used, 0.728));
+        let (_, to) = layout.run.unwrap();
+        assert!(close(to, 0.8));
+        assert_eq!(layout.over, Some((0.8, 1.0)));
+        assert!(layout.clipped);
         assert_eq!(layout.track_from, 1.0, "no track left");
-        assert_eq!(
-            layout.tick,
-            Some(Tick {
-                at: 1.0,
-                past_limit: true
-            })
-        );
+        assert_eq!(layout.tick, None);
+    }
+
+    /// A used-up limit still on pace: the solid fill reaches the marker and the overrun starts there.
+    #[test]
+    fn an_exhausted_limit_fills_to_the_marker() {
+        let layout = BarLayout::of(1.0, Some(1.1));
+        assert!(close(layout.used, 0.8));
+        assert_eq!(layout.run, None);
+        let (from, to) = layout.over.unwrap();
+        assert!(close(from, 0.8) && close(to, 0.88));
+        let plain = BarLayout::of(1.0, None);
+        assert!(close(plain.used, 0.8) && plain.over.is_none());
     }
 
     /// A projection a point ahead still gets its tick at the true share, neither moved nor widened.
@@ -349,19 +688,97 @@ mod tests {
     fn a_projection_a_point_ahead_still_gets_its_tick() {
         let layout = BarLayout::of(0.53, Some(0.54));
         let tick = layout.tick.unwrap();
-        assert!((tick.at - 0.54).abs() < 1e-6);
-        assert!((layout.used - 0.53).abs() < 1e-6);
+        assert!(close(tick.at, 0.432));
+        assert!(close(layout.used, 0.424));
     }
 
-    /// Nothing projected, or a projection at or behind the share used: a plain bar with no run and no tick.
+    /// Nothing projected, or a projection at or behind the share used: a plain bar with no run, no overrun and no tick,
+    /// but still the limit marker.
     #[test]
     fn no_projection_draws_a_plain_bar() {
         for projected in [None, Some(0.42), Some(0.3), Some(f64::NAN)] {
             let layout = BarLayout::of(0.42, projected);
             assert_eq!(layout.run, None, "{projected:?}");
+            assert_eq!(layout.over, None, "{projected:?}");
             assert_eq!(layout.tick, None, "{projected:?}");
             assert_eq!(layout.track_from, 0., "the whole track, under the pill end");
+            assert!(close(layout.limit.unwrap(), 0.8));
         }
+    }
+
+    /// The Pi dashboard's grades (#234): out at 100% used, at risk when projected past 100%, tight from 85% used or
+    /// projected, fine otherwise.
+    #[test]
+    fn the_runway_grades_like_the_pi_dashboard() {
+        assert_eq!(Runway::of(1.0, Some(1.4)), Runway::Out);
+        assert_eq!(Runway::of(1.0, None), Runway::Out);
+        assert_eq!(Runway::of(0.17, Some(1.12)), Runway::Risk);
+        assert_eq!(
+            Runway::of(0.5, Some(1.0)),
+            Runway::Tight,
+            "exactly the limit is tight, not at risk"
+        );
+        assert_eq!(Runway::of(0.86, None), Runway::Tight);
+        assert_eq!(Runway::of(0.4, Some(0.85)), Runway::Tight);
+        assert_eq!(Runway::of(0.4, Some(0.84)), Runway::Ok);
+        assert_eq!(Runway::of(0.4, None), Runway::Ok);
+    }
+
+    /// The Pi dashboard's example (#234): 17% used, on pace for 112% with five days left.
+    #[test]
+    fn an_overrun_says_its_share_at_reset_and_when_it_runs_out() {
+        let weekly = Metric::Window {
+            label: "Weekly".into(),
+            used: 0.17,
+            resets_at: now() + Duration::hours(142),
+            pace: Some(Pace::per_hour(0.95 / 142.0)),
+            length: None,
+        };
+        let forecast = Forecast::of(&weekly, now()).unwrap();
+        assert_eq!(forecast.runway(), Runway::Risk);
+        // 83% left at 0.669%/h: about 124 hours, 5d 4h.
+        assert_eq!(forecast.text(), "112% at reset · runs out in 5d 4h");
+        let projection = Projection::of(&weekly, 0.17, now());
+        assert_eq!(projection.runway, Runway::Risk);
+        assert_eq!(projection.label, "17% used, 112% at reset · runs out in 5d 4h");
+        assert!(
+            projection
+                .tooltip
+                .starts_with("17% used · resets in 6d · 112% at reset · runs out in 5d 4h, 17h 56m early ("),
+            "{}",
+            projection.tooltip
+        );
+    }
+
+    /// The limit hit within a minute of the reset (#206): a full share, tight, never "runs out" at the reset.
+    #[test]
+    fn a_limit_hit_at_the_reset_is_a_full_share_not_an_overrun() {
+        // 0.5%/h with 10% left and the reset 20h 0m 30s away: the limit comes 30s early.
+        let metric = Metric::Window {
+            label: "Weekly".into(),
+            used: 0.9,
+            resets_at: now() + Duration::seconds(20 * 3600 + 30),
+            pace: Some(Pace::per_hour(0.005)),
+            length: None,
+        };
+        let forecast = Forecast::of(&metric, now()).unwrap();
+        assert_eq!(forecast.runway(), Runway::Tight);
+        assert_eq!(forecast.text(), "100% at reset · near limit");
+    }
+
+    /// Used up with no pace left: the label and tooltip say the limit is reached, not that it is too early.
+    #[test]
+    fn a_used_up_limit_without_a_pace_says_it_is_reached() {
+        let projection = Projection::of(&window(1.0, None), 1.0, now());
+        assert_eq!(projection.label, "100% used, limit reached");
+        assert_eq!(projection.tooltip, "100% used · resets in 2d · limit reached");
+    }
+
+    #[test]
+    fn a_used_up_limit_says_so() {
+        let forecast = Forecast::of(&window(1.0, Some(Pace::per_hour(0.01))), now()).unwrap();
+        assert_eq!(forecast.runway(), Runway::Out);
+        assert_eq!(forecast.text(), "148% at reset · limit reached");
     }
 
     #[test]
@@ -369,11 +786,9 @@ mod tests {
         // 1%/h over 48 hours left: 35% + 48% = 83%.
         let projection = Projection::of(&window(0.35, Some(Pace::per_hour(0.01))), 0.35, now());
         assert_eq!(projection.projected.map(|p| (p * 100.0).round()), Some(83.0));
-        assert_eq!(projection.label, "35% used, on pace for 83%");
-        assert_eq!(
-            projection.tooltip,
-            "35% used · resets in 2d · on pace for 83% by the reset (1.0%/h)"
-        );
+        assert_eq!(projection.runway, Runway::Ok);
+        assert_eq!(projection.label, "35% used, 83% at reset");
+        assert_eq!(projection.tooltip, "35% used · resets in 2d · 83% at reset (1.0%/h)");
     }
 
     #[test]
@@ -391,12 +806,12 @@ mod tests {
     fn a_projection_past_the_limit_says_how_early_it_runs_out() {
         // 5%/h with 9% left: the limit in 1h 48m, the reset in two days (#206).
         let projection = Projection::of(&window(0.91, Some(Pace::per_hour(0.05))), 0.91, now());
-        assert!(
-            projection.projected.unwrap() > 1.0,
-            "the faded segment still runs to the end"
+        assert!(projection.projected.unwrap() > 1.0, "the overrun runs past the marker");
+        assert_eq!(projection.label, "91% used, 331% at reset · runs out in 1h 48m");
+        assert_eq!(
+            projection.tooltip,
+            "91% used · resets in 2d · 331% at reset · runs out in 1h 48m, 1d 22h early (5.0%/h)"
         );
-        assert_eq!(projection.label, "91% used, 1d 22h early");
-        assert_eq!(projection.tooltip, "91% used · resets in 2d · 1d 22h early (5.0%/h)");
     }
 
     #[test]
@@ -453,6 +868,66 @@ mod tests {
         );
     }
 
+    /// The bar draws the forecast's share: a limit hit within a minute of the reset is a full bar, graded tight.
+    #[test]
+    fn the_bar_draws_the_share_the_words_say() {
+        let metric = Metric::Window {
+            label: "Weekly".into(),
+            used: 0.9,
+            resets_at: now() + Duration::seconds(20 * 3600 + 30),
+            pace: Some(Pace::per_hour(0.005)),
+            length: None,
+        };
+        let projection = Projection::of(&metric, 0.9, now());
+        assert_eq!(projection.projected, Some(1.0));
+        assert_eq!(projection.runway, Runway::Tight);
+        assert_eq!(BarLayout::of(projection.used, projection.projected).over, None);
+    }
+
+    #[test]
+    fn a_balance_bar_is_graded_by_its_severity_not_as_a_used_up_limit() {
+        // Four days of credit left: pressure 1.0, but the balance only needs watching.
+        let balance = Metric::Balance {
+            label: "$ balance".into(),
+            remaining: codexbar_core::Money::from_cents(400),
+            burn_per_day: Some(codexbar_core::Money::from_cents(100)),
+        };
+        let severity = codexbar_core::assess(&balance, now()).severity();
+        let projection = Projection::of(&balance, 1.0, now());
+        assert_eq!(projection.runway, Runway::of_severity(severity));
+        assert_ne!(projection.runway, Runway::Out, "{severity:?}");
+    }
+
+    /// A used-up window the credits carry (#150) is calm, draws nothing past the marker, and says so.
+    #[test]
+    fn a_calm_bar_draws_no_overrun() {
+        let projection = Projection::of(&window(1.0, Some(Pace::per_hour(0.01))), 1.0, now()).calm();
+        assert_eq!(projection.runway, Runway::Ok);
+        assert_eq!(projection.label, "100% used, covered by credits");
+        assert_eq!(projection.tooltip, "100% used · resets in 2d · covered by credits");
+        let layout = BarLayout::of(projection.used, projection.projected);
+        assert_eq!((layout.over, layout.tick), (None, None));
+    }
+
+    /// A credit pool, a balance or an account's pressure has no limit: its bar runs the whole width at 100%, with
+    /// no marker.
+    #[test]
+    fn a_bar_with_no_limit_runs_the_whole_width() {
+        let credits = Metric::Credits {
+            label: "Credits".into(),
+            balance: Some(0.0),
+            start: Some(50_000.),
+        };
+        let projection = Projection::of(&credits, 1.0, now());
+        assert!(!projection.limited);
+        assert!(!Projection::bare(0.5).limited);
+        assert!(Projection::of(&window(0.5, None), 0.5, now()).limited);
+        let layout = BarLayout::plain(0.5);
+        assert!(close(layout.used, 0.5));
+        assert_eq!(layout.limit, None);
+        assert!(close(BarLayout::plain(1.0).used, 1.0));
+    }
+
     #[test]
     fn credits_have_no_projection_and_say_so() {
         let credits = Metric::Credits {
@@ -462,6 +937,11 @@ mod tests {
         };
         let projection = Projection::of(&credits, 0.63, now());
         assert_eq!(projection.projected, None);
+        assert_eq!(
+            Projection::of(&credits, 1.0, now()).runway,
+            Runway::Ok,
+            "a spent credit pool stays calm"
+        );
         assert_eq!(projection.label, "63% used");
         assert_eq!(
             projection.tooltip,

@@ -245,8 +245,9 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         if let Some(at) = metric.resets_at().filter(|at| *at > now) {
             detail.push(format!("resets in {}", format::countdown(at - now)));
         }
-        if let Some(outlook) = metric.outlook(now) {
-            detail.push(format::outlook_text(outlook));
+        // The share at the reset and when the limit runs out (#234), as the bars say it.
+        if let Some(outlook) = crate::usage_bar::outlook(metric, account, now) {
+            detail.push(outlook);
         }
         // What is left under a spend limit, derived from spend and limit; never presented as a balance.
         if let Some(headroom) = metric.headroom() {
@@ -345,7 +346,7 @@ fn limit_card(
 ) -> Card {
     match view {
         LimitView::Gauge => share_card(account, now, &[metric.key()], ring, slot, cx),
-        LimitView::Bar => bar_card(metric, now, slot, cx),
+        LimitView::Bar => bar_card(account, metric, now, slot, cx),
         LimitView::Graph => graph_card(&limit_graph(account, metric, now), now, slot, cx),
     }
 }
@@ -392,16 +393,14 @@ fn window_title(metric: &Metric) -> String {
 
 /// One limit as a large progress bar (#230): the share used, the bar with its projection as the table draws it, the
 /// window's period, pace and reset.
-fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card {
+fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     let used = metric.used_fraction().unwrap_or_default();
-    let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
-    let projection = crate::usage_bar::Projection::of(metric, used, now);
-    let pace = metric.outlook(now).map(format::outlook_text);
-    let spoken = match &pace {
-        Some(pace) => format!("{}: {:.0}% used, {pace}", metric.label(), used * 100.0),
-        None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
-    };
+    // Calm when the account's credits carry it (#150), as the table's bar is.
+    let projection = crate::usage_bar::Projection::of_account(metric, used, account, now);
+    // The share at the reset and when the limit runs out (#234), as the table's "At reset" column says it.
+    let pace = crate::usage_bar::outlook(metric, account, now);
+    let spoken = format!("{}: {}", metric.label(), projection.label);
     let muted = cx.theme().muted_foreground;
     let bar_height = crate::zoom::scaled(14., cx);
     let body = v_flex()
@@ -429,7 +428,7 @@ fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
                 .child(crate::usage_bar::usage_bar(
                     &format!("focus-bar-{slot}-bar"),
                     &projection,
-                    color,
+                    cx.theme().chart_1,
                     bar_height,
                     metric.label().to_owned(),
                     cx,
@@ -440,11 +439,24 @@ fn bar_card(metric: &Metric, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
         .id(format!("focus-bar-card-{slot}"))
         .takeaway(pool_takeaway(1.0 - used))
         .caption(reset_caption(metric, now));
+    // A window the account's credits carry (#150) raises no alert, as the account's own assessment doesn't.
     let severity = codexbar_core::assess(metric, now).severity();
-    if severity >= Severity::AtRisk {
+    if severity >= Severity::AtRisk && !account.credits_cover(metric) {
         card.alert(severity_color(severity, cx))
     } else {
         card
+    }
+}
+
+/// The words in a ring's opening (#234): the forecast's share at the reset, short enough for the ring, or what the
+/// bars say when there is none ("covered by credits", "limit reached"). The whole forecast is in its label and hover.
+fn ring_pace(metric: &Metric, account: &AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
+    if account.credits_cover(metric) {
+        return crate::usage_bar::outlook(metric, account, now);
+    }
+    match crate::usage_bar::Forecast::of(metric, now) {
+        Some(forecast) => Some(format!("{} at reset", forecast.share())),
+        None => crate::usage_bar::outlook(metric, account, now),
     }
 }
 
@@ -843,7 +855,7 @@ fn share_card(
     // left the card is automatic again.
     let chosen = chosen_rings(account, rings);
     if chosen.len() >= 2 {
-        return rings_card(&chosen, now, control, cx);
+        return rings_card(account, &chosen, now, control, cx);
     }
     let Some(metric) = chosen.first().copied().or_else(|| share_metric(account, now)) else {
         return Card::new("No limits", "", div()).takeaway("This account reports no limits");
@@ -885,20 +897,16 @@ fn share_card(
     };
 
     // The number leads (#174): large in the ring, with the pace in the ring's opening and the reset in the caption.
-    let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
-    let projected = metric.projected_at_reset(now);
-    let outlook = metric.outlook(now);
-    let pace = outlook.map(format::outlook_text);
-    let spoken = match (outlook, &pace) {
-        (Some(codexbar_core::Outlook::Share(_)), Some(pace)) => {
-            format!("{}: {:.0}% used, {pace} by the reset", metric.label(), used * 100.0)
-        }
-        (_, Some(pace)) => format!("{}: {:.0}% used, {pace}", metric.label(), used * 100.0),
-        (_, None) => format!("{}: {:.0}% used", metric.label(), used * 100.0),
-    };
+    // The ring draws, colors and says what the bars do (#234): the forecast's share in its opening, the whole forecast
+    // to screen readers and on hover, calm when the account's credits carry it (#150).
+    let projection = crate::usage_bar::Projection::of_account(metric, used, account, now);
+    let color = projection.runway.color(cx.theme().chart_1, cx);
+    let projected = projection.projected;
+    let pace = ring_pace(metric, account, now);
+    let spoken = format!("{}: {}", metric.label(), projection.label);
     // The ring paints its number and pace itself, on its own geometry, so it fits any card width and zoom (#176).
     // Hovering it says what the table's bars say (#197).
-    let hover: gpui_kit::SharedString = crate::usage_bar::Projection::of(metric, used, now).tooltip.into();
+    let hover: gpui_kit::SharedString = projection.tooltip.into();
     let ring = div()
         .id(if slot == 1 {
             SharedString::from("focus-share")
@@ -951,19 +959,23 @@ fn chosen_rings<'a>(account: &'a AccountSnapshot, rings: &[String]) -> Vec<&'a M
 
 /// Several rings side by side (#218), one per chosen limit, each with its own number, pace and reset. The takeaway
 /// names the limit with the least of its pool left.
-fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, control: &crate::ring_size::RingControl, cx: &App) -> Card {
+fn rings_card(
+    account: &AccountSnapshot,
+    metrics: &[&Metric],
+    now: DateTime<Utc>,
+    control: &crate::ring_size::RingControl,
+    cx: &App,
+) -> Card {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     let muted = cx.theme().muted_foreground;
     let rings = metrics.iter().enumerate().map(|(ix, metric)| {
         let used = metric.used_fraction().unwrap_or_default();
-        let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
-        let outlook = metric.outlook(now);
-        let pace = outlook.map(format::outlook_text);
-        let spoken = match &pace {
-            Some(pace) => format!("{}: {:.0}% used, {pace}", metric.label(), used * 100.0),
-            None => format!("{}: {:.0}% used", metric.label(), used * 100.0),
-        };
-        let hover: SharedString = crate::usage_bar::Projection::of(metric, used, now).tooltip.into();
+        let projection = crate::usage_bar::Projection::of_account(metric, used, account, now);
+        let color = projection.runway.color(cx.theme().chart_1, cx);
+        let projected = projection.projected;
+        let pace = ring_pace(metric, account, now);
+        let spoken = format!("{}: {}", metric.label(), projection.label);
+        let hover: SharedString = projection.tooltip.into();
         v_flex()
             .id(("focus-ring", ix))
             .role(Role::Note)
@@ -987,16 +999,10 @@ fn rings_card(metrics: &[&Metric], now: DateTime<Utc>, control: &crate::ring_siz
             )
             .child(
                 div().flex_1().min_h_0().child(
-                    crate::gauge::Gauge::new(
-                        used,
-                        metric.projected_at_reset(now),
-                        format!("{:.0}", used * 100.0),
-                        color,
-                        cx,
-                    )
-                    .pace(pace)
-                    .max_radius(control.radius(cx))
-                    .render(),
+                    crate::gauge::Gauge::new(used, projected, format!("{:.0}", used * 100.0), color, cx)
+                        .pace(pace)
+                        .max_radius(control.radius(cx))
+                        .render(),
                 ),
             )
             // The reset line is kept even when a limit has no reset, such as Claude's Extra usage, so its ring sits

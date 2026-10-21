@@ -519,13 +519,16 @@ fn the_share_ring_leads_the_second_card(cx: &mut TestAppContext) {
     focus(cx, "codex-personal");
     let ring = label(cx, handle, "focus-share").unwrap();
     assert!(
-        ring.starts_with("Weekly: 47% used, on pace for ") && ring.ends_with("% by the reset"),
+        ring.starts_with("Weekly: 47% used, ") && ring.ends_with("% at reset"),
         "{ring}"
     );
 
-    // The team account's credits lead (#150); the ring shows the used-up weekly window, with no pace to project.
+    // The team account's credits lead (#150); the ring shows the used-up weekly window, which they carry.
     focus(cx, "codex-team");
-    assert_eq!(label(cx, handle, "focus-share").as_deref(), Some("Weekly: 100% used"));
+    assert_eq!(
+        label(cx, handle, "focus-share").as_deref(),
+        Some("Weekly: 100% used, covered by credits")
+    );
 }
 
 #[gpui_kit::test]
@@ -539,7 +542,8 @@ fn a_used_up_window_without_credits_is_blocked_with_no_pill(cx: &mut TestAppCont
     assert_eq!(label(cx, handle, "used-codex-work").as_deref(), Some("Weekly: 100%"));
     assert_eq!(
         label(cx, handle, "progress-cell-codex-work").as_deref(),
-        Some("100% used")
+        Some("100% used, limit reached"),
+        "used up with no pace: the bar says the limit is reached (#234)"
     );
     assert!(
         label(cx, handle, "severity-tag-codex-work").is_none(),
@@ -1519,7 +1523,7 @@ fn a_wide_table_shows_the_five_hour_and_weekly_windows_side_by_side(cx: &mut Tes
         "the primary metric keeps its bar"
     );
 
-    cx.simulate_window_resize(handle, size(px(2200.), px(1000.)));
+    cx.simulate_window_resize(handle, size(px(2700.), px(1000.)));
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     assert_eq!(
@@ -1626,7 +1630,7 @@ fn a_wide_table_shows_each_windows_own_reset(cx: &mut TestAppContext) {
     let handle = cx.windows()[0];
     let left = |hours: i64| codexbar_core::format::time_left_label(now + chrono::Duration::hours(hours), now);
 
-    cx.simulate_window_resize(handle, size(px(2200.), px(1000.)));
+    cx.simulate_window_resize(handle, size(px(2700.), px(1000.)));
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     // Each window's own reset, which differ.
@@ -1778,7 +1782,7 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
             now,
         )
     };
-    // 1%/h with 48h left on top of 42%: on pace for 90% by the reset.
+    // 1%/h with 48h left on top of 42%: 90% at the reset, near the limit (#234).
     let paced = window("paced", Some(codexbar_core::Pace::per_hour(0.01)));
     let young = window("young", None);
     let over = AccountSnapshot::new(
@@ -1793,15 +1797,57 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
         }],
         now,
     );
-    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![paced, young, over]));
+    // A used-up window the account's credits carry (#150), and a spend cap with no reset (Claude's extra usage).
+    let covered = AccountSnapshot::new(
+        AccountId::new("covered"),
+        Provider::Codex,
+        vec![
+            Metric::Window {
+                label: "5-hour window".into(),
+                used: 1.0,
+                resets_at: now + chrono::Duration::hours(2),
+                pace: Some(codexbar_core::Pace::per_hour(0.2)),
+                length: None,
+            },
+            Metric::Credits {
+                label: "Credits".into(),
+                balance: Some(12.0),
+                start: None,
+            },
+        ],
+        now,
+    );
+    let capped = AccountSnapshot::new(
+        AccountId::new("capped"),
+        Provider::Claude,
+        vec![Metric::Spend {
+            label: "Extra usage".into(),
+            spent: codexbar_core::Money::from_cents(420),
+            limit: Some(codexbar_core::Money::from_cents(2000)),
+            resets_at: None,
+            pace: None,
+        }],
+        now,
+    );
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![paced, young, over, covered, capped]));
     let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
     cx.run_until_parked();
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     assert_eq!(
+        label(cx, handle, "at-reset-covered").as_deref(),
+        Some("5-hour window at reset: covered by credits"),
+        "credits carry it: neither runs out nor reached"
+    );
+    assert_eq!(
+        label(cx, handle, "at-reset-capped").as_deref(),
+        Some("Extra usage at reset: not applicable"),
+        "no reset, nothing to forecast"
+    );
+    assert_eq!(
         label(cx, handle, "progress-cell-paced").as_deref(),
-        Some("42% used, on pace for 90%")
+        Some("42% used, 90% at reset · near limit")
     );
     assert_eq!(
         label(cx, handle, "progress-cell-young").as_deref(),
@@ -1810,15 +1856,28 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
     );
     assert_eq!(
         label(cx, handle, "progress-cell-over").as_deref(),
-        Some("91% used, 33m early"),
-        "a projection past the limit says how early it runs out (#206)"
+        Some("91% used, 111% at reset · runs out in 27m"),
+        "a projection past the limit says its share at the reset and when it runs out (#234)"
+    );
+    // The "At reset" column says the same in words beside the bar (#234), as the Pi dashboard's does.
+    assert_eq!(
+        label(cx, handle, "at-reset-over").as_deref(),
+        Some("5-hour window: 111% at reset · runs out in 27m")
+    );
+    assert_eq!(
+        label(cx, handle, "at-reset-paced").as_deref(),
+        Some("Weekly: 90% at reset · near limit")
+    );
+    assert_eq!(
+        label(cx, handle, "at-reset-young").as_deref(),
+        Some("Weekly at reset: no forecast")
     );
     assert!(
         visible(cx, handle, "progress-cell-paced-bar"),
         "the bar itself is drawn"
     );
-    // The tick marks where the projection ends (#213): at 90% of the bar, standing proud of it above and below,
-    // and none on a bar with nothing projected.
+    // The tick marks where the projection ends (#213): 90% of the limit sits at 72% of the bar on its 0 to 125%
+    // scale (#234), standing proud of it above and below, and none on a bar with nothing projected.
     let (bar, tick) = cx
         .update_window(handle, |_, window, _| {
             (
@@ -1828,7 +1887,7 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
         })
         .unwrap();
     let centre = f32::from(tick.left() + tick.size.width / 2.);
-    let expected = f32::from(bar.left() + bar.size.width * 0.9);
+    let expected = f32::from(bar.left() + bar.size.width * 0.72);
     assert!(
         (centre - expected).abs() <= 1.5,
         "tick at {centre}, expected {expected}"
@@ -1841,16 +1900,34 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
         !visible(cx, handle, "progress-cell-young-projected"),
         "nothing projected, no tick"
     );
-    // Past the limit the tick sits at the bar's end, inside it.
-    let (over_bar, over_tick) = cx
+    // The limit marker stands at 100%, four fifths of the bar (#234). Past the limit the overrun starts at the marker
+    // and the tick sits where the projection ends, at 111%.
+    let (over_bar, over_tick, limit, overrun) = cx
         .update_window(handle, |_, window, _| {
             (
                 window.find("progress-cell-over-bar").bounds(),
                 window.find("progress-cell-over-projected").bounds(),
+                window.find("progress-cell-over-limit").bounds(),
+                window.find("progress-cell-over-over").bounds(),
             )
         })
         .unwrap();
-    assert!((f32::from(over_tick.right()) - f32::from(over_bar.right())).abs() <= 0.5);
+    let at = |share: f32| f32::from(over_bar.left() + over_bar.size.width * share);
+    let centre = |bounds: gpui_kit::Bounds<gpui_kit::Pixels>| f32::from(bounds.left() + bounds.size.width / 2.);
+    assert!((centre(limit) - at(0.8)).abs() <= 1.0, "the limit marker at 100%");
+    assert!(
+        limit.top() < over_bar.top() && limit.bottom() > over_bar.bottom(),
+        "the marker stands proud of the bar"
+    );
+    assert!(
+        (f32::from(overrun.left()) - at(0.8)).abs() <= 1.0,
+        "the overrun starts at the marker"
+    );
+    assert!(
+        (f32::from(overrun.right()) - at(0.888)).abs() <= 1.0,
+        "and ends at 111%"
+    );
+    assert!((centre(over_tick) - at(0.888)).abs() <= 1.5, "the tick at 111%");
 }
 
 // Focus-card charts keep their room at every zoom (#200): the card grows and the dashboard scrolls instead.
@@ -6790,7 +6867,7 @@ fn the_spend_view_totals_each_currency_and_counts_only_net_spend(cx: &mut TestAp
     );
     let cursor = spend.iter().find(|row| row.starts_with("Cursor")).unwrap();
     assert!(
-        cursor.starts_with("Cursor, On-demand: $12.40 of $50.00, 25% used, on pace for "),
+        cursor.starts_with("Cursor, On-demand: $12.40 of $50.00, 25% used, ") && cursor.contains("% at reset"),
         "{cursor}"
     );
     let claude = spend.iter().find(|row| row.starts_with("Claude")).unwrap();

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::usage_bar::{Projection, usage_bar};
+use crate::usage_bar::{Forecast, Projection, usage_bar};
 use chrono::{DateTime, Utc};
 use codexbar_core::{AccountSnapshot, Metric, format};
 use codexbar_store::summary::HistorySummary;
@@ -10,7 +10,7 @@ use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex};
 use gpui_kit::{
     App, AppContext as _, Context, Div, DragMoveEvent, ElementId, EntityId, InteractiveElement as _, IntoElement,
     ParentElement as _, Pixels, Point, Render, Role, SharedString, Stateful, StatefulInteractiveElement as _,
@@ -51,7 +51,7 @@ impl Render for DragRow {
     }
 }
 
-use crate::status::{severity_color, severity_dot_color, severity_tag};
+use crate::status::{severity_dot_color, severity_tag};
 use crate::zoom::scaled;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -61,6 +61,9 @@ enum Col {
     Used,
     Percent,
     Progress,
+    /// Where the primary metric's pace lands by the reset and when its limit runs out (#234), as the Pi dashboard's
+    /// "At reset" column says it: "112% · runs out in 5d 4h".
+    AtReset,
     /// The standard windows side by side (#195), each as a percentage, a bar and its own reset (#204); blank for a
     /// row without one.
     Window(WindowKind, WindowCell),
@@ -117,41 +120,67 @@ impl WindowKind {
 enum WindowCell {
     Percent,
     Bar,
+    AtReset,
     Resets,
 }
 
 /// The columns at the usual width: one metric per row, its primary one.
-const NARROW: [Col; 7] = [
+const NARROW: [Col; 8] = [
     Col::Account,
     Col::Limit,
     Col::Used,
     Col::Percent,
     Col::Progress,
+    Col::AtReset,
     Col::Resets,
     Col::Trend,
 ];
 
-/// The columns when there is room (#195): the 5-hour and weekly windows get a percentage, a bar and their own reset
-/// each (#204), and the primary metric's own percentage, bar and reset follow them (#207), filled only when it is
-/// neither window (credits, premium requests, activity).
-const WIDE: [Col; 13] = [
+/// The columns when there is room (#195): the 5-hour and weekly windows get a percentage, a bar, the share at the
+/// reset (#234) and their own reset each (#204), and the primary metric's own follow them (#207), filled only when it
+/// is neither window (credits, premium requests, activity).
+const WIDE: [Col; 16] = [
     Col::Account,
     Col::Limit,
     Col::Used,
     Col::Window(WindowKind::FiveHour, WindowCell::Percent),
     Col::Window(WindowKind::FiveHour, WindowCell::Bar),
+    Col::Window(WindowKind::FiveHour, WindowCell::AtReset),
     Col::Window(WindowKind::FiveHour, WindowCell::Resets),
     Col::Window(WindowKind::Weekly, WindowCell::Percent),
     Col::Window(WindowKind::Weekly, WindowCell::Bar),
+    Col::Window(WindowKind::Weekly, WindowCell::AtReset),
     Col::Window(WindowKind::Weekly, WindowCell::Resets),
     Col::Percent,
     Col::Progress,
+    Col::AtReset,
     Col::Resets,
     Col::Trend,
 ];
 
 /// The width the wide columns need, in unzoomed pixels: what the table must have to show both windows.
-pub const WIDE_TABLE_WIDTH: f32 = 320. + 150. + 110. + 2. * (72. + 140. + 110.) + 64. + 200. + 110. + 200.;
+pub const WIDE_TABLE_WIDTH: f32 = ACCOUNT_WIDTH
+    + LIMIT_WIDTH
+    + USED_WIDTH
+    + 2. * (WINDOW_PERCENT_WIDTH + WINDOW_BAR_WIDTH + AT_RESET_WIDTH + RESETS_WIDTH)
+    + PERCENT_WIDTH
+    + PROGRESS_WIDTH
+    + AT_RESET_WIDTH
+    + RESETS_WIDTH
+    + TREND_WIDTH;
+
+/// Column widths in unzoomed pixels. The "At reset" column (#234) took its room from the account, limit, used,
+/// progress, resets and trend columns, so the narrow table still fits the default 1440-pixel window.
+const ACCOUNT_WIDTH: f32 = 275.;
+const LIMIT_WIDTH: f32 = 145.;
+const USED_WIDTH: f32 = 100.;
+const PERCENT_WIDTH: f32 = 64.;
+const PROGRESS_WIDTH: f32 = 160.;
+const AT_RESET_WIDTH: f32 = 210.;
+const RESETS_WIDTH: f32 = 90.;
+const TREND_WIDTH: f32 = 140.;
+const WINDOW_PERCENT_WIDTH: f32 = 72.;
+const WINDOW_BAR_WIDTH: f32 = 140.;
 
 /// Each account's stored history summary for its primary metric, by account id.
 pub type Compact = HashMap<String, (HistorySummary, ValueKind)>;
@@ -383,25 +412,33 @@ impl TableDelegate for AccountTable {
         match self.columns()[col_ix] {
             Col::Window(kind, WindowCell::Percent) => {
                 Column::new(SharedString::from(format!("{}-percent", kind.key())), kind.title())
-                    .width(scaled(72., cx))
+                    .width(scaled(WINDOW_PERCENT_WIDTH, cx))
                     .text_right()
             }
             Col::Window(kind, WindowCell::Bar) => {
-                Column::new(SharedString::from(format!("{}-bar", kind.key())), "").width(scaled(140., cx))
+                Column::new(SharedString::from(format!("{}-bar", kind.key())), "").width(scaled(WINDOW_BAR_WIDTH, cx))
+            }
+            Col::Window(kind, WindowCell::AtReset) => {
+                Column::new(SharedString::from(format!("{}-at-reset", kind.key())), "At reset")
+                    .width(scaled(AT_RESET_WIDTH, cx))
             }
             Col::Window(kind, WindowCell::Resets) => {
-                Column::new(SharedString::from(format!("{}-resets", kind.key())), "Resets").width(scaled(110., cx))
+                Column::new(SharedString::from(format!("{}-resets", kind.key())), "Resets")
+                    .width(scaled(RESETS_WIDTH, cx))
             }
             // DataTable widths are pixels, so they follow the interface zoom explicitly (#116).
             Col::Account => Column::new("account", "Account")
-                .width(scaled(320., cx))
+                .width(scaled(ACCOUNT_WIDTH, cx))
                 .min_width(scaled(220., cx)),
-            Col::Limit => Column::new("limit", "Limit").width(scaled(150., cx)),
-            Col::Used => Column::new("used", "Used").width(scaled(110., cx)).text_right(),
-            Col::Percent => Column::new("percent", "%").width(scaled(64., cx)).text_right(),
-            Col::Progress => Column::new("progress", "Progress").width(scaled(200., cx)),
-            Col::Resets => Column::new("resets", "Resets").width(scaled(110., cx)),
-            Col::Trend => Column::new("trend", "14-day trend").width(scaled(200., cx)),
+            Col::Limit => Column::new("limit", "Limit").width(scaled(LIMIT_WIDTH, cx)),
+            Col::Used => Column::new("used", "Used").width(scaled(USED_WIDTH, cx)).text_right(),
+            Col::Percent => Column::new("percent", "%")
+                .width(scaled(PERCENT_WIDTH, cx))
+                .text_right(),
+            Col::Progress => Column::new("progress", "Progress").width(scaled(PROGRESS_WIDTH, cx)),
+            Col::AtReset => Column::new("at-reset", "At reset").width(scaled(AT_RESET_WIDTH, cx)),
+            Col::Resets => Column::new("resets", "Resets").width(scaled(RESETS_WIDTH, cx)),
+            Col::Trend => Column::new("trend", "14-day trend").width(scaled(TREND_WIDTH, cx)),
         }
     }
 
@@ -436,6 +473,10 @@ impl TableDelegate for AccountTable {
                     WindowCell::Bar => match metric {
                         Some(metric) => bar_cell(metric, row, &assessment, self.now, &format!("{id}-bar"), cx),
                         None => blank_cell(&format!("{id}-bar"), kind.title(), muted),
+                    },
+                    WindowCell::AtReset => match metric {
+                        Some(metric) => at_reset_cell(metric, row, self.now, &format!("{id}-at-reset"), name, cx),
+                        None => blank_cell(&format!("{id}-at-reset"), &format!("{} at reset", kind.title()), muted),
                     },
                     // The window's own reset (#204), as time left (#196), beside its bar.
                     WindowCell::Resets => match metric.and_then(Metric::resets_at) {
@@ -510,6 +551,13 @@ impl TableDelegate for AccountTable {
                     // Wide, the row's window sits in its own columns; narrow, a row always has a primary metric.
                     None if self.wide && primary.is_some() => blank_cell(&id, "Primary metric", muted),
                     None => bar_cell_without_metric(&id, &assessment, severity, row, cx),
+                }
+            }
+            Col::AtReset => {
+                let id = format!("at-reset-{}", row.id().as_str());
+                match own_pair {
+                    Some(metric) => at_reset_cell(metric, row, self.now, &id, metric.label(), cx),
+                    None => blank_cell(&id, "At reset", muted),
                 }
             }
             // Always how long is left (#196), never a weekday, time or date; the clock refreshes it every second.
@@ -660,15 +708,89 @@ fn blank_cell(id: &str, name: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyEleme
         .into_any_element()
 }
 
-/// The severity a metric's own bar is colored by (#203): the metric's own assessment, not the account's worst, so a
-/// weekly window at 53% stays calm while the 5-hour window beside it is about to run out. A used-up window the
-/// account's credits carry it past (#150) stays calm too, as it does for the account.
-fn bar_severity(metric: &Metric, row: &AccountSnapshot, now: DateTime<Utc>) -> codexbar_core::Severity {
+/// A metric's own bar (#203), graded by its own runway (#234) rather than the account's worst, so a weekly window at
+/// 53% stays calm while the 5-hour window beside it is about to run out. A used-up window the account's credits carry
+/// it past (#150) stays calm too, as it does for the account.
+fn bar_projection(metric: &Metric, used: f64, row: &AccountSnapshot, now: DateTime<Utc>) -> Projection {
+    Projection::of_account(metric, used, row, now)
+}
+
+/// The share at the reset and what it means (#234), as the Pi dashboard's "At reset" column says it: the share in the
+/// runway's color, then "runs out in 5d 4h", "near limit" or "limit reached" muted; "no forecast" for a limit too young
+/// to project, a dash for what has none. `name` names the metric for screen readers, which hear "at reset" too.
+fn at_reset_cell(
+    metric: &Metric,
+    row: &AccountSnapshot,
+    now: DateTime<Utc>,
+    id: &str,
+    name: &str,
+    cx: &gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let plain = |text: &str, spoken: String, color: gpui_kit::Hsla| {
+        div()
+            .id(ElementId::Name(id.to_owned().into()))
+            .test_support()
+            .aria_label(spoken)
+            .text_color(color)
+            .truncate()
+            .child(text.to_owned())
+            .into_any_element()
+    };
+    // A used-up window the account's credits carry (#150) neither runs out nor is reached: the credits pay for it.
     if row.credits_cover(metric) {
-        codexbar_core::Severity::Normal
-    } else {
-        codexbar_core::assess(metric, now).severity()
+        return plain(
+            crate::usage_bar::COVERED,
+            format!("{name} at reset: {}", crate::usage_bar::COVERED),
+            muted,
+        );
     }
+    let Some(forecast) = Forecast::of(metric, now) else {
+        // Only a limit with a reset ahead can be forecast; one without (a money-only spend cap) is not applicable.
+        let limited = (matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
+            || matches!(metric, Metric::Spend { limit: Some(_), .. }))
+            && metric.resets_at().is_some();
+        // A used-up limit with no pace left to project still says so, as the Pi dashboard does.
+        let used_up = metric.used_fraction().is_some_and(|used| used >= 1.0);
+        let (text, spoken) = if used_up {
+            ("limit reached", format!("{name} at reset: limit reached"))
+        } else if limited {
+            ("no forecast", format!("{name} at reset: no forecast"))
+        } else {
+            ("—", format!("{name} at reset: not applicable"))
+        };
+        return plain(text, spoken, if used_up { cx.theme().danger } else { muted });
+    };
+    let runway = forecast.runway();
+    let tint = match runway {
+        crate::usage_bar::Runway::Ok => cx.theme().foreground,
+        crate::usage_bar::Runway::Tight => cx.theme().warning,
+        crate::usage_bar::Runway::Risk | crate::usage_bar::Runway::Out => cx.theme().danger,
+    };
+    let phrase = forecast.phrase();
+    h_flex()
+        .id(ElementId::Name(id.to_owned().into()))
+        .test_support()
+        .aria_label(format!("{name}: {}", forecast.text()))
+        .gap_2()
+        .min_w_0()
+        .items_baseline()
+        .child(
+            div()
+                .flex_shrink_0()
+                .font_semibold()
+                .text_color(tint)
+                .child(forecast.share()),
+        )
+        .children(phrase.map(|phrase| {
+            let color = if runway >= crate::usage_bar::Runway::Risk {
+                tint
+            } else {
+                muted
+            };
+            div().truncate().text_color(color).child(phrase)
+        }))
+        .into_any_element()
 }
 
 /// The bar for `metric`: its share used, or for credits the spend from the remembered start (#150), with the share
@@ -683,7 +805,6 @@ fn bar_cell(
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
     let muted = cx.theme().muted_foreground;
-    let severity = bar_severity(metric, row, now);
     let used = match metric {
         Metric::Activity { .. } => return no_bar(id, muted),
         Metric::Credits { .. } => match metric.progress() {
@@ -692,7 +813,7 @@ fn bar_cell(
         },
         _ => metric.used_fraction().unwrap_or_else(|| assessment.pressure()),
     };
-    bar(id, &Projection::of(metric, used, now), severity, row, cx)
+    bar(id, &bar_projection(metric, used, row, now), row, cx)
 }
 
 /// The bar for a row with no primary metric: the account's pressure, with nothing to project.
@@ -703,7 +824,7 @@ fn bar_cell_without_metric(
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
-    bar(id, &Projection::bare(assessment.pressure()), severity, row, cx)
+    bar(id, &Projection::bare(assessment.pressure()).graded(severity), row, cx)
 }
 
 fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
@@ -716,17 +837,11 @@ fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-fn bar(
-    id: &str,
-    projection: &Projection,
-    severity: codexbar_core::Severity,
-    row: &AccountSnapshot,
-    cx: &gpui_kit::App,
-) -> gpui_kit::AnyElement {
+fn bar(id: &str, projection: &Projection, row: &AccountSnapshot, cx: &gpui_kit::App) -> gpui_kit::AnyElement {
     usage_bar(
         id,
         projection,
-        severity_color(severity, cx),
+        cx.theme().chart_1,
         crate::usage_bar::small(),
         row.display_name(),
         cx,
@@ -802,6 +917,7 @@ fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> g
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::usage_bar::Runway;
     use chrono::Duration;
     use codexbar_core::{AccountId, Pace, Provider, Severity};
 
@@ -827,15 +943,15 @@ mod tests {
     #[test]
     fn a_calm_weekly_bar_stays_calm_beside_a_five_hour_window_about_to_run_out() {
         let five_hour = window("5-hour window", 0.91, Duration::minutes(38), Pace::per_hour(0.216));
-        let weekly = window("Weekly", 0.53, Duration::days(6), Pace::per_hour(0.003));
+        let weekly = window("Weekly", 0.53, Duration::days(6), Pace::per_hour(0.00007));
         let row = account(vec![five_hour.clone(), weekly.clone()]);
         assert_eq!(
             row.assess(now()).severity(),
             Severity::LimitSoon,
             "the account is in trouble"
         );
-        assert_eq!(bar_severity(&five_hour, &row, now()), Severity::LimitSoon);
-        assert_eq!(bar_severity(&weekly, &row, now()), Severity::Normal);
+        assert_eq!(bar_projection(&five_hour, 0.91, &row, now()).runway, Runway::Risk);
+        assert_eq!(bar_projection(&weekly, 0.53, &row, now()).runway, Runway::Ok);
     }
 
     /// The other way round: a weekly window projected past its limit colors its own bar, not the 5-hour one.
@@ -844,8 +960,8 @@ mod tests {
         let five_hour = window("5-hour window", 0.12, Duration::hours(4), Pace::per_hour(0.03));
         let weekly = window("Weekly", 0.70, Duration::days(3), Pace::per_day(0.15));
         let row = account(vec![five_hour.clone(), weekly.clone()]);
-        assert!(bar_severity(&weekly, &row, now()) >= Severity::AtRisk);
-        assert_eq!(bar_severity(&five_hour, &row, now()), Severity::Normal);
+        assert_eq!(bar_projection(&weekly, 0.70, &row, now()).runway, Runway::Risk);
+        assert_eq!(bar_projection(&five_hour, 0.12, &row, now()).runway, Runway::Ok);
     }
 
     /// The wide layout (#204, #207): the windows first, each with its reset, then the primary pair and its reset.
@@ -859,12 +975,15 @@ mod tests {
                 Col::Used => "used",
                 Col::Window(WindowKind::FiveHour, WindowCell::Percent) => "5h%",
                 Col::Window(WindowKind::FiveHour, WindowCell::Bar) => "5h-bar",
+                Col::Window(WindowKind::FiveHour, WindowCell::AtReset) => "5h-at-reset",
                 Col::Window(WindowKind::FiveHour, WindowCell::Resets) => "5h-resets",
                 Col::Window(WindowKind::Weekly, WindowCell::Percent) => "weekly%",
                 Col::Window(WindowKind::Weekly, WindowCell::Bar) => "weekly-bar",
+                Col::Window(WindowKind::Weekly, WindowCell::AtReset) => "weekly-at-reset",
                 Col::Window(WindowKind::Weekly, WindowCell::Resets) => "weekly-resets",
                 Col::Percent => "%",
                 Col::Progress => "progress",
+                Col::AtReset => "at-reset",
                 Col::Resets => "resets",
                 Col::Trend => "trend",
             })
@@ -877,12 +996,15 @@ mod tests {
                 "used",
                 "5h%",
                 "5h-bar",
+                "5h-at-reset",
                 "5h-resets",
                 "weekly%",
                 "weekly-bar",
+                "weekly-at-reset",
                 "weekly-resets",
                 "%",
                 "progress",
+                "at-reset",
                 "resets",
                 "trend"
             ]
@@ -904,6 +1026,6 @@ mod tests {
         };
         let row = account(vec![five_hour.clone(), credits]);
         assert!(row.credits_cover(&five_hour));
-        assert_eq!(bar_severity(&five_hour, &row, now()), Severity::Normal);
+        assert_eq!(bar_projection(&five_hour, 1.0, &row, now()).runway, Runway::Ok);
     }
 }

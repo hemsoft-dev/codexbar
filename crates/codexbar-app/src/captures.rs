@@ -54,6 +54,63 @@ impl codexbar_providers::UsageProvider for ExpiredKey {
     }
 }
 
+/// Usage runway bars (#234): one window under its limit, the Pi dashboard's 112% overrun, a used-up window, one past
+/// the scale's 125%, a tight one and one too young to project.
+struct RunwayAccounts;
+
+impl codexbar_providers::UsageProvider for RunwayAccounts {
+    fn name(&self) -> &'static str {
+        codexbar_core::Provider::Codex.display_name()
+    }
+
+    fn fetch(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_core::AccountSnapshot>, codexbar_providers::ProviderError> {
+        use chrono::Duration;
+        use codexbar_core::{AccountId, AccountSnapshot, Metric, Pace, Provider};
+        // `used` now and the share at the reset `minutes` from now, as a steady pace.
+        let window_in = |label: &str, used: f64, at_reset: f64, minutes: i64| Metric::Window {
+            label: label.into(),
+            used,
+            resets_at: now + Duration::minutes(minutes),
+            pace: (at_reset > used).then(|| Pace::per_hour((at_reset - used) * 60.0 / minutes as f64)),
+            length: None,
+        };
+        let window = |label: &str, used: f64, at_reset: f64, hours: i64| window_in(label, used, at_reset, hours * 60);
+        let account = |id: &str, label: &str, metrics: Vec<Metric>| {
+            AccountSnapshot::new(AccountId::new(id), Provider::Codex, metrics, now).with_label(label)
+        };
+        Ok(vec![
+            account(
+                "runway-over",
+                "112% at reset",
+                vec![
+                    window("Weekly", 0.17, 1.12, 142),
+                    window("5-hour window", 1.0, 1.0, 2),
+                    window("Weekly Opus", 0.40, 0.70, 142),
+                ],
+            ),
+            account(
+                "runway-under",
+                "under the limit",
+                vec![window("Weekly", 0.42, 0.70, 72)],
+            ),
+            account("runway-out", "used up", vec![window("5-hour window", 1.0, 1.3, 2)]),
+            account("runway-clipped", "past 125%", vec![window("Weekly", 0.60, 1.60, 96)]),
+            account("runway-tight", "tight", vec![window("5-hour window", 0.80, 0.88, 3)]),
+            account("runway-young", "too young", vec![window("Weekly", 0.05, 0.0, 160)]),
+            // The Pi dashboard's Codex weekly window at 2026-10-21 12:27 UTC: 21% used, 118% at the reset 5d 18h 5m
+            // away, which it shows as "118% runs out in 4d 16h".
+            account(
+                "runway-pi",
+                "Pi dashboard's Codex weekly",
+                vec![window_in("Weekly", 0.21, 1.18, (5 * 24 + 18) * 60 + 5)],
+            ),
+        ])
+    }
+}
+
 fn save(cx: &mut HeadlessAppContext, handle: AnyWindowHandle, dir: &Path, name: &str) {
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
@@ -145,9 +202,10 @@ fn captures() {
     cx.run_until_parked();
 
     // #195: wide enough, the table shows the 5-hour and weekly windows side by side; rows without one leave the
-    // cells blank. A second demo window at 2200×1400 (the wide columns need more since #204), light and dark, closed again before the drag below.
+    // cells blank. A second demo window at 2700×1400 (the wide columns need more since #204, and more again for
+    // #234's At reset columns), light and dark, closed again before the drag below.
     let wide = cx
-        .open_window(size(px(2200.), px(1400.)), |window, cx| {
+        .open_window(size(px(2700.), px(1400.)), |window, cx| {
             let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
             cx.new(|cx| Root::new(view, window, cx))
         })
@@ -517,6 +575,61 @@ fn captures() {
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::History, cx)));
     cx.run_until_parked();
     save(&mut cx, handle, &out, "history");
+
+    // #234: the usage runway bars on their 0 to 125% scale with the limit marked at 100%, light and dark: under the
+    // limit, the Pi dashboard's 112% overrun with when it runs out, a used-up window, one clipped past 125%, a tight one
+    // and one too young to project. Then the 112% account's focus cards as bars, showing the same three states.
+    let mut runway_view = None;
+    let runway = cx
+        .open_window(size(px(1440.), px(1100.)), |window, cx| {
+            let source = DataSource::Live {
+                history: Arc::new(std::sync::Mutex::new(codexbar_store::HistoryStore::in_memory(
+                    chrono::Duration::days(30),
+                ))),
+                providers: Arc::new(|_| vec![Arc::new(RunwayAccounts) as Arc<dyn codexbar_providers::UsageProvider>]),
+            };
+            let view = cx.new(|cx| Dashboard::new(source, window, cx));
+            runway_view = Some(view.clone());
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let runway: AnyWindowHandle = runway.into();
+    let runway_view = runway_view.unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "runway-over", |choice| {
+            choice.limits = [
+                Some(LimitChoice {
+                    key: "weekly".into(),
+                    view: LimitView::Bar,
+                }),
+                Some(LimitChoice {
+                    key: "5-hour-window".into(),
+                    view: LimitView::Bar,
+                }),
+                Some(LimitChoice {
+                    key: "weekly-opus".into(),
+                    view: LimitView::Bar,
+                }),
+            ];
+        })
+    });
+    let request = crate::handoff::FocusRequest {
+        account: "runway-over".into(),
+        metric: None,
+    };
+    cx.update(|cx| runway_view.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    save(&mut cx, runway, &out, "runway");
+    cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
+    cx.run_until_parked();
+    save(&mut cx, runway, &out, "runway-dark");
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System);
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "runway-over", |choice| choice.limits = [None, None, None]);
+    });
+    cx.update_window(runway, |_, window, _| window.remove_window()).unwrap();
+    cx.run_until_parked();
 
     // #215: the Spend view over the demo, light and dark, then at 150% zoom in a 1440×960 window, top and scrolled to
     // the trend.
