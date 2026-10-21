@@ -1,13 +1,20 @@
 //! Embeds CodexBar's mark as the Windows executable's icon resource 1 (#182). GPUI's Windows backend loads that
 //! resource for its window class, so the taskbar, Alt-Tab, Explorer and shortcuts show the mark instead of the generic
 //! executable icon. The other platforms take their icons from the package (`package-macos.sh`, `package-linux.sh`).
+//!
+//! It also works out the version the title bar shows (#244), as `CODEXBAR_VERSION`.
 
 #[path = "src/mark.rs"]
 mod mark;
 
+#[path = "src/version_scheme.rs"]
+mod version_scheme;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/mark.rs");
+    println!("cargo:rerun-if-changed=src/version_scheme.rs");
+    stamp_version();
     for name in rc_override_names() {
         println!("cargo:rerun-if-env-changed={name}");
     }
@@ -54,6 +61,69 @@ fn embed_windows_icon() {
                  Studio Build Tools' \"Desktop development with C++\" workload); set RC to its path.{looked}"
             )
         });
+}
+
+/// Sets `CODEXBAR_VERSION`: the version `package.ps1` passes in, else the package scheme at this commit, so a build from
+/// source shows the version `package.ps1` would give the same commit. Without git (a source archive) the commit count
+/// is left out; the build doesn't fail over it.
+fn stamp_version() {
+    println!("cargo:rerun-if-env-changed=CODEXBAR_VERSION");
+    let (version, source) = match std::env::var("CODEXBAR_VERSION") {
+        Ok(version) if !version.trim().is_empty() => (version.trim().to_owned(), "stamped"),
+        _ => {
+            let commits = git(&["rev-list", "--count", "HEAD"]).and_then(|count| count.parse().ok());
+            let cargo = std::env::var("CARGO_PKG_VERSION").expect("cargo sets it");
+            let source = if commits.is_some() { "git" } else { "no-git" };
+            (version_scheme::package_style(&cargo, commits), source)
+        }
+    };
+    println!("cargo:rustc-env=CODEXBAR_VERSION={version}");
+    // Where the version came from, so the app's tests can check it exactly.
+    println!("cargo:rustc-env=CODEXBAR_VERSION_SOURCE={source}");
+    watch_git_head();
+}
+
+/// Runs git in the crate's folder; `None` when git is missing or fails.
+fn git(args: &[&str]) -> Option<String> {
+    let dir = std::env::var("CARGO_MANIFEST_DIR").ok()?;
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Reruns the build script when a commit, checkout or pull moves HEAD, so the commit count stays current. HEAD's reflog
+/// changes with every move; HEAD itself and the branch's ref cover a repository without reflogs. A shallow clone's
+/// boundary file changes, or goes, when the clone is deepened, which changes the count without moving HEAD. Only files
+/// that exist are watched: Cargo reruns the script on every build for a missing one.
+fn watch_git_head() {
+    let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) else {
+        return;
+    };
+    let git_dir = std::path::PathBuf::from(git_dir);
+    let shallow = git(&["rev-parse", "--path-format=absolute", "--git-path", "shallow"]).map(std::path::PathBuf::from);
+    for path in [git_dir.join("HEAD"), git_dir.join("logs").join("HEAD")]
+        .into_iter()
+        .chain(shallow)
+    {
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+    // A linked worktree keeps its branches in the main repository's folder.
+    let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]).map(std::path::PathBuf::from);
+    if let (Some(common), Some(branch)) = (common, git(&["symbolic-ref", "-q", "HEAD"])) {
+        for path in [common.join(branch), common.join("packed-refs")] {
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
 }
 
 /// The environment variables that name a resource compiler, as embed-resource defines them and in its order of

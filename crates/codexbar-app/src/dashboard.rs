@@ -288,6 +288,9 @@ const PENDING_FOCUS_WAIT: std::time::Duration = std::time::Duration::from_secs(1
 
 impl Dashboard {
     pub fn new(source: DataSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // The taskbar, Alt+Tab, window managers and the macOS Window menu name the window by its title, which carries
+        // the version as the title bar does (#244).
+        window.set_window_title(&crate::version::title());
         let now = Utc::now();
         let table = cx.new(|cx| {
             TableState::new(
@@ -1489,6 +1492,16 @@ impl Dashboard {
                     .items_center()
                     .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary))
                     .child(div().font_semibold().child("CodexBar"))
+                    // Which build is running, at a glance (#244).
+                    .child(
+                        div()
+                            .id("app-version")
+                            .test_support()
+                            .aria_label(crate::version::title())
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(crate::version::current()),
+                    )
                     // The view tabs switch dashboard views; Settings has its own navigation.
                     .when(self.view != DashboardView::Settings, |this| {
                         this.child(

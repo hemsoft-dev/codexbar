@@ -1324,10 +1324,12 @@ fn about_page() -> SettingPage {
     #[cfg(windows)]
     use crate::package::Updates;
     let installed = package::installed();
-    let version = installed.map_or_else(
-        || SharedString::from(env!("CARGO_PKG_VERSION")),
-        |installed| SharedString::from(format!("{} (package {})", env!("CARGO_PKG_VERSION"), installed.version)),
-    );
+    // The version the title bar shows (#244), with the crate version it is derived from.
+    let version = SharedString::from(format!(
+        "{} (crate {})",
+        crate::version::current(),
+        env!("CARGO_PKG_VERSION")
+    ));
     let build = SharedString::from(package::BUILD.unwrap_or("Development build"));
     let source = SharedString::from(match installed {
         None if cfg!(windows) => "Built from source with run.ps1".to_owned(),

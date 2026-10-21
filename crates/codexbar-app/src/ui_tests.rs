@@ -267,6 +267,39 @@ fn failed_save_reloads_from_the_injected_folder(cx: &mut TestAppContext) {
     assert_eq!(settings.zoom_on_disk(), Some(1.3));
 }
 
+#[gpui_kit::test]
+fn the_title_bar_shows_the_version_on_every_view(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("title-version", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let expected = format!("CodexBar {}", crate::version::current());
+    let native = gpui_kit::VisualTestContext::from_window(handle, cx).window_title();
+    assert_eq!(
+        native.as_deref(),
+        Some(expected.as_str()),
+        "the taskbar and Alt+Tab show it too"
+    );
+    assert!(
+        crate::version::current().starts_with(&crate::version_scheme::package_style(env!("CARGO_PKG_VERSION"), None))
+    );
+    for view in [
+        DashboardView::Usage,
+        DashboardView::Spend,
+        DashboardView::History,
+        DashboardView::Settings,
+    ] {
+        cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(view, cx)));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        assert!(visible(cx, handle, "app-version"), "{view:?} shows the version");
+        assert_eq!(
+            label(cx, handle, "app-version").as_deref(),
+            Some(expected.as_str()),
+            "{view:?}"
+        );
+    }
+}
+
 fn label(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &'static str) -> Option<String> {
     cx.update_window(handle, |_, window, _| {
         window.try_find(id).and_then(|found| found.label().map(str::to_owned))
