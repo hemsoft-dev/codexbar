@@ -201,6 +201,27 @@ fn back_off(key: u64, retry_at: DateTime<Utc>) -> ProviderError {
     ProviderError::RateLimited { retry_at }
 }
 
+/// When GitHub said to try again, if `response` says its rate is limited: a 429, or a 403 with a retry time or a
+/// rate-limit message. GitHub's whole wait: its Retry-After (a year at most, so the time stays representable), else
+/// the reset of a used-up primary limit, else a minute.
+fn rate_limited_until(response: &crate::HttpResponse, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let reset = response.rate_limit_reset.filter(|reset| *reset > now);
+    let limited = match response.status {
+        429 => true,
+        403 => {
+            response.retry_after_secs.is_some()
+                || reset.is_some()
+                || response.body.to_lowercase().contains("rate limit")
+        }
+        _ => false,
+    };
+    limited.then(|| match (response.retry_after_secs, reset) {
+        (Some(secs), _) => now + chrono::Duration::seconds(secs.min(365 * 24 * 3600) as i64),
+        (None, Some(reset)) => reset,
+        (None, None) => now + chrono::Duration::seconds(RATE_LIMIT_WAIT),
+    })
+}
+
 /// The organization's dashboard account. Users are `copilot-<user>`; organizations use another prefix, so a user
 /// named like `org-acme` never shares an id with the organization `acme`.
 pub fn org_account_id(organization: &str) -> AccountId {
@@ -296,9 +317,11 @@ struct OrgRead {
     /// The month's credits, or the error the tokens met when none could read them.
     credits: Result<Credits, ProviderError>,
     pool: Option<u64>,
-    /// The Copilot budgets and every product's net AI-credit spend; `None` until a token reads them. An organization
-    /// read through its enterprise has none.
-    budgets: Option<(Vec<Budget>, Option<f64>)>,
+    /// The Copilot budgets; `None` until a token reads them. An organization read through its enterprise has none.
+    budgets: Option<Vec<Budget>>,
+    /// Every product's net AI-credit spend, which a budget on every AI credit is measured against; `None` until a
+    /// token reads it, kept apart so a later token can fill it in.
+    all_net: Option<f64>,
 }
 
 impl OrgRead {
@@ -331,10 +354,10 @@ impl OrgRead {
         };
         if self.billing.enterprise.is_none() {
             match &self.budgets {
-                Some((budgets, all)) => {
+                Some(budgets) => {
                     for budget in budgets {
                         let spent = match budget_covers(budget) {
-                            BudgetCovers::AllAiCredits => *all,
+                            BudgetCovers::AllAiCredits => self.all_net,
                             BudgetCovers::Copilot => Some(consumed.net),
                             BudgetCovers::Sku => None,
                         };
@@ -530,7 +553,16 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             ("Editor-Plugin-Version", "copilot-chat/0.26.7"),
             ("X-Github-Api-Version", "2025-04-01"),
         ];
+        // A token GitHub has rate-limited waits for its retry time here too, and a limit met here holds back the
+        // organization's billing requests with the same token.
+        let key = token_key(token);
+        if let Some(retry_at) = backed_off(key, now) {
+            return Err(ProviderError::RateLimited { retry_at });
+        }
         let response = self.http.get(USER_ENDPOINT, &headers)?;
+        if let Some(retry_at) = rate_limited_until(&response, now) {
+            return Err(back_off(key, retry_at));
+        }
         match response.status {
             200..=299 => parse_user(&response.body, username, now).map(|account| (account, parse_seat(&response.body))),
             401 | 403 => Err(ProviderError::Expired { hint: expired }),
@@ -572,21 +604,11 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             return Err(ProviderError::RateLimited { retry_at });
         }
         let response = self.get(path, token)?;
-        // GitHub's whole wait: its Retry-After (a year at most, so the time stays representable), else the reset of a
-        // used-up primary limit, else a minute.
-        let reset = response.rate_limit_reset.filter(|reset| *reset > now);
-        let retry_at = match (response.retry_after_secs, reset) {
-            (Some(secs), _) => now + chrono::Duration::seconds(secs.min(365 * 24 * 3600) as i64),
-            (None, Some(reset)) => reset,
-            (None, None) => now + chrono::Duration::seconds(RATE_LIMIT_WAIT),
-        };
-        let rate_limited = response.retry_after_secs.is_some()
-            || reset.is_some()
-            || response.body.to_lowercase().contains("rate limit");
+        if let Some(retry_at) = rate_limited_until(&response, now) {
+            return Err(back_off(key, retry_at));
+        }
         match response.status {
             200..=299 => Ok(response.body),
-            429 => Err(back_off(key, retry_at)),
-            403 if rate_limited => Err(back_off(key, retry_at)),
             403 => Err(ProviderError::Refused { reason: ORG_NO_ACCESS }),
             404 => Err(ProviderError::Refused { reason: ORG_NOT_FOUND }),
             status => Err(ProviderError::Http { status }),
@@ -762,23 +784,6 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         Ok(total)
     }
 
-    /// An organization's Copilot budgets, with every product's AI-credit spend when one covers every AI credit: read
-    /// only then, and one that can't be read leaves that budget unmeasured rather than low.
-    fn read_budgets(
-        &self,
-        billing: &OrgBilling,
-        token: &str,
-        now: DateTime<Utc>,
-    ) -> Result<(Vec<Budget>, Option<f64>), ProviderError> {
-        let budgets = self.copilot_budgets(billing, token, now)?;
-        let all = budgets
-            .iter()
-            .any(|budget| budget_covers(budget) == BudgetCovers::AllAiCredits)
-            .then(|| self.all_ai_credits_net(billing, token, now).ok())
-            .flatten();
-        Ok((budgets, all))
-    }
-
     /// Every organization billed on its own that `username` is set to read: one GitHub account can be an owner or
     /// billing manager of several (#233).
     fn org_only_billing(&self, username: &str) -> Vec<&OrgBilling> {
@@ -810,6 +815,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                     credits: Err(error.clone()),
                     pool: None,
                     budgets: None,
+                    all_net: None,
                 });
             }
         }
@@ -838,6 +844,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                     credits: consumed.clone(),
                     pool: None,
                     budgets: None,
+                    all_net: None,
                 });
                 orgs.len() - 1
             }
@@ -851,7 +858,16 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                 org.pool = self.pool(billing, token, now);
             }
             if org.budgets.is_none() && billing.enterprise.is_none() {
-                org.budgets = self.read_budgets(billing, token, now).ok();
+                org.budgets = self.copilot_budgets(billing, token, now).ok();
+            }
+            // A budget on every AI credit is measured against every product's spend, read only when there is one.
+            let bundle = org.budgets.as_ref().is_some_and(|budgets| {
+                budgets
+                    .iter()
+                    .any(|budget| budget_covers(budget) == BudgetCovers::AllAiCredits)
+            });
+            if bundle && org.all_net.is_none() {
+                org.all_net = self.all_ai_credits_net(billing, token, now).ok();
             }
         }
         consumed
@@ -1019,24 +1035,27 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
             }
         }
         let mut outcomes = cli_failures;
-        // An account whose saved token couldn't be read is reported, not taken for signed out.
+        let mut orgs = Vec::new();
+        // An account whose saved token couldn't be read is reported, not taken for signed out, and the organizations
+        // it bills keep their cards as failures.
         for username in &self.unreadable {
             accounts.retain(|known| !known.eq_ignore_ascii_case(username));
+            let error = ProviderError::Unexpected {
+                detail: concat!(
+                    "its saved token couldn't be read from ",
+                    codexbar_core::secret_store_name!()
+                ),
+            };
+            self.org_unreadable(username, &error, &mut orgs);
             outcomes.push(AccountOutcome::Failed {
                 account: account_id(username),
                 label: Some(username.clone()),
-                error: ProviderError::Unexpected {
-                    detail: concat!(
-                        "its saved token couldn't be read from ",
-                        codexbar_core::secret_store_name!()
-                    ),
-                },
+                error,
             });
         }
         if accounts.is_empty() && outcomes.is_empty() {
             return Err(ProviderError::NotSignedIn { hint: GH_MISSING });
         }
-        let mut orgs = Vec::new();
         for username in &accounts {
             let failed = |error| AccountOutcome::Failed {
                 account: account_id(username),
@@ -2132,6 +2151,87 @@ mod tests {
             panic!("the organization's card stays, failed")
         };
         assert_eq!(error, &ProviderError::NotSignedIn { hint: GH_LOGIN });
+    }
+
+    #[test]
+    fn a_rate_limited_quota_request_holds_back_the_organization() {
+        let http = Routes::new(vec![
+            (
+                "copilot_internal/user",
+                HttpResponse {
+                    retry_after_secs: Some(900),
+                    ..HttpResponse::new(429, "")
+                },
+            ),
+            ("ai_credit/usage", ok(ORG_REPORT)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_quota_limited")
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        assert_eq!(
+            provider.http.urls("/organizations/"),
+            0,
+            "no billing request before the retry time"
+        );
+        let retry_at = now() + chrono::Duration::minutes(15);
+        assert!(
+            matches!(&outcomes[0], AccountOutcome::Failed { error: ProviderError::RateLimited { retry_at: at }, .. } if *at == retry_at)
+        );
+        assert!(matches!(
+            org_card(&outcomes),
+            AccountOutcome::Failed {
+                error: ProviderError::RateLimited { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_unreadable_saved_token_keeps_the_organization_card_as_a_failure() {
+        let provider = CopilotProvider::new(Routes::new(Vec::new()), NoGh)
+            .without_cli()
+            .with_unreadable_login("owner")
+            .with_billing("owner", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        assert!(
+            matches!(org_card(&outcomes), AccountOutcome::Failed { .. }),
+            "{outcomes:?}"
+        );
+    }
+
+    #[test]
+    fn a_later_token_fills_in_the_spend_a_bundle_budget_is_measured_against() {
+        // Both tokens list the budgets; only the second can read the every-product report.
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(BUSINESS_USER)),
+            ("product=Copilot", ok(ORG_REPORT)),
+            (
+                "ai_credit/usage?year=2026&month=10|Bearer gho_bundle_second",
+                ok(ALL_PRODUCTS_REPORT),
+            ),
+            ("ai_credit/usage?year=2026&month=10", HttpResponse::new(502, "")),
+            ("/copilot/billing", ok(BUSINESS_BILLING)),
+            ("/budgets", ok(BUDGETS)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("first", "gho_bundle_first")
+            .with_login("second", "gho_bundle_second")
+            .with_billing("first", business(None))
+            .with_billing("second", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(org) = org_card(&outcomes) else {
+            panic!("org")
+        };
+        assert!(
+            org.messages()
+                .iter()
+                .any(|m| m.starts_with("AI credits budget: $23.50 of $20.00")),
+            "{:?}",
+            org.messages()
+        );
     }
 
     #[test]
