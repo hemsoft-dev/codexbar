@@ -897,10 +897,10 @@ fn share_card(
     };
 
     // The number leads (#174): large in the ring, with the pace in the ring's opening and the reset in the caption.
-    let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
-    // The ring draws and says what the bars do (#234): the forecast's share in its opening, the whole forecast to
-    // screen readers and on hover.
+    // The ring draws, colors and says what the bars do (#234): the forecast's share in its opening, the whole forecast
+    // to screen readers and on hover, calm when the account's credits carry it (#150).
     let projection = crate::usage_bar::Projection::of_account(metric, used, account, now);
+    let color = projection.runway.color(cx.theme().chart_1, cx);
     let projected = projection.projected;
     let pace = ring_pace(metric, account, now);
     let spoken = format!("{}: {}", metric.label(), projection.label);
@@ -970,8 +970,8 @@ fn rings_card(
     let muted = cx.theme().muted_foreground;
     let rings = metrics.iter().enumerate().map(|(ix, metric)| {
         let used = metric.used_fraction().unwrap_or_default();
-        let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
         let projection = crate::usage_bar::Projection::of_account(metric, used, account, now);
+        let color = projection.runway.color(cx.theme().chart_1, cx);
         let projected = projection.projected;
         let pace = ring_pace(metric, account, now);
         let spoken = format!("{}: {}", metric.label(), projection.label);
