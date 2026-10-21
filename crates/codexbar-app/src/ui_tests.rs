@@ -84,6 +84,15 @@ impl Drop for Unsavable {
 
 /// Opens the demo dashboard the way `main` does, with settings from `settings`.
 fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindowHandle, Entity<Dashboard>) {
+    open_dashboard_sized(cx, settings, size(px(1440.), px(960.)))
+}
+
+/// `open_dashboard` with a window of `window_size`, such as one wide enough for the wide usage table (#195).
+fn open_dashboard_sized(
+    cx: &mut TestAppContext,
+    settings: &TempSettings,
+    window_size: gpui_kit::Size<gpui_kit::Pixels>,
+) -> (AnyWindowHandle, Entity<Dashboard>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         // Dialogs slide in over real time; a slow machine would click a button mid-slide and miss it.
@@ -98,7 +107,7 @@ fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindo
         }
     });
     let mut dashboard = None;
-    let handle = cx.open_window(size(px(1440.), px(960.)), |window, cx| {
+    let handle = cx.open_window(window_size, |window, cx| {
         let view = cx.new(|cx| Dashboard::new(DataSource::Demo, window, cx));
         dashboard = Some(view.clone());
         Root::new(view, window, cx)
@@ -7501,6 +7510,94 @@ mod column_widths {
             "a saved width scales with the zoom like the defaults"
         );
         assert_eq!(saved_widths(&settings)["account"], 220.0, "and is still saved unzoomed");
+    }
+
+    fn has_header(cx: &mut TestAppContext, handle: AnyWindowHandle, ix: usize) -> bool {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(("col-header", ix)).is_some()
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn a_column_dragged_back_to_its_default_forgets_its_saved_width(cx: &mut TestAppContext) {
+        let settings = TempSettings::new("column-back-to-default", "{}");
+        std::fs::write(
+            settings.0.join("dashboard.json"),
+            r#"{ "version": 1, "columnWidths": { "account": 320, "limit": 100 } }"#,
+        )
+        .unwrap();
+        let (handle, dashboard) = open_dashboard(cx, &settings);
+        assert!((header_width(cx, handle, ACCOUNT) - 320.).abs() < 1.);
+        // The drag ends with the account column at its default of 275 and the limit column where it was.
+        let table = cx.update(|cx| dashboard.read(cx).table().clone());
+        cx.update(|cx| {
+            table.update(cx, |table, cx| {
+                let mut widths: Vec<_> = (0..8).filter_map(|ix| table.col_width(ix)).collect();
+                widths[ACCOUNT] = px(275.);
+                cx.emit(gpui_kit::component::table::TableEvent::ColumnWidthsChanged(widths));
+            })
+        });
+        cx.run_until_parked();
+        let saved = saved_widths(&settings);
+        assert_eq!(
+            saved.get("account"),
+            None,
+            "back at its default, so it follows the default again: {saved}"
+        );
+        assert_eq!(saved["limit"], 100, "an unmoved column keeps its saved width");
+    }
+
+    #[gpui_kit::test]
+    fn columns_dont_resize_when_the_preferences_are_from_a_newer_version(cx: &mut TestAppContext) {
+        let settings = TempSettings::new("column-read-only", "{}");
+        let newer = r#"{ "version": 2, "columnWidths": { "account": 300 } }"#;
+        std::fs::write(settings.0.join("dashboard.json"), newer).unwrap();
+        let (handle, _) = open_dashboard(cx, &settings);
+        let account = header_width(cx, handle, ACCOUNT);
+        drag_border(cx, handle, ACCOUNT, 80.);
+        assert!(
+            (header_width(cx, handle, ACCOUNT) - account).abs() < 1.,
+            "the border doesn't drag"
+        );
+        assert_eq!(
+            std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap(),
+            newer
+        );
+    }
+
+    #[gpui_kit::test]
+    fn widths_hold_in_the_wide_layout_and_across_a_switch(cx: &mut TestAppContext) {
+        const FIVE_HOUR_PERCENT: usize = 3;
+        let settings = TempSettings::new("column-wide", "{}");
+        let (handle, _) = open_dashboard_sized(cx, &settings, size(px(2600.), px(960.)));
+        assert!(has_header(cx, handle, 15), "the wide table's sixteen columns");
+        let five_hour = header_width(cx, handle, FIVE_HOUR_PERCENT);
+        drag_border(cx, handle, FIVE_HOUR_PERCENT, 40.);
+        drag_border(cx, handle, ACCOUNT, 60.);
+        let widened_five_hour = header_width(cx, handle, FIVE_HOUR_PERCENT);
+        let widened_account = header_width(cx, handle, ACCOUNT);
+        assert!(
+            widened_five_hour > five_hour + 30.,
+            "{five_hour} widened to {widened_five_hour}"
+        );
+        let saved = saved_widths(&settings);
+        assert!(
+            (saved["5h-percent"].as_f64().unwrap() as f32 - widened_five_hour).abs() < 1.,
+            "{saved}"
+        );
+
+        // Narrower than the wide columns need: the narrow table, with the account column as it was dragged.
+        gpui_kit::VisualTestContext::from_window(handle, cx).simulate_resize(size(px(1440.), px(960.)));
+        cx.run_until_parked();
+        assert!(!has_header(cx, handle, 8), "the narrow table's eight columns");
+        assert!((header_width(cx, handle, ACCOUNT) - widened_account).abs() < 1.);
+        // Wide again: the 5-hour column is back at its dragged width.
+        gpui_kit::VisualTestContext::from_window(handle, cx).simulate_resize(size(px(2600.), px(960.)));
+        cx.run_until_parked();
+        assert!((header_width(cx, handle, FIVE_HOUR_PERCENT) - widened_five_hour).abs() < 1.);
+        assert!((header_width(cx, handle, ACCOUNT) - widened_account).abs() < 1.);
     }
 
     #[gpui_kit::test]

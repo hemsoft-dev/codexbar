@@ -213,11 +213,12 @@ impl PrefsHub {
         cx.try_global::<Self>().and_then(|hub| hub.prefs.column_width(column))
     }
 
-    /// Remembers the usage table's column widths (#245), in unzoomed pixels, and saves when one changed.
-    pub fn set_column_widths(cx: &mut App, widths: &[(String, f32)]) {
+    /// Remembers the usage table's column widths (#245), in unzoomed pixels (`None` for the default), and saves when
+    /// one changed.
+    pub fn set_column_widths(cx: &mut App, widths: &[(String, Option<f32>)]) {
         Self::edit(cx, |prefs| {
             for (column, width) in widths {
-                prefs.set_column_width(column, Some(*width));
+                prefs.set_column_width(column, *width);
             }
         });
     }

@@ -384,6 +384,11 @@ impl AccountTable {
         self.columns().get(ix).map(|col| col.key())
     }
 
+    /// The default width of the column at `ix`, unzoomed (#245).
+    pub fn column_default_width(&self, ix: usize) -> Option<f32> {
+        self.columns().get(ix).map(|col| col.widths().0)
+    }
+
     pub fn row(&self, ix: usize) -> Option<&AccountSnapshot> {
         self.rows.get(ix)
     }

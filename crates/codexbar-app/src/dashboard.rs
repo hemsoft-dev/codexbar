@@ -320,16 +320,25 @@ impl Dashboard {
                     .update(cx, |view, cx| view.follow(selected.as_ref(), cx));
                 cx.notify();
             }
-            // A drag ended (#245): remember each column's width, unzoomed, so it comes back at any zoom.
-            TableEvent::ColumnWidthsChanged(widths) => {
+            // A drag ended (#245): remember each column's width, unzoomed, so it comes back at any zoom. Preferences
+            // from a newer CodexBar can't be saved, so the borders don't drag then (see `refresh`).
+            TableEvent::ColumnWidthsChanged(widths) if !crate::prefs_hub::PrefsHub::is_read_only(cx) => {
                 let zoom = crate::zoom::level(cx) as f32;
                 let delegate = table.read(cx).delegate();
-                // Only the columns that moved: one never dragged keeps following its default.
-                let widths: Vec<(String, f32)> = widths
+                // Only the columns that moved: one never dragged keeps following its default, and one dragged back to
+                // its default forgets its saved width.
+                let widths: Vec<(String, Option<f32>)> = widths
                     .iter()
                     .enumerate()
                     .filter(|(ix, width)| column_was_dragged(delegate, *ix, **width, cx))
-                    .filter_map(|(ix, width)| Some((delegate.column_key(ix)?, f32::from(*width) / zoom)))
+                    .filter_map(|(ix, width)| {
+                        let width = f32::from(*width) / zoom;
+                        let default = delegate.column_default_width(ix)?;
+                        Some((
+                            delegate.column_key(ix)?,
+                            ((width - default).abs() >= 0.5).then_some(width),
+                        ))
+                    })
                     .collect();
                 crate::prefs_hub::PrefsHub::set_column_widths(cx, &widths);
             }
@@ -613,6 +622,12 @@ impl Dashboard {
     #[cfg(test)]
     pub fn account_id(&self, ix: usize) -> Option<String> {
         self.accounts.get(ix).map(|account| account.id().as_str().to_owned())
+    }
+
+    /// The usage table, for the headless UI tests.
+    #[cfg(test)]
+    pub fn table(&self) -> &Entity<TableState<AccountTable>> {
+        &self.table
     }
 
     /// Selects a table row the way a click does (the table emits its selection event), for the headless UI tests.
@@ -1377,9 +1392,10 @@ impl Dashboard {
         });
         self.spend_view
             .update(cx, |view, cx| view.set_accounts(accounts.clone(), states.clone(), cx));
-        // Rows drag to a new place (#178) unless the preferences can't be saved.
+        // Rows drag to a new place (#178), and column borders resize (#245), unless the preferences can't be saved.
         let draggable = !crate::prefs_hub::PrefsHub::is_read_only(cx);
         self.table.update(cx, |table, cx| {
+            table.col_resizable = draggable;
             *table.delegate_mut() = AccountTable::new(accounts, now, compact, states)
                 .with_groups(groups)
                 .draggable(draggable);
