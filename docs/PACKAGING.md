@@ -42,8 +42,12 @@ installed.
 The package version comes from the workspace version in `Cargo.toml`, with its
 major part plus one, followed by the commit count. App Installer rejects a zero
 major part, so Cargo `0.1.0` at commit 312 becomes package `1.1.0.312`. Use
-`-Revision <n>` to override the commit count. **Settings › About › Version**
-shows both, for example `0.1.0 (package 1.1.0.312)`.
+`-Revision <n>` to override the commit count. A build from source, such as
+`run.ps1`'s, gets the same version for its commit at build time (#244); without
+git it leaves out the commit count. The title bar shows the version after
+"CodexBar", and **Settings › About › Version** shows it with the Cargo version it
+comes from, for example `1.1.0.312 (crate 0.1.0)`. A packaged app shows its
+installed package version.
 The build ID, the commit with `-modified` when the working tree had uncommitted
 changes, appears under **Settings › About › Build**.
 

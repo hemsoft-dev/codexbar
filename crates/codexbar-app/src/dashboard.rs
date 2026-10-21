@@ -1489,6 +1489,16 @@ impl Dashboard {
                     .items_center()
                     .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary))
                     .child(div().font_semibold().child("CodexBar"))
+                    // Which build is running, at a glance (#244).
+                    .child(
+                        div()
+                            .id("app-version")
+                            .test_support()
+                            .aria_label(crate::version::title())
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(crate::version::current()),
+                    )
                     // The view tabs switch dashboard views; Settings has its own navigation.
                     .when(self.view != DashboardView::Settings, |this| {
                         this.child(

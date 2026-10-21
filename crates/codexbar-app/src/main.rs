@@ -42,6 +42,9 @@ mod tray;
 #[cfg(test)]
 mod ui_tests;
 mod usage_bar;
+mod version;
+#[cfg(test)]
+mod version_scheme;
 #[cfg(windows)]
 mod widget_builder;
 #[cfg(windows)]
@@ -248,10 +251,9 @@ fn main() {
         };
 
         let (handle, dashboard) = gpui_kit::open_window(options, cx, |window, cx| {
-            // Window managers and the macOS Window menu name the window by its title; Windows keeps the untitled
-            // window it has always had.
-            #[cfg(not(windows))]
-            window.set_window_title("CodexBar");
+            // The taskbar, Alt+Tab, window managers and the macOS Window menu name the window by its title, which
+            // carries the version as the title bar does (#244).
+            window.set_window_title(&version::title());
             // Closing hides: the window lives as long as the app, so the tray reopens the last view instantly.
             window.on_window_should_close(cx, |window, cx| {
                 tray::hide(window, cx);

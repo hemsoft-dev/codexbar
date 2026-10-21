@@ -339,6 +339,8 @@ else {
     Write-Information "Building CodexBar $version ($commit)..." -InformationAction Continue
     $builtExe = $null
     $env:CODEXBAR_BUILD = $commit
+    # The title bar and Settings > About show the package's version, including a -Revision override (#244).
+    $env:CODEXBAR_VERSION = $version
     # The package declares x64, so it builds x64 on any host. The C runtime is linked in, so the package runs on PCs
     # without the Visual C++ Redistributable. Its own target folder keeps these flags from rebuilding run.ps1's copy
     # every time.
@@ -358,6 +360,7 @@ else {
     finally {
         Pop-Location
         Remove-Item Env:\CODEXBAR_BUILD -ErrorAction SilentlyContinue
+        Remove-Item Env:\CODEXBAR_VERSION -ErrorAction SilentlyContinue
         $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = $rustFlags
     }
     if (-not $builtExe) { throw 'Cargo did not report the codexbar executable.' }
