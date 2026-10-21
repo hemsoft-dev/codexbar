@@ -71,6 +71,65 @@ enum Col {
     Trend,
 }
 
+impl Col {
+    /// The column's key: its id in the table and its name in the saved widths (#245).
+    fn key(self) -> String {
+        match self {
+            Self::Account => "account".into(),
+            Self::Limit => "limit".into(),
+            Self::Used => "used".into(),
+            Self::Percent => "percent".into(),
+            Self::Progress => "progress".into(),
+            Self::AtReset => "at-reset".into(),
+            Self::Resets => "resets".into(),
+            Self::Trend => "trend".into(),
+            Self::Window(kind, WindowCell::Percent) => format!("{}-percent", kind.key()),
+            Self::Window(kind, WindowCell::Bar) => format!("{}-bar", kind.key()),
+            Self::Window(kind, WindowCell::AtReset) => format!("{}-at-reset", kind.key()),
+            Self::Window(kind, WindowCell::Resets) => format!("{}-resets", kind.key()),
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Account => "Account",
+            Self::Limit => "Limit",
+            Self::Used => "Used",
+            Self::Percent => "%",
+            Self::Progress => "Progress",
+            Self::AtReset | Self::Window(_, WindowCell::AtReset) => "At reset",
+            Self::Resets | Self::Window(_, WindowCell::Resets) => "Resets",
+            Self::Trend => "14-day trend",
+            Self::Window(kind, WindowCell::Percent) => kind.title(),
+            Self::Window(_, WindowCell::Bar) => "",
+        }
+    }
+
+    /// The default width and the narrowest a drag can make it (#245), in unzoomed pixels. The minimum keeps the
+    /// header and a typical value readable.
+    fn widths(self) -> (f32, f32) {
+        match self {
+            Self::Account => (ACCOUNT_WIDTH, 220.),
+            Self::Limit => (LIMIT_WIDTH, 80.),
+            Self::Used => (USED_WIDTH, 64.),
+            Self::Percent => (PERCENT_WIDTH, 48.),
+            Self::Progress => (PROGRESS_WIDTH, 80.),
+            Self::AtReset | Self::Window(_, WindowCell::AtReset) => (AT_RESET_WIDTH, 100.),
+            Self::Resets | Self::Window(_, WindowCell::Resets) => (RESETS_WIDTH, 64.),
+            Self::Trend => (TREND_WIDTH, 100.),
+            Self::Window(_, WindowCell::Percent) => (WINDOW_PERCENT_WIDTH, 56.),
+            Self::Window(_, WindowCell::Bar) => (WINDOW_BAR_WIDTH, 64.),
+        }
+    }
+
+    fn right_aligned(self) -> bool {
+        matches!(self, Self::Used | Self::Percent | Self::Window(_, WindowCell::Percent))
+    }
+}
+
+/// How far past its default a column can be dragged (#245), as a multiple of it.
+const MAX_WIDTH_FACTOR: f32 = 4.;
+
 /// The two windows most subscriptions share, shown side by side when the table is wide enough (#195).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WindowKind {
@@ -169,8 +228,9 @@ pub const WIDE_TABLE_WIDTH: f32 = ACCOUNT_WIDTH
     + RESETS_WIDTH
     + TREND_WIDTH;
 
-/// Column widths in unzoomed pixels. The "At reset" column (#234) took its room from the account, limit, used,
-/// progress, resets and trend columns, so the narrow table still fits the default 1440-pixel window.
+/// Default column widths in unzoomed pixels; a column the user dragged keeps the width it was given (#245). The "At
+/// reset" column (#234) took its room from the account, limit, used, progress, resets and trend columns, so the
+/// narrow table still fits the default 1440-pixel window.
 const ACCOUNT_WIDTH: f32 = 275.;
 const LIMIT_WIDTH: f32 = 145.;
 const USED_WIDTH: f32 = 100.;
@@ -319,6 +379,11 @@ impl AccountTable {
         self.now = now;
     }
 
+    /// The key of the column at `ix`, as its width is saved under (#245).
+    pub fn column_key(&self, ix: usize) -> Option<String> {
+        self.columns().get(ix).map(|col| col.key())
+    }
+
     pub fn row(&self, ix: usize) -> Option<&AccountSnapshot> {
         self.rows.get(ix)
     }
@@ -409,36 +474,23 @@ impl TableDelegate for AccountTable {
     }
 
     fn column(&self, col_ix: usize, cx: &gpui_kit::App) -> Column {
-        match self.columns()[col_ix] {
-            Col::Window(kind, WindowCell::Percent) => {
-                Column::new(SharedString::from(format!("{}-percent", kind.key())), kind.title())
-                    .width(scaled(WINDOW_PERCENT_WIDTH, cx))
-                    .text_right()
-            }
-            Col::Window(kind, WindowCell::Bar) => {
-                Column::new(SharedString::from(format!("{}-bar", kind.key())), "").width(scaled(WINDOW_BAR_WIDTH, cx))
-            }
-            Col::Window(kind, WindowCell::AtReset) => {
-                Column::new(SharedString::from(format!("{}-at-reset", kind.key())), "At reset")
-                    .width(scaled(AT_RESET_WIDTH, cx))
-            }
-            Col::Window(kind, WindowCell::Resets) => {
-                Column::new(SharedString::from(format!("{}-resets", kind.key())), "Resets")
-                    .width(scaled(RESETS_WIDTH, cx))
-            }
-            // DataTable widths are pixels, so they follow the interface zoom explicitly (#116).
-            Col::Account => Column::new("account", "Account")
-                .width(scaled(ACCOUNT_WIDTH, cx))
-                .min_width(scaled(220., cx)),
-            Col::Limit => Column::new("limit", "Limit").width(scaled(LIMIT_WIDTH, cx)),
-            Col::Used => Column::new("used", "Used").width(scaled(USED_WIDTH, cx)).text_right(),
-            Col::Percent => Column::new("percent", "%")
-                .width(scaled(PERCENT_WIDTH, cx))
-                .text_right(),
-            Col::Progress => Column::new("progress", "Progress").width(scaled(PROGRESS_WIDTH, cx)),
-            Col::AtReset => Column::new("at-reset", "At reset").width(scaled(AT_RESET_WIDTH, cx)),
-            Col::Resets => Column::new("resets", "Resets").width(scaled(RESETS_WIDTH, cx)),
-            Col::Trend => Column::new("trend", "14-day trend").width(scaled(TREND_WIDTH, cx)),
+        let col = self.columns()[col_ix];
+        let (default, min) = col.widths();
+        let max = default * MAX_WIDTH_FACTOR;
+        let key = col.key();
+        // Users drag the borders to resize (#245); a saved width comes back, kept within the column's limits.
+        let width = crate::prefs_hub::PrefsHub::column_width(cx, &key)
+            .unwrap_or(default)
+            .clamp(min, max);
+        // DataTable widths are pixels, so they follow the interface zoom explicitly (#116).
+        let column = Column::new(SharedString::from(key), col.title())
+            .width(scaled(width, cx))
+            .min_width(scaled(min, cx))
+            .max_width(scaled(max, cx));
+        if col.right_aligned() {
+            column.text_right()
+        } else {
+            column
         }
     }
 

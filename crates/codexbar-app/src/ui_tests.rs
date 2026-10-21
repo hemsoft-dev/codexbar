@@ -7410,3 +7410,117 @@ fn the_ring_size_stays_put_while_preferences_are_read_only(cx: &mut TestAppConte
         newer
     );
 }
+
+// The usage table's columns resize by dragging their borders, and the widths are remembered (#245).
+mod column_widths {
+    use super::*;
+    use gpui_kit::test::TestEventExt as _;
+    use gpui_kit::{MouseButton, point};
+
+    const ACCOUNT: usize = 0;
+    const LIMIT: usize = 1;
+
+    fn header_width(cx: &mut TestAppContext, handle: AnyWindowHandle, ix: usize) -> f32 {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find(("col-header", ix)).bounds().size.width)
+        })
+        .unwrap()
+    }
+
+    /// Drags the right border of column `ix` by `dx` pixels and lets go.
+    fn drag_border(cx: &mut TestAppContext, handle: AnyWindowHandle, ix: usize, dx: f32) {
+        cx.update_window(handle, |_, window, cx| {
+            let header = window.find(("col-header", ix)).bounds();
+            let start = point(header.right() - px(2.), header.center().y);
+            window.pointer_down(start, MouseButton::Left, cx);
+            window.pointer_move(start + point(px(dx / 2.), px(0.)), Some(MouseButton::Left), cx);
+            window.pointer_move(start + point(px(dx), px(0.)), Some(MouseButton::Left), cx);
+            window.pointer_up(start + point(px(dx), px(0.)), MouseButton::Left, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    fn saved_widths(settings: &TempSettings) -> serde_json::Value {
+        let text = std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap();
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()["columnWidths"].clone()
+    }
+
+    #[gpui_kit::test]
+    fn a_dragged_column_keeps_its_width_after_a_restart(cx: &mut TestAppContext) {
+        let settings = TempSettings::new("column-widths", "{}");
+        let (handle, _) = open_dashboard(cx, &settings);
+        let account = header_width(cx, handle, ACCOUNT);
+        let limit = header_width(cx, handle, LIMIT);
+
+        drag_border(cx, handle, ACCOUNT, 80.);
+        let widened = header_width(cx, handle, ACCOUNT);
+        assert!(widened > account + 60., "{account} widened to {widened}");
+        drag_border(cx, handle, LIMIT, -40.);
+        let narrowed = header_width(cx, handle, LIMIT);
+        assert!(narrowed < limit - 25., "{limit} narrowed to {narrowed}");
+
+        // Saved at once, unzoomed; a column never dragged isn't saved, so it keeps following its default.
+        let saved = saved_widths(&settings);
+        assert!(
+            (saved["account"].as_f64().unwrap() as f32 - widened).abs() < 1.,
+            "{saved}"
+        );
+        assert!(
+            (saved["limit"].as_f64().unwrap() as f32 - narrowed).abs() < 1.,
+            "{saved}"
+        );
+        assert_eq!(saved.as_object().unwrap().len(), 2, "only the dragged columns: {saved}");
+
+        // A restart reads dashboard.json again and gives both columns their widths back.
+        let (reopened, _) = open_dashboard(cx, &settings);
+        assert!((header_width(cx, reopened, ACCOUNT) - widened).abs() < 1.);
+        assert!((header_width(cx, reopened, LIMIT) - narrowed).abs() < 1.);
+        assert!(
+            (header_width(cx, reopened, 2) - header_width(cx, handle, 2)).abs() < 1.,
+            "Used is untouched"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_column_stops_at_its_minimum_and_saved_widths_follow_the_zoom(cx: &mut TestAppContext) {
+        let settings = TempSettings::new("column-minimum", "{}");
+        let (handle, _) = open_dashboard(cx, &settings);
+        drag_border(cx, handle, ACCOUNT, -400.);
+        assert!(
+            (header_width(cx, handle, ACCOUNT) - 220.).abs() < 1.,
+            "the account column's minimum"
+        );
+        assert_eq!(saved_widths(&settings)["account"], 220.0);
+
+        cx.update(|cx| zoom::set_level(1.5, cx));
+        cx.run_until_parked();
+        assert!(
+            (header_width(cx, handle, ACCOUNT) - 330.).abs() < 1.,
+            "a saved width scales with the zoom like the defaults"
+        );
+        assert_eq!(saved_widths(&settings)["account"], 220.0, "and is still saved unzoomed");
+    }
+
+    #[gpui_kit::test]
+    fn unusable_saved_widths_fall_back_to_the_defaults(cx: &mut TestAppContext) {
+        let settings = TempSettings::new("column-widths-bad", "{}");
+        let (handle, _) = open_dashboard(cx, &settings);
+        let account = header_width(cx, handle, ACCOUNT);
+        std::fs::write(
+            settings.0.join("dashboard.json"),
+            r#"{ "version": 1, "columnWidths": { "account": "wide", "limit": 1, "gone-column": 90 } }"#,
+        )
+        .unwrap();
+        let (reopened, _) = open_dashboard(cx, &settings);
+        assert!(
+            (header_width(cx, reopened, ACCOUNT) - account).abs() < 1.,
+            "not a number: the default"
+        );
+        assert!(
+            (header_width(cx, reopened, LIMIT) - 80.).abs() < 1.,
+            "too narrow: held at the minimum"
+        );
+    }
+}

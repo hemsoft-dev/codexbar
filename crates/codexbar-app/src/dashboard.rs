@@ -283,6 +283,12 @@ pub struct Dashboard {
     _subscriptions: Vec<Subscription>,
 }
 
+/// True when the table's column `ix` is no longer the width the table gave it (#245): the column was dragged.
+fn column_was_dragged(delegate: &AccountTable, ix: usize, width: gpui_kit::Pixels, cx: &gpui_kit::App) -> bool {
+    use gpui_kit::component::table::TableDelegate as _;
+    ix < delegate.columns_count(cx) && (delegate.column(ix, cx).width - width).abs() > px(0.5)
+}
+
 /// How long a widget tap waits for an account that hasn't loaded yet (#95).
 const PENDING_FOCUS_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -301,18 +307,33 @@ impl Dashboard {
             .row_selectable(true)
             .col_selectable(false)
             .col_movable(false)
-            .col_resizable(false)
+            // Column borders drag to resize (#245); the widths are remembered in dashboard.json.
+            .col_resizable(true)
             .sortable(false)
         });
 
-        let selection = cx.subscribe(&table, |this, table, event: &TableEvent, cx| {
-            if let TableEvent::SelectRow(row) = event {
+        let selection = cx.subscribe(&table, |this, table, event: &TableEvent, cx| match event {
+            TableEvent::SelectRow(row) => {
                 this.selected = table.read(cx).delegate().row(*row).map(|account| account.id().clone());
                 let selected = this.selected.clone();
                 this.history_view
                     .update(cx, |view, cx| view.follow(selected.as_ref(), cx));
                 cx.notify();
             }
+            // A drag ended (#245): remember each column's width, unzoomed, so it comes back at any zoom.
+            TableEvent::ColumnWidthsChanged(widths) => {
+                let zoom = crate::zoom::level(cx) as f32;
+                let delegate = table.read(cx).delegate();
+                // Only the columns that moved: one never dragged keeps following its default.
+                let widths: Vec<(String, f32)> = widths
+                    .iter()
+                    .enumerate()
+                    .filter(|(ix, width)| column_was_dragged(delegate, *ix, **width, cx))
+                    .filter_map(|(ix, width)| Some((delegate.column_key(ix)?, f32::from(*width) / zoom)))
+                    .collect();
+                crate::prefs_hub::PrefsHub::set_column_widths(cx, &widths);
+            }
+            _ => {}
         });
         let activation = cx.observe_window_activation(window, |this, window, _| {
             if !window.is_window_active() {
