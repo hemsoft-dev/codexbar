@@ -1001,6 +1001,7 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
     fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
         let mut accounts = Vec::new();
         let mut cli_failures = Vec::new();
+        let mut orgs = Vec::new();
         if self.use_cli {
             match self.cli_accounts() {
                 Ok(found) => accounts = found,
@@ -1012,15 +1013,15 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                     if !self.logins.is_empty() || !self.unreadable.is_empty() => {}
                 Err(err) => match &self.only {
                     Some(only) if !self.logins.is_empty() || !self.unreadable.is_empty() => {
-                        cli_failures = only
-                            .iter()
-                            .filter(|user| self.login(user).is_none())
-                            .map(|user| AccountOutcome::Failed {
+                        // The organizations those accounts bill keep their cards as failures too.
+                        for user in only.iter().filter(|user| self.login(user).is_none()) {
+                            self.org_unreadable(user, &err, &mut orgs);
+                            cli_failures.push(AccountOutcome::Failed {
                                 account: account_id(user),
                                 label: Some(user.clone()),
                                 error: err.clone(),
-                            })
-                            .collect();
+                            });
+                        }
                     }
                     _ => return Err(err),
                 },
@@ -1035,7 +1036,6 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
             }
         }
         let mut outcomes = cli_failures;
-        let mut orgs = Vec::new();
         // An account whose saved token couldn't be read is reported, not taken for signed out, and the organizations
         // it bills keep their cards as failures.
         for username in &self.unreadable {
@@ -2231,6 +2231,27 @@ mod tests {
                 .any(|m| m.starts_with("AI credits budget: $23.50 of $20.00")),
             "{:?}",
             org.messages()
+        );
+    }
+
+    #[test]
+    fn a_failed_cli_discovery_keeps_its_accounts_organization_cards() {
+        // gh auth status fails outright; the configured CLI account's organization keeps its card, failed, beside
+        // the account CodexBar signed in itself.
+        struct BrokenGh;
+        impl CommandRunner for BrokenGh {
+            fn run(&self, _: &str, _: &[&str], _: StdDuration) -> Result<CommandOutput, CommandError> {
+                Err(CommandError::Failed)
+            }
+        }
+        let provider = CopilotProvider::new(Routes::new(vec![("copilot_internal/user", ok(USER))]), BrokenGh)
+            .only_accounts(vec!["cliuser".into(), "HemSoft".into()])
+            .with_login("HemSoft", "gho_managed")
+            .with_billing("cliuser", business(None));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        assert!(
+            matches!(org_card(&outcomes), AccountOutcome::Failed { .. }),
+            "{outcomes:?}"
         );
     }
 
