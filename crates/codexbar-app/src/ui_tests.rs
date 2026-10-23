@@ -614,7 +614,7 @@ fn table_trend_shows_compact_history_until_hidden(cx: &mut TestAppContext) {
 
     let compact = label(cx, handle, cell).unwrap();
     assert!(
-        compact.starts_with("ChatGPT · Codex (personal) trend. Last 14 days: Latest 91%"),
+        compact.starts_with("ChatGPT · Codex (personal · Pro (More)) trend. Last 14 days: Latest 91%"),
         "{compact}"
     );
     assert!(compact.contains("Low ") && compact.contains("samples"), "{compact}");
@@ -793,10 +793,16 @@ fn alerts_notify_once_per_condition_and_survive_a_restart(cx: &mut TestAppContex
         .collect();
     // The demo's Codex 5-hour window is at 91% and about to run out; Moonshot has $7.85 left, under $10.
     let has = |title: &str| shown.iter().any(|shown| shown == title);
-    assert!(has("ChatGPT · Codex (personal): 5-hour window at 91%"), "{shown:?}");
-    assert!(has("ChatGPT · Codex (personal): 5-hour window limit soon"), "{shown:?}");
     assert!(
-        !has("ChatGPT · Codex (personal): 5-hour window at risk"),
+        has("ChatGPT · Codex (personal · Pro (More)): 5-hour window at 91%"),
+        "{shown:?}"
+    );
+    assert!(
+        has("ChatGPT · Codex (personal · Pro (More)): 5-hour window limit soon"),
+        "{shown:?}"
+    );
+    assert!(
+        !has("ChatGPT · Codex (personal · Pro (More)): 5-hour window at risk"),
         "covered by limit soon"
     );
     assert!(has("Moonshot (Kimi): $7.85 left"), "{shown:?}");
@@ -6951,7 +6957,7 @@ fn the_spend_view_totals_each_currency_and_counts_only_net_spend(cx: &mut TestAp
     let claude = spend.iter().find(|row| row.starts_with("Claude")).unwrap();
     assert_eq!(
         claude,
-        "Claude · personal, Extra usage: €4.20 of €20.00, 21% used, No reset date"
+        "Claude · personal · Max 20x, Extra usage: €4.20 of €20.00, 21% used, No reset date"
     );
 
     let balances = spend_rows(cx, "balance-row");
@@ -7644,7 +7650,7 @@ fn the_claude_row_shows_the_weekly_window(cx: &mut TestAppContext) {
     // The 14-day summary reads the weekly window's stored history, which ends at 82%; the 5-hour window's ends at 64%.
     let trend = label(cx, handle, "trend-cell-claude-personal").unwrap();
     assert!(
-        trend.starts_with("Claude · personal trend. Last 14 days: Latest 82%"),
+        trend.starts_with("Claude · personal · Max 20x trend. Last 14 days: Latest 82%"),
         "{trend}"
     );
 
@@ -7665,5 +7671,30 @@ fn the_claude_row_shows_the_weekly_window(cx: &mut TestAppContext) {
     assert_eq!(
         label(cx, wide, "resets-claude-personal").as_deref(),
         Some("Resets: not applicable")
+    );
+}
+
+#[gpui_kit::test]
+fn subscription_plans_are_visible_and_unknown_sources_explain_the_fallback(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("subscription-plans", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    assert_eq!(
+        label(cx, handle, "account-name-claude-personal").as_deref(),
+        Some("Claude · personal · Max 20x")
+    );
+    assert!(
+        label(cx, handle, "account-name-codex-personal")
+            .unwrap()
+            .contains("Pro (More)")
+    );
+    let request = crate::handoff::FocusRequest {
+        account: "cursor".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    assert_eq!(
+        label(cx, handle, "plan-unavailable").as_deref(),
+        Some("The connected usage source does not report a subscription plan.")
     );
 }

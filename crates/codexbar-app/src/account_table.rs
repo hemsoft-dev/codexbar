@@ -590,7 +590,19 @@ impl TableDelegate for AccountTable {
                         .bg(severity_dot_color(severity, cx)),
                 )
                 .child(crate::brand::badge(row.provider(), row.id().as_str().to_owned(), cx))
-                .child(div().truncate().child(row.display_name()))
+                .child(
+                    div()
+                        .id(ElementId::Name(format!("account-name-{}", row.id().as_str()).into()))
+                        .test_support()
+                        .aria_label(row.display_name())
+                        .truncate()
+                        .child(row.account_name()),
+                )
+                .children(row.plan().map(|plan| {
+                    div()
+                        .flex_shrink_0()
+                        .child(Tag::secondary().small().child(plan.to_owned()))
+                }))
                 .children(self.groups.get(row.id().as_str()).map(|group| {
                     div()
                         .flex_shrink_0()

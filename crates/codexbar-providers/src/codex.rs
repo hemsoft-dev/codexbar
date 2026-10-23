@@ -143,7 +143,12 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
         .and_then(Value::as_str)
         .filter(|plan| !plan.is_empty())
     {
-        account = account.with_label(plan_name(plan));
+        account = account.with_plan(codex_plan_name(plan));
+        if matches!(plan.to_ascii_lowercase().as_str(), "pro" | "prolite" | "promax") {
+            account = account.with_message(
+                "OpenAI reports the plan variant, but this usage API does not expose a 5x or 20x multiplier.",
+            );
+        }
     }
     Ok(account)
 }
@@ -174,6 +179,21 @@ fn parse_credits(credits: &Value) -> Option<Metric> {
         balance,
         start: None,
     })
+}
+
+/// Display names from OpenAI's own `KnownPlan::display_name`, not multipliers inferred from limits.
+fn codex_plan_name(plan: &str) -> String {
+    match plan.to_ascii_lowercase().as_str() {
+        "pro" => "Pro (More)".to_owned(),
+        "prolite" => "Pro".to_owned(),
+        "promax" => "Pro (Max)".to_owned(),
+        "hc" | "ent26" | "enterprise" => "Enterprise".to_owned(),
+        "enterprise_cbp_automation" => "Enterprise (Automation)".to_owned(),
+        "edu" | "education" => "Edu".to_owned(),
+        "sci" => "Academic Researchers".to_owned(),
+        "sci_plus" => "Academic Researchers Plus".to_owned(),
+        _ => plan_name(plan),
+    }
 }
 
 /// "pro" -> "Pro", "prolite" -> "Pro", "team_plus" -> "Team Plus".
@@ -349,12 +369,12 @@ impl<H: HttpClient> CodexProvider<H> {
         }
     }
 
-    fn label_for(&self, plan: Option<&str>) -> Option<String> {
-        match (self.account.as_ref().map(|(_, label)| label.trim()), plan) {
-            (Some(label), Some(plan)) if !label.is_empty() => Some(format!("{label} · {plan}")),
-            (Some(label), None) if !label.is_empty() => Some(label.to_owned()),
-            (_, plan) => plan.map(str::to_owned),
-        }
+    fn label_for(&self) -> Option<String> {
+        self.account
+            .as_ref()
+            .map(|(_, label)| label.trim())
+            .filter(|label| !label.is_empty())
+            .map(str::to_owned)
     }
 }
 
@@ -392,8 +412,14 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
         let outcome = match result {
             Ok(usage) => {
                 let mut account = AccountSnapshot::new(id.clone(), Provider::Codex, usage.metrics().to_vec(), now);
-                if let Some(label) = self.label_for(usage.label()) {
+                if let Some(label) = self.label_for() {
                     account = account.with_label(label);
+                }
+                if let Some(plan) = usage.plan() {
+                    account = account.with_plan(plan);
+                }
+                for message in usage.messages() {
+                    account = account.with_message(message.clone());
                 }
                 let mut last = LAST_ACCOUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 match last.iter_mut().find(|(path, _)| *path == self.auth_path) {
@@ -411,7 +437,7 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
             }
             Err(error) => AccountOutcome::Failed {
                 account: id,
-                label: self.label_for(None),
+                label: self.label_for(),
                 error,
             },
         };
@@ -475,7 +501,7 @@ mod tests {
     #[test]
     fn parse_usage_fixture_orders_windows_and_projects_pace() {
         let account = parse_usage(FIXTURE, now()).unwrap();
-        assert_eq!(account.display_name(), "ChatGPT · Codex (Pro)");
+        assert_eq!(account.display_name(), "ChatGPT · Codex (Pro (More))");
         let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
         assert_eq!(labels, ["5-hour window", "Weekly"]);
         assert_eq!(account.primary().unwrap().used_fraction(), Some(0.91));
@@ -634,6 +660,50 @@ mod tests {
         let account = parse_usage(&payload, now()).unwrap();
         assert_eq!(account.primary().unwrap().time_to_limit(), None);
         assert_eq!(account.assess(now()).severity(), Severity::Normal);
+    }
+
+    #[test]
+    fn a_codex_plan_transition_refreshes_without_changing_identity_or_the_account_name() {
+        struct Plans(Mutex<Vec<String>>);
+        impl HttpClient for Plans {
+            fn get(&self, _: &str, _: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+                Ok(HttpResponse::new(200, self.0.lock().unwrap().remove(0)))
+            }
+        }
+        let file = auth_file(r#"{"tokens":{"access_token":"tok","account_id":"plan-transition"}}"#);
+        let http = Plans(Mutex::new(vec![
+            FIXTURE.to_owned(),
+            FIXTURE.replace("\"pro\"", "\"prolite\""),
+        ]));
+        let provider = CodexProvider::new(http, file.path().to_path_buf()).with_account("record-plan", "Work");
+        let first = provider.fetch(now()).unwrap().remove(0);
+        let next = provider.fetch(now() + Duration::minutes(2)).unwrap().remove(0);
+        assert_eq!(first.plan(), Some("Pro (More)"));
+        assert_eq!(next.plan(), Some("Pro"));
+        assert_eq!(next.id(), first.id());
+        assert_eq!(next.label(), Some("Work"));
+        assert!(
+            !next
+                .messages()
+                .iter()
+                .any(|message| message.contains("different ChatGPT account"))
+        );
+    }
+
+    #[test]
+    fn reported_plan_variants_change_without_guessing_a_multiplier() {
+        for (raw, expected) in [("pro", "Pro (More)"), ("prolite", "Pro"), ("promax", "Pro (Max)")] {
+            let payload = FIXTURE.replace("\"pro\"", &format!("\"{raw}\""));
+            let account = parse_usage(&payload, now()).unwrap();
+            assert_eq!(account.plan(), Some(expected));
+            assert!(!account.display_name().contains("20x"));
+            assert!(
+                account
+                    .messages()
+                    .iter()
+                    .any(|message| message.contains("does not expose"))
+            );
+        }
     }
 
     #[test]
@@ -896,7 +966,8 @@ mod tests {
         assert_eq!(provider.account_id(), Some("record-1"));
         assert_eq!(provider.account_label(), Some("Work"));
         let account = provider.fetch(now()).unwrap().remove(0);
-        assert_eq!(account.label(), Some("Work · Pro"));
+        assert_eq!(account.label(), Some("Work"));
+        assert_eq!(account.plan(), Some("Pro (More)"));
         assert_eq!(provider.signed_in_account().as_ref(), Some(account.id()));
     }
 
@@ -911,7 +982,12 @@ mod tests {
                 .remove(0)
         };
         let first = fetch();
-        assert!(first.messages().is_empty());
+        assert!(
+            !first
+                .messages()
+                .iter()
+                .any(|message| message.contains("different ChatGPT account"))
+        );
         std::fs::write(file.path(), sign_in("tok", later, "user-2")).unwrap();
         let second = fetch();
         assert_ne!(second.id(), first.id());
@@ -921,7 +997,12 @@ mod tests {
                 .iter()
                 .any(|text| text.contains("different ChatGPT account"))
         );
-        assert!(fetch().messages().is_empty());
+        assert!(
+            !fetch()
+                .messages()
+                .iter()
+                .any(|message| message.contains("different ChatGPT account"))
+        );
     }
 
     /// A minimal self-deleting temp file, to avoid a dev-dependency for three tests.

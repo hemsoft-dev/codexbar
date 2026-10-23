@@ -161,6 +161,7 @@ fn may_renew(home: &Path) -> bool {
 /// What the billing proxy says about the consumer pool, as metrics and messages.
 #[derive(Debug, Default, PartialEq)]
 pub struct GrokUsage {
+    pub plan: Option<String>,
     pub metrics: Vec<Metric>,
     pub messages: Vec<String>,
 }
@@ -288,7 +289,8 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
             .messages
             .push("Grok's Extra Usage Credits are malformed.".to_owned()),
     }
-    if let Some(plan) = plan.filter(|plan| PAID_PLANS.contains(plan)) {
+    usage.plan = plan.filter(|plan| !plan.trim().is_empty()).map(str::to_owned);
+    if let Some(plan) = usage.plan.as_deref() {
         usage.messages.push(format!("Plan: {plan}."));
     }
     Ok(usage)
@@ -401,6 +403,7 @@ impl<H: HttpClient> GrokProvider<H> {
     fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
         let usage = if self.shown_on_x_subscription {
             GrokUsage {
+                plan: None,
                 metrics: Vec::new(),
                 messages: vec!["Shown on the X Subscription card, which reads the same Grok sign-in.".to_owned()],
             }
@@ -411,6 +414,9 @@ impl<H: HttpClient> GrokProvider<H> {
             AccountSnapshot::new(AccountId::new(self.account.clone()), Provider::Grok, usage.metrics, now);
         if !self.label.trim().is_empty() {
             account = account.with_label(self.label.trim());
+        }
+        if let Some(plan) = usage.plan {
+            account = account.with_plan(plan);
         }
         Ok(usage.messages.into_iter().fold(account, AccountSnapshot::with_message))
     }
@@ -667,7 +673,7 @@ mod tests {
             "Me",
         );
         let account = provider.fetch(now()).unwrap().remove(0);
-        assert_eq!(account.display_name(), "Grok · Me");
+        assert_eq!(account.display_name(), "Grok · Me · SuperGrok");
         assert_eq!(account.metrics()[0].used_fraction(), Some(0.1));
         assert_eq!(renewer.1.load(Ordering::SeqCst), 1);
     }

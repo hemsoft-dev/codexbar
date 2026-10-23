@@ -151,6 +151,44 @@ async fn run(
             }
         }
     }
+    // Optional synthetic plan states. The normal live adapters never read these fixture values.
+    if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, Appearance::Light));
+        cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Usage, cx)));
+        for (plan, name) in [("Max 20x", "plan-max20x"), ("Max 5x", "plan-max5x")] {
+            cx.update(|cx| {
+                dashboard.update(cx, |dashboard, cx| {
+                    dashboard.capture_demo_plan("claude-personal", plan, cx);
+                    dashboard.focus_account(
+                        &crate::handoff::FocusRequest {
+                            account: "claude-personal".into(),
+                            metric: None,
+                        },
+                        cx,
+                    );
+                })
+            });
+            settle(cx).await;
+            if save(cx, handle, dir, name) {
+                saved.push(name.to_owned());
+            }
+        }
+        cx.update(|cx| {
+            dashboard.update(cx, |dashboard, cx| {
+                dashboard.focus_account(
+                    &crate::handoff::FocusRequest {
+                        account: "cursor".into(),
+                        metric: None,
+                    },
+                    cx,
+                )
+            })
+        });
+        settle(cx).await;
+        if save(cx, handle, dir, "plan-unavailable") {
+            saved.push("plan-unavailable".into());
+        }
+    }
     // The About page, the last Settings page.
     let _ = cx.update(|cx| {
         cx.update_window(handle, |_, window, cx| {

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use chrono::{DateTime, Months, Utc};
+use chrono::{DateTime, Duration, Months, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Money, Provider};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::pace::elapsed_pace;
 use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 
+const PLAN_ENDPOINT: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetPlanInfo";
+static PLAN_BACKOFF: Mutex<Vec<(PathBuf, String, DateTime<Utc>)>> = Mutex::new(Vec::new());
 const USAGE_ENDPOINT: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 const SIGN_IN_HINT: &str = "Sign in to Cursor, then refresh CodexBar.";
 /// The hint for a sign-in CodexBar made (#81).
@@ -288,6 +290,45 @@ impl<H: HttpClient> CursorProvider<H> {
             .filter(|label| !label.is_empty())
     }
 
+    fn current_plan(&self, token: &str, headers: &[(&str, &str)], now: DateTime<Utc>) -> Option<String> {
+        // Bind holds to this exact sign-in without retaining the token itself.
+        let identity = format!("{:x}", Sha256::digest(token.as_bytes()));
+        {
+            let mut holds = PLAN_BACKOFF.lock().unwrap_or_else(|error| error.into_inner());
+            holds.retain(|(_, _, until)| *until > now);
+            if holds
+                .iter()
+                .any(|(path, key, _)| path == &self.auth_path && key == &identity)
+            {
+                return None;
+            }
+        }
+        let response = self.http.post_json(PLAN_ENDPOINT, headers, "{}").ok()?;
+        if response.status == 429 {
+            let seconds = response
+                .retry_after_secs
+                .unwrap_or_default()
+                .min(Duration::MAX.num_seconds() as u64) as i64;
+            let until = now
+                .checked_add_signed(Duration::seconds(seconds).max(Duration::minutes(15)))
+                .unwrap_or(DateTime::<Utc>::MAX_UTC);
+            PLAN_BACKOFF.lock().unwrap_or_else(|error| error.into_inner()).push((
+                self.auth_path.clone(),
+                identity,
+                until,
+            ));
+        }
+        if response.status != 200 {
+            return None;
+        }
+        let json: Value = serde_json::from_str(&response.body).ok()?;
+        json.pointer("/planInfo/planName")?
+            .as_str()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+    }
+
     fn usage(&self, token: &str, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
         let bearer = format!("Bearer {token}");
         let headers = [
@@ -298,7 +339,15 @@ impl<H: HttpClient> CursorProvider<H> {
         ];
         let response = self.http.post_json(USAGE_ENDPOINT, &headers, "{}")?;
         match response.status {
-            200..=299 => parse_usage(&response.body, now),
+            200..=299 => {
+                let account = parse_usage(&response.body, now)?;
+                Ok(match self.current_plan(token, &headers, now) {
+                    Some(plan) => account.with_plan(plan),
+                    None => {
+                        account.with_message("Cursor's plan lookup did not report a plan; usage is still available.")
+                    }
+                })
+            }
             401 | 403 => Err(ProviderError::Expired { hint: self.hint }),
             status => Err(ProviderError::Http { status }),
         }
@@ -330,6 +379,12 @@ impl<H: HttpClient> UsageProvider for CursorProvider<H> {
                 let mut account = AccountSnapshot::new(id.clone(), Provider::Cursor, usage.metrics().to_vec(), now);
                 if let Some(label) = self.label() {
                     account = account.with_label(label);
+                }
+                if let Some(plan) = usage.plan() {
+                    account = account.with_plan(plan);
+                }
+                for message in usage.messages() {
+                    account = account.with_message(message.clone());
                 }
                 let mut last = LAST_ACCOUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 let previous = last.iter_mut().find(|(path, _)| *path == self.auth_path);
@@ -564,6 +619,93 @@ mod tests {
         assert_eq!(account_id_for_token("a.%%%.c").as_str(), LEGACY_ID);
     }
 
+    struct PlanHttp {
+        profiles: Mutex<Vec<HttpResponse>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl HttpClient for PlanHttp {
+        fn get(&self, _: &str, _: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+            unreachable!()
+        }
+        fn post_json(&self, url: &str, _: &[(&str, &str)], body: &str) -> Result<HttpResponse, ProviderError> {
+            assert_eq!(body, "{}");
+            if url == PLAN_ENDPOINT {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(self.profiles.lock().unwrap().remove(0));
+            }
+            assert_eq!(url, USAGE_ENDPOINT);
+            Ok(HttpResponse::new(200, USAGE))
+        }
+    }
+
+    #[test]
+    fn cursor_plan_names_follow_explicit_profile_changes_without_changing_identity() {
+        let auth = Auth::new("plans", "plan-source");
+        let profile = |name| HttpResponse::new(200, serde_json::json!({"planInfo":{"planName":name}}).to_string());
+        let provider = CursorProvider::new(
+            PlanHttp {
+                profiles: Mutex::new(vec![profile("Premium"), profile("Ultra")]),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            },
+            auth.0.clone(),
+        )
+        .with_account("record", "Work");
+        let first = provider.fetch(now()).unwrap().remove(0);
+        let next = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(first.plan(), Some("Premium"));
+        assert_eq!(next.plan(), Some("Ultra"));
+        assert_eq!(first.id(), next.id());
+        assert_eq!(next.label(), Some("Work"));
+    }
+
+    #[test]
+    fn a_refused_or_unknown_cursor_plan_does_not_hide_usage_or_guess_from_price() {
+        for (index, response) in [
+            HttpResponse::new(403, ""),
+            HttpResponse::new(200, r#"{"planInfo":{"price":200}}"#),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let auth = Auth::new(&format!("plans-missing-{index}"), "plan-missing");
+            let provider = CursorProvider::new(
+                PlanHttp {
+                    profiles: Mutex::new(vec![response]),
+                    calls: std::sync::atomic::AtomicUsize::new(0),
+                },
+                auth.0.clone(),
+            );
+            let account = provider.fetch(now()).unwrap().remove(0);
+            assert_eq!(account.plan(), None);
+            assert!(!account.metrics().is_empty());
+        }
+    }
+
+    #[test]
+    fn cursor_plan_rate_limits_do_not_block_usage_refreshes() {
+        let auth = Auth::new("plans-rate-limit", "plan-rate-limit");
+        let provider = CursorProvider::new(
+            PlanHttp {
+                profiles: Mutex::new(vec![
+                    HttpResponse {
+                        retry_after_secs: Some(3600),
+                        ..HttpResponse::new(429, "")
+                    },
+                    HttpResponse::new(200, r#"{"planInfo":{"planName":"Premium"}}"#),
+                ]),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            },
+            auth.0.clone(),
+        );
+        assert_eq!(provider.fetch(now()).unwrap()[0].plan(), None);
+        assert_eq!(provider.fetch(now() + Duration::minutes(2)).unwrap()[0].plan(), None);
+        assert_eq!(provider.http.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            provider.fetch(now() + Duration::minutes(61)).unwrap()[0].plan(),
+            Some("Premium")
+        );
+    }
+
     struct Auth(PathBuf);
 
     impl Auth {
@@ -640,17 +782,34 @@ mod tests {
         let provider = || CursorProvider::new(Fixed(HttpResponse::new(200, USAGE)), auth.0.clone());
         let first = provider().fetch(now()).unwrap().remove(0);
         assert_eq!(first.id(), &account_id_for_token(&token("google-oauth2|111")));
-        assert!(first.messages().is_empty());
+        assert!(
+            !first
+                .messages()
+                .iter()
+                .any(|message| message.contains("signed in to a different"))
+        );
         assert_eq!(provider().signed_in_account(), Some(first.id().clone()));
         // The Cursor app signs in to another account.
         auth.sign_in("google-oauth2|222");
         let second = provider().fetch(now()).unwrap().remove(0);
         assert_ne!(second.id(), first.id(), "nothing carries over");
         assert_eq!(
-            second.messages(),
-            ["The Cursor app is signed in to a different account. The previous account's usage stays with it."]
+            second
+                .messages()
+                .iter()
+                .filter(|message| message.contains("signed in to a different"))
+                .count(),
+            1
         );
-        assert!(provider().fetch(now()).unwrap()[0].messages().is_empty(), "said once");
+        assert!(second.messages().iter().any(|message| message
+            == "The Cursor app is signed in to a different account. The previous account's usage stays with it."));
+        assert!(
+            !provider().fetch(now()).unwrap()[0]
+                .messages()
+                .iter()
+                .any(|message| message.contains("signed in to a different")),
+            "said once"
+        );
         // Signed out: the provider as a whole has no sign-in.
         std::fs::remove_file(&auth.0).unwrap();
         assert!(matches!(

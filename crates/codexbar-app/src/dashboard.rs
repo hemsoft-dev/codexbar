@@ -1361,6 +1361,26 @@ impl Dashboard {
         }
     }
 
+    /// Synthetic plan transitions for screenshot qualification; unavailable in normal builds and real accounts.
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_demo_plan(&mut self, account_id: &str, plan: &str, cx: &mut Context<Self>) {
+        if !crate::is_demo() {
+            return;
+        }
+        let accounts = self
+            .accounts
+            .iter()
+            .map(|account| {
+                if account.id().as_str() == account_id {
+                    account.clone().with_plan(plan)
+                } else {
+                    account.clone()
+                }
+            })
+            .collect();
+        self.set_accounts(accounts, cx);
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.ranked_with = alert_inputs(cx);
         self.now = Utc::now();
@@ -1854,6 +1874,15 @@ impl Dashboard {
                 .children(crate::alert_details::alert_details(&details, self.now, cx))
                 .children(crate::focus_cards::metric_list(account, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
+                .children(account.plan().is_none().then(|| {
+                    div()
+                        .id("plan-unavailable")
+                        .test_support()
+                        .aria_label("The connected usage source does not report a subscription plan.")
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("The connected usage source does not report a subscription plan.")
+                }))
                 .children(account.messages().iter().enumerate().map(|(ix, message)| {
                     div()
                         .id(("provider-message", ix))

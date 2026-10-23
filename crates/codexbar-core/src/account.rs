@@ -184,6 +184,7 @@ pub struct AccountSnapshot {
     id: AccountId,
     provider: Provider,
     label: Option<String>,
+    plan: Option<Box<str>>,
     metrics: Vec<Metric>,
     trend: Vec<f64>,
     detail: AccountDetail,
@@ -199,6 +200,7 @@ impl AccountSnapshot {
             id,
             provider,
             label: None,
+            plan: None,
             metrics,
             trend: Vec::new(),
             detail: AccountDetail::default(),
@@ -220,6 +222,17 @@ impl AccountSnapshot {
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
+    }
+
+    /// The effective subscription reported by the provider, separate from a user-assigned account name.
+    pub fn with_plan(mut self, plan: impl Into<String>) -> Self {
+        let plan = plan.into();
+        self.plan = (!plan.trim().is_empty()).then(|| plan.trim().into());
+        self
+    }
+
+    pub fn plan(&self) -> Option<&str> {
+        self.plan.as_deref()
     }
 
     /// Daily pressure for the trend sparkline, oldest first.
@@ -245,12 +258,28 @@ impl AccountSnapshot {
         self.label.as_deref()
     }
 
-    /// "Copilot · work", or the provider name alone when the account has no label.
-    pub fn display_name(&self) -> String {
+    /// Provider and user-assigned account name, for layouts that show the plan beside it.
+    pub fn account_name(&self) -> String {
         match &self.label {
             Some(label) if self.provider == Provider::Codex => format!("{} ({label})", self.provider.display_name()),
             Some(label) => format!("{} · {label}", self.provider.display_name()),
             None => self.provider.display_name().to_owned(),
+        }
+    }
+
+    /// "Copilot · work", or the provider name alone when the account has no label.
+    pub fn display_name(&self) -> String {
+        let details = [self.label(), self.plan()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        if details.is_empty() {
+            self.provider.display_name().to_owned()
+        } else if self.provider == Provider::Codex {
+            format!("{} ({details})", self.provider.display_name())
+        } else {
+            format!("{} · {details}", self.provider.display_name())
         }
     }
 
@@ -374,6 +403,18 @@ mod credits_tests {
 
     fn account(metrics: Vec<Metric>) -> AccountSnapshot {
         AccountSnapshot::new(AccountId::new("codex"), Provider::Codex, metrics, now())
+    }
+
+    #[test]
+    fn plan_changes_preserve_account_identity_and_the_user_name() {
+        let original = account(vec![weekly(0.5)]).with_label("Work").with_plan("Pro (More)");
+        let changed = original.clone().with_plan("Pro");
+        assert_eq!(changed.id(), original.id());
+        assert_eq!(changed.label(), Some("Work"));
+        assert_eq!(changed.metrics(), original.metrics());
+        assert_ne!(changed.display_name(), original.display_name());
+        assert_eq!(changed.display_name(), "ChatGPT · Codex (Work · Pro)");
+        assert_eq!(changed.with_plan(" ").plan(), None);
     }
 
     #[test]

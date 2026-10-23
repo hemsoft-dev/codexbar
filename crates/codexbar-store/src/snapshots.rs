@@ -67,6 +67,7 @@ fn account_to_json(account: &AccountSnapshot) -> Value {
         "id": account.id().as_str(),
         "provider": account.provider().key(),
         "label": account.label(),
+        "plan": account.plan(),
         "fetchedAt": account.fetched_at().to_rfc3339(),
         "metrics": account.metrics().iter().map(metric_to_json).collect::<Vec<_>>(),
         "messages": account.messages(),
@@ -86,6 +87,9 @@ fn account_from_json(value: &Value) -> Option<AccountSnapshot> {
     let mut account = AccountSnapshot::new(AccountId::new(id), provider, metrics, fetched_at);
     if let Some(label) = value.get("label").and_then(Value::as_str) {
         account = account.with_label(label);
+    }
+    if let Some(plan) = value.get("plan").and_then(Value::as_str) {
+        account = account.with_plan(plan);
     }
     for message in value.get("messages").and_then(Value::as_array).into_iter().flatten() {
         if let Some(message) = message.as_str() {
@@ -265,6 +269,16 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 7, 14, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn effective_plan_round_trips_separately_from_the_account_name() {
+        let dir = Dir::new("plan");
+        let account = AccountSnapshot::new(AccountId::new("plan"), Provider::Claude, Vec::new(), now())
+            .with_label("Work")
+            .with_plan("Max 5x");
+        save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
+        assert_eq!(load_snapshots(&dir.0), [account]);
     }
 
     #[test]

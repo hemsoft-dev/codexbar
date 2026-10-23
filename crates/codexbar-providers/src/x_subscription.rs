@@ -195,6 +195,9 @@ impl<H: HttpClient> XSubscriptionProvider<H> {
         if !self.label.trim().is_empty() {
             account = account.with_label(self.label.trim());
         }
+        if let Some(plan) = usage.plan {
+            account = account.with_plan(plan);
+        }
         Ok(usage
             .messages
             .into_iter()
@@ -450,7 +453,7 @@ mod tests {
         let homes = Homes::new("all", true);
         let (provider, seen) = x_subscription(&homes, Some(HttpResponse::new(200, SAND)));
         let account = provider.fetch(now()).unwrap().remove(0);
-        assert_eq!(account.display_name(), "X Subscription · Me");
+        assert_eq!(account.display_name(), "X Subscription · Me · SuperGrok");
         let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
         assert_eq!(labels, [SUPERGROK_LABEL, GROK_BOT_LABEL, "Extra usage credits"]);
         assert_eq!(account.metrics()[0].used_fraction(), Some(0.12));

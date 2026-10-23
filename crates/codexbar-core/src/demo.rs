@@ -36,6 +36,8 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             fetched,
         )
         .with_label("personal")
+        .with_plan("Pro (More)")
+        .with_message("OpenAI reports the plan variant, but this usage API does not expose a 5x or 20x multiplier.")
         .with_trend(vec![
             0.31, 0.42, 0.38, 0.55, 0.47, 0.62, 0.58, 0.66, 0.6, 0.71, 0.69, 0.8, 0.84, 0.91,
         ])
@@ -88,6 +90,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             fetched,
         )
         .with_label("personal")
+        .with_plan("Max 20x")
         // The primary metric's trend, the 5-hour window's daily peaks; Weekly's is a limit series (#246).
         .with_trend(vec![
             0.55, 0.7, 0.92, 0.48, 0.66, 0.81, 0.97, 0.6, 0.74, 0.88, 0.52, 0.79, 0.95, 0.64,
@@ -543,9 +546,9 @@ mod tests {
             names,
             [
                 "ChatGPT · Codex (work)",
-                "ChatGPT · Codex (personal)",
+                "ChatGPT · Codex (personal · Pro (More))",
                 "Copilot · work",
-                "Claude · personal",
+                "Claude · personal · Max 20x",
                 "Cursor",
                 "OpenRouter",
                 "ChatGPT · Codex (team)",
