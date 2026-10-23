@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "tool_version": "27.1.0",
+  "targets": [
+    {
+      "file": "crates/codexbar-core/src/sus.rs",
+      "function": "calculate",
+      "package": "codexbar-core",
+      "minimum_caught": 23,
+      "maximum_unviable": 1
+    },
+    {
+      "file": "crates/codexbar-providers/src/balance.rs",
+      "function": "parse_openrouter",
+      "package": "codexbar-providers",
+      "minimum_caught": 2,
+      "maximum_unviable": 1
+    },
+    {
+      "file": "crates/codexbar-store/src/subscription_price.rs",
+      "function": "from_json",
+      "package": "codexbar-store",
+      "minimum_caught": 4,
+      "maximum_unviable": 1
+    }
+  ]
+}

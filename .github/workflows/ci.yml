@@ -142,6 +142,42 @@ jobs:
           path: artifacts/rust-metrics/
           retention-days: 14
 
+  rust-mutations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install pinned Rust mutation tool
+        run: python3 scripts/rust-mutations.py install
+
+      - name: Prove weakened assertions fail qualification
+        run: python3 scripts/tests/test_rust_mutations.py
+
+      - name: Qualify domain, provider and persistence assertions
+        run: python3 scripts/rust-mutations.py run
+
+      - name: Publish Rust mutation summary
+        if: always()
+        run: |
+          if test -f artifacts/rust-mutations/summary.md; then
+            cat artifacts/rust-mutations/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-mutations
+          path: artifacts/rust-mutations/
+          retention-days: 14
+
   build:
     runs-on: windows-latest
 

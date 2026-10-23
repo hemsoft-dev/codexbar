@@ -76,6 +76,8 @@ See [Rust dependency security](docs/RUST_DEPENDENCY_SECURITY.md) for the pinned
 scanner, local commands, report artifacts and exception policy.
 CI also measures [Rust production coverage and per-function CRAP](docs/RUST_TEST_METRICS.md)
 and rejects regressions against the base revision.
+The [Rust mutation qualification](docs/RUST_MUTATION_TESTING.md) also verifies
+selected domain, provider and persistence assertions with a pinned tool.
 
 ```powershell
 git clone https://github.com/hemsoft-dev/codexbar.git

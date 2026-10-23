@@ -274,6 +274,17 @@ mod tests {
         assert_eq!(calculate(f64::NAN, None, 5., 168.), None);
     }
     #[test]
+    fn score_inputs_reject_each_invalid_dimension_and_accept_zero_usage() {
+        assert_eq!(calculate(0., None, 5., 168.).unwrap().value(), 0);
+        for value in [-1., f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(calculate(value, None, 5., 168.), None, "projected {value}");
+        }
+        for value in [0., -1., f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(calculate(80., None, value, 168.), None, "reset {value}");
+            assert_eq!(calculate(80., None, 5., value), None, "length {value}");
+        }
+    }
+    #[test]
     fn bands_are_numeric_and_have_exact_boundaries() {
         for (n, b) in [
             (74, Band::Red),
