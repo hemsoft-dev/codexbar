@@ -41,6 +41,10 @@ impl LoginWindow {
         })
     }
 
+    pub fn finished(&mut self) -> bool {
+        matches!(self.child().try_wait(), Ok(Some(_)))
+    }
+
     fn child(&mut self) -> &mut Child {
         #[cfg(windows)]
         {

@@ -1,7 +1,7 @@
 //! Synthetic CLI responses for native-window connection-flow evidence. Never used outside --demo captures.
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use codexbar_store::settings::{AccountRecord, AuthMethod, names};
@@ -17,9 +17,14 @@ struct Fixture {
     mode: AtomicUsize,
     checks: AtomicUsize,
     opens: AtomicUsize,
+    finished: Arc<AtomicBool>,
 }
-struct Pending;
-impl PendingSignIn for Pending {}
+struct Pending(Arc<AtomicBool>);
+impl PendingSignIn for Pending {
+    fn finished(&mut self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 impl SignInService for Fixture {
     fn check(&self) -> Result<(), String> {
         self.checks.fetch_add(1, Ordering::SeqCst);
@@ -31,7 +36,8 @@ impl SignInService for Fixture {
     }
     fn open(&self, _: &Path) -> Result<Box<dyn PendingSignIn>, String> {
         self.opens.fetch_add(1, Ordering::SeqCst);
-        Ok(Box::new(Pending))
+        self.finished.store(false, Ordering::SeqCst);
+        Ok(Box::new(Pending(self.finished.clone())))
     }
 }
 fn click(cx: &mut AsyncApp, handle: AnyWindowHandle, id: &'static str) {
@@ -125,6 +131,13 @@ pub(super) async fn run(
     click(cx, handle, "antigravity-open-cli");
     assert_eq!(fixture.opens.load(Ordering::SeqCst), 1);
     capture!("antigravity-handoff");
+    fixture.finished.store(true, Ordering::SeqCst);
+    click(cx, handle, "antigravity-check");
+    super::settle(cx).await;
+    assert!(!connected(cx));
+    capture!("antigravity-retry");
+    click(cx, handle, "antigravity-open-cli");
+    assert_eq!(fixture.opens.load(Ordering::SeqCst), 2);
     cx.update(|cx| {
         cx.update_window(handle, |_, window, cx| {
             use gpui_kit::component::WindowExt as _;

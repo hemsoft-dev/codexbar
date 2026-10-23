@@ -6422,11 +6422,16 @@ mod gemini_fixture {
         pub checks: AtomicUsize,
         pub opens: Mutex<Vec<PathBuf>>,
         pub closes: AtomicUsize,
+        pub finished: std::sync::atomic::AtomicBool,
     }
     #[derive(Default, Clone)]
     pub struct FakeGemini(pub Arc<State>);
     struct Pending(Arc<State>);
-    impl PendingSignIn for Pending {}
+    impl PendingSignIn for Pending {
+        fn finished(&mut self) -> bool {
+            self.0.finished.load(Ordering::SeqCst)
+        }
+    }
     impl Drop for Pending {
         fn drop(&mut self) {
             self.0.closes.fetch_add(1, Ordering::SeqCst);
@@ -6447,6 +6452,7 @@ mod gemini_fixture {
                 return Err(error);
             }
             self.0.opens.lock().unwrap().push(dir.to_owned());
+            self.0.finished.store(false, Ordering::SeqCst);
             Ok(Box::new(Pending(self.0.clone())))
         }
     }
@@ -6617,6 +6623,37 @@ fn antigravity_launch_and_check_failures_stay_actionable(cx: &mut TestAppContext
             .contains("Install the Antigravity CLI")
     );
     assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
+}
+
+#[gpui_kit::test]
+fn an_exited_antigravity_cli_can_be_relaunched_after_a_failed_check(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("antigravity-retry-exit", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gm-1");
+    click(cx, handle, "antigravity-open-cli");
+    click(cx, handle, "antigravity-check");
+    assert_eq!(
+        fake.0.closes.load(Ordering::SeqCst),
+        0,
+        "an early failed check must keep active consent open"
+    );
+    click(cx, handle, "antigravity-open-cli");
+    assert_eq!(fake.0.opens.lock().unwrap().len(), 1, "do not duplicate a live CLI");
+    fake.0.finished.store(true, Ordering::SeqCst);
+    click(cx, handle, "antigravity-check");
+    assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
+    click(cx, handle, "antigravity-open-cli");
+    assert_eq!(
+        fake.0.opens.lock().unwrap().len(),
+        2,
+        "retry without cancelling the dialog"
+    );
+    assert_eq!(
+        fake.0.closes.load(Ordering::SeqCst),
+        1,
+        "release only the completed CLI handle"
+    );
 }
 
 #[gpui_kit::test]

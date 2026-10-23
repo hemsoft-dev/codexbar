@@ -52,8 +52,14 @@ pub fn clean_up(cx: &mut App) {
 }
 
 /// The owned CLI handle, never the user's browser or shared vendor credentials.
-pub trait PendingSignIn: Send {}
-impl PendingSignIn for codexbar_providers::gemini_login::LoginWindow {}
+pub trait PendingSignIn: Send {
+    fn finished(&mut self) -> bool;
+}
+impl PendingSignIn for codexbar_providers::gemini_login::LoginWindow {
+    fn finished(&mut self) -> bool {
+        self.finished()
+    }
+}
 pub trait SignInService: Send + Sync {
     fn check(&self) -> Result<(), String>;
     fn open(&self, dir: &Path) -> Result<Box<dyn PendingSignIn>, String>;
@@ -147,7 +153,7 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
             Stage::Failed(_) => "The Antigravity connection has not been verified. Follow the message below, or open the CLI to sign in.",
         };
         let open_stage = shown.clone(); let open_cli = cli.clone(); let open_service = service.clone(); let open_dir = dir.clone();
-        let check_stage = shown.clone(); let check_cancel = cancel_button.clone(); let check_id = id.clone();
+        let check_stage = shown.clone(); let check_cancel = cancel_button.clone(); let check_id = id.clone(); let check_pending = cli.clone();
         dialog.title(format!("Connect “{}” to Antigravity", record.label)).w(crate::zoom::scaled(560., cx))
             .child(v_flex().gap_3()
                 .child(div().id("gemini-sign-in-status").role(Role::Status).test_support().aria_label(text).text_sm().child(text))
@@ -169,12 +175,12 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
                 .child(Button::new("antigravity-check").primary().label("Check connection").disabled(checking || stopped)
                     .on_click(move |_, window, cx| {
                         if !matches!(*check_stage.borrow(), Stage::Checking) {
-                            check(check_id.clone(), check_stage.clone(), check_cancel.clone(), window, cx);
+                            check(check_id.clone(), check_stage.clone(), check_cancel.clone(), check_pending.clone(), window, cx);
                         }
                     }))
                 .child(DialogClose::new().trigger(|button| button.outline().label(if stopped { "Close" } else { "Cancel" }))))
     });
-    check(record.id, stage.clone(), cancel.clone(), window, cx);
+    check(record.id, stage.clone(), cancel.clone(), pending.clone(), window, cx);
     window
         .spawn(cx, async move |cx| {
             cx.background_executor().timer(SIGN_IN_TIMEOUT).await;
@@ -191,7 +197,14 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
         .detach();
 }
 
-fn check(record_id: String, stage: Rc<RefCell<Stage>>, cancel: Arc<AtomicBool>, window: &mut Window, cx: &mut App) {
+fn check(
+    record_id: String,
+    stage: Rc<RefCell<Stage>>,
+    cancel: Arc<AtomicBool>,
+    pending: Pending,
+    window: &mut Window,
+    cx: &mut App,
+) {
     if cancel.load(Ordering::SeqCst) {
         return;
     }
@@ -209,6 +222,11 @@ fn check(record_id: String, stage: Rc<RefCell<Stage>>, cancel: Arc<AtomicBool>, 
                 match result {
                     Ok(()) => window.close_dialog(cx),
                     Err(error) => {
+                        // A closed CLI must not keep the retry button disabled. Keep an active consent process alone.
+                        let finished = pending.borrow_mut().as_mut().is_some_and(|cli| cli.finished());
+                        if finished {
+                            pending.borrow_mut().take();
+                        }
                         *stage.borrow_mut() = Stage::Failed(error.into());
                         window.refresh();
                     }
