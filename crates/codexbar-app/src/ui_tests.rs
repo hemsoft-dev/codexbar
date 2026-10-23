@@ -561,7 +561,7 @@ fn the_share_ring_leads_the_second_card(cx: &mut TestAppContext) {
     focus(cx, "codex-personal");
     let ring = label(cx, handle, "focus-share").unwrap();
     assert!(
-        ring.starts_with("Weekly: 47% used, ") && ring.ends_with("% at reset"),
+        ring.starts_with("Weekly: 47% used, ") && ring.contains("% at reset"),
         "{ring}"
     );
 
@@ -7160,7 +7160,7 @@ fn pick_card_menu_entry(cx: &mut TestAppContext, handle: AnyWindowHandle, card: 
 
 #[gpui_kit::test]
 fn each_card_shows_the_limit_and_view_chosen_from_its_menu(cx: &mut TestAppContext) {
-    // Claude: the 5-hour window as a graph, Weekly as a gauge, and the 5-hour window as a bar (#230).
+    // Claude: Weekly as a graph, Weekly as a gauge, and the 5-hour window as a bar (#230).
     let settings = TempSettings::new("focus-limits", "{}");
     let (handle, dashboard) = open_dashboard(cx, &settings);
     let request = crate::handoff::FocusRequest {
@@ -7169,14 +7169,14 @@ fn each_card_shows_the_limit_and_view_chosen_from_its_menu(cx: &mut TestAppConte
     };
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
     cx.run_until_parked();
-    // Automatic: Claude's primary limit, Weekly, has a trend and no window curve.
-    assert!(exists(cx, handle, "focus-trend-card"));
-    assert!(!exists(cx, handle, "focus-window-card"));
-
-    pick_card_menu_entry(cx, handle, 0, "5-hour window as a graph");
-    // The 5-hour window's own curve, not the primary limit's trend.
+    // Automatic: Claude's primary limit, the 5-hour window as the provider lists it first (#246), has a window curve.
     assert!(exists(cx, handle, "focus-window-card"));
     assert!(!exists(cx, handle, "focus-trend-card"));
+
+    pick_card_menu_entry(cx, handle, 0, "Weekly as a graph");
+    // Weekly's own trend: it has no window curve.
+    assert!(exists(cx, handle, "focus-trend-card"));
+    assert!(!exists(cx, handle, "focus-window-card"));
 
     pick_card_menu_entry(cx, handle, 1, "Weekly");
     let ring = label_of(cx, "focus-share").unwrap();
@@ -7192,7 +7192,7 @@ fn each_card_shows_the_limit_and_view_chosen_from_its_menu(cx: &mut TestAppConte
     assert_eq!(
         json["focusCards"]["claude-personal"]["limits"],
         serde_json::json!([
-            {"key": "5-hour-window", "view": "graph"},
+            {"key": "weekly", "view": "graph"},
             null,
             {"key": "5-hour-window", "view": "bar"}
         ])
@@ -7209,7 +7209,7 @@ fn each_card_shows_the_limit_and_view_chosen_from_its_menu(cx: &mut TestAppConte
     let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
     assert_eq!(
         json["focusCards"]["claude-personal"]["limits"],
-        serde_json::json!([{"key": "5-hour-window", "view": "graph"}, null, null])
+        serde_json::json!([{"key": "weekly", "view": "graph"}, null, null])
     );
 }
 
@@ -7254,13 +7254,13 @@ fn the_gauge_card_shows_the_limits_chosen_from_its_menu(cx: &mut TestAppContext)
         "one ring until more are chosen"
     );
 
-    // Claude's limits are Weekly, 5-hour window and Extra usage, after Automatic.
+    // Claude's limits are the 5-hour window, Weekly and Extra usage, after Automatic, in the provider's order (#246).
     pick_card_menu(cx, handle, 1, 1);
     pick_card_menu(cx, handle, 1, 2);
     let first = label_of(cx, ("focus-ring", 0usize)).unwrap();
     let second = label_of(cx, ("focus-ring", 1usize)).unwrap();
-    assert!(first.starts_with("Weekly: 82% used"), "{first}");
-    assert!(second.starts_with("5-hour window: 64% used"), "{second}");
+    assert!(first.starts_with("5-hour window: 64% used"), "{first}");
+    assert!(second.starts_with("Weekly: 82% used"), "{second}");
     assert!(label_of(cx, ("focus-ring", 2usize)).is_none());
 
     // The ring size slider overlays the card's edge rather than taking a column from the rings (#219): the last
@@ -7290,7 +7290,7 @@ fn the_gauge_card_shows_the_limits_chosen_from_its_menu(cx: &mut TestAppContext)
     let json: serde_json::Value = serde_json::from_str(&saved).unwrap();
     assert_eq!(
         json["focusCards"]["claude-personal"]["rings"],
-        serde_json::json!(["weekly", "5-hour-window"])
+        serde_json::json!(["5-hour-window", "weekly"])
     );
 
     // Automatic again: one ring, and the account leaves the file's choices.
@@ -7620,4 +7620,50 @@ mod column_widths {
             "too narrow: held at the minimum"
         );
     }
+}
+
+/// #246: the demo's Claude account lists its windows as the provider does, 5-hour first, and its usage-table row shows
+/// the weekly window; the wide table still gives each window its own columns.
+#[gpui_kit::test]
+fn the_claude_row_shows_the_weekly_window(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-weekly-row", "{}");
+    let (handle, _) = open_dashboard(cx, &settings);
+    assert_eq!(
+        label(cx, handle, "used-claude-personal").as_deref(),
+        Some("Weekly: 82%")
+    );
+    assert_eq!(
+        label(cx, handle, "sparkline-claude-personal").as_deref(),
+        Some("14-day sparkline: 14 samples, latest 82%")
+    );
+    let resets = label(cx, handle, "resets-claude-personal").unwrap_or_default();
+    assert!(
+        !resets.contains("1h 12m"),
+        "the weekly reset, not the 5-hour one: {resets}"
+    );
+    // The 14-day summary reads the weekly window's stored history, which ends at 82%; the 5-hour window's ends at 64%.
+    let trend = label(cx, handle, "trend-cell-claude-personal").unwrap();
+    assert!(
+        trend.starts_with("Claude · personal trend. Last 14 days: Latest 82%"),
+        "{trend}"
+    );
+
+    let (wide, _) = open_dashboard_sized(cx, &settings, size(px(2600.), px(960.)));
+    assert_eq!(
+        label(cx, wide, "window-5h-claude-personal").as_deref(),
+        Some("5-hour window: 64%")
+    );
+    assert_eq!(
+        label(cx, wide, "window-weekly-claude-personal").as_deref(),
+        Some("Weekly: 82%")
+    );
+    // Both windows have their own columns, so the primary-metric pair is blank for the row.
+    assert_eq!(
+        label(cx, wide, "percent-claude-personal").as_deref(),
+        Some("Primary metric: not applicable")
+    );
+    assert_eq!(
+        label(cx, wide, "resets-claude-personal").as_deref(),
+        Some("Resets: not applicable")
+    );
 }
