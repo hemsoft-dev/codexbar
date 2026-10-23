@@ -28,6 +28,7 @@ pub(super) async fn run(
             (4, "verified-x", 74),
             (5, "two-codex-subscriptions", 70),
             (6, "calendar-week", 60),
+            (7, "already-over-quota", 60),
         ] {
             cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(phase, base, cx)));
             settle(cx).await;
@@ -38,6 +39,25 @@ pub(super) async fn run(
                         window.find("fleet-sus").label(),
                         Some(format!("Fleet SUS: SUS {expected}, red").as_str())
                     );
+                    let codex = window
+                        .try_find("progress-cell-codex-personal-sus")
+                        .or_else(|| window.try_find("window-weekly-codex-personal-bar-sus"))
+                        .and_then(|node| node.label().map(str::to_owned));
+                    assert_eq!(
+                        codex.as_deref(),
+                        Some(if phase == 7 {
+                            "Weekly: SUS 40, red"
+                        } else {
+                            "Weekly: SUS 48, red"
+                        })
+                    );
+                    if phase == 6 {
+                        let x = window
+                            .try_find("progress-cell-x-subscription-sus")
+                            .or_else(|| window.try_find("window-weekly-x-subscription-bar-sus"))
+                            .and_then(|node| node.label().map(str::to_owned));
+                        assert_eq!(x.as_deref(), Some("Weekly SuperGrok limit: SUS 22, red"));
+                    }
                     assert_eq!(
                         window.find("focus-metric-1-sus").label(),
                         Some(if phase == 3 {

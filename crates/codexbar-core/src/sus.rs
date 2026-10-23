@@ -44,7 +44,7 @@ pub fn calculate(projected_percent: f64, out_hours: Option<f64>, reset_hours: f6
         projected_percent
     } else {
         let dark = out_hours
-            .filter(|out| out.is_finite() && *out >= 0.)
+            .filter(|out| out.is_finite())
             .map_or(0., |out| (reset_hours - out).max(0.));
         100. - 100. * dark / length_hours
     };
@@ -185,6 +185,18 @@ mod tests {
         }
     }
     #[test]
+    fn a_reached_quota_uses_the_same_zero_time_to_limit_as_its_bar() {
+        let metric = Metric::Window {
+            label: "Weekly".into(),
+            used: 1.1,
+            resets_at: now() + Duration::hours(100),
+            pace: Some(Pace::per_hour(0.02)),
+            length: Some(Duration::days(7)),
+        };
+        assert_eq!(metric.time_to_limit(), Some(Duration::zero()));
+        assert_eq!(weekly(&metric, now()).unwrap().value(), 40);
+    }
+    #[test]
     fn declared_calendar_weeks_use_their_actual_length() {
         for hours in [167, 169] {
             let metric = Metric::Window {
@@ -236,6 +248,7 @@ mod tests {
             (400., Some(1.), 167., 1),
             (900., Some(0.), 168., 0),
             (110., None, 10., 100),
+            (150., Some(-3.), 20., 86),
             (74.5, None, 10., 74),
             (75.5, None, 10., 76),
         ] {

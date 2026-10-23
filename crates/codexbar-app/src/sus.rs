@@ -134,7 +134,11 @@ pub fn fixture(base: DateTime<Utc>, phase: u8) -> Vec<AccountSnapshot> {
     let codex = account(
         "codex-personal",
         Provider::Codex,
-        vec![window("Weekly", 1. - 25. * 1.08 / 88., 1.08 / 88., 113)],
+        if phase == 7 {
+            vec![window("Weekly", 1.1, 0.02, 100)]
+        } else {
+            vec![window("Weekly", 1. - 25. * 1.08 / 88., 1.08 / 88., 113)]
+        },
     )
     .with_plan(if phase == 1 { "Pro Lite" } else { "Pro" })
     .with_subscription_price(price);

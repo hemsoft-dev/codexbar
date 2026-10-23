@@ -7942,6 +7942,7 @@ fn sus_rendering_and_fleet_use_the_same_forecasts_and_effective_prices(cx: &mut 
         (4, "Fleet SUS: SUS 74, red"),
         (5, "Fleet SUS: SUS 70, red"),
         (6, "Fleet SUS: SUS 60, red"),
+        (7, "Fleet SUS: SUS 60, red"),
     ] {
         cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(phase, base, cx)));
         cx.run_until_parked();
@@ -7950,7 +7951,11 @@ fn sus_rendering_and_fleet_use_the_same_forecasts_and_effective_prices(cx: &mut 
         assert_eq!(label(cx, handle, "fleet-sus").as_deref(), Some(expected));
         assert_eq!(
             label(cx, handle, "progress-cell-codex-personal-sus").as_deref(),
-            Some("Weekly: SUS 48, red")
+            Some(if phase == 7 {
+                "Weekly: SUS 40, red"
+            } else {
+                "Weekly: SUS 48, red"
+            })
         );
         assert_eq!(
             label(cx, handle, "focus-metric-1-sus").as_deref(),

@@ -18,7 +18,10 @@ have a known weekly length/reset, and have a forecast. Otherwise it says `SUS n/
 - Without a known pre-reset exhaustion time there is no lockout penalty, matching
   `sus` in [Chief's reference](https://github.com/hemsoft-dev/chief/blob/main/scripts/usage.py).
 
-Scores round ties to even, like Python. The reference cases are 208% projected,
+Reached quotas use the same zero time-to-limit as their bars, retaining the
+remaining lockout penalty. Finite negative reference inputs also retain their
+elapsed lockout time. Scores round ties to even,
+like Python. The reference cases are 208% projected,
 25 hours until limit, 113 hours until reset: SUS 48; and 132%, 52 hours, 92 hours:
 SUS 76. Scores are calculated again on the dashboard clock, including the age
 threshold and effective price changes.
