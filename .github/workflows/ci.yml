@@ -97,6 +97,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      - name: Test Codex review policy
+        run: node --test .github/scripts/codex-review.test.cjs
+
       - name: Install markdownlint-cli
         run: npm ci
 

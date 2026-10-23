@@ -1,0 +1,43 @@
+name: Codex review gate
+
+# Metadata only. Never check out or execute a pull request's code with this token.
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Pull request number whose review evidence should be refreshed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Use trusted main, including for review/comment events on a fork.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const { run } = require('./.github/scripts/codex-review.cjs');
+            await run({ github, context, core });
