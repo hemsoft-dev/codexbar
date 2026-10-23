@@ -27,6 +27,7 @@ pub(super) async fn run(
             (3, "fresh-window", 64),
             (4, "verified-x", 74),
             (5, "two-codex-subscriptions", 70),
+            (6, "calendar-week", 60),
         ] {
             cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(phase, base, cx)));
             settle(cx).await;

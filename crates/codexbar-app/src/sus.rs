@@ -162,7 +162,15 @@ pub fn fixture(base: DateTime<Utc>, phase: u8) -> Vec<AccountSnapshot> {
     let x = account(
         "x-subscription",
         Provider::XSubscription,
-        if phase == 4 {
+        if phase == 6 {
+            vec![Metric::Window {
+                label: "Weekly SuperGrok limit".into(),
+                used: 0.74,
+                resets_at: base + Duration::hours(143),
+                pace: Some(Pace::per_hour(0.02)),
+                length: Some(Duration::hours(167)),
+            }]
+        } else if phase == 4 {
             vec![window("Weekly SuperGrok limit", 0.4, 0.4 / 96., 96)]
         } else {
             vec![Metric::Activity {

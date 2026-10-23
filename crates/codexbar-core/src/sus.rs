@@ -51,14 +51,19 @@ pub fn calculate(projected_percent: f64, out_hours: Option<f64>, reset_hours: f6
     Some(Score::rounded(value))
 }
 pub fn is_weekly(metric: &Metric) -> bool {
-    metric.window_length() == Some(Duration::days(7))
-        || (matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
-            && metric.window_length().is_none()
-            && metric
-                .label()
-                .to_ascii_lowercase()
-                .split_whitespace()
-                .any(|part| part == "weekly"))
+    let declared_weekly = matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
+        && metric
+            .label()
+            .to_ascii_lowercase()
+            .split_whitespace()
+            .any(|part| part == "weekly");
+    match metric.window_length() {
+        Some(length) if length == Duration::days(7) => true,
+        // Provider calendar weeks can cross offset changes. Keep their actual length for age and lockout math;
+        // the weekly label is required outside exactly seven days, and short/monthly periods stay excluded.
+        Some(length) => declared_weekly && (Duration::days(6)..=Duration::days(8)).contains(&length),
+        None => declared_weekly,
+    }
 }
 pub fn weekly(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
     if !is_weekly(metric) {
@@ -178,6 +183,48 @@ mod tests {
             pace: Some(Pace::per_hour(projected / (left.num_seconds() as f64 / 3600.))),
             length: Some(Duration::days(7)),
         }
+    }
+    #[test]
+    fn declared_calendar_weeks_use_their_actual_length() {
+        for hours in [167, 169] {
+            let metric = Metric::Window {
+                label: "Weekly usage".into(),
+                used: 0.74,
+                resets_at: now() + Duration::hours(hours - 24),
+                pace: Some(Pace::per_hour(0.02)),
+                length: Some(Duration::hours(hours)),
+            };
+            assert!(is_weekly(&metric));
+            assert_eq!(weekly(&metric, now()).unwrap().value(), 22);
+            assert_eq!(text(&metric, now()).as_deref(), Some("SUS 22"));
+            let account = AccountSnapshot::new(AccountId::new("calendar"), Provider::Grok, vec![metric], now());
+            assert_eq!(
+                fleet([(subscription_score(&account, now()), Some(20_000))])
+                    .score
+                    .unwrap()
+                    .value(),
+                22
+            );
+        }
+        for hours in [5, 24, 24 * 28] {
+            let metric = Metric::Window {
+                label: "Weekly".into(),
+                used: 0.5,
+                resets_at: now() + Duration::hours(1),
+                pace: Some(Pace::per_hour(0.01)),
+                length: Some(Duration::hours(hours)),
+            };
+            assert!(!is_weekly(&metric));
+            assert_eq!(text(&metric, now()), None);
+        }
+        let metric = Metric::Window {
+            label: "Monthly".into(),
+            used: 0.5,
+            resets_at: now() + Duration::hours(100),
+            pace: Some(Pace::per_hour(0.01)),
+            length: Some(Duration::hours(169)),
+        };
+        assert!(!is_weekly(&metric), "a duration near a week alone is insufficient");
     }
     #[test]
     fn reference_vectors_and_bankers_rounding() {

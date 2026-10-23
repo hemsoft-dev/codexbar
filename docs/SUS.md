@@ -3,7 +3,10 @@
 Weekly subscription windows show SUS beside their usage bars, in the focused
 account, the tray tooltip, and Windows widget tiles. SUS is 0–100. Green is
 90–100, yellow 75–89, and red below 75. The accessible label also names the band.
-Five-hour windows have no SUS.
+Five-hour windows have no SUS. Provider-labelled weekly periods from six to
+eight days also qualify, covering calendar offset changes without accepting
+short or monthly periods. Age and lockout calculations use the actual reported
+length, including 167- and 169-hour weeks.
 
 The score uses the metric's existing projection and time-to-limit, so its inputs
 agree with the forecast beside the bar. A window must be at least 12 hours old,

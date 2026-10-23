@@ -516,6 +516,17 @@ mod tests {
     }
 
     #[test]
+    fn provider_declared_weekly_periods_with_offset_changes_keep_scores() {
+        for (offset, hours) in [("+01:00", 167), ("-01:00", 169)] {
+            let body = billing(r#","creditUsagePercent":40"#)
+                .replace("2026-10-15T16:32:13+00:00", &format!("2026-10-15T16:32:13{offset}"));
+            let usage = parse_billing(&body, None, now()).unwrap();
+            let metric = &usage.metrics[0];
+            assert_eq!(metric.window_length(), Some(Duration::hours(hours)));
+            assert!(codexbar_core::sus::weekly(metric, now()).is_some());
+        }
+    }
+    #[test]
     fn a_reported_weekly_percent_and_credits_show_apart() {
         let body = billing(r#","creditUsagePercent":37.5,"prepaidBalance":{"val":1250}"#);
         let usage = parse_billing(&body, Some("SuperGrok"), now()).unwrap();

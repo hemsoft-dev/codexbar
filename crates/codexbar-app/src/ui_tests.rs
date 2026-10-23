@@ -7941,6 +7941,7 @@ fn sus_rendering_and_fleet_use_the_same_forecasts_and_effective_prices(cx: &mut 
         (2, "Fleet SUS: SUS 72, red"),
         (4, "Fleet SUS: SUS 74, red"),
         (5, "Fleet SUS: SUS 70, red"),
+        (6, "Fleet SUS: SUS 60, red"),
     ] {
         cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(phase, base, cx)));
         cx.run_until_parked();
