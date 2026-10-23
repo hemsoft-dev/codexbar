@@ -1,11 +1,27 @@
 {
+  "name": "codexbar-development-tools",
+  "private": true,
   "scripts": {
     "perfection:audit": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./.agents/skills/perfection/scripts/Invoke-PerfectionCheck.ps1",
     "lint:md": "markdownlint \"**/*.md\" --ignore node_modules",
     "security:scan": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/Invoke-SecurityScan.ps1",
-    "postinstall": "git config core.hooksPath .githooks 2>nul || exit 0"
+    "postinstall": "git config core.hooksPath .githooks 2>nul || exit 0",
+    "audit:npm": "npm audit --include=dev --audit-level=low",
+    "test:npm-audit": "node --test scripts/tests/npm-audit.test.cjs"
   },
   "devDependencies": {
-    "markdownlint-cli": "^0.48.0"
+    "markdownlint-cli": "0.49.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "markdownlint-cli": {
+      "js-yaml": "5.5.0",
+      "smol-toml": "1.9.1"
+    },
+    "micromark-extension-math": {
+      "katex": "0.18.2"
+    }
   }
 }
