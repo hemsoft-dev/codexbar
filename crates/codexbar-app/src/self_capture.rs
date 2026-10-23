@@ -139,6 +139,22 @@ async fn run(
     dir: &std::path::Path,
 ) -> serde_json::Value {
     cx.background_executor().timer(Duration::from_secs(3)).await;
+    if std::env::var_os("CODEXBAR_CAPTURE_WIDE").is_some() {
+        cx.update(|cx| {
+            cx.update_window(handle, |_, window, _| {
+                window.resize(gpui_kit::size(gpui_kit::px(2600.), gpui_kit::px(1000.)));
+            })
+        })
+        .expect("wide capture window");
+        settle(cx).await;
+        let actual = cx
+            .update(|cx| cx.update_window(handle, |_, window, _| window.viewport_size()))
+            .expect("wide capture viewport");
+        assert!(
+            actual.width >= gpui_kit::px(2600.) && actual.height >= gpui_kit::px(1000.),
+            "wide capture was clamped: {actual:?}"
+        );
+    }
     let mut saved = Vec::new();
     for (appearance, suffix) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
         cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, appearance));
