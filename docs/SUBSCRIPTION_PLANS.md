@@ -13,7 +13,13 @@ labels, such as `Pro` or `Work · Max`, split into the account name and reported
 plan before a refresh. An old generic Pro or Max stays generic until the
 provider supplies its current tier. Unrecognized labels stay account names. A
 configured name that resembles a plan stays a name only when its record ID or
-remembered external identity matches the restored account.
+remembered external identity matches the restored account. Migration covers the
+legacy Enterprise, education and research spellings, including `Hc`, `Ent26`,
+`Enterprise Cbp Automation`, `Sci` and `Sci Plus`, and normalizes their known
+aliases. Business and education variants follow the explicit codes in
+[the Codex protocol](https://github.com/openai/codex/blob/fea1d7f7d163521a868c344527da79ba0efc146d/codex-rs/protocol/src/auth.rs).
+Old generic `Pro` stays generic because the previous writer collapsed both
+`pro` and `prolite` to that label.
 
 ## Sources and limits
 

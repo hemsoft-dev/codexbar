@@ -140,15 +140,34 @@ fn legacy_plan_label<'a>(
     let (name, plan) = combined
         .rsplit_once(" · ")
         .map_or((None, combined), |(name, plan)| (Some(name), plan));
-    let known = match provider {
-        Provider::Codex => matches!(
-            plan,
-            "Free" | "Go" | "Plus" | "Pro" | "Promax" | "Team" | "Team Plus" | "Business" | "Enterprise" | "Edu"
-        ),
-        Provider::Claude => matches!(plan, "Free" | "Pro" | "Max" | "Team" | "Enterprise"),
-        _ => false,
+    let migrated = match provider {
+        Provider::Codex => match plan {
+            "Hc" | "Ent26" => Some("Enterprise"),
+            "Enterprise Cbp Automation" => Some("Enterprise (Automation)"),
+            "Sci" => Some("Academic Researchers"),
+            "Sci Plus" => Some("Academic Researchers Plus"),
+            "Education" => Some("Edu"),
+            "Promax" => Some("Pro Max"),
+            "Free"
+            | "Go"
+            | "Plus"
+            | "Pro"
+            | "Team"
+            | "Team Plus"
+            | "Business"
+            | "Enterprise"
+            | "Edu"
+            | "Self Serve Business Prolite"
+            | "Self Serve Business Usage Based"
+            | "Enterprise Cbp Usage Based"
+            | "Edu Plus"
+            | "Edu Pro" => Some(plan),
+            _ => None,
+        },
+        Provider::Claude => matches!(plan, "Free" | "Pro" | "Max" | "Team" | "Enterprise").then_some(plan),
+        _ => None,
     };
-    if known { (name, Some(plan)) } else { (label, None) }
+    migrated.map_or((label, None), |plan| (name, Some(plan)))
 }
 
 fn metric_to_json(metric: &Metric) -> Value {
@@ -413,6 +432,72 @@ mod tests {
             // No successful fetch occurs: saving restored last-good data must retain the split.
             save_snapshots(&dir.0, &loaded).unwrap();
             assert_eq!(load_snapshots(&dir.0), expected);
+        }
+    }
+
+    #[test]
+    fn every_known_codex_tier_migrates_from_its_old_serialized_spelling() {
+        // Version 1/2 title-cased underscore-separated API codes, except prolite -> Pro.
+        // Cover current supported codes and aliases, not only the personal tiers.
+        let tiers = [
+            ("Free", "Free"),
+            ("Go", "Go"),
+            ("Plus", "Plus"),
+            ("Pro", "Pro"),
+            ("Promax", "Pro Max"),
+            ("Team", "Team"),
+            ("Team Plus", "Team Plus"),
+            ("Business", "Business"),
+            ("Hc", "Enterprise"),
+            ("Ent26", "Enterprise"),
+            ("Enterprise", "Enterprise"),
+            ("Enterprise Cbp Automation", "Enterprise (Automation)"),
+            ("Enterprise Cbp Usage Based", "Enterprise Cbp Usage Based"),
+            ("Self Serve Business Prolite", "Self Serve Business Prolite"),
+            ("Self Serve Business Usage Based", "Self Serve Business Usage Based"),
+            ("Edu", "Edu"),
+            ("Education", "Edu"),
+            ("Edu Plus", "Edu Plus"),
+            ("Edu Pro", "Edu Pro"),
+            ("Sci", "Academic Researchers"),
+            ("Sci Plus", "Academic Researchers Plus"),
+        ];
+        for version in [1, 2] {
+            let dir = Dir::new(&format!("all-legacy-codex-tiers-{version}"));
+            let mut values = Vec::new();
+            let mut expected = Vec::new();
+            for (index, (old, plan)) in tiers.into_iter().enumerate() {
+                for label in [None, Some("Work · Research")] {
+                    let account = AccountSnapshot::new(
+                        AccountId::new(format!("tier-{index}-{}", label.is_some())),
+                        Provider::Codex,
+                        Vec::new(),
+                        now(),
+                    );
+                    let combined = label.map_or_else(|| old.to_owned(), |name| format!("{name} · {old}"));
+                    let mut value = account_to_json(&account.clone().with_label(combined));
+                    value.as_object_mut().unwrap().remove("plan");
+                    values.push(value);
+                    let account = account.with_plan(plan);
+                    expected.push(match label {
+                        Some(name) => account.with_label(name),
+                        None => account,
+                    });
+                }
+            }
+            std::fs::write(
+                dir.0.join(SNAPSHOTS_FILE),
+                json!({"version":version,"accounts":values}).to_string(),
+            )
+            .unwrap();
+            let loaded = load_snapshots(&dir.0);
+            assert_eq!(loaded, expected);
+            save_snapshots(&dir.0, &loaded).unwrap();
+            assert_eq!(
+                load_snapshots(&dir.0),
+                expected,
+                "no successful refresh is needed to preserve the plan"
+            );
         }
     }
 
