@@ -71,6 +71,10 @@ there. The Automatic method reads that sign-in. Dates follow the system's locale
 
 ### Build from source
 
+CI scans the locked Rust dependencies for vulnerabilities and unsoundness.
+See [Rust dependency security](docs/RUST_DEPENDENCY_SECURITY.md) for the pinned
+scanner, local commands, report artifacts and exception policy.
+
 ```powershell
 git clone https://github.com/hemsoft-dev/codexbar.git
 cd codexbar

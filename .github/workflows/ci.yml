@@ -28,6 +28,23 @@ jobs:
         shell: pwsh
         run: ./scripts/Invoke-SecurityScan.ps1
 
+      - name: Install Rust advisory scanner
+        shell: pwsh
+        run: |
+          rustup show active-toolchain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content scripts/rust-audit-version.txt -Raw).Trim()
+          cargo install cargo-audit --version $version --locked --no-default-features
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Scan locked Rust dependencies
+        shell: pwsh
+        run: ./scripts/Invoke-RustAdvisoryScan.ps1
+
+      - name: Verify Rust advisory rejection
+        shell: pwsh
+        run: ./scripts/tests/RustAdvisoryScan.Tests.ps1
+
       - name: Upload security scan reports
         if: always()
         uses: actions/upload-artifact@v4
