@@ -6410,50 +6410,55 @@ fn the_same_user_signing_in_again_keeps_the_account(cx: &mut TestAppContext) {
     assert!(stored_token(cx, "gb-1").as_deref() == Some("gho_token_for_octocat"));
 }
 
-// Gemini Apps (#106): a temporary browser sign-in, faked so tests never start a browser or reach Google.
-
+// #254: the Settings action delegates Antigravity auth, never a controlled Google-cookie browser.
 mod gemini_fixture {
+    use super::*;
+    use crate::gemini_sign_in::{PendingSignIn, SignInService};
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex};
-
-    use codexbar_providers::gemini_apps::AppsSession;
-
-    use crate::gemini_sign_in::SignInService;
-
     #[derive(Default)]
     pub struct State {
-        pub outcome: Mutex<Option<Result<AppsSession, String>>>,
-        pub parents: Mutex<Vec<PathBuf>>,
+        pub outcome: Mutex<Option<Result<(), String>>>,
+        pub launch_error: Mutex<Option<String>>,
+        pub checks: AtomicUsize,
+        pub opens: Mutex<Vec<PathBuf>>,
+        pub closes: AtomicUsize,
     }
-
     #[derive(Default, Clone)]
     pub struct FakeGemini(pub Arc<State>);
-
+    struct Pending(Arc<State>);
+    impl PendingSignIn for Pending {}
+    impl Drop for Pending {
+        fn drop(&mut self) {
+            self.0.closes.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     impl SignInService for FakeGemini {
-        fn sign_in(&self, parent: &Path, _: &AtomicBool, _: &dyn Fn()) -> Result<AppsSession, String> {
-            self.0.parents.lock().unwrap().push(parent.to_owned());
+        fn check(&self) -> Result<(), String> {
+            self.0.checks.fetch_add(1, Ordering::SeqCst);
             self.0
                 .outcome
                 .lock()
                 .unwrap()
                 .clone()
-                .unwrap_or_else(|| Err("cancelled".into()))
+                .unwrap_or_else(|| Err("Sign in to the Antigravity CLI, then check again.".into()))
+        }
+        fn open(&self, dir: &Path) -> Result<Box<dyn PendingSignIn>, String> {
+            if let Some(error) = self.0.launch_error.lock().unwrap().clone() {
+                return Err(error);
+            }
+            self.0.opens.lock().unwrap().push(dir.to_owned());
+            Ok(Box::new(Pending(self.0.clone())))
         }
     }
 }
-
 use gemini_fixture::FakeGemini;
-
 const GEMINI_ACCOUNT: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
     { "id": "gm-1", "providerId": "Gemini", "displayLabel": "Personal", "enabled": true,
       "authenticationMethod": "BrowserSession" } ] }"#;
-
 fn open_gemini_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: &FakeGemini) -> AnyWindowHandle {
     let fake = fake.clone();
     cx.update(|cx| crate::gemini_sign_in::init_with(cx, Arc::new(fake)));
     let handle = open_settings_page(cx, settings, MemoryCredentialStore::default(), 1);
-    // Gemini is the eleventh group; Settings renders only groups in view, so scroll it in.
     cx.update_window(handle, |_, window, cx| {
         window.within("settings-sidebar").click("0-1-10", cx)
     })
@@ -6461,129 +6466,244 @@ fn open_gemini_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: 
     cx.run_until_parked();
     handle
 }
-
 fn gemini_session(cx: &mut TestAppContext, key: &str) -> Option<codexbar_providers::gemini_apps::AppsSession> {
     cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), key))
         .ok()
         .flatten()
         .and_then(|secret| codexbar_providers::gemini_apps::AppsSession::from_secret(&secret))
 }
-
-#[gpui_kit::test]
-fn a_gemini_account_signs_in_through_a_temporary_browser_and_keeps_only_the_session(cx: &mut TestAppContext) {
-    let settings = TempSettings::new("gemini-sign-in", GEMINI_ACCOUNT);
-    let fake = FakeGemini::default();
-    *fake.0.outcome.lock().unwrap() = Some(Ok(codexbar_providers::gemini_apps::AppsSession {
-        psid: "g.session".into(),
-        psidts: Some("ts".into()),
-    }));
-    let handle = open_gemini_accounts(cx, &settings, &fake);
-    assert_eq!(
-        label_of(cx, "account-detail-gm-1").as_deref(),
-        Some("Browser session · Gemini Apps not signed in")
-    );
-    click(cx, handle, "sign-in-gm-1");
-    // The temporary profile goes in CodexBar's settings folder, never another browser's.
-    assert_eq!(*fake.0.parents.lock().unwrap(), [settings.0.join("gemini")]);
-    assert!(
-        !exists(cx, handle, "gemini-sign-in-status"),
-        "the dialog closes once signed in"
-    );
-    assert!(gemini_session(cx, "gm-1:gemini-apps").is_some_and(|s| s.psid == "g.session"));
-    assert_eq!(
-        label_of(cx, "account-detail-gm-1").as_deref(),
-        Some("Browser session · Gemini Apps signed in")
-    );
-    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
-    let gemini: Vec<_> = adapters.iter().filter(|a| a.name() == "Gemini").collect();
-    assert_eq!(gemini.len(), 1);
-    assert_eq!(gemini[0].account_id(), Some("gm-1"));
-
-    click(cx, handle, "sign-out-gm-1");
-    assert!(gemini_session(cx, "gm-1:gemini-apps").is_none());
-    assert_eq!(saved_settings(&settings).accounts().len(), 1, "the account stays");
-}
-
-#[gpui_kit::test]
-fn a_gemini_sign_in_that_fails_says_so_and_keeps_nothing(cx: &mut TestAppContext) {
-    let settings = TempSettings::new("gemini-sign-in-fails", GEMINI_ACCOUNT);
-    let fake = FakeGemini::default();
-    *fake.0.outcome.lock().unwrap() = Some(Err("The sign-in window was closed before Gemini could be read.".into()));
-    let handle = open_gemini_accounts(cx, &settings, &fake);
-    click(cx, handle, "sign-in-gm-1");
-    assert_eq!(
-        label_of(cx, "gemini-sign-in-error").as_deref(),
-        Some("The sign-in window was closed before Gemini could be read.")
-    );
-    assert!(gemini_session(cx, "gm-1:gemini-apps").is_none());
-}
-
-#[gpui_kit::test]
-fn signing_a_gemini_account_in_again_asks_for_the_same_google_account(cx: &mut TestAppContext) {
-    use gpui_kit::component::WindowExt as _;
-    let settings = TempSettings::new("gemini-sign-in-again", GEMINI_ACCOUNT);
-    let fake = FakeGemini::default();
-    *fake.0.outcome.lock().unwrap() = Some(Err("The sign-in took too long. Try again.".into()));
-    let handle = open_gemini_accounts(cx, &settings, &fake);
-    click(cx, handle, "sign-in-gm-1");
-    assert!(
-        !exists(cx, handle, "gemini-sign-in-same-account"),
-        "a first sign-in has nothing to match"
-    );
-    cx.update_window(handle, |_, window, cx| window.close_dialog(cx))
-        .unwrap();
-    cx.run_until_parked();
-    let earlier = codexbar_providers::gemini_apps::AppsSession {
-        psid: "g.earlier".into(),
+fn keep_gemini_session(cx: &mut TestAppContext) {
+    let session = codexbar_providers::gemini_apps::AppsSession {
+        psid: "old-private-session".into(),
         psidts: None,
     };
     cx.update(|cx| {
         codexbar_store::credentials::write_long(
             SettingsHub::global(cx).credentials().as_ref(),
             "gm-1:gemini-apps",
-            &earlier.to_secret(),
+            &session.to_secret(),
         )
     })
     .unwrap();
-    click(cx, handle, "sign-in-gm-1");
-    assert!(exists(cx, handle, "gemini-sign-in-same-account"));
 }
 
 #[gpui_kit::test]
-fn one_gemini_sign_in_runs_at_a_time(cx: &mut TestAppContext) {
-    let settings = TempSettings::new("gemini-one-at-a-time", GEMINI_ACCOUNT);
+fn antigravity_connect_does_not_launch_the_gemini_apps_cookie_browser(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("antigravity-no-google-cdp", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    *fake.0.outcome.lock().unwrap() = Some(Ok(()));
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gm-1");
+    assert_eq!(
+        fake.0.checks.load(Ordering::SeqCst),
+        1,
+        "verify the existing local session through the CLI"
+    );
+    assert!(fake.0.opens.lock().unwrap().is_empty(), "reuse needs no sign-in window");
+    assert!(!settings.0.join("gemini").exists(), "no disposable browser profile");
+    assert!(saved_settings(&settings).accounts()[0].gemini_coding);
+    assert!(
+        gemini_session(cx, "gm-1:gemini-apps").is_none(),
+        "OAuth is not a website cookie"
+    );
+    assert_eq!(
+        label_of(cx, "account-detail-gm-1").as_deref(),
+        Some("Antigravity CLI coding quotas enabled")
+    );
+}
+
+#[gpui_kit::test]
+fn antigravity_consent_is_explicit_and_verified_without_replacing_apps_or_identity(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("antigravity-handoff", GEMINI_ACCOUNT);
     let fake = FakeGemini::default();
     let handle = open_gemini_accounts(cx, &settings, &fake);
-    // An earlier attempt is still closing its browser.
-    cx.update(|cx| cx.set_global(crate::gemini_sign_in::Running));
+    keep_gemini_session(cx);
     click(cx, handle, "sign-in-gm-1");
-    assert!(!exists(cx, handle, "gemini-sign-in-status"), "no second browser");
-    assert!(fake.0.parents.lock().unwrap().is_empty());
+    assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
     assert!(
-        cx.update(|cx| SettingsHub::global(cx).notice())
-            .is_some_and(|error| error.contains("still closing"))
+        fake.0.opens.lock().unwrap().is_empty(),
+        "failed checks do not open consent automatically"
     );
-    // Once it has closed, signing in works again.
-    cx.update(|cx| cx.remove_global::<crate::gemini_sign_in::Running>());
-    click(cx, handle, "sign-in-gm-1");
-    assert_eq!(fake.0.parents.lock().unwrap().len(), 1);
+    assert!(
+        label_of(cx, "gemini-apps-limitation")
+            .unwrap()
+            .contains("OAuth cannot supply website cookies")
+    );
+    click(cx, handle, "antigravity-open-cli");
+    assert_eq!(
+        fake.0.opens.lock().unwrap().as_slice(),
+        std::slice::from_ref(&settings.0)
+    );
+    assert!(
+        label_of(cx, "gemini-sign-in-status")
+            .unwrap()
+            .contains("default system browser")
+    );
+    assert!(
+        !saved_settings(&settings).accounts()[0].gemini_coding,
+        "a launched terminal is not authentication success"
+    );
+    *fake.0.outcome.lock().unwrap() = Some(Ok(()));
+    click(cx, handle, "antigravity-check");
+    assert!(!exists(cx, handle, "gemini-sign-in-status"));
+    assert_eq!(fake.0.closes.load(Ordering::SeqCst), 1, "close only the owned CLI");
+    let stored = saved_settings(&settings);
+    let record = &stored.accounts()[0];
+    assert_eq!(record.id, "gm-1");
+    assert_eq!(record.label, "Personal");
+    assert!(record.gemini_coding);
+    assert_eq!(
+        gemini_session(cx, "gm-1:gemini-apps").unwrap().psid,
+        "old-private-session"
+    );
+    click(cx, handle, "sign-out-gm-1");
+    assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
+    assert!(
+        gemini_session(cx, "gm-1:gemini-apps").is_some(),
+        "disconnect leaves saved Apps credentials alone"
+    );
+    click(cx, handle, "forget-apps-gm-1");
+    assert!(gemini_session(cx, "gm-1:gemini-apps").is_none());
+    assert_eq!(saved_settings(&settings).accounts().len(), 1);
 }
 
 #[gpui_kit::test]
-fn a_gemini_account_always_signs_in_through_the_browser(cx: &mut TestAppContext) {
-    let settings = TempSettings::new(
-        "gemini-method",
-        r#"{ "accountConfigurationVersion": 1, "accounts": [
-            { "id": "gm-1", "providerId": "Gemini", "displayLabel": "Personal", "enabled": true,
-              "authenticationMethod": "Automatic" } ] }"#,
+fn cancelling_antigravity_closes_its_cli_and_preserves_saved_sessions(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let settings = TempSettings::new("antigravity-cancel", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    keep_gemini_session(cx);
+    click(cx, handle, "sign-in-gm-1");
+    click(cx, handle, "antigravity-open-cli");
+    cx.update_window(handle, |_, window, cx| window.close_dialog(cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(fake.0.closes.load(Ordering::SeqCst), 1);
+    assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
+    assert!(gemini_session(cx, "gm-1:gemini-apps").is_some());
+    click(cx, handle, "sign-in-gm-1");
+    assert!(
+        exists(cx, handle, "gemini-sign-in-status"),
+        "a cancelled dialog releases its connection slot"
     );
+}
+
+#[gpui_kit::test]
+fn antigravity_timeout_closes_the_cli_without_connecting(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("antigravity-timeout", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gm-1");
+    click(cx, handle, "antigravity-open-cli");
+    cx.executor().advance_clock(std::time::Duration::from_secs(601));
+    cx.run_until_parked();
+    assert!(label_of(cx, "gemini-sign-in-error").unwrap().contains("timed out"));
+    assert_eq!(fake.0.closes.load(Ordering::SeqCst), 1);
+    assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
+}
+
+#[gpui_kit::test]
+fn antigravity_launch_and_check_failures_stay_actionable(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("antigravity-errors", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    *fake.0.launch_error.lock().unwrap() = Some("Install the Antigravity CLI (agy), then try again.".into());
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gm-1");
+    click(cx, handle, "antigravity-open-cli");
+    assert!(
+        label_of(cx, "gemini-sign-in-error")
+            .unwrap()
+            .contains("Install the Antigravity CLI")
+    );
+    assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
+}
+
+#[gpui_kit::test]
+fn one_antigravity_connection_runs_at_a_time(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("antigravity-singleton", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    cx.update(|cx| cx.set_global(crate::gemini_sign_in::Running(active.clone())));
+    click(cx, handle, "sign-in-gm-1");
+    assert_eq!(fake.0.checks.load(Ordering::SeqCst), 0);
+    assert!(!exists(cx, handle, "gemini-sign-in-status"));
+    active.store(false, Ordering::SeqCst);
+    click(cx, handle, "sign-in-gm-1");
+    assert_eq!(fake.0.checks.load(Ordering::SeqCst), 1);
+}
+
+#[gpui_kit::test]
+fn a_usage_check_completing_after_cancel_cannot_enable_antigravity(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let settings = TempSettings::new("antigravity-late-cancel", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    *fake.0.outcome.lock().unwrap() = Some(Ok(()));
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("sign-in-gm-1", cx);
+        window.close_dialog(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!saved_settings(&settings).accounts()[0].gemini_coding);
+    assert!(gemini_session(cx, "gm-1:gemini-apps").is_none());
+}
+
+#[gpui_kit::test]
+fn an_account_removed_during_the_usage_check_is_not_recreated(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("antigravity-removed", GEMINI_ACCOUNT);
+    let fake = FakeGemini::default();
+    *fake.0.outcome.lock().unwrap() = Some(Ok(()));
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("sign-in-gm-1", cx);
+        SettingsHub::update(cx, |settings| {
+            settings.remove("gm-1");
+            Ok(())
+        })
+        .unwrap();
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(saved_settings(&settings).accounts().is_empty());
+    assert!(label_of(cx, "gemini-sign-in-error").unwrap().contains("removed"));
+}
+
+#[gpui_kit::test]
+fn connecting_antigravity_cannot_duplicate_another_accounts_shared_feed(cx: &mut TestAppContext) {
+    let mut data: serde_json::Value = serde_json::from_str(GEMINI_ACCOUNT).unwrap();
+    data["accounts"].as_array_mut().unwrap().push(serde_json::json!({"id":"other","providerId":"Gemini","displayLabel":"Other", "enabled":true, "authenticationMethod":"Automatic", "geminiCodingFromCli":true}));
+    let settings = TempSettings::new("antigravity-feed-owner", &data.to_string());
+    let fake = FakeGemini::default();
+    *fake.0.outcome.lock().unwrap() = Some(Ok(()));
+    let handle = open_gemini_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gm-1");
+    assert!(
+        !saved_settings(&settings)
+            .accounts()
+            .iter()
+            .find(|a| a.id == "gm-1")
+            .unwrap()
+            .gemini_coding
+    );
+    assert!(
+        label_of(cx, "gemini-sign-in-error")
+            .unwrap()
+            .contains("already shows Antigravity")
+    );
+}
+
+#[gpui_kit::test]
+fn editing_a_gemini_account_does_not_force_the_retired_cookie_method(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("gemini-method", &GEMINI_ACCOUNT.replace("BrowserSession", "Automatic"));
     let handle = open_gemini_accounts(cx, &settings, &FakeGemini::default());
     click(cx, handle, "edit-gm-1");
     click(cx, handle, "account-save");
     assert_eq!(
         saved_settings(&settings).accounts()[0].method,
-        codexbar_store::settings::AuthMethod::BrowserSession,
-        "no other method can sign Gemini Apps in"
+        codexbar_store::settings::AuthMethod::Automatic
     );
 }
 

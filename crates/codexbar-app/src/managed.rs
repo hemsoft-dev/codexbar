@@ -89,7 +89,7 @@ impl Managed {
             }
             Self::Cursor => cursor_sign_in::auth_path(hub.dir(), record).exists(),
             Self::OpenCode => matches!(opencode_sign_in::credential(hub, record), Ok(Some(_))),
-            Self::Gemini => matches!(gemini_sign_in::apps_session(hub, record), Ok(Some(_))),
+            Self::Gemini => record.gemini_coding,
             Self::Grok => codexbar_providers::grok::read_auth(&grok_sign_in::home(hub.dir(), record)).is_some(),
         }
     }

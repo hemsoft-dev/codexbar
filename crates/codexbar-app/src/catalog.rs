@@ -146,13 +146,12 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     ProviderInfo {
         id: names::GEMINI,
         display: "Gemini",
-        sign_in: "Experimental. Browser session opens Gemini in a separate, temporary Edge or Chrome window where you \
-                  sign in to Google yourself; CodexBar keeps only the two Google session cookies Gemini Apps usage \
-                  needs, and deletes the window's data. Shows the consumer Gemini Apps five-hour and weekly limits, \
-                  and can show the coding quotas of the Antigravity CLI (agy).",
+        sign_in: "Experimental. Connect Antigravity reuses the local agy sign-in or opens the CLI's normal sign-in \
+                  in your default browser, then verifies coding usage. Saved Gemini Apps sessions stay separate; \
+                  new Gemini Apps website sign-in is unavailable here.",
         secret: None,
-        default_method: AuthMethod::BrowserSession,
-        setup_method: AuthMethod::BrowserSession,
+        default_method: AuthMethod::Automatic,
+        setup_method: AuthMethod::Automatic,
         multi_account: true,
     },
     ProviderInfo {

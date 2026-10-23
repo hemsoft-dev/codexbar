@@ -160,3 +160,21 @@ To add a provider:
 2. Record the registration in the table above, with who approved it.
 3. Give the provider adapter an `OAuthClient` with those values. Then wire its
    sign-in (#78 Codex, #79 Copilot, #80 Claude, #81 Cursor).
+
+## Antigravity delegation (#254)
+
+Gemini's **Connect Antigravity** action checks the local CLI's usage endpoint
+through `agy`; when needed, the user opens plain `agy` for its documented
+[native-keyring and default-browser authentication](https://www.antigravity.google/docs/install?tab=cli).
+CodexBar sends no initial prompt, borrows no OAuth client, starts no callback
+listener and reads no vendor tokens. It verifies a successful version-gated
+`/usage` response before enabling the coding feed. The vendor owns OAuth
+security and redirect handling; this is delegation, not qualification of a
+CodexBar-owned PKCE/state/loopback implementation. See
+[Google's desktop guidance](https://developers.google.com/identity/protocols/oauth2/native-app)
+and [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252) for native-app requirements.
+
+The former CDP Google-cookie sign-in is retired. Saved Gemini Apps sessions
+remain usable independently; Antigravity tokens are never treated as website
+cookies. Real new-account consent is qualified separately from mocked UI tests
+in the [Windows manual checks](ANTIGRAVITY_LOGIN_TESTING.md).

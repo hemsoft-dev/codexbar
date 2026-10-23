@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::managed::Managed;
 use codexbar_store::settings::{AccountRecord, AuthMethod, names};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
@@ -243,6 +244,7 @@ fn account_item(record: AccountRecord) -> SettingItem {
         // An account CodexBar signs in (#78-#80) shows who it is signed in as; its external id is internal.
         let managed = crate::managed::Managed::of(&current);
         let detail = match (&current.external_id, &secret) {
+            _ if managed == Some(Managed::Gemini) => crate::gemini_sign_in::describe(hub, &current),
             _ if managed.is_some() => format!(
                 "{} · {}",
                 current.method.label(),
@@ -252,6 +254,9 @@ fn account_item(record: AccountRecord) -> SettingItem {
             (None, Some(source)) => format!("{} · {source}", current.method.label()),
             (None, None) => current.method.label().to_owned(),
         };
+        let saved_apps = current.provider.eq_ignore_ascii_case(names::GEMINI)
+            && matches!(crate::gemini_sign_in::apps_session(hub, &current), Ok(Some(_)) | Err(_));
+        let forget_apps_id = current.id.clone();
         let signed_in = managed.is_some_and(|kind| kind.signed_in(hub, &current));
         let sign_in_id = current.id.clone();
         let sign_out_id = current.id.clone();
@@ -315,7 +320,13 @@ fn account_item(record: AccountRecord) -> SettingItem {
                     Button::new(SharedString::from(format!("sign-in-{}", current.id)))
                         .small()
                         .ghost()
-                        .label(if signed_in { "Sign in again…" } else { "Sign in…" })
+                        .label(if kind == Managed::Gemini {
+                            "Connect Antigravity…"
+                        } else if signed_in {
+                            "Sign in again…"
+                        } else {
+                            "Sign in…"
+                        })
                         .disabled(read_only)
                         .on_click(move |_, window, cx| kind.sign_in(&sign_in_id, window, cx)),
                 )
@@ -324,11 +335,25 @@ fn account_item(record: AccountRecord) -> SettingItem {
                         Button::new(SharedString::from(format!("sign-out-{}", current.id)))
                             .small()
                             .ghost()
-                            .label("Sign out")
+                            .label(if kind == Managed::Gemini {
+                                "Disconnect coding quotas"
+                            } else {
+                                "Sign out"
+                            })
                             .disabled(read_only)
                             .on_click(move |_, window, cx| kind.sign_out(&sign_out_id, window, cx)),
                     )
                 })
+            })
+            .when(saved_apps, |this| {
+                this.child(
+                    Button::new(SharedString::from(format!("forget-apps-{}", current.id)))
+                        .small()
+                        .ghost()
+                        .label("Forget saved Gemini Apps session")
+                        .disabled(read_only)
+                        .on_click(move |_, _, cx| crate::gemini_sign_in::forget_apps(&forget_apps_id, cx)),
+                )
             })
             .child(
                 Button::new(SharedString::from(format!("edit-{}", current.id)))
@@ -594,8 +619,9 @@ pub fn open_account_dialog(provider: &'static str, existing: Option<AccountRecor
                     })
                     .when(info.id == names::GEMINI, |this| {
                         this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
-                            "Browser session: after adding, CodexBar opens a temporary browser window for the Google \
-                             sign-in of Gemini Apps.",
+                            "Connect Antigravity reuses the Antigravity CLI's local sign-in, or opens its normal \
+                             sign-in in your default browser. Saved Gemini Apps sessions remain separate; new Gemini \
+                             Apps website sign-in is unavailable here.",
                         ))
                         .child(field(
                             "Coding quotas",
@@ -839,11 +865,6 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             replaced_billing_id = Some(std::mem::replace(&mut record.id, new_id));
             record.external_id = None;
         }
-    }
-    // Gemini Apps only signs in through the temporary browser (#106); another method would leave the account with no
-    // way to sign in.
-    if info.id == names::GEMINI {
-        record.method = AuthMethod::BrowserSession;
     }
     // An OpenCode account on OAuth keeps the workspace its sign-in set (#102).
     let opencode_oauth = info.id == names::OPENCODE_GO && method == AuthMethod::OAuth;
