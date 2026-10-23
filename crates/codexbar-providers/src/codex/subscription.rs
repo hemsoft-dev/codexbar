@@ -185,6 +185,15 @@ mod tests {
         }}})
         .to_string()
     }
+    // The fixture instant can fall on October 26 or 27 locally. Expected
+    // labels must follow the host date too, so both sides of UTC are covered.
+    fn expected_schedule(style: &dyn DateStyle) -> String {
+        let at = "2026-10-26T13:33:19Z".parse::<DateTime<Utc>>().unwrap();
+        format!(
+            "Pro → Pro Lite on {}",
+            style.month_day(at.with_timezone(&Local).date_naive())
+        )
+    }
     fn credentials(id: &str) -> Credentials {
         Credentials {
             access_token: "test-token".into(),
@@ -254,7 +263,7 @@ mod tests {
     fn schedule_uses_the_explicit_change_time_and_does_not_apply_the_downgrade_early() {
         let plan = parse(&scheduled(), "a").unwrap().unwrap();
         assert_eq!(plan.name, "Pro");
-        assert_eq!(plan.display(now(), &English), "Pro → Pro Lite on Oct 26");
+        assert_eq!(plan.display(now(), &English), expected_schedule(&English));
         let at = plan.scheduled.as_ref().unwrap().1;
         assert_eq!(at, "2026-10-26T13:33:19Z".parse::<DateTime<Utc>>().unwrap());
         assert_eq!(plan.display(at, &English), "Pro");
@@ -290,8 +299,8 @@ mod tests {
             .fetch(now())
             .unwrap()
             .remove(0);
-        assert_eq!(first.plan(), Some("Pro → Pro Lite on Oct 26"));
-        assert_eq!(localized.plan(), Some("Pro → Pro Lite on 26. Okt."));
+        assert_eq!(first.plan(), Some(expected_schedule(&English).as_str()));
+        assert_eq!(localized.plan(), Some(expected_schedule(&DayFirst).as_str()));
         assert_eq!(
             http.requests.lock().unwrap().len(),
             1,
@@ -313,7 +322,7 @@ mod tests {
                 .remove(0)
         };
         let first = fetch(now());
-        assert_eq!(first.plan(), Some("Pro → Pro Lite on Oct 26"));
+        assert_eq!(first.plan(), Some(expected_schedule(&English).as_str()));
         http.body(payload("a", "prolite"));
         assert_eq!(fetch(now() + Duration::hours(3)).plan(), first.plan());
         assert_eq!(http.requests.lock().unwrap().len(), 1);
@@ -334,7 +343,7 @@ mod tests {
             lookup(&http, &path, &creds, at - Duration::minutes(30))
                 .unwrap()
                 .as_deref(),
-            Some("Pro → Pro Lite on Oct 26")
+            Some(expected_schedule(&English).as_str())
         );
         http.body(payload("a", "prolite"));
         assert_eq!(lookup(&http, &path, &creds, at).unwrap().as_deref(), Some("Pro Lite"));
