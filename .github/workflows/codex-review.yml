@@ -31,7 +31,13 @@ concurrency:
 
 jobs:
   review:
-    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    if: >-
+      (github.event_name != 'issue_comment' ||
+        (github.event.issue.pull_request &&
+         github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
+         github.event.comment.user.type == 'Bot' &&
+         contains(github.event.comment.body, '<!-- codex-review-state:v1'))) &&
+      (github.event_name != 'pull_request_review' || github.event.review.user.id == 8227352)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

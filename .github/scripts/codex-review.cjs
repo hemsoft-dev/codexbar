@@ -9,11 +9,14 @@ function codexVerdict(comments, head) {
   const summaries = comments.filter(comment => comment.user?.login === CODEX && comment.user?.type === 'Bot')
     .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
   for (const comment of summaries) {
-    const match = comment.body?.match(/<!-- codex-review-state:v1 (\{[^\n]*\}) -->/);
-    if (!match) continue;
+    if (!comment.body?.includes('<!-- codex-review-state:v1')) continue;
+    const malformed = { state: 'failure', description: 'The latest Codex summary is malformed' };
+    const match = comment.body.match(/<!-- codex-review-state:v1 (\{[^\n]*\}) -->/);
+    if (!match) return malformed;
     let review;
-    try { review = JSON.parse(match[1]).code_review; } catch { continue; }
-    if (review?.commit_sha !== head) continue;
+    try { review = JSON.parse(match[1]).code_review; } catch { return malformed; }
+    if (!review || typeof review.commit_sha !== 'string') return malformed;
+    if (review.commit_sha !== head) continue;
     if (review.status !== 'completed') return { state: 'pending', description: 'Current-head Codex review is running' };
     if (review.has_any_findings === false && review.has_unresolved_findings === false) {
       return { state: 'success', description: 'Codex reviewed this exact head with no findings', target_url: comment.html_url };
@@ -35,6 +38,16 @@ function fallbackReceipt(review, head) {
     return receipt.head === head && receipt.clean === true && receipt.provider === 'claude' &&
       receipt.model === 'claude-opus-5-5' && ['hung', 'unavailable'].includes(receipt.codex);
   } catch { return false; }
+}
+
+function eligibleEvent(context) {
+  if (context.eventName === 'issue_comment') {
+    const comment = context.payload.comment;
+    return !!context.payload.issue?.pull_request && comment?.user?.login === CODEX &&
+      comment.user.type === 'Bot' && !!comment.body?.includes('<!-- codex-review-state:v1');
+  }
+  if (context.eventName === 'pull_request_review') return context.payload.review?.user?.id === MAINTAINER_ID;
+  return true;
 }
 
 function triggerIncluded(context, comments, reviews) {
@@ -73,6 +86,7 @@ function fingerprint({ comments, reviews }) {
 }
 
 async function run({ github, context, core }) {
+  if (!eligibleEvent(context)) return;
   const { owner, repo } = context.repo;
   const number = context.payload.pull_request?.number ?? context.payload.issue?.number ?? Number(context.payload.inputs?.number);
   if (!Number.isSafeInteger(number) || number <= 0) throw new Error('A pull request number is required');
@@ -114,4 +128,4 @@ async function run({ github, context, core }) {
   core.info(`${CONTEXT} ${head} / ${merge}: ${verdict.state}`);
 }
 
-module.exports = { codexVerdict, fallbackReceipt, triggerIncluded, run };
+module.exports = { codexVerdict, fallbackReceipt, eligibleEvent, triggerIncluded, run };

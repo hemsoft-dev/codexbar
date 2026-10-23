@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { codexVerdict, fallbackReceipt, triggerIncluded, run } = require('./codex-review.cjs');
+const { codexVerdict, fallbackReceipt, eligibleEvent, triggerIncluded, run } = require('./codex-review.cjs');
 const head = 'a'.repeat(40);
 const clean = { commit_sha: head, status: 'completed', has_any_findings: false, has_unresolved_findings: false };
 const summary = (result, user = { login: 'chatgpt-codex-connector[bot]', type: 'Bot' }) => ({
@@ -18,7 +18,7 @@ test('only a completed clean bot verdict for the exact head passes', () => {
   assert.equal(codexVerdict([], head).state, 'pending');
   assert.equal(codexVerdict([summary(clean, { login: 'someone', type: 'User' })], head).state, 'pending');
   assert.equal(codexVerdict([summary(clean, { login: 'chatgpt-codex-connector[bot]', type: 'User' })], head).state, 'pending');
-  assert.equal(codexVerdict([{ ...summary(clean), body: '<!-- codex-review-state:v1 {broken} -->' }], head).state, 'pending');
+  assert.equal(codexVerdict([{ ...summary(clean), body: '<!-- codex-review-state:v1 {broken} -->' }], head).state, 'failure');
 });
 
 test('a later running or failed result replaces an earlier clean result', () => {
@@ -103,4 +103,21 @@ test('a stale API snapshot cannot ignore the triggering edit or deletion', async
     await run(fixture); assert.equal(result(fixture), 'pending');
   }
   assert.equal(triggerIncluded({ payload: { action: 'deleted', comment: old } }, [], []), true);
+});
+
+test('a newer malformed summary cannot resurrect an older clean result', () => {
+  for (const body of ['<!-- codex-review-state:v1 {broken} -->', '<!-- codex-review-state:v1 {} -->',
+    '<!-- codex-review-state:v1 {"code_review":null} -->', '<!-- codex-review-state:v1 truncated']) {
+    assert.equal(codexVerdict([summary(clean), { ...summary(clean), body, updated_at: '2026-10-24' }], head).state, 'failure');
+  }
+});
+test('unrelated comments and reviews cannot revoke a clean gate', async () => {
+  for (const eventName of ['issue_comment', 'pull_request_review']) {
+    const fixture = client({ comments: [summary(clean)], payload: { issue: { number: 1, pull_request: {} },
+      comment: { user: { login: 'guest', type: 'User' }, body: 'ordinary conversation' },
+      review: { user: { id: 1 } } } });
+    fixture.context.eventName = eventName;
+    await run(fixture); assert.equal(fixture.statuses.length, 0);
+  }
+  assert.equal(eligibleEvent({ eventName: 'issue_comment', payload: { issue: { pull_request: {} }, comment: summary(clean) } }), true);
 });
