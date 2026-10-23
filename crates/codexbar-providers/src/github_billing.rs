@@ -444,7 +444,7 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
         let summary = current_summary(&self.http, token, owner, now)?;
         let (mut metrics, mut messages) = usage(&summary, now);
         // Included allowances and budgets (#105) add to what is shown; their failures never hide the spend.
-        let (more_metrics, more_messages) = self.allowances(token, owner, personal_plan, &summary, now);
+        let (more_metrics, more_messages, plan) = self.allowances(token, owner, personal_plan, &summary, now);
         metrics.extend(more_metrics);
         messages.extend(more_messages);
         let mut account = AccountSnapshot::new(
@@ -455,6 +455,9 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
         );
         if !self.label.trim().is_empty() {
             account = account.with_label(self.label.trim());
+        }
+        if let Some(plan) = plan {
+            account = account.with_plan(plan);
         }
         Ok(messages.into_iter().fold(account, AccountSnapshot::with_message))
     }
@@ -469,7 +472,7 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
         personal_plan: Option<String>,
         summary: &Summary,
         now: DateTime<Utc>,
-    ) -> (Vec<Metric>, Vec<String>) {
+    ) -> (Vec<Metric>, Vec<String>, Option<String>) {
         use crate::github_allowances::{self as allowances, Scope};
         let mut metrics = Vec::new();
         let mut messages = Vec::new();
@@ -500,6 +503,7 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
                 allowances::parse_detail(&body)
                     .map_err(|UnknownShape| "GitHub's billing detail came in an unknown shape".to_owned())
             });
+        let reported_plan = plan_name.as_ref().ok().map(|name| crate::codex::plan_name(name));
         match (plan_name, &detail) {
             (Err(reason), _) => messages.push(format!("Included allowances: not shown, {reason}.")),
             (Ok(name), _) if allowances::plan(&name, scope).is_none() => messages.push(format!(
@@ -528,7 +532,7 @@ impl<H: HttpClient> GitHubBillingProvider<H> {
                 Err(reason) => messages.push(format!("Budgets couldn't be read: {reason}")),
             }
         }
-        (metrics, messages)
+        (metrics, messages, reported_plan)
     }
 
     /// Every page of an organization's budgets. A list longer than the pages read is an error, never a short list.

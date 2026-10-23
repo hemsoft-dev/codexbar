@@ -86,7 +86,38 @@ pub fn parse_user(payload: &str, username: &str, now: DateTime<Utc>) -> Result<A
         }
     }
 
-    Ok(AccountSnapshot::new(account_id(username), Provider::Copilot, metrics, now).with_label(username))
+    let mut account = AccountSnapshot::new(account_id(username), Provider::Copilot, metrics, now).with_label(username);
+    let plan = match json.get("access_type_sku").and_then(Value::as_str) {
+        Some("free_limited_copilot") => Some("Free".to_owned()),
+        Some("free_educational_quota") => Some("Student".to_owned()),
+        _ if json.get("can_signup_for_limited").and_then(Value::as_bool) == Some(true) => None,
+        _ => json
+            .get("copilot_plan")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|plan| !plan.is_empty())
+            .map(copilot_plan_name),
+    };
+    if let Some(plan) = plan {
+        account = account.with_plan(plan);
+    }
+    Ok(account)
+}
+
+/// Product names from VS Code's Copilot entitlement mapping. In particular, individual_pro is Pro+, not Pro.
+/// Unknown codes stay verbatim rather than inventing a product name from their spelling.
+fn copilot_plan_name(code: &str) -> String {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "individual" => "Pro",
+        "individual_pro" => "Pro+",
+        "individual_max" => "Max",
+        "individual_edu" => "Student",
+        "business" => "Business",
+        "enterprise" => "Enterprise",
+        "free" => "Free",
+        _ => code.trim(),
+    }
+    .to_owned()
 }
 
 /// Quotas in display order. Paid plans meter premium requests; Copilot Free meters chat and completions.
@@ -317,6 +348,7 @@ struct OrgRead {
     /// The month's credits, or the error the tokens met when none could read them.
     credits: Result<Credits, ProviderError>,
     pool: Option<u64>,
+    plan: Option<String>,
     /// The Copilot budgets; `None` until a token reads them. An organization read through its enterprise has none.
     budgets: Option<Vec<Budget>>,
     /// Every product's net AI-credit spend, which a budget on every AI credit is measured against; `None` until a
@@ -365,6 +397,9 @@ impl OrgRead {
                 }
                 None => org = org.with_message(BUDGETS_UNREAD),
             }
+        }
+        if let Some(plan) = &self.plan {
+            org = org.with_plan(plan);
         }
         AccountOutcome::Fresh(org.with_label(&self.billing.organization))
     }
@@ -677,28 +712,40 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
 
     /// The organization's monthly pool: the configured total, else seats times the allowance per seat. An enterprise's
     /// seats are Enterprise seats; an organization billed on its own says which plan its seats are on.
-    fn pool(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> Option<u64> {
-        if let Some(total) = billing.pool_total.filter(|total| *total > 0) {
-            return Some(total);
-        }
-        // Through the same rate-limit guard as the rest of the organization's billing, so a limited token waits.
-        let body = self
+    fn pool(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> (Option<u64>, Option<String>) {
+        let configured = billing.pool_total.filter(|total| *total > 0);
+        // The same authenticated billing source supplies the seat count and explicit plan, even when the
+        // configured pool overrides its count. A refused optional lookup never discards the configured total.
+        let value = self
             .org_rest(
                 &format!("/orgs/{}/copilot/billing", encode(&billing.organization)),
                 token,
                 now,
             )
-            .ok()?;
-        let json = serde_json::from_str::<Value>(&body).ok()?;
-        let seats = json
-            .pointer("/seat_breakdown/total")?
-            .as_u64()
-            .filter(|seats| *seats > 0)?;
-        let per_seat = match &billing.enterprise {
-            Some(_) => credits_per_seat(now.year(), now.month()),
-            None => plan_credits_per_seat(json.get("plan_type").and_then(Value::as_str).unwrap_or("business"), now),
+            .ok()
+            .and_then(|body| serde_json::from_str::<Value>(&body).ok());
+        let Some(json) = value else {
+            return (configured, None);
         };
-        Some(seats * per_seat)
+        let plan = json
+            .get("plan_type")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .map(copilot_plan_name);
+        let computed = json
+            .pointer("/seat_breakdown/total")
+            .and_then(Value::as_u64)
+            .filter(|seats| *seats > 0)
+            .and_then(|seats| {
+                let per_seat = match &billing.enterprise {
+                    Some(_) => credits_per_seat(now.year(), now.month()),
+                    None => {
+                        plan_credits_per_seat(json.get("plan_type").and_then(Value::as_str).unwrap_or("business"), now)
+                    }
+                };
+                seats.checked_mul(per_seat)
+            });
+        (configured.or(computed), plan)
     }
 
     /// What an organization billed on its own spent this month on every AI credit past its pool, whatever the product:
@@ -814,6 +861,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                     billing: billing.clone(),
                     credits: Err(error.clone()),
                     pool: None,
+                    plan: None,
                     budgets: None,
                     all_net: None,
                 });
@@ -843,6 +891,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                     billing: billing.clone(),
                     credits: consumed.clone(),
                     pool: None,
+                    plan: None,
                     budgets: None,
                     all_net: None,
                 });
@@ -854,8 +903,10 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             if org.credits.is_err() {
                 org.credits = Ok(*credits);
             }
-            if org.pool.is_none() {
-                org.pool = self.pool(billing, token, now);
+            if org.pool.is_none() || org.plan.is_none() {
+                let (pool, plan) = self.pool(billing, token, now);
+                org.pool = org.pool.or(pool);
+                org.plan = org.plan.take().or(plan);
             }
             if org.budgets.is_none() && billing.enterprise.is_none() {
                 org.budgets = self.copilot_budgets(billing, token, now).ok();
@@ -919,6 +970,9 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         metrics.extend(account.metrics().iter().cloned());
         let mut billed =
             AccountSnapshot::new(account.id().clone(), Provider::Copilot, metrics, now).with_label(username);
+        if let Some(plan) = account.plan() {
+            billed = billed.with_plan(plan);
+        }
         for message in account.messages() {
             billed = billed.with_message(message.clone());
         }
@@ -1207,7 +1261,7 @@ mod tests {
     #[test]
     fn parse_user_premium_quota_maps_used_limit_and_reset() {
         let account = parse_user(USER, "HemSoft", now()).unwrap();
-        assert_eq!(account.display_name(), "Copilot · HemSoft");
+        assert_eq!(account.display_name(), "Copilot · HemSoft · Pro+");
         let Some(Metric::Quota {
             used, limit, resets_at, ..
         }) = account.primary()
@@ -1221,6 +1275,29 @@ mod tests {
     }
 
     #[test]
+    fn copilot_plan_codes_and_explicit_skus_use_product_names() {
+        // The same entitlement mapping as VS Code, never inferred from quota amounts.
+        for (code, sku, signup, expected) in [
+            ("individual", None, false, Some("Pro")),
+            ("individual_pro", None, false, Some("Pro+")),
+            ("individual_max", None, false, Some("Max")),
+            ("individual_edu", None, false, Some("Student")),
+            ("business", None, false, Some("Business")),
+            ("enterprise", None, false, Some("Enterprise")),
+            ("individual", Some("free_limited_copilot"), false, Some("Free")),
+            ("individual", Some("free_educational_quota"), false, Some("Student")),
+            ("individual", None, true, None),
+            ("future_plan_CODE", None, false, Some("future_plan_CODE")),
+        ] {
+            let payload =
+                serde_json::json!({"copilot_plan":code,"access_type_sku":sku,"can_signup_for_limited":signup});
+            let account = parse_user(&payload.to_string(), "dev", now()).unwrap();
+            assert_eq!(account.plan(), expected, "{payload}");
+            assert!(account.metrics().is_empty(), "a plan requires no quota inference");
+        }
+    }
+
+    #[test]
     fn parse_user_unlimited_quota_has_no_metric() {
         let payload = r#"{"quota_reset_date":"2026-11-01","quota_snapshots":{"premium_interactions":{"entitlement":0,"remaining":0,"unlimited":true}}}"#;
         assert!(parse_user(payload, "x", now()).unwrap().metrics().is_empty());
@@ -1228,11 +1305,12 @@ mod tests {
 
     #[test]
     fn parse_user_free_plan_reports_chat_and_completions() {
-        let payload = r#"{"copilot_plan":"individual","quota_reset_date":"2026-11-01","quota_snapshots":{
+        let payload = r#"{"copilot_plan":"individual","access_type_sku":"free_limited_copilot","quota_reset_date":"2026-11-01","quota_snapshots":{
             "chat":{"entitlement":200,"remaining":199,"unlimited":false},
             "completions":{"entitlement":2000,"remaining":2000,"unlimited":false},
             "premium_interactions":{"entitlement":0,"remaining":0,"unlimited":false}}}"#;
         let account = parse_user(payload, "HemSoft", now()).unwrap();
+        assert_eq!(account.plan(), Some("Free"));
         let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
         assert_eq!(labels, ["Chat messages", "Code completions"]);
         assert_eq!(account.primary().unwrap().used_display(), "1");
@@ -1542,7 +1620,8 @@ mod tests {
             panic!("pool")
         };
         assert_eq!((*used, *limit), (500, 2000));
-        assert_eq!(provider.http.urls("/copilot/billing"), 0);
+        assert_eq!(provider.http.urls("/copilot/billing"), 1);
+        assert_eq!(org.plan(), None, "a refused optional lookup must not invent a plan");
     }
 
     #[test]

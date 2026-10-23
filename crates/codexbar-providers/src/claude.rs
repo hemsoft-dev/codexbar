@@ -21,6 +21,7 @@ use crate::claude_cli::ClaudeCliError;
 use crate::pace::elapsed_pace;
 use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 
+const PROFILE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/profile";
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const SIGN_IN_HINT: &str = "Run `claude` and sign in with your Claude account.";
 const EXPIRED_HINT: &str = "Open Claude Code once to renew the sign-in.";
@@ -547,9 +548,27 @@ pub fn parse_usage(
         account = account.with_message(message);
     }
     Ok(match subscription.filter(|s| !s.is_empty()) {
-        Some(plan) => account.with_label(crate::codex::plan_name(plan)),
+        Some(plan) => account.with_plan(crate::codex::plan_name(plan)),
         None => account,
     })
+}
+
+/// Only explicit current profile fields identify a tier. Sign-in metadata can remain stale after a downgrade.
+fn profile_plan(payload: &str) -> Option<String> {
+    let json: Value = serde_json::from_str(payload).ok()?;
+    let org = json.get("organization")?;
+    let kind = org.get("organization_type")?.as_str()?;
+    let tier = org.get("rate_limit_tier").and_then(Value::as_str);
+    let plan = match (kind, tier) {
+        ("claude_max", Some("default_claude_max_5x")) => "Max 5x",
+        ("claude_max", Some("default_claude_max_20x")) => "Max 20x",
+        ("claude_max", _) => "Max",
+        ("claude_pro", _) => "Pro",
+        ("claude_team", _) => "Team",
+        ("claude_enterprise", _) => "Enterprise",
+        _ => return None,
+    };
+    Some(plan.to_owned())
 }
 
 /// One limit window as reported: a label, percent used (0..=100) and the reset.
@@ -762,6 +781,8 @@ struct State {
     /// Until when, and for which account: a folder signed in to another account since isn't held back.
     backoff_until: Option<(DateTime<Utc>, AccountId)>,
     renewed_at: Option<Instant>,
+    /// Optional profile failures must not suppress usage or disregard a profile Retry-After.
+    profile_backoff_until: Option<(DateTime<Utc>, AccountId)>,
     /// The account this sign-in file last fetched for, so a switch between refreshes is noticed.
     last_account: Option<AccountId>,
 }
@@ -889,12 +910,45 @@ impl<H: HttpClient> ClaudeProvider<H> {
         due && renewer.renew(config).is_ok()
     }
 
-    fn label_for(&self, plan: Option<&str>) -> Option<String> {
-        match (self.account.as_ref().map(|(_, label)| label.trim()), plan) {
-            (Some(label), Some(plan)) if !label.is_empty() => Some(format!("{label} · {plan}")),
-            (Some(label), None) if !label.is_empty() => Some(label.to_owned()),
-            (_, plan) => plan.map(str::to_owned),
+    fn label_for(&self) -> Option<String> {
+        self.account
+            .as_ref()
+            .map(|(_, label)| label.trim())
+            .filter(|label| !label.is_empty())
+            .map(str::to_owned)
+    }
+
+    fn current_plan(&self, headers: &[(&str, &str)], now: DateTime<Utc>) -> Option<String> {
+        let id = self.identity();
+        let held = with_state(&self.credentials_path, |state| {
+            state
+                .profile_backoff_until
+                .as_ref()
+                .is_some_and(|(until, account)| now < *until && *account == id)
+        });
+        if held {
+            return None;
         }
+        let response = self.http.get(PROFILE_ENDPOINT, headers).ok()?;
+        if matches!(response.status, 429 | 403) {
+            let delay = if response.status == 403 {
+                Duration::hours(FORBIDDEN_BACKOFF_HOURS)
+            } else {
+                Duration::seconds(
+                    response
+                        .retry_after_secs
+                        .unwrap_or_default()
+                        .min(Duration::MAX.num_seconds() as u64) as i64,
+                )
+                .max(Duration::minutes(RATE_LIMIT_BACKOFF_MINUTES))
+            };
+            let until = now.checked_add_signed(delay).unwrap_or(DateTime::<Utc>::MAX_UTC);
+            with_state(&self.credentials_path, |state| {
+                state.profile_backoff_until = Some((until, id))
+            });
+            return None;
+        }
+        (response.status == 200).then(|| profile_plan(&response.body)).flatten()
     }
 
     fn request(&self, credentials: &Credentials, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
@@ -907,7 +961,20 @@ impl<H: HttpClient> ClaudeProvider<H> {
         ];
         let response = self.http.get(USAGE_ENDPOINT, &headers)?;
         match response.status {
-            200..=299 => parse_usage(&response.body, credentials.subscription.as_deref(), now),
+            200..=299 => {
+                let mut account = parse_usage(&response.body, None, now)?;
+                // Reuse the usage refresh's cache and authentication; a failed optional profile must never hide usage.
+                let plan = self.current_plan(&headers, now);
+                match plan {
+                    Some(plan) => {
+                        if plan == "Max" {
+                            account = account.with_message("Claude reports Max, but its current profile does not identify the 5x or 20x tier.");
+                        }
+                        Ok(account.with_plan(plan))
+                    }
+                    None => Ok(account.with_message("Claude's current account profile did not provide a plan. Usage is current; the sign-in's cached tier is not used.")),
+                }
+            }
             429 => {
                 let retry_after = response
                     .retry_after_secs
@@ -982,7 +1049,7 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
             });
         }
         let id = self.identity();
-        let label = self.label_for(None);
+        let label = self.label_for();
         let failed = |error| {
             Ok(vec![AccountOutcome::Failed {
                 account: id.clone(),
@@ -1011,8 +1078,11 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
         match self.fresh(now) {
             Ok(usage) => {
                 let mut account = AccountSnapshot::new(id.clone(), Provider::Claude, usage.metrics().to_vec(), now);
-                if let Some(label) = self.label_for(usage.label()) {
+                if let Some(label) = self.label_for() {
                     account = account.with_label(label);
+                }
+                if let Some(plan) = usage.plan() {
+                    account = account.with_plan(plan);
                 }
                 for message in usage.messages() {
                     account = account.with_message(message.clone());
@@ -1085,7 +1155,13 @@ mod tests {
     }
 
     impl HttpClient for FakeHttp {
-        fn get(&self, _: &str, _: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+        fn get(&self, url: &str, _: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+            if url == PROFILE_ENDPOINT {
+                return Ok(HttpResponse::new(
+                    200,
+                    r#"{"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_20x"}}"#,
+                ));
+            }
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.responses[call.min(self.responses.len() - 1)].clone())
         }
@@ -1674,7 +1750,125 @@ mod tests {
         );
         folder.sign_in("tok", now() + Duration::hours(8), "user-1");
         let account = provider.fetch(now()).unwrap().remove(0);
-        assert_eq!(account.label(), Some("Work · Max"));
+        assert_eq!(account.label(), Some("Work"));
+        assert_eq!(account.plan(), Some("Max 20x"));
+    }
+
+    #[test]
+    fn current_profile_names_tiers_without_using_limits_or_stale_credentials() {
+        for (kind, tier, expected) in [
+            ("claude_max", "default_claude_max_20x", "Max 20x"),
+            ("claude_max", "default_claude_max_5x", "Max 5x"),
+            ("claude_pro", "default_claude_max_20x", "Pro"),
+            ("claude_max", "unknown", "Max"),
+        ] {
+            let body =
+                serde_json::json!({"organization":{"organization_type":kind,"rate_limit_tier":tier}}).to_string();
+            assert_eq!(profile_plan(&body).as_deref(), Some(expected));
+        }
+        assert_eq!(profile_plan("{}"), None);
+        assert_eq!(profile_plan(r#"{"organization":{"organization_type":42}}"#), None);
+    }
+
+    struct ProfileHttp {
+        profiles: Vec<HttpResponse>,
+        profile_calls: AtomicUsize,
+        usage_calls: AtomicUsize,
+    }
+
+    impl HttpClient for ProfileHttp {
+        fn get(&self, url: &str, _: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+            if url == PROFILE_ENDPOINT {
+                let call = self.profile_calls.fetch_add(1, Ordering::SeqCst);
+                return Ok(self.profiles[call.min(self.profiles.len() - 1)].clone());
+            }
+            self.usage_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(HttpResponse::new(200, FIXTURE))
+        }
+    }
+
+    #[test]
+    fn a_plan_downgrade_refreshes_after_the_usage_cache_without_a_new_sign_in() {
+        let file = CredentialsFile::new("plan-downgrade", now() + Duration::hours(8));
+        let profile = |tier| {
+            HttpResponse::new(
+                200,
+                serde_json::json!({"organization":{
+            "organization_type":"claude_max", "rate_limit_tier":tier}})
+                .to_string(),
+            )
+        };
+        let http = ProfileHttp {
+            profiles: vec![profile("default_claude_max_20x"), profile("default_claude_max_5x")],
+            profile_calls: AtomicUsize::new(0),
+            usage_calls: AtomicUsize::new(0),
+        };
+        let provider = ClaudeProvider::new(http, file.0.clone());
+        let first = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(first.plan(), Some("Max 20x"));
+        assert_eq!(
+            provider.fetch(now() + Duration::minutes(5)).unwrap()[0].plan(),
+            Some("Max 20x")
+        );
+        assert_eq!(provider.http.profile_calls.load(Ordering::SeqCst), 1);
+        let next = provider.fetch(now() + Duration::minutes(11)).unwrap().remove(0);
+        assert_eq!(next.plan(), Some("Max 5x"));
+        assert_eq!(next.id(), first.id());
+        assert_eq!(
+            next.primary().unwrap().used_fraction(),
+            first.primary().unwrap().used_fraction()
+        );
+        assert_eq!(provider.http.profile_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.http.usage_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn profile_retry_after_holds_only_the_optional_lookup_not_usage() {
+        let file = CredentialsFile::new("plan-backoff", now() + Duration::hours(8));
+        let limited = HttpResponse {
+            retry_after_secs: Some(3600),
+            ..HttpResponse::new(429, "")
+        };
+        let profile = HttpResponse::new(200, r#"{"organization":{"organization_type":"claude_pro"}}"#);
+        let provider = ClaudeProvider::new(
+            ProfileHttp {
+                profiles: vec![limited, profile],
+                profile_calls: AtomicUsize::new(0),
+                usage_calls: AtomicUsize::new(0),
+            },
+            file.0.clone(),
+        );
+        assert_eq!(provider.fetch(now()).unwrap()[0].plan(), None);
+        assert_eq!(provider.fetch(now() + Duration::minutes(11)).unwrap()[0].plan(), None);
+        assert_eq!(provider.http.profile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.http.usage_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            provider.fetch(now() + Duration::minutes(61)).unwrap()[0].plan(),
+            Some("Pro")
+        );
+        assert_eq!(provider.http.profile_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn an_unreadable_profile_keeps_usage_and_does_not_claim_the_cached_plan() {
+        let file = CredentialsFile::new("plan-failure", now() + Duration::hours(8));
+        let provider = ClaudeProvider::new(
+            ProfileHttp {
+                profiles: vec![HttpResponse::new(403, "")],
+                profile_calls: AtomicUsize::new(0),
+                usage_calls: AtomicUsize::new(0),
+            },
+            file.0.clone(),
+        );
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert!(!account.metrics().is_empty());
+        assert_eq!(account.plan(), None);
+        assert!(
+            account
+                .messages()
+                .iter()
+                .any(|message| message.contains("cached tier is not used"))
+        );
     }
 
     #[test]

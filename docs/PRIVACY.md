@@ -15,10 +15,10 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 
 | Provider | Endpoint | Authenticated with |
 | --- | --- | --- |
-| ChatGPT / Codex | `https://chatgpt.com/backend-api/wham/usage` | The Codex sign-in (`auth.json`) |
-| Claude | `https://api.anthropic.com/api/oauth/usage` | The Claude Code sign-in (`.credentials.json`) |
+| ChatGPT / Codex | `https://chatgpt.com/backend-api/wham/usage` and `…/accounts/check/v4-2023-04-27` (current plan and scheduled change, cached four hours) | The Codex sign-in (`auth.json`) |
+| Claude | `https://api.anthropic.com/api/oauth/usage` and `…/api/oauth/profile` (current plan only) | The Claude Code sign-in (`.credentials.json`) |
 | Copilot | `https://api.github.com/copilot_internal/user`, and for org billing `https://api.github.com/enterprises/…/settings/billing/ai_credit/usage` (with an enterprise) or `https://api.github.com/organizations/…/settings/billing/ai_credit/usage` and `https://api.github.com/organizations/…/settings/billing/budgets` (a Copilot Business organization without one), and `https://api.github.com/orgs/…/copilot/billing` | A GitHub CLI token |
-| Cursor | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` | The Cursor sign-in (`auth.json`) |
+| Cursor | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` and `…/GetPlanInfo` (current plan) | The Cursor sign-in (`auth.json`) |
 | OpenRouter | `https://openrouter.ai/api/v1/credits` | Your API key |
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
 | Greptile | `https://api.greptile.com/mcp` (only the read-only `list_code_reviews` tool) | Your organization API key |
@@ -27,6 +27,12 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | Gemini | `https://gemini.google.com/usage` and `https://gemini.google.com/_/BardChatUi/data/batchexecute` (the usage RPC only) | Two Google session cookies (`__Secure-1PSID`, `__Secure-1PSIDTS`) kept by CodexBar |
 | GitHub Billing | `https://api.github.com/user`; the owner's `…/settings/billing/usage/summary` and `…/settings/billing/usage`; for an organization `…/orgs/{org}` (its plan) and `…/settings/billing/budgets`; `…/repos/{owner}/{repo}` for repositories in this month's Actions usage (their visibility, remembered for six hours) | The account's own GitHub CLI token, kept by CodexBar |
 | OpenCode Go / Zen | OAuth accounts: `https://opencode.ai/console/api/go/status` and `…/console/api/billing/status`; cookie accounts: `https://opencode.ai/workspace/…` | The account's OpenCode sign-in (OAuth), or your dashboard auth cookie |
+
+The optional account-profile lookups keep only the effective subscription name
+or tier and, for Codex, the scheduled target plan and change time. The displayed
+plan and upcoming-change label are retained with last-good snapshots. Claude profile names, emails and organization identifiers are not kept
+or logged. Plan lookup failure leaves valid usage visible. See
+[subscription plan sources and limits](SUBSCRIPTION_PLANS.md).
 
 For the GitHub CLI's Copilot accounts, CodexBar also runs `gh auth status` on
 each refresh to list them; the GitHub CLI checks each account with GitHub while
@@ -82,7 +88,7 @@ Everything CodexBar writes lives in `%USERPROFILE%\.codexbar`. With
 | --- | --- |
 | `settings.json` | Accounts (provider, name, sign-in method, username or workspace id, org billing settings), refresh interval, zoom |
 | `dashboard.json` | Groups, order, appearance, alert settings, which alerts were shown, hidden history series, each Codex account's starting credit balance, the dashboard window's last display, position, size and state |
-| `snapshots.json` | The last good usage of each account (ids, labels, metric names, numbers, times), so the dashboard shows something at startup and while a provider fails |
+| `snapshots.json` | The last good usage of each account (ids, account labels, provider-reported plan names, metric names, numbers, times), so the dashboard shows something at startup and while a provider fails |
 | `history.jsonl` | Usage samples for the history charts, kept **30 days** and pruned at startup |
 | `codex\`, `claude\`, `cursor\` | One folder per account CodexBar signed in, holding that provider CLI's own sign-in files |
 

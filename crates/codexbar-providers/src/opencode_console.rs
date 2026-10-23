@@ -708,8 +708,10 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
             messages.push(UNSAVED_MESSAGE.to_owned());
         }
         let mut errors = Vec::new();
+        let mut subscribed = false;
         match go {
             Ok(GoStatus::Subscribed(windows, notes)) => {
+                subscribed = true;
                 metrics.extend(windows);
                 messages.extend(notes);
             }
@@ -746,6 +748,9 @@ impl<H: HttpClient> OpenCodeConsoleProvider<H> {
         let mut account = AccountSnapshot::new(AccountId::new(self.account.clone()), Provider::OpenCode, metrics, now);
         if !self.label.trim().is_empty() {
             account = account.with_label(self.label.trim());
+        }
+        if subscribed {
+            account = account.with_plan("Go");
         }
         Ok(messages.into_iter().fold(account, AccountSnapshot::with_message))
     }
@@ -1229,7 +1234,7 @@ mod tests {
         let accounts = provider(&console, &slot).fetch(now()).unwrap();
         let account = &accounts[0];
         assert_eq!(account.id().as_str(), "oc-1");
-        assert_eq!(account.display_name(), "OpenCode Go + Zen · Team");
+        assert_eq!(account.display_name(), "OpenCode Go + Zen · Team · Go");
         assert_eq!(account.metrics().len(), 4);
         assert_eq!(console.header(0, "x-org-id").as_deref(), Some("wrk_01ABC"));
         assert_eq!(console.header(1, "Authorization").as_deref(), Some("Bearer at-1"));

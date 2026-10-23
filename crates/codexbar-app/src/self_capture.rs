@@ -139,6 +139,22 @@ async fn run(
     dir: &std::path::Path,
 ) -> serde_json::Value {
     cx.background_executor().timer(Duration::from_secs(3)).await;
+    if std::env::var_os("CODEXBAR_CAPTURE_WIDE").is_some() {
+        cx.update(|cx| {
+            cx.update_window(handle, |_, window, _| {
+                window.resize(gpui_kit::size(gpui_kit::px(2600.), gpui_kit::px(1000.)));
+            })
+        })
+        .expect("wide capture window");
+        settle(cx).await;
+        let actual = cx
+            .update(|cx| cx.update_window(handle, |_, window, _| window.viewport_size()))
+            .expect("wide capture viewport");
+        assert!(
+            actual.width >= gpui_kit::px(2600.) && actual.height >= gpui_kit::px(1000.),
+            "wide capture was clamped: {actual:?}"
+        );
+    }
     let mut saved = Vec::new();
     for (appearance, suffix) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {
         cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, appearance));
@@ -162,6 +178,100 @@ async fn run(
     settle(cx).await;
     if save(cx, handle, dir, "settings-about-dark") {
         saved.push("settings-about-dark".into());
+    }
+    // Optional synthetic plan states. The normal live adapters never read these fixture values.
+    if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, Appearance::Light));
+        cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Usage, cx)));
+        for (plan, name) in [("Max 20x", "plan-max20x"), ("Max 5x", "plan-max5x")] {
+            cx.update(|cx| {
+                dashboard.update(cx, |dashboard, cx| {
+                    dashboard.capture_demo_plan("claude-personal", plan, cx);
+                    dashboard.focus_account(
+                        &crate::handoff::FocusRequest {
+                            account: "claude-personal".into(),
+                            metric: None,
+                        },
+                        cx,
+                    );
+                })
+            });
+            settle(cx).await;
+            if save(cx, handle, dir, name) {
+                saved.push(name.to_owned());
+            }
+        }
+        cx.update(|cx| {
+            dashboard.update(cx, |dashboard, cx| {
+                dashboard.focus_account(
+                    &crate::handoff::FocusRequest {
+                        account: "cursor".into(),
+                        metric: None,
+                    },
+                    cx,
+                )
+            })
+        });
+        settle(cx).await;
+        if save(cx, handle, dir, "plan-unavailable") {
+            saved.push("plan-unavailable".into());
+        }
+        for (state, name) in [
+            (crate::account_table::AccountState::Loading, "plan-loading"),
+            (
+                crate::account_table::AccountState::Unavailable("Couldn't fetch usage: network unavailable.".into()),
+                "plan-first-failure",
+            ),
+        ] {
+            cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.capture_demo_plan_state(state, cx)));
+            settle(cx).await;
+            if save(cx, handle, dir, name) {
+                saved.push(name.into());
+            }
+        }
+        cx.update(|cx| {
+            dashboard.update(cx, |dashboard, cx| {
+                dashboard.capture_demo_plan_state(crate::account_table::AccountState::Fresh, cx)
+            })
+        });
+    }
+    if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
+        cx.update(|cx| {
+            dashboard.update(cx, |dashboard, cx| {
+                dashboard.capture_demo_plan("copilot-hemsoft", "Pro+", cx);
+                dashboard.focus_account(
+                    &crate::handoff::FocusRequest {
+                        account: "copilot-hemsoft".into(),
+                        metric: None,
+                    },
+                    cx,
+                );
+            })
+        });
+        settle(cx).await;
+        if save(cx, handle, dir, "plan-copilot") {
+            saved.push("plan-copilot".into());
+        }
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let scheduled = format!("Pro → Pro Lite on {}", crate::locale::style().month_day(date));
+        for (plan, name) in [(scheduled.as_str(), "plan-codex"), ("Pro Lite", "plan-codex-changed")] {
+            cx.update(|cx| {
+                dashboard.update(cx, |dashboard, cx| {
+                    dashboard.capture_demo_plan("codex-personal", plan, cx);
+                    dashboard.focus_account(
+                        &crate::handoff::FocusRequest {
+                            account: "codex-personal".into(),
+                            metric: None,
+                        },
+                        cx,
+                    );
+                })
+            });
+            settle(cx).await;
+            if save(cx, handle, dir, name) {
+                saved.push(name.into());
+            }
+        }
     }
     if std::env::var_os("CODEXBAR_CAPTURE_RESIZE").is_some() {
         saved.extend(resize_columns(cx, handle, dashboard, dir).await);

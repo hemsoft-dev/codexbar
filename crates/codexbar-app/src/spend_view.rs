@@ -1106,10 +1106,23 @@ mod tests {
         runway_text(&sheet.balances[0], now())
     }
 
+    fn local_day(instant: &str) -> String {
+        let at = instant.parse::<DateTime<Utc>>().unwrap();
+        crate::locale::style().month_day(at.with_timezone(&Local).date_naive())
+    }
+
     #[test]
     fn a_balance_says_how_long_it_lasts() {
-        assert_eq!(runway(&balance(1842, Some(310))), "About 6 days left, until Oct 25");
-        assert_eq!(runway(&balance(300, Some(310))), "Less than a day left, until Oct 20");
+        let long = local_day("2026-10-25T10:36:23Z");
+        let short = local_day("2026-10-20T11:13:33Z");
+        assert_eq!(
+            runway(&balance(1842, Some(310))),
+            format!("About 6 days left, until {long}")
+        );
+        assert_eq!(
+            runway(&balance(300, Some(310))),
+            format!("Less than a day left, until {short}")
+        );
         assert_eq!(runway(&balance(1842, None)), "No spending rate known yet");
         assert_eq!(runway(&balance(0, Some(310))), "Empty");
     }
@@ -1119,13 +1132,14 @@ mod tests {
         let accounts = [balance(1842, Some(310))];
         let sheet = SpendSheet::of(&accounts);
         let row = &sheet.balances[0];
+        let until = local_day("2026-10-25T10:36:23Z");
         assert_eq!(
             runway_text(row, now() + Duration::days(2)),
-            "About 4 days left, until Oct 25"
+            format!("About 4 days left, until {until}")
         );
         assert_eq!(
             runway_text(row, now() + Duration::days(7)),
-            "Expected to have run out by Oct 25"
+            format!("Expected to have run out by {until}")
         );
     }
 

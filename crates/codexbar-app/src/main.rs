@@ -246,8 +246,15 @@ fn main() {
         // Where the window was last (#194), or centered on the primary display the first time.
         let saved_placement = prefs_hub::PrefsHub::window_placement(cx);
         let restored = placement::restore_in(saved_placement.as_ref(), cx);
+        let initial_size = placement::default_size();
+        #[cfg(feature = "capture")]
+        let initial_size = if is_demo() && std::env::var_os("CODEXBAR_CAPTURE_WIDE").is_some() {
+            gpui_kit::size(gpui_kit::px(2600.), gpui_kit::px(1000.))
+        } else {
+            initial_size
+        };
         let bounds = restored.as_ref().map_or_else(
-            || WindowBounds::Windowed(Bounds::centered(None, placement::default_size(), cx)),
+            || WindowBounds::Windowed(Bounds::centered(None, initial_size, cx)),
             |restored| restored.bounds,
         );
         let options = WindowOptions {

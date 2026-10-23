@@ -161,6 +161,7 @@ fn may_renew(home: &Path) -> bool {
 /// What the billing proxy says about the consumer pool, as metrics and messages.
 #[derive(Debug, Default, PartialEq)]
 pub struct GrokUsage {
+    pub plan: Option<String>,
     pub metrics: Vec<Metric>,
     pub messages: Vec<String>,
 }
@@ -194,7 +195,11 @@ pub struct UnknownBilling;
 pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Result<GrokUsage, UnknownBilling> {
     let value: Value = serde_json::from_str(body).map_err(|_| UnknownBilling)?;
     let config = value.get("config").and_then(Value::as_object).ok_or(UnknownBilling)?;
-    let mut usage = GrokUsage::default();
+    let mut usage = GrokUsage {
+        plan: plan.filter(|plan| !plan.trim().is_empty()).map(str::to_owned),
+        ..GrokUsage::default()
+    };
+
     let unified = config.get("isUnifiedBillingUser").and_then(Value::as_bool) == Some(true);
     if !unified {
         usage
@@ -288,7 +293,7 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
             .messages
             .push("Grok's Extra Usage Credits are malformed.".to_owned()),
     }
-    if let Some(plan) = plan.filter(|plan| PAID_PLANS.contains(plan)) {
+    if let Some(plan) = usage.plan.as_deref() {
         usage.messages.push(format!("Plan: {plan}."));
     }
     Ok(usage)
@@ -401,6 +406,7 @@ impl<H: HttpClient> GrokProvider<H> {
     fn snapshot(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
         let usage = if self.shown_on_x_subscription {
             GrokUsage {
+                plan: None,
                 metrics: Vec::new(),
                 messages: vec!["Shown on the X Subscription card, which reads the same Grok sign-in.".to_owned()],
             }
@@ -411,6 +417,9 @@ impl<H: HttpClient> GrokProvider<H> {
             AccountSnapshot::new(AccountId::new(self.account.clone()), Provider::Grok, usage.metrics, now);
         if !self.label.trim().is_empty() {
             account = account.with_label(self.label.trim());
+        }
+        if let Some(plan) = usage.plan {
+            account = account.with_plan(plan);
         }
         Ok(usage.messages.into_iter().fold(account, AccountSnapshot::with_message))
     }
@@ -575,6 +584,15 @@ mod tests {
     }
 
     #[test]
+    fn a_non_unified_account_preserves_its_reported_plan_without_inventing_a_pool() {
+        let body = r#"{"config":{"isUnifiedBillingUser":false}}"#;
+        let usage = parse_billing(body, Some("SuperGrok Lite"), now()).unwrap();
+        assert_eq!(usage.plan.as_deref(), Some("SuperGrok Lite"));
+        assert!(usage.metrics.is_empty());
+        assert!(usage.messages.iter().any(|m| m.contains("no weekly pool")));
+    }
+
+    #[test]
     fn the_plan_reads_from_either_key_spelling() {
         assert_eq!(
             parse_plan(r#"{"subscription_tier_display":"SuperGrok"}"#).as_deref(),
@@ -667,9 +685,32 @@ mod tests {
             "Me",
         );
         let account = provider.fetch(now()).unwrap().remove(0);
-        assert_eq!(account.display_name(), "Grok · Me");
+        assert_eq!(account.display_name(), "Grok · Me · SuperGrok");
         assert_eq!(account.metrics()[0].used_fraction(), Some(0.1));
         assert_eq!(renewer.1.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_non_unified_fetch_still_names_the_provider_reported_plan() {
+        let home = Home::with("plan-without-pool", AUTH);
+        let proxy = Proxy(
+            Mutex::new(vec![
+                HttpResponse::new(200, r#"{"config":{"isUnifiedBillingUser":false}}"#),
+                HttpResponse::new(200, r#"{"subscription_tier_display":"SuperGrok Lite"}"#),
+            ]),
+            Mutex::new(Vec::new()),
+        );
+        let provider = GrokProvider::new(
+            proxy,
+            Arc::new(Renewer(home.0.clone(), AtomicUsize::new(0))),
+            home.0.clone(),
+            None,
+            "gk-plan",
+            "Me",
+        );
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.plan(), Some("SuperGrok Lite"));
+        assert!(account.metrics().is_empty());
     }
 
     #[test]

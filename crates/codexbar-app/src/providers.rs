@@ -220,7 +220,9 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         }
         homes.push(path.clone());
         identities.extend(identity.clone());
-        let mut provider = CodexProvider::new(UreqClient::new(), path).with_renewer(Arc::new(CodexCliRenewer));
+        let mut provider = CodexProvider::new(UreqClient::new(), path)
+            .with_date_style(crate::locale::style())
+            .with_renewer(Arc::new(CodexCliRenewer));
         if managed {
             provider = provider.managed();
         }
