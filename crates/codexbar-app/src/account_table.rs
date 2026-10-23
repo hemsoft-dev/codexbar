@@ -928,8 +928,9 @@ fn bar_cell(
         },
         _ => metric.used_fraction().unwrap_or_else(|| assessment.pressure()),
     };
+    // Fill the cell's height so a missing SUS badge cannot collapse the row's alignment box (#259).
     h_flex()
-        .w_full()
+        .size_full()
         .gap_2()
         .items_center()
         .child(

@@ -8160,3 +8160,70 @@ fn sus_legacy_ownership_checks_both_record_and_account_before_applying_price(cx:
         }
     });
 }
+
+// Progress cells must not borrow their vertical alignment from an optional SUS badge (#259).
+#[gpui_kit::test]
+fn progress_bars_and_markers_are_centered_with_or_without_sus(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("progress-centering", "{}");
+    let (handle, _dashboard) = open_dashboard(cx, &settings);
+    for wide in [false, true] {
+        let viewport = size(px(if wide { 2600. } else { 1440. }), px(1000.));
+        gpui_kit::VisualTestContext::from_window(handle, cx).simulate_resize(viewport);
+        assert_eq!(
+            cx.update_window(handle, |_, window, _| window.viewport_size()).unwrap(),
+            viewport
+        );
+        for appearance in [crate::theme::Appearance::Light, crate::theme::Appearance::Dark] {
+            cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, appearance));
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                for (account, window_kind, has_sus) in [
+                    ("gemini", Some("5h"), false),
+                    ("copilot-work", None, false),
+                    ("openrouter", None, false),
+                    ("claude-personal", Some("weekly"), true),
+                    ("x-subscription", Some("weekly"), true),
+                    ("codex-personal", Some("5h"), false),
+                ] {
+                    let id = match window_kind.filter(|_| wide) {
+                        Some(kind) => format!("window-{kind}-{account}-bar"),
+                        None => format!("progress-cell-{account}"),
+                    };
+                    let name = window.find(format!("account-name-{account}")).bounds();
+                    let row = gpui_kit::test::TestQueryExt::find_all_by_role(window, gpui_kit::Role::Row)
+                        .into_iter()
+                        .map(|row| row.bounds())
+                        .find(|row| row.contains(&name.center()))
+                        .expect("the account name must belong to an actual table row");
+                    assert_eq!(window.try_find(format!("{id}-sus")).is_some(), has_sus, "{id}");
+                    let bar = window.find(format!("{id}-bar")).bounds();
+                    assert!(bar.size.width > px(0.) && bar.size.height > px(0.));
+                    let offset = f32::from(bar.center().y - row.center().y);
+                    assert!(
+                        offset.abs() <= 1.,
+                        "{id}, wide={wide}, {appearance:?}: bar is {offset}px from row center; bar={bar:?}, row={row:?}"
+                    );
+                    for marker in ["limit", "projected"] {
+                        let tick = window.try_find(format!("{id}-{marker}"));
+                        let expected = match marker {
+                            "limit" => account != "openrouter",
+                            _ => matches!(account, "copilot-work" | "claude-personal" | "codex-personal"),
+                        };
+                        assert_eq!(tick.is_some(), expected, "{id}-{marker} must retain its visibility");
+                        if let Some(tick) = tick {
+                            let tick = tick.bounds();
+                            let offset = f32::from(tick.center().y - row.center().y);
+                            assert!(offset.abs() <= 1., "{id}-{marker}: tick is {offset}px from row center");
+                            assert!(
+                                tick.top() < bar.top() && tick.bottom() > bar.bottom(),
+                                "marker overhang retained"
+                            );
+                        }
+                    }
+                }
+            })
+            .unwrap();
+        }
+    }
+}
