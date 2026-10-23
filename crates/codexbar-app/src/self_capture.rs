@@ -151,6 +151,18 @@ async fn run(
             }
         }
     }
+    // The About page, the last Settings page.
+    let _ = cx.update(|cx| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let last = if cfg!(windows) { 6 } else { 5 };
+            window.within("settings-sidebar").click(format!("0-{last}"), cx);
+        })
+    });
+    settle(cx).await;
+    if save(cx, handle, dir, "settings-about-dark") {
+        saved.push("settings-about-dark".into());
+    }
     // Optional synthetic plan states. The normal live adapters never read these fixture values.
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
         cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, Appearance::Light));
@@ -189,17 +201,22 @@ async fn run(
             saved.push("plan-unavailable".into());
         }
     }
-    // The About page, the last Settings page.
-    let _ = cx.update(|cx| {
-        cx.update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
-            let last = if cfg!(windows) { 6 } else { 5 };
-            window.within("settings-sidebar").click(format!("0-{last}"), cx);
-        })
-    });
-    settle(cx).await;
-    if save(cx, handle, dir, "settings-about-dark") {
-        saved.push("settings-about-dark".into());
+    if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
+        cx.update(|cx| {
+            dashboard.update(cx, |dashboard, cx| {
+                dashboard.focus_account(
+                    &crate::handoff::FocusRequest {
+                        account: "codex-personal".into(),
+                        metric: None,
+                    },
+                    cx,
+                )
+            })
+        });
+        settle(cx).await;
+        if save(cx, handle, dir, "plan-codex") {
+            saved.push("plan-codex".into());
+        }
     }
     if std::env::var_os("CODEXBAR_CAPTURE_RESIZE").is_some() {
         saved.extend(resize_columns(cx, handle, dashboard, dir).await);

@@ -23,6 +23,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 
 ## Features
 
+- **Subscription plans** from provider account data, including Claude Max 5x/20x when reported. Generic sources explain missing tier detail; [plan sources and refresh behavior](docs/SUBSCRIPTION_PLANS.md).
 - **System tray** icon with a usage tooltip
 - **Dashboard** with an account table, focus cards, usage history and window curves; wide enough, the table shows
   each account's 5-hour and weekly windows side by side, and every reset reads as time left ("in 2d 4h"), never a
