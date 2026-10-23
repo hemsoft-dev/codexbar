@@ -40,7 +40,8 @@ updates on refresh; Codex metadata retains its existing four-hour cache.
 In Settings > Accounts, **SUS price…** overrides the monthly USD price and can
 set a next price with a known RFC3339 effective instant including its timezone.
 A blank current price explicitly means unknown. **Use provider price** removes
-the override. A future price applies exactly at its configured instant. Set
+the override. Account settings schema 2 preserves these overrides and reads
+version 1 records; older writers refuse schema 2. A future price applies exactly at its configured instant. Set
 Claude's scheduled downgrade here if its API supplies no billing date. No
 billing date is guessed. Overrides preserve the account ID, credentials and
 usage history. Snapshot schema 4 persists price metadata; versions 1–3 still

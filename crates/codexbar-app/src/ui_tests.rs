@@ -748,7 +748,7 @@ fn legacy_history_stays_put_while_no_account_is_configured(cx: &mut TestAppConte
 #[gpui_kit::test]
 fn legacy_history_stays_put_when_settings_are_from_a_newer_version(cx: &mut TestAppContext) {
     // A newer schema can't be read, so the hub falls back to defaults; nothing may move on their say-so.
-    let newer = r#"{ "accountConfigurationVersion": 2, "accounts": [] }"#;
+    let newer = r#"{ "accountConfigurationVersion": 3, "accounts": [] }"#;
     assert_eq!(legacy_history_after_migration(cx, newer, "migrate-newer"), (1, 0));
 }
 
