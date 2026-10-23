@@ -978,6 +978,13 @@ fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> g
     });
     let pad = ((high - low) * 0.15).max(0.01);
     div()
+        .id(ElementId::Name(format!("sparkline-{}", row.id().as_str()).into()))
+        .test_support()
+        .aria_label(format!(
+            "14-day sparkline: {} samples, latest {:.0}%",
+            trend.len(),
+            trend[trend.len() - 1] * 100.0
+        ))
         .w_full()
         .h(rems(1.625))
         .child(

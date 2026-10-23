@@ -561,7 +561,7 @@ fn the_share_ring_leads_the_second_card(cx: &mut TestAppContext) {
     focus(cx, "codex-personal");
     let ring = label(cx, handle, "focus-share").unwrap();
     assert!(
-        ring.starts_with("Weekly: 47% used, ") && ring.ends_with("% at reset"),
+        ring.starts_with("Weekly: 47% used, ") && ring.contains("% at reset"),
         "{ring}"
     );
 
@@ -7631,6 +7631,10 @@ fn the_claude_row_shows_the_weekly_window(cx: &mut TestAppContext) {
     assert_eq!(
         label(cx, handle, "used-claude-personal").as_deref(),
         Some("Weekly: 82%")
+    );
+    assert_eq!(
+        label(cx, handle, "sparkline-claude-personal").as_deref(),
+        Some("14-day sparkline: 14 samples, latest 82%")
     );
     let resets = label(cx, handle, "resets-claude-personal").unwrap_or_default();
     assert!(

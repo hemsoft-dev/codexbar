@@ -452,8 +452,8 @@ fn codex_detail() -> AccountDetail {
         .with_requests_by_hour(requests)
 }
 
-/// Claude's limits other than Weekly, each with its own history (#230): the 5-hour window's curve, almost four hours
-/// into the window that resets in 72 minutes, and daily trends for it and for Extra usage.
+/// Claude's primary 5-hour curve, almost four hours into the window that resets in 72 minutes,
+/// plus separate daily trends for Weekly and Extra usage (#230, #246).
 fn claude_detail() -> AccountDetail {
     let labels = (0..=30)
         .map(|i| {

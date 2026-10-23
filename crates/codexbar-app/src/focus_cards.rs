@@ -1546,6 +1546,24 @@ mod tests {
     }
 
     #[test]
+    fn a_non_primary_limit_graph_uses_its_own_window_curve() {
+        use codexbar_core::{AccountDetail, LimitSeries, WindowCurve};
+        let curve = WindowCurve::new(vec!["start".into(), "end".into()], vec![0.2, 0.64], vec![0.1, 0.5]);
+        let account = claude().with_detail(AccountDetail::default().with_limit_series(
+            "5-hour-window",
+            LimitSeries {
+                curve: Some(curve),
+                trend: vec![0.3, 0.64],
+            },
+        ));
+        let graph = limit_graph(&account, &account.metrics()[1], now());
+        let curve = graph.curve.expect("the non-primary window must keep its own curve");
+        assert_eq!(curve.current(), [0.2, 0.64]);
+        assert_eq!(curve.previous(), [0.1, 0.5]);
+        assert_eq!(graph.trend, [0.3, 0.64]);
+    }
+
+    #[test]
     fn each_card_menu_offers_only_what_the_account_reports() {
         let account = claude();
         let [usage, rings, activity] = menu_entries(&account, &FocusChoice::default(), false);
