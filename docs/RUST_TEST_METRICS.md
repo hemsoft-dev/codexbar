@@ -14,10 +14,10 @@ on air, macOS arm64. Compiler `1.101.0-nightly`, commit `1a2c4797e`, LLVM
 
 | Measurement | Result |
 | --- | ---: |
-| Production executable lines hit | 19,827 / 22,716 = 87.2821% |
-| Production branch outcomes hit | 2,733 / 3,498 = 78.1304% |
-| Production source functions | 1,675 |
-| Functions without mapped executable lines | 108 |
+| Production executable lines hit | 19,711 / 22,600 = 87.2168% |
+| Production branch outcomes hit | 2,715 / 3,480 = 78.0172% |
+| Production source functions | 1,669 |
+| Functions without mapped executable lines | 105 |
 | Existing functions above CRAP 30 | 39 |
 
 Examples from the measured baseline:
@@ -66,6 +66,10 @@ File exclusions are explicit in the collector:
 Build scripts, examples, benches, integration-test files, dependencies and the
 retired C# `src/` tree are outside this production-function scope. There are no
 handwritten high-complexity function exemptions.
+
+Instrumentation runs workspace unit and integration tests, with optional capture
+features and doctests disabled. Conditional test-only statements embedded inside
+an otherwise production function remain attributed to that function.
 
 The raw LLVM totals include inline test scaffolding and are retained only as
 source evidence. The filtered `metrics.json` totals and `summary.md` are the
