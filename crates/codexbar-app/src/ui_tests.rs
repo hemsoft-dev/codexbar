@@ -614,7 +614,7 @@ fn table_trend_shows_compact_history_until_hidden(cx: &mut TestAppContext) {
 
     let compact = label(cx, handle, cell).unwrap();
     assert!(
-        compact.starts_with("ChatGPT · Codex (personal · Pro (More)) trend. Last 14 days: Latest 91%"),
+        compact.starts_with("ChatGPT · Codex (personal · Pro) trend. Last 14 days: Latest 91%"),
         "{compact}"
     );
     assert!(compact.contains("Low ") && compact.contains("samples"), "{compact}");
@@ -794,15 +794,15 @@ fn alerts_notify_once_per_condition_and_survive_a_restart(cx: &mut TestAppContex
     // The demo's Codex 5-hour window is at 91% and about to run out; Moonshot has $7.85 left, under $10.
     let has = |title: &str| shown.iter().any(|shown| shown == title);
     assert!(
-        has("ChatGPT · Codex (personal · Pro (More)): 5-hour window at 91%"),
+        has("ChatGPT · Codex (personal · Pro): 5-hour window at 91%"),
         "{shown:?}"
     );
     assert!(
-        has("ChatGPT · Codex (personal · Pro (More)): 5-hour window limit soon"),
+        has("ChatGPT · Codex (personal · Pro): 5-hour window limit soon"),
         "{shown:?}"
     );
     assert!(
-        !has("ChatGPT · Codex (personal · Pro (More)): 5-hour window at risk"),
+        !has("ChatGPT · Codex (personal · Pro): 5-hour window at risk"),
         "covered by limit soon"
     );
     assert!(has("Moonshot (Kimi): $7.85 left"), "{shown:?}");
@@ -7685,7 +7685,7 @@ fn subscription_plans_are_visible_and_unknown_sources_explain_the_fallback(cx: &
     assert!(
         label(cx, handle, "account-name-codex-personal")
             .unwrap()
-            .contains("Pro (More)")
+            .contains("Pro")
     );
     let request = crate::handoff::FocusRequest {
         account: "cursor".into(),

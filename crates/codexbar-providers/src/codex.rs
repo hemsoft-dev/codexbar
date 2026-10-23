@@ -2,6 +2,8 @@
 //! `auth.json`: the CLI's own `~/.codex`, or a home CodexBar signed in through the Codex CLI (#78). Codex writes the
 //! file; this module only reads it, and asks the Codex CLI to renew it shortly before it expires.
 
+mod subscription;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -144,11 +146,6 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
         .filter(|plan| !plan.is_empty())
     {
         account = account.with_plan(codex_plan_name(plan));
-        if matches!(plan.to_ascii_lowercase().as_str(), "pro" | "prolite" | "promax") {
-            account = account.with_message(
-                "OpenAI reports the plan variant, but this usage API does not expose a 5x or 20x multiplier.",
-            );
-        }
     }
     Ok(account)
 }
@@ -181,12 +178,12 @@ fn parse_credits(credits: &Value) -> Option<Metric> {
     })
 }
 
-/// Display names from OpenAI's own `KnownPlan::display_name`, not multipliers inferred from limits.
+/// Explicit plan-code names. The live account API display name takes priority.
 fn codex_plan_name(plan: &str) -> String {
     match plan.to_ascii_lowercase().as_str() {
-        "pro" => "Pro (More)".to_owned(),
-        "prolite" => "Pro".to_owned(),
-        "promax" => "Pro (Max)".to_owned(),
+        "pro" => "Pro".to_owned(),
+        "prolite" => "Pro Lite".to_owned(),
+        "promax" => "Pro Max".to_owned(),
         "hc" | "ent26" | "enterprise" => "Enterprise".to_owned(),
         "enterprise_cbp_automation" => "Enterprise (Automation)".to_owned(),
         "edu" | "education" => "Edu".to_owned(),
@@ -196,10 +193,10 @@ fn codex_plan_name(plan: &str) -> String {
     }
 }
 
-/// "pro" -> "Pro", "prolite" -> "Pro", "team_plus" -> "Team Plus".
+/// "pro" -> "Pro", "prolite" -> "Pro Lite", "team_plus" -> "Team Plus".
 pub fn plan_name(plan: &str) -> String {
     match plan.to_lowercase().as_str() {
-        "prolite" => "Pro".to_owned(),
+        "prolite" => "Pro Lite".to_owned(),
         other => other
             .split('_')
             .filter(|word| !word.is_empty())
@@ -410,7 +407,12 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
         }
         let id = credentials.account();
         let outcome = match result {
-            Ok(usage) => {
+            Ok(mut usage) => {
+                match subscription::lookup(&self.http, &self.auth_path, &credentials, now) {
+                    Ok(Some(plan)) => usage = usage.with_plan(plan),
+                    Ok(None) => {}
+                    Err(message) => usage = usage.with_message(message),
+                }
                 let mut account = AccountSnapshot::new(id.clone(), Provider::Codex, usage.metrics().to_vec(), now);
                 if let Some(label) = self.label_for() {
                     account = account.with_label(label);
@@ -501,7 +503,7 @@ mod tests {
     #[test]
     fn parse_usage_fixture_orders_windows_and_projects_pace() {
         let account = parse_usage(FIXTURE, now()).unwrap();
-        assert_eq!(account.display_name(), "ChatGPT · Codex (Pro (More))");
+        assert_eq!(account.display_name(), "ChatGPT · Codex (Pro)");
         let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
         assert_eq!(labels, ["5-hour window", "Weekly"]);
         assert_eq!(account.primary().unwrap().used_fraction(), Some(0.91));
@@ -666,7 +668,10 @@ mod tests {
     fn a_codex_plan_transition_refreshes_without_changing_identity_or_the_account_name() {
         struct Plans(Mutex<Vec<String>>);
         impl HttpClient for Plans {
-            fn get(&self, _: &str, _: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+            fn get(&self, url: &str, _: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+                if url != USAGE_ENDPOINT {
+                    return Ok(HttpResponse::new(403, ""));
+                }
                 Ok(HttpResponse::new(200, self.0.lock().unwrap().remove(0)))
             }
         }
@@ -678,8 +683,8 @@ mod tests {
         let provider = CodexProvider::new(http, file.path().to_path_buf()).with_account("record-plan", "Work");
         let first = provider.fetch(now()).unwrap().remove(0);
         let next = provider.fetch(now() + Duration::minutes(2)).unwrap().remove(0);
-        assert_eq!(first.plan(), Some("Pro (More)"));
-        assert_eq!(next.plan(), Some("Pro"));
+        assert_eq!(first.plan(), Some("Pro"));
+        assert_eq!(next.plan(), Some("Pro Lite"));
         assert_eq!(next.id(), first.id());
         assert_eq!(next.label(), Some("Work"));
         assert!(
@@ -692,23 +697,18 @@ mod tests {
 
     #[test]
     fn reported_plan_variants_change_without_guessing_a_multiplier() {
-        for (raw, expected) in [("pro", "Pro (More)"), ("prolite", "Pro"), ("promax", "Pro (Max)")] {
+        for (raw, expected) in [("pro", "Pro"), ("prolite", "Pro Lite"), ("promax", "Pro Max")] {
             let payload = FIXTURE.replace("\"pro\"", &format!("\"{raw}\""));
             let account = parse_usage(&payload, now()).unwrap();
             assert_eq!(account.plan(), Some(expected));
             assert!(!account.display_name().contains("20x"));
-            assert!(
-                account
-                    .messages()
-                    .iter()
-                    .any(|message| message.contains("does not expose"))
-            );
+            assert!(account.messages().is_empty());
         }
     }
 
     #[test]
     fn plan_name_known_and_unknown_formats() {
-        assert_eq!(plan_name("prolite"), "Pro");
+        assert_eq!(plan_name("prolite"), "Pro Lite");
         assert_eq!(plan_name("plus"), "Plus");
         assert_eq!(plan_name("team_plus"), "Team Plus");
     }
@@ -792,7 +792,10 @@ mod tests {
     }
 
     impl HttpClient for Sequence {
-        fn get(&self, _: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+        fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+            if url != USAGE_ENDPOINT {
+                return Ok(HttpResponse::new(403, ""));
+            }
             let bearer = headers
                 .iter()
                 .find(|(name, _)| *name == "Authorization")
@@ -967,7 +970,7 @@ mod tests {
         assert_eq!(provider.account_label(), Some("Work"));
         let account = provider.fetch(now()).unwrap().remove(0);
         assert_eq!(account.label(), Some("Work"));
-        assert_eq!(account.plan(), Some("Pro (More)"));
+        assert_eq!(account.plan(), Some("Pro"));
         assert_eq!(provider.signed_in_account().as_ref(), Some(account.id()));
     }
 

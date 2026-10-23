@@ -36,8 +36,7 @@ pub fn demo_accounts<Tz: TimeZone>(now: DateTime<Utc>, tz: &Tz) -> Vec<AccountSn
             fetched,
         )
         .with_label("personal")
-        .with_plan("Pro (More)")
-        .with_message("OpenAI reports the plan variant, but this usage API does not expose a 5x or 20x multiplier.")
+        .with_plan("Pro")
         .with_trend(vec![
             0.31, 0.42, 0.38, 0.55, 0.47, 0.62, 0.58, 0.66, 0.6, 0.71, 0.69, 0.8, 0.84, 0.91,
         ])
@@ -546,7 +545,7 @@ mod tests {
             names,
             [
                 "ChatGPT · Codex (work)",
-                "ChatGPT · Codex (personal · Pro (More))",
+                "ChatGPT · Codex (personal · Pro)",
                 "Copilot · work",
                 "Claude · personal · Max 20x",
                 "Cursor",

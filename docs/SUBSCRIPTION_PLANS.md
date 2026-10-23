@@ -12,7 +12,7 @@ longer supplies.
 
 | Provider | Source used | Display and limitations |
 | --- | --- | --- |
-| ChatGPT / Codex | Existing `/backend-api/wham/usage`, `plan_type` | Uses the provider client's explicit plan names. `pro`, `prolite` and `promax` distinguish Pro variants, but do not expose a current 5x/20x multiplier. The UI says so rather than asserting one. |
+| ChatGPT / Codex | `/backend-api/accounts/check/v4-2023-04-27`, selected account and entitlement; existing `/backend-api/wham/usage` fallback | Prefers `account.plan_display_name`, otherwise maps explicit `account.plan_type`: `pro` is Pro, `prolite` is Pro Lite, `promax` is Pro Max. A future `entitlement.scheduled_plan_change` with an explicit `changes_at` displays the target and local date, for example Pro → Pro Lite on Oct 26. |
 | Claude | `/api/oauth/profile`, `organization.organization_type` and `organization.rate_limit_tier` | Exact `default_claude_max_5x` and `default_claude_max_20x` values display Max 5x and Max 20x. An unknown Max tier displays Max with a note. Pro, Team and Enterprise follow the current organization type. |
 | Copilot | Existing `copilot_internal/user`, `copilot_plan`; organization `/copilot/billing`, `plan_type` | Displays the explicit plan value with readable capitalization. No tier is inferred from premium-request or AI-credit allowances. Optional org lookup failure preserves configured pool totals. |
 | GitHub Billing | Existing user/org profile, `plan.name` | Displays the reported profile plan even if allowance detail is unavailable. Missing permission leaves the plan unknown, with the existing billing explanation. |
@@ -36,30 +36,34 @@ ten minutes per sign-in. It honors profile 429 Retry-After and 403 backoff
 without withholding valid usage. A failed profile does not reuse a stale
 precise tier. No token is renewed or rewritten by this lookup.
 
-Codex reads `plan_type` on each normal usage refresh. The other plans follow
-their normal source refreshes. A scheduled downgrade is not applied early:
-these adapters read the current effective provider fields and do not use
-future billing schedules, prices or quota sizes to choose a name.
+Codex fetches account metadata on the first successful usage refresh after
+startup and then once every four hours per sign-in. The cache survives provider
+reconstruction and is bound to the auth path and hashed user/workspace identity.
+The same ChatGPT token and account header as usage authenticate the request.
+A scheduled change expires the cache early at `changes_at`, so the next usage
+refresh reads the newly effective plan. The label shows the current plan until
+the provider changes it; an upcoming target is never applied early. Lookup
+failures are cached for four hours and honor longer Retry-After delays. They
+preserve usage and fall back to its current `plan_type`, with a lookup-failure
+note. Other providers keep their normal source refreshes.
 
 ## Evidence
 
-On October 22, 2026, a bounded live read on air returned `plan_type: pro` from
-Codex's usage endpoint, with no multiplier or plan-display-name field. The
-account endpoint refused the same sign-in with HTTP 403. Claude's live profile
-returned `organization_type: claude_max`,
+On October 23, 2026, a bounded live read on mini with the existing Codex
+sign-in returned `account.plan_type: pro`, `account.plan_display_name: Pro`,
+`entitlement.subscription_plan: chatgptpro`, and a scheduled `prolite` change
+at October 26, 2026, 9:33 AM EDT. Both `renews_at` and `changes_at` carried
+that timestamp. The implementation uses the explicit change time, not renewal
+alone, to date the upcoming label. Earlier HTTP 403 qualification on air was
+not a statement that the API lacks plan details.
+
+Claude's live profile returned `organization_type: claude_max`,
 `rate_limit_tier: default_claude_max_20x` and `subscription_status: active`.
 A bounded Cursor account read returned `planInfo.planName: Premium` from
-`GetPlanInfo`; its usage endpoint supplied no plan name. Only these plan fields were retained; no tokens, emails or organization IDs
-were logged or added to fixtures.
-
-OpenAI's first-party client maps its plan codes to display names in
-[`KnownPlan::display_name`](https://github.com/openai/codex/blob/8531184b49bcb160175a84e140b659a83a426df7/codex-rs/protocol/src/auth.rs).
-It currently calls `pro` "Pro (More)", `prolite` "Pro" and `promax` "Pro (Max)".
-Those are explicit code mappings, not inferred multiplier promises. Commercial
-plans and allowances can change, as the current
-[Pro tier documentation](https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers)
-explains. CodexBar does not turn a generic `pro` field into a historical 20x
-allowance.
+`GetPlanInfo`; its usage endpoint supplied no plan name. Only selected plan
+fields were retained; no tokens, emails or organization IDs were logged or
+added to fixtures. The current OpenAI project also records the account-check
+endpoint in [issue 34192](https://github.com/openai/codex/issues/34192).
 
 Anthropic's profile field shape is also recorded in its first-party issue
 tracker, including the distinction between stale credentials and the live

@@ -407,13 +407,13 @@ mod credits_tests {
 
     #[test]
     fn plan_changes_preserve_account_identity_and_the_user_name() {
-        let original = account(vec![weekly(0.5)]).with_label("Work").with_plan("Pro (More)");
-        let changed = original.clone().with_plan("Pro");
+        let original = account(vec![weekly(0.5)]).with_label("Work").with_plan("Pro");
+        let changed = original.clone().with_plan("Pro Lite");
         assert_eq!(changed.id(), original.id());
         assert_eq!(changed.label(), Some("Work"));
         assert_eq!(changed.metrics(), original.metrics());
         assert_ne!(changed.display_name(), original.display_name());
-        assert_eq!(changed.display_name(), "ChatGPT · Codex (Work · Pro)");
+        assert_eq!(changed.display_name(), "ChatGPT · Codex (Work · Pro Lite)");
         assert_eq!(changed.with_plan(" ").plan(), None);
     }
 

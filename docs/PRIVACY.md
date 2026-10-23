@@ -15,7 +15,7 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 
 | Provider | Endpoint | Authenticated with |
 | --- | --- | --- |
-| ChatGPT / Codex | `https://chatgpt.com/backend-api/wham/usage` | The Codex sign-in (`auth.json`) |
+| ChatGPT / Codex | `https://chatgpt.com/backend-api/wham/usage` and `…/accounts/check/v4-2023-04-27` (current plan and scheduled change, cached four hours) | The Codex sign-in (`auth.json`) |
 | Claude | `https://api.anthropic.com/api/oauth/usage` and `…/api/oauth/profile` (current plan only) | The Claude Code sign-in (`.credentials.json`) |
 | Copilot | `https://api.github.com/copilot_internal/user`, and for org billing `https://api.github.com/enterprises/…/settings/billing/ai_credit/usage` (with an enterprise) or `https://api.github.com/organizations/…/settings/billing/ai_credit/usage` and `https://api.github.com/organizations/…/settings/billing/budgets` (a Copilot Business organization without one), and `https://api.github.com/orgs/…/copilot/billing` | A GitHub CLI token |
 | Cursor | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` and `…/GetPlanInfo` (current plan) | The Cursor sign-in (`auth.json`) |
@@ -29,7 +29,8 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | OpenCode Go / Zen | OAuth accounts: `https://opencode.ai/console/api/go/status` and `…/console/api/billing/status`; cookie accounts: `https://opencode.ai/workspace/…` | The account's OpenCode sign-in (OAuth), or your dashboard auth cookie |
 
 The optional account-profile lookups keep only the effective subscription name
-or tier. Claude profile names, emails and organization identifiers are not kept
+or tier and, for Codex, the scheduled target plan and change time. The displayed
+plan and upcoming-change label are retained with last-good snapshots. Claude profile names, emails and organization identifiers are not kept
 or logged. Plan lookup failure leaves valid usage visible. See
 [subscription plan sources and limits](SUBSCRIPTION_PLANS.md).
 

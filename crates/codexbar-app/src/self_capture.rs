@@ -218,20 +218,26 @@ async fn run(
         }
     }
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
-        cx.update(|cx| {
-            dashboard.update(cx, |dashboard, cx| {
-                dashboard.focus_account(
-                    &crate::handoff::FocusRequest {
-                        account: "codex-personal".into(),
-                        metric: None,
-                    },
-                    cx,
-                )
-            })
-        });
-        settle(cx).await;
-        if save(cx, handle, dir, "plan-codex") {
-            saved.push("plan-codex".into());
+        for (plan, name) in [
+            ("Pro → Pro Lite on Oct 26", "plan-codex"),
+            ("Pro Lite", "plan-codex-changed"),
+        ] {
+            cx.update(|cx| {
+                dashboard.update(cx, |dashboard, cx| {
+                    dashboard.capture_demo_plan("codex-personal", plan, cx);
+                    dashboard.focus_account(
+                        &crate::handoff::FocusRequest {
+                            account: "codex-personal".into(),
+                            metric: None,
+                        },
+                        cx,
+                    );
+                })
+            });
+            settle(cx).await;
+            if save(cx, handle, dir, name) {
+                saved.push(name.into());
+            }
         }
     }
     if std::env::var_os("CODEXBAR_CAPTURE_RESIZE").is_some() {
