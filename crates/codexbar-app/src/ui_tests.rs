@@ -7704,6 +7704,52 @@ fn subscription_plans_are_visible_and_unknown_sources_explain_the_fallback(cx: &
 }
 
 #[gpui_kit::test]
+fn plan_unavailability_waits_for_success_and_keeps_last_good_evidence(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("plan-fetch-evidence", "{}");
+    let provider = FakeProvider::for_account(Provider::Codex, "plan-account", None);
+    let dashboard = open_live(cx, &settings, vec![provider.clone()]);
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(
+        label(cx, handle, "plan-unavailable"),
+        None,
+        "loading is not evidence of a missing plan"
+    );
+    cx.run_until_parked();
+    assert!(matches!(
+        state(cx, &dashboard, "plan-account"),
+        AccountState::Unavailable(_)
+    ));
+    assert_eq!(
+        label(cx, handle, "plan-unavailable"),
+        None,
+        "neither is a first network failure"
+    );
+    *provider.error.lock().unwrap() = ProviderError::NotSignedIn { hint: "Sign in first." };
+    refresh(cx, &dashboard);
+    assert_eq!(
+        label(cx, handle, "plan-unavailable"),
+        None,
+        "an authentication failure says nothing about the plan"
+    );
+    // A successful unlimited account may have no metrics, so metrics.is_empty() is not the gate.
+    provider.set_empty();
+    refresh(cx, &dashboard);
+    assert_eq!(state(cx, &dashboard, "plan-account"), AccountState::Fresh);
+    let expected = Some("The connected usage source does not report a subscription plan.".to_owned());
+    assert_eq!(label(cx, handle, "plan-unavailable"), expected);
+    provider.set(None);
+    refresh(cx, &dashboard);
+    assert!(matches!(state(cx, &dashboard, "plan-account"), AccountState::Failed(_)));
+    assert_eq!(
+        label(cx, handle, "plan-unavailable"),
+        expected,
+        "last-good data remains valid evidence"
+    );
+}
+
+#[gpui_kit::test]
 fn a_scheduled_plan_keeps_the_account_name_visible_in_a_normal_width_row(cx: &mut TestAppContext) {
     let settings = TempSettings::new("scheduled-plan-layout", "{}");
     let plan = "Pro → Pro Lite on Oct 26";

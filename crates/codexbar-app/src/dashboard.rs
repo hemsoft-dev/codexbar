@@ -1381,6 +1381,31 @@ impl Dashboard {
         self.set_accounts(accounts, cx);
     }
 
+    /// Exercises first-fetch status on a synthetic account for rendered plan-note qualification.
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_demo_plan_state(&mut self, state: AccountState, cx: &mut Context<Self>) {
+        if !crate::is_demo() {
+            return;
+        }
+        let id = "cursor";
+        let mut accounts = self.accounts.clone();
+        let Some(account) = accounts.iter_mut().find(|account| account.id().as_str() == id) else {
+            return;
+        };
+        if matches!(state, AccountState::Fresh) {
+            *account = codexbar_core::demo::demo_accounts(self.now, &chrono::Local)
+                .into_iter()
+                .find(|account| account.id().as_str() == id)
+                .unwrap();
+            self.placeholders.remove(id);
+        } else {
+            *account = AccountSnapshot::new(account.id().clone(), account.provider(), Vec::new(), self.now);
+            self.placeholders.insert(id.to_owned());
+        }
+        self.states.insert(id.to_owned(), state);
+        self.set_accounts(accounts, cx);
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.ranked_with = alert_inputs(cx);
         self.now = Utc::now();
@@ -1874,15 +1899,17 @@ impl Dashboard {
                 .children(crate::alert_details::alert_details(&details, self.now, cx))
                 .children(crate::focus_cards::metric_list(account, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
-                .children(account.plan().is_none().then(|| {
-                    div()
-                        .id("plan-unavailable")
-                        .test_support()
-                        .aria_label("The connected usage source does not report a subscription plan.")
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("The connected usage source does not report a subscription plan.")
-                }))
+                .children(
+                    (account.plan().is_none() && !self.placeholders.contains(account.id().as_str())).then(|| {
+                        div()
+                            .id("plan-unavailable")
+                            .test_support()
+                            .aria_label("The connected usage source does not report a subscription plan.")
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("The connected usage source does not report a subscription plan.")
+                    }),
+                )
                 .children(account.messages().iter().enumerate().map(|(ix, message)| {
                     div()
                         .id(("provider-message", ix))

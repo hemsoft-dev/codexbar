@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric, Money, Pace, Provider};
 use serde_json::{Value, json};
 
-use crate::settings::{AccountRecord, Settings};
+use crate::settings::{AccountRecord, AuthMethod, Settings};
 
 pub const SNAPSHOTS_FILE: &str = "snapshots.json";
 /// Version 3 adds reported plans. Version 2 added currencies, spend and messages.
@@ -130,11 +130,36 @@ fn legacy_plan_label<'a>(
     let Some(combined) = label else {
         return (None, None);
     };
-    if configured.iter().any(|account| {
-        account.provider.eq_ignore_ascii_case(provider.key())
-            && (account.id == id || account.external_id.as_deref() == Some(id))
-            && account.label.trim() == combined
-    }) {
+    let same_provider = |account: &&AccountRecord| account.provider.eq_ignore_ascii_case(provider.key());
+    let known = configured
+        .iter()
+        .filter(same_provider)
+        .find(|account| account.id == id || account.external_id.as_deref() == Some(id));
+    // Default CLI adapters do not store their live identity on the generated settings record. Codex uses a
+    // user/workspace hash; Claude keeps the account-neutral id. A known record always takes precedence, so an
+    // automatic record's name cannot suppress migration on a different managed account.
+    let default_identity = match provider {
+        Provider::Codex => {
+            id == "codex-chatgpt"
+                || id
+                    .strip_prefix("codex-")
+                    .is_some_and(|hash| hash.len() == 12 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        }
+        Provider::Claude => id == "claude",
+        _ => false,
+    };
+    let configured_name = known.map_or_else(
+        || {
+            default_identity
+                && configured.iter().filter(same_provider).any(|account| {
+                    matches!(account.method, AuthMethod::Automatic | AuthMethod::CommandLine)
+                        && account.external_id.is_none()
+                        && account.label.trim() == combined
+                })
+        },
+        |account| account.label.trim() == combined,
+    );
+    if configured_name {
         return (label, None);
     }
     let (name, plan) = combined
@@ -551,6 +576,65 @@ mod tests {
             expected,
             "a failed refresh cannot persist the wrong split"
         );
+    }
+
+    #[test]
+    fn automatic_legacy_names_survive_the_default_adapters_different_identity() {
+        for version in [1, 2] {
+            for method in ["Automatic", "CommandLine"] {
+                for (provider, automatic_id, tier) in [
+                    (Provider::Codex, "codex-0123456789ab", "Pro"),
+                    (Provider::Claude, "claude", "Max"),
+                ] {
+                    let other_id = if provider == Provider::Codex {
+                        "codex-abcdef012345"
+                    } else {
+                        "claude-abcdef012345"
+                    };
+                    for name in [tier.to_owned(), format!("Work · {tier}")] {
+                        let dir = Dir::new("legacy-automatic-name");
+                        std::fs::write(dir.0.join("settings.json"), json!({
+                            "accountConfigurationVersion": 1,
+                            "accounts": [
+                                {"id":"generated-default-record", "providerId":provider.key(), "displayLabel":name,
+                                 "enabled":true, "authenticationMethod":method},
+                                {"id":"managed-record", "externalAccountId":other_id, "providerId":provider.key(),
+                                 "displayLabel":"Other", "enabled":true,
+                                 "authenticationMethod":if provider == Provider::Codex { "OAuth" } else { "BrowserSession" }}
+                            ]
+                        }).to_string()).unwrap();
+                        let automatic = AccountSnapshot::new(AccountId::new(automatic_id), provider, Vec::new(), now())
+                            .with_label(name.clone());
+                        let other = AccountSnapshot::new(AccountId::new(other_id), provider, Vec::new(), now())
+                            .with_label(name.clone());
+                        let values: Vec<_> = [&automatic, &other]
+                            .into_iter()
+                            .map(account_to_json)
+                            .map(|mut value| {
+                                value.as_object_mut().unwrap().remove("plan");
+                                value
+                            })
+                            .collect();
+                        std::fs::write(
+                            dir.0.join(SNAPSHOTS_FILE),
+                            json!({"version":version,"accounts":values}).to_string(),
+                        )
+                        .unwrap();
+                        let other =
+                            AccountSnapshot::new(AccountId::new(other_id), provider, Vec::new(), now()).with_plan(tier);
+                        let other = if name == tier { other } else { other.with_label("Work") };
+                        let expected = [automatic, other];
+                        assert_eq!(
+                            load_snapshots(&dir.0),
+                            expected,
+                            "{provider:?} {method} v{version} {name}"
+                        );
+                        save_snapshots(&dir.0, &expected).unwrap();
+                        assert_eq!(load_snapshots(&dir.0), expected);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

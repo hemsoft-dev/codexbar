@@ -216,6 +216,24 @@ async fn run(
         if save(cx, handle, dir, "plan-unavailable") {
             saved.push("plan-unavailable".into());
         }
+        for (state, name) in [
+            (crate::account_table::AccountState::Loading, "plan-loading"),
+            (
+                crate::account_table::AccountState::Unavailable("Couldn't fetch usage: network unavailable.".into()),
+                "plan-first-failure",
+            ),
+        ] {
+            cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.capture_demo_plan_state(state, cx)));
+            settle(cx).await;
+            if save(cx, handle, dir, name) {
+                saved.push(name.into());
+            }
+        }
+        cx.update(|cx| {
+            dashboard.update(cx, |dashboard, cx| {
+                dashboard.capture_demo_plan_state(crate::account_table::AccountState::Fresh, cx)
+            })
+        });
     }
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
         let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();

@@ -12,8 +12,11 @@ readable and upgrade on the next save. Their known Codex and Claude plan
 labels, such as `Pro` or `Work · Max`, split into the account name and reported
 plan before a refresh. An old generic Pro or Max stays generic until the
 provider supplies its current tier. Unrecognized labels stay account names. A
-configured name that resembles a plan stays a name only when its record ID or
-remembered external identity matches the restored account. Migration covers the
+configured name that resembles a plan stays a name when its record ID or
+remembered external identity matches the restored account. Default CLI accounts
+also retain their configured name when the adapter uses its live Codex hash or
+neutral Claude identity instead of the generated settings ID; a known managed
+account takes precedence over that fallback. Migration covers the
 legacy Enterprise, education and research spellings, including `Hc`, `Ent26`,
 `Enterprise Cbp Automation`, `Sci` and `Sci Plus`, and normalizes their known
 aliases. Business and education variants follow the explicit codes in
@@ -91,3 +94,7 @@ See [Gemini connection details](GEMINI.md),
 [GitHub billing](GITHUB_BILLING.md), [Grok](GROK.md),
 [X Subscription](X_SUBSCRIPTION.md) and [Greptile activity](GREPTILE.md)
 for the existing sources and their permission limits.
+
+The generic plan-unavailable note is shown only for an account backed by a
+successful fetch or restored last-good data. Loading and failed-first-fetch
+placeholders show their actual status without claiming the source lacks a plan.
