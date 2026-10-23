@@ -30,7 +30,18 @@ try {
     if ($LASTEXITCODE -eq 0 -or (Test-Path -LiteralPath (Join-Path $output 'cargo-audit.json'))) {
         throw 'Scanner startup failure reused stale evidence.'
     }
-    Write-Output 'PASS: actual idna advisory blocks the scan; failed startup cannot reuse stale evidence.'
+
+    $noticeFixture = Join-Path $PSScriptRoot 'fixtures/rust-advisory/notice/Cargo.lock'
+    $noticeOutput = Join-Path $output 'notice'
+    & $pwsh -NoProfile -File $scanner -Lockfile $noticeFixture -OutputDirectory $noticeOutput -DatabasePath $DatabasePath -AuditPath $AuditPath
+    if ($LASTEXITCODE -ne 0) { throw 'A notice-only scan unexpectedly failed.' }
+    $noticeReport = Get-Content -LiteralPath (Join-Path $noticeOutput 'cargo-audit.json') -Raw | ConvertFrom-Json -AsHashtable
+    if (-not $noticeReport.warnings.ContainsKey('notice')) { throw 'Informational notices are missing from the report.' }
+    $notice = @($noticeReport.warnings.notice | Where-Object {
+        $_.advisory.id -eq 'RUSTSEC-2022-0058' -and $_.package.name -eq 'inconceivable' -and $_.package.version -eq '0.9.0'
+    })
+    if ($notice.Count -ne 1) { throw 'The scanner did not retain the expected informational notice.' }
+    Write-Output 'PASS: vulnerability blocks; startup cannot reuse stale evidence; notice stays visible without blocking.'
 } finally {
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
 }

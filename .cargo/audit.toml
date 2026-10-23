@@ -1,7 +1,7 @@
 [advisories]
 # No exceptions. See docs/RUST_DEPENDENCY_SECURITY.md before adding one.
 ignore = []
-informational_warnings = ["unmaintained", "unsound"]
+informational_warnings = ["unmaintained", "unsound", "notice"]
 
 [output]
 deny = ["unsound"]

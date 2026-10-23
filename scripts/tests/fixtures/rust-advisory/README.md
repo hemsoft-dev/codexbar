@@ -9,3 +9,9 @@ named `advisory-scan-negative-fixture`, version `0.0.0`, edition `2024`, with
 that single dependency. The checksums and dependency graph come from crates.io.
 The integration test requires the real pinned scanner to report that exact
 advisory and package version. An unrelated nonzero exit cannot pass the test.
+
+The `notice/Cargo.lock` fixture was generated the same way, with package name
+`advisory-scan-notice-fixture` and sole dependency `inconceivable = "=0.9.0"`.
+Its [RUSTSEC-2022-0058](https://rustsec.org/advisories/RUSTSEC-2022-0058.html)
+notice must appear in the report without failing the scan. It is also never
+compiled, installed, or part of the product workspace.

@@ -38,11 +38,17 @@ finding. Missing tools, network failures and malformed fixtures cannot count
 as successful vulnerability detection. It also seeds a previous report and
 proves that a startup failure cannot reuse it.
 
+A second Cargo-generated lockfile contains `inconceivable 0.9.0`, which has
+the informational [RUSTSEC-2022-0058](https://rustsec.org/advisories/RUSTSEC-2022-0058.html)
+notice. The test requires that exact notice in `warnings.notice` and a
+successful scan. This prevents a shortened informational-category list from
+silently hiding notices. Neither fixture is compiled or shipped.
+
 ## Blocking policy and exceptions
 
 Vulnerability advisories at every severity and informational `unsound`
 advisories fail the scan. There are no ignored advisory IDs or target filters.
-Unmaintained and yanked dependencies remain visible as warnings. An
+Informational notices, unmaintained and yanked dependencies remain visible as warnings. An
 unmaintained notice alone does not assert an exploitable defect; a vulnerability
 or unsoundness notice on that same package still blocks. No warning category
 is silently removed from the JSON report.
