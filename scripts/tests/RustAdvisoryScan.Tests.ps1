@@ -34,3 +34,7 @@ try {
 } finally {
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
 }
+
+# GitHub's pwsh wrapper otherwise propagates the last expected child failure.
+# Only successful assertions and cleanup reach this exit; exceptions still fail.
+exit 0
