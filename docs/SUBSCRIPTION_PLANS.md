@@ -11,7 +11,9 @@ refuse to overwrite plans they do not understand. Versions 1 and 2 remain
 readable and upgrade on the next save. Their known Codex and Claude plan
 labels, such as `Pro` or `Work · Max`, split into the account name and reported
 plan before a refresh. An old generic Pro or Max stays generic until the
-provider supplies its current tier. Unrecognized labels stay account names.
+provider supplies its current tier. Unrecognized labels stay account names. A
+configured name that resembles a plan stays a name only when its record ID or
+remembered external identity matches the restored account.
 
 ## Sources and limits
 

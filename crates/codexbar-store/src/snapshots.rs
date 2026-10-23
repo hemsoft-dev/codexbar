@@ -34,7 +34,7 @@ pub fn load_snapshots(dir: &Path) -> Vec<AccountSnapshot> {
     else {
         return Vec::new();
     };
-    // A configured name can itself be "Pro" or end in " · Pro". Keep it a name.
+    // A configured name can itself be "Pro" or end in " · Pro". Keep it a name only for that same account.
     let settings = (version < 3).then(|| Settings::load_or_default(dir));
     let configured = settings.as_ref().map(Settings::accounts).unwrap_or_default();
     doc.get("accounts")
@@ -99,7 +99,7 @@ fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) 
     let label = value.get("label").and_then(Value::as_str);
     let plan = value.get("plan").and_then(Value::as_str);
     let (label, plan) = if version < 3 && plan.is_none() {
-        legacy_plan_label(provider, label, configured)
+        legacy_plan_label(provider, id, label, configured)
     } else {
         (label, plan)
     };
@@ -123,16 +123,18 @@ fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) 
 /// old generic Pro/Max into a precise tier: the cache did not retain that information.
 fn legacy_plan_label<'a>(
     provider: Provider,
+    id: &str,
     label: Option<&'a str>,
     configured: &[AccountRecord],
 ) -> (Option<&'a str>, Option<&'a str>) {
     let Some(combined) = label else {
         return (None, None);
     };
-    if configured
-        .iter()
-        .any(|account| account.provider.eq_ignore_ascii_case(provider.key()) && account.label.trim() == combined)
-    {
+    if configured.iter().any(|account| {
+        account.provider.eq_ignore_ascii_case(provider.key())
+            && (account.id == id || account.external_id.as_deref() == Some(id))
+            && account.label.trim() == combined
+    }) {
         return (label, None);
     }
     let (name, plan) = combined
@@ -415,19 +417,24 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_legacy_account_name_that_looks_like_a_plan_stays_a_name() {
+    fn legacy_plan_like_names_are_preserved_only_for_the_same_account() {
         let dir = Dir::new("legacy-custom-plan-name");
         std::fs::write(dir.0.join("settings.json"), json!({
             "accountConfigurationVersion": 1,
             "accounts": [
-                {"id": "custom", "providerId": "Codex", "displayLabel": "Pro", "enabled": true, "authenticationMethod": "OAuth"},
-                {"id": "work", "providerId": "Claude", "displayLabel": "Work · Pro", "enabled": true, "authenticationMethod": "OAuth"}
+                {"id": "custom", "externalAccountId": "signed-in-codex", "providerId": "Codex", "displayLabel": "Pro", "enabled": true, "authenticationMethod": "OAuth"},
+                {"id": "work", "externalAccountId": "signed-in-claude", "providerId": "Claude", "displayLabel": "Work · Pro", "enabled": true, "authenticationMethod": "OAuth"}
             ]
         }).to_string()).unwrap();
         let accounts = [
             AccountSnapshot::new(AccountId::new("signed-in-codex"), Provider::Codex, Vec::new(), now())
                 .with_label("Pro"),
             AccountSnapshot::new(AccountId::new("signed-in-claude"), Provider::Claude, Vec::new(), now())
+                .with_label("Work · Pro"),
+            AccountSnapshot::new(AccountId::new("custom"), Provider::Codex, Vec::new(), now()).with_label("Pro"),
+            AccountSnapshot::new(AccountId::new("automatic-codex"), Provider::Codex, Vec::new(), now())
+                .with_label("Pro"),
+            AccountSnapshot::new(AccountId::new("other-claude"), Provider::Claude, Vec::new(), now())
                 .with_label("Work · Pro"),
         ];
         std::fs::write(
@@ -438,7 +445,27 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        assert_eq!(load_snapshots(&dir.0), accounts);
+        let expected = [
+            accounts[0].clone(),
+            accounts[1].clone(),
+            accounts[2].clone(),
+            AccountSnapshot::new(AccountId::new("automatic-codex"), Provider::Codex, Vec::new(), now())
+                .with_plan("Pro"),
+            AccountSnapshot::new(AccountId::new("other-claude"), Provider::Claude, Vec::new(), now())
+                .with_label("Work")
+                .with_plan("Pro"),
+        ];
+        let loaded = load_snapshots(&dir.0);
+        assert_eq!(
+            loaded, expected,
+            "another account's configured name must not hide a legacy plan"
+        );
+        save_snapshots(&dir.0, &loaded).unwrap();
+        assert_eq!(
+            load_snapshots(&dir.0),
+            expected,
+            "a failed refresh cannot persist the wrong split"
+        );
     }
 
     #[test]
