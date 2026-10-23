@@ -11,6 +11,8 @@ use chrono::{DateTime, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric, Money, Pace, Provider};
 use serde_json::{Value, json};
 
+use crate::settings::{AccountRecord, Settings};
+
 pub const SNAPSHOTS_FILE: &str = "snapshots.json";
 /// Version 3 adds reported plans. Version 2 added currencies, spend and messages.
 /// Version 1 files read as US dollars with no messages.
@@ -25,16 +27,24 @@ pub fn load_snapshots(dir: &Path) -> Vec<AccountSnapshot> {
     let Ok(doc) = serde_json::from_str::<Value>(&text) else {
         return Vec::new();
     };
-    if !doc
+    let Some(version) = doc
         .get("version")
         .and_then(Value::as_u64)
-        .is_some_and(|version| (1..=VERSION).contains(&version))
-    {
+        .filter(|v| (1..=VERSION).contains(v))
+    else {
         return Vec::new();
-    }
+    };
+    // A configured name can itself be "Pro" or end in " · Pro". Keep it a name.
+    let settings = (version < 3).then(|| Settings::load_or_default(dir));
+    let configured = settings.as_ref().map(Settings::accounts).unwrap_or_default();
     doc.get("accounts")
         .and_then(Value::as_array)
-        .map(|accounts| accounts.iter().filter_map(account_from_json).collect())
+        .map(|accounts| {
+            accounts
+                .iter()
+                .filter_map(|value| account_from_json(value, version, configured))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -75,7 +85,7 @@ fn account_to_json(account: &AccountSnapshot) -> Value {
     })
 }
 
-fn account_from_json(value: &Value) -> Option<AccountSnapshot> {
+fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) -> Option<AccountSnapshot> {
     let id = value.get("id")?.as_str()?;
     let provider = Provider::from_key(value.get("provider")?.as_str()?)?;
     let fetched_at = time(value.get("fetchedAt")?)?;
@@ -86,10 +96,17 @@ fn account_from_json(value: &Value) -> Option<AccountSnapshot> {
         .map(metric_from_json)
         .collect::<Option<Vec<_>>>()?;
     let mut account = AccountSnapshot::new(AccountId::new(id), provider, metrics, fetched_at);
-    if let Some(label) = value.get("label").and_then(Value::as_str) {
+    let label = value.get("label").and_then(Value::as_str);
+    let plan = value.get("plan").and_then(Value::as_str);
+    let (label, plan) = if version < 3 && plan.is_none() {
+        legacy_plan_label(provider, label, configured)
+    } else {
+        (label, plan)
+    };
+    if let Some(label) = label {
         account = account.with_label(label);
     }
-    if let Some(plan) = value.get("plan").and_then(Value::as_str) {
+    if let Some(plan) = plan {
         account = account.with_plan(plan);
     }
     for message in value.get("messages").and_then(Value::as_array).into_iter().flatten() {
@@ -98,6 +115,38 @@ fn account_from_json(value: &Value) -> Option<AccountSnapshot> {
         }
     }
     Some(account)
+}
+
+/// Before version 3, Codex and Claude appended the reported plan to the configured label.
+/// Only recognize the old adapters' known plan names; an arbitrary account name is not a tier.
+/// Split from the right so a name containing the separator survives intact. Never expand an
+/// old generic Pro/Max into a precise tier: the cache did not retain that information.
+fn legacy_plan_label<'a>(
+    provider: Provider,
+    label: Option<&'a str>,
+    configured: &[AccountRecord],
+) -> (Option<&'a str>, Option<&'a str>) {
+    let Some(combined) = label else {
+        return (None, None);
+    };
+    if configured
+        .iter()
+        .any(|account| account.provider.eq_ignore_ascii_case(provider.key()) && account.label.trim() == combined)
+    {
+        return (label, None);
+    }
+    let (name, plan) = combined
+        .rsplit_once(" · ")
+        .map_or((None, combined), |(name, plan)| (Some(name), plan));
+    let known = match provider {
+        Provider::Codex => matches!(
+            plan,
+            "Free" | "Go" | "Plus" | "Pro" | "Promax" | "Team" | "Team Plus" | "Business" | "Enterprise" | "Edu"
+        ),
+        Provider::Claude => matches!(plan, "Free" | "Pro" | "Max" | "Team" | "Enterprise"),
+        _ => false,
+    };
+    if known { (name, Some(plan)) } else { (label, None) }
 }
 
 fn metric_to_json(metric: &Metric) -> Value {
@@ -307,6 +356,112 @@ mod tests {
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap()).unwrap();
         assert_eq!(doc["version"], 3);
         assert_eq!(load_snapshots(&dir.0), loaded);
+    }
+
+    #[test]
+    fn legacy_reported_plans_are_split_before_a_failed_refresh_can_save_them() {
+        for version in [1, 2] {
+            let dir = Dir::new(&format!("legacy-plan-labels-{version}"));
+            let cases = [
+                (Provider::Codex, "Pro", None, Some("Pro")),
+                (Provider::Codex, "Work · Pro", Some("Work"), Some("Pro")),
+                (Provider::Claude, "Max", None, Some("Max")),
+                (
+                    Provider::Claude,
+                    "Work · Research · Pro",
+                    Some("Work · Research"),
+                    Some("Pro"),
+                ),
+                (Provider::Claude, "Work", Some("Work"), None),
+                (Provider::Codex, "Work · Research", Some("Work · Research"), None),
+                (Provider::Cursor, "Work · Pro", Some("Work · Pro"), None),
+            ];
+            let mut values = Vec::new();
+            let mut expected = Vec::new();
+            for (index, (provider, old, label, plan)) in cases.into_iter().enumerate() {
+                let account = AccountSnapshot::new(
+                    AccountId::new(format!("legacy-{index}")),
+                    provider,
+                    vec![Metric::Activity {
+                        label: "Last good activity".into(),
+                        count: 7,
+                    }],
+                    now(),
+                )
+                .with_message("Last good usage");
+                let mut value = account_to_json(&account.clone().with_label(old));
+                value.as_object_mut().unwrap().remove("plan");
+                values.push(value);
+                let mut migrated = account;
+                if let Some(label) = label {
+                    migrated = migrated.with_label(label);
+                }
+                if let Some(plan) = plan {
+                    migrated = migrated.with_plan(plan);
+                }
+                expected.push(migrated);
+            }
+            std::fs::write(
+                dir.0.join(SNAPSHOTS_FILE),
+                json!({"version": version, "accounts": values}).to_string(),
+            )
+            .unwrap();
+            let loaded = load_snapshots(&dir.0);
+            assert_eq!(loaded, expected);
+            // No successful fetch occurs: saving restored last-good data must retain the split.
+            save_snapshots(&dir.0, &loaded).unwrap();
+            assert_eq!(load_snapshots(&dir.0), expected);
+        }
+    }
+
+    #[test]
+    fn a_configured_legacy_account_name_that_looks_like_a_plan_stays_a_name() {
+        let dir = Dir::new("legacy-custom-plan-name");
+        std::fs::write(dir.0.join("settings.json"), json!({
+            "accountConfigurationVersion": 1,
+            "accounts": [
+                {"id": "custom", "providerId": "Codex", "displayLabel": "Pro", "enabled": true, "authenticationMethod": "OAuth"},
+                {"id": "work", "providerId": "Claude", "displayLabel": "Work · Pro", "enabled": true, "authenticationMethod": "OAuth"}
+            ]
+        }).to_string()).unwrap();
+        let accounts = [
+            AccountSnapshot::new(AccountId::new("signed-in-codex"), Provider::Codex, Vec::new(), now())
+                .with_label("Pro"),
+            AccountSnapshot::new(AccountId::new("signed-in-claude"), Provider::Claude, Vec::new(), now())
+                .with_label("Work · Pro"),
+        ];
+        std::fs::write(
+            dir.0.join(SNAPSHOTS_FILE),
+            json!({"version": 2, "accounts": accounts.iter().map(account_to_json).map(|mut value| {
+            value.as_object_mut().unwrap().remove("plan"); value
+        }).collect::<Vec<_>>()})
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(load_snapshots(&dir.0), accounts);
+    }
+
+    #[test]
+    fn modern_labels_and_explicit_plans_are_not_reinterpreted() {
+        let dir = Dir::new("modern-plan-labels");
+        let accounts = [
+            AccountSnapshot::new(AccountId::new("custom"), Provider::Codex, Vec::new(), now()).with_label("Work · Pro"),
+            AccountSnapshot::new(AccountId::new("both"), Provider::Claude, Vec::new(), now())
+                .with_label("Pro")
+                .with_plan("Max 5x"),
+        ];
+        save_snapshots(&dir.0, &accounts).unwrap();
+        assert_eq!(load_snapshots(&dir.0), accounts);
+        let mut doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap()).unwrap();
+        doc["version"] = json!(2);
+        doc["accounts"].as_array_mut().unwrap().remove(0);
+        std::fs::write(dir.0.join(SNAPSHOTS_FILE), doc.to_string()).unwrap();
+        assert_eq!(
+            load_snapshots(&dir.0),
+            [accounts[1].clone()],
+            "explicit data always wins"
+        );
     }
 
     #[test]

@@ -8,7 +8,10 @@ account name and plan. Last-good snapshots retain the reported plan at restart;
 a successful refresh replaces it, including removing a plan the source no
 longer supplies. Snapshots are written as schema version 3, so older builds
 refuse to overwrite plans they do not understand. Versions 1 and 2 remain
-readable and upgrade on the next save.
+readable and upgrade on the next save. Their known Codex and Claude plan
+labels, such as `Pro` or `Work · Max`, split into the account name and reported
+plan before a refresh. An old generic Pro or Max stays generic until the
+provider supplies its current tier. Unrecognized labels stay account names.
 
 ## Sources and limits
 
