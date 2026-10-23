@@ -443,6 +443,29 @@ mod keychain {
         }
         answer
     }
+
+    #[cfg(test)]
+    mod presence_tests {
+        use super::*;
+
+        #[test]
+        fn known_and_in_flight_presence_do_not_start_redundant_lookups() {
+            let config = Path::new("/__codexbar_presence_coverage_fixture__");
+            let service = super::super::keychain_service(config);
+            with_presence(&service, |entry| {
+                entry.known = Some((Instant::now(), KeychainItem::SignedIn));
+                entry.looking = false;
+            });
+            assert_eq!(holds_known(config), KeychainItem::SignedIn);
+            with_presence(&service, |entry| assert!(!entry.looking));
+            with_presence(&service, |entry| {
+                entry.known = None;
+                entry.looking = true;
+            });
+            assert_eq!(holds_known(config), KeychainItem::Absent);
+            with_presence(&service, |entry| assert!(entry.looking));
+        }
+    }
 }
 
 /// Claude Code keeps its sign-ins in files everywhere but macOS.

@@ -8123,3 +8123,40 @@ fn fleet_counts_subscriptions_once_including_two_paid_accounts_of_one_vendor(cx:
         assert!(!fleet.equal_weights);
     });
 }
+
+#[gpui_kit::test]
+fn sus_legacy_ownership_checks_both_record_and_account_before_applying_price(cx: &mut TestAppContext) {
+    use codexbar_core::{AccountId, AccountSnapshot, Provider, sus::Price};
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("sus-legacy-ownership-price", "{}");
+    let (_, _) = open_dashboard(cx, &settings);
+    let base = "2026-10-23T14:00:00Z".parse().unwrap();
+    let fixtures = crate::sus::fixture(base, 0);
+    let accounts = [
+        fixtures[0].clone(),
+        AccountSnapshot::new(
+            AccountId::new("discovered"),
+            Provider::Codex,
+            fixtures[1].metrics().to_vec(),
+            base,
+        )
+        .with_subscription_price(Price::fixed(20_000)),
+    ];
+    cx.update(|cx| {
+        let mut record = AccountRecord::new(names::CODEX, "CLI", AuthMethod::Automatic);
+        record.id = "configured".into();
+        record.sus_price = Some(Price::fixed(10_000));
+        SettingsHub::update(cx, |settings| settings.upsert(record)).unwrap();
+        // Separate singleton maps make every predicate outcome independent of hash iteration order.
+        for (record, account, expected) in [
+            ("other#source", "discovered", 62),
+            ("configured#source", "different-account", 62),
+            ("configured#source", "discovered", 67),
+        ] {
+            let owned = [(record.to_owned(), account.to_owned())].into_iter().collect();
+            let fleet = crate::sus::fleet(&accounts, &Default::default(), &owned, base, cx);
+            assert_eq!(fleet.score.unwrap().value(), expected);
+            assert!(!fleet.equal_weights);
+        }
+    });
+}

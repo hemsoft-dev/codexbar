@@ -97,6 +97,51 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  rust-metrics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev
+
+      - name: Install pinned Rust metrics tools
+        run: python3 scripts/rust-metrics.py install
+
+      - name: Test production scope and regression gate
+        run: python3 scripts/tests/test_rust_metrics.py
+
+      - name: Measure base and candidate, then gate regressions
+        env:
+          METRICS_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/rust-metrics.py ci --base "$METRICS_BASE"
+
+      - name: Publish Rust metrics summary
+        if: always()
+        run: |
+          if test -f artifacts/rust-metrics/candidate/summary.md; then
+            cat artifacts/rust-metrics/candidate/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if test -f artifacts/rust-metrics/gate.json; then
+            cat artifacts/rust-metrics/gate.json >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rust-metrics
+          path: artifacts/rust-metrics/
+          retention-days: 14
+
   build:
     runs-on: windows-latest
 

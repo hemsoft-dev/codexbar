@@ -1,0 +1,17 @@
+[package]
+name = "codexbar-metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cargo-crap = "=0.9.0"
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde_json.workspace = true
+anyhow.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
