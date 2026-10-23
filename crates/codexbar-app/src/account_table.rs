@@ -599,9 +599,18 @@ impl TableDelegate for AccountTable {
                         .child(row.account_name()),
                 )
                 .children(row.plan().map(|plan| {
+                    let full: SharedString = plan.to_owned().into();
                     div()
+                        .id(ElementId::Name(format!("plan-badge-{}", row.id().as_str()).into()))
+                        .test_support()
+                        .aria_label(plan.to_owned())
                         .flex_shrink_0()
-                        .child(Tag::secondary().small().child(plan.to_owned()))
+                        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                        .child(
+                            Tag::secondary()
+                                .small()
+                                .child(div().max_w(px(56.)).truncate().child(plan.to_owned())),
+                        )
                 }))
                 .children(self.groups.get(row.id().as_str()).map(|group| {
                     div()

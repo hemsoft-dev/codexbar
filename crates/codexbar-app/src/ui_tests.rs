@@ -7698,3 +7698,23 @@ fn subscription_plans_are_visible_and_unknown_sources_explain_the_fallback(cx: &
         Some("The connected usage source does not report a subscription plan.")
     );
 }
+
+#[gpui_kit::test]
+fn a_scheduled_plan_keeps_the_account_name_visible_in_a_normal_width_row(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("scheduled-plan-layout", "{}");
+    let plan = "Pro → Pro Lite on Oct 26";
+    let account = codexbar_core::demo::demo_accounts(chrono::Utc::now(), &chrono::Local)
+        .remove(0)
+        .with_plan(plan);
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![account]));
+    let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    assert_eq!(label(cx, handle, "plan-badge-codex-personal").as_deref(), Some(plan));
+    let width = cx
+        .update_window(handle, |_, window, _| {
+            f32::from(window.find("account-name-codex-personal").bounds().size.width)
+        })
+        .unwrap();
+    assert!(width >= 30., "the plan must leave readable account text, got {width}px");
+}
