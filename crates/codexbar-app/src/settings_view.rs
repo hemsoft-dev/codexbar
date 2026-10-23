@@ -258,6 +258,7 @@ fn account_item(record: AccountRecord) -> SettingItem {
             && matches!(crate::gemini_sign_in::apps_session(hub, &current), Ok(Some(_)) | Err(_));
         let forget_apps_id = current.id.clone();
         let signed_in = managed.is_some_and(|kind| kind.signed_in(hub, &current));
+        let price_id = current.id.clone();
         let sign_in_id = current.id.clone();
         let sign_out_id = current.id.clone();
         let read_only = hub.is_read_only();
@@ -345,6 +346,14 @@ fn account_item(record: AccountRecord) -> SettingItem {
                     )
                 })
             })
+            .child(
+                Button::new(SharedString::from(format!("sus-price-{}", current.id)))
+                    .small()
+                    .ghost()
+                    .label("SUS price…")
+                    .disabled(read_only)
+                    .on_click(move |_, window, cx| crate::sus_price::open(&price_id, window, cx)),
+            )
             .when(saved_apps, |this| {
                 this.child(
                     Button::new(SharedString::from(format!("forget-apps-{}", current.id)))

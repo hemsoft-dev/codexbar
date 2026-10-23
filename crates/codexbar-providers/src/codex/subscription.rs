@@ -22,6 +22,7 @@ static CACHE: Mutex<Vec<(CacheKey, CacheEntry)>> = Mutex::new(Vec::new());
 struct Plan {
     name: String,
     scheduled: Option<(String, DateTime<Utc>)>,
+    price: Option<codexbar_core::sus::Price>,
 }
 
 impl Plan {
@@ -83,7 +84,36 @@ fn parse(payload: &str, account_id: &str) -> PlanResult {
                 .with_timezone(&Utc);
             Some((target, at))
         });
-    Ok(Some(Plan { name, scheduled }))
+    let mut price = text(account, "plan_type")
+        .and_then(|code| codexbar_core::sus::known_price(codexbar_core::Provider::Codex, &code.to_ascii_lowercase()));
+    if let Some(change) = record
+        .pointer("/entitlement/scheduled_plan_change")
+        .filter(|change| self::name(change).is_some())
+    {
+        let target = text(change, "plan_type")
+            .and_then(|code| {
+                codexbar_core::sus::known_price(codexbar_core::Provider::Codex, &code.to_ascii_lowercase())
+            })
+            .and_then(|p| p.monthly_cents);
+        let at = text(change, "changes_at")
+            .or_else(|| record.get("entitlement").and_then(|e| text(e, "renews_at")))
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|at| at.with_timezone(&Utc));
+        if let Some(at) = at {
+            price
+                .get_or_insert(codexbar_core::sus::Price {
+                    monthly_cents: None,
+                    scheduled: None,
+                })
+                .scheduled = Some((target, at));
+        }
+    }
+    Ok(Some(Plan { name, scheduled, price }))
+}
+
+pub(super) struct Metadata {
+    pub name: String,
+    pub price: Option<codexbar_core::sus::Price>,
 }
 
 pub(super) fn lookup(
@@ -92,7 +122,7 @@ pub(super) fn lookup(
     credentials: &Credentials,
     now: DateTime<Utc>,
     style: &dyn DateStyle,
-) -> Result<Option<String>, &'static str> {
+) -> Result<Option<Metadata>, &'static str> {
     let account_id = credentials.account_id.as_deref().ok_or(UNAVAILABLE)?;
     // No tokens or raw account identifiers are retained in the cache key.
     let identity: [u8; 32] = Sha256::digest(format!("{}\n{account_id}", credentials.account().as_str())).into();
@@ -115,7 +145,12 @@ pub(super) fn lookup(
         return value
             .value
             .as_ref()
-            .map(|plan| plan.as_ref().map(|plan| plan.display(now, style)))
+            .map(|plan| {
+                plan.as_ref().map(|plan| Metadata {
+                    name: plan.display(now, style),
+                    price: plan.price.clone(),
+                })
+            })
             .map_err(|error| *error);
     }
     let bearer = format!("Bearer {}", credentials.access_token);
@@ -149,7 +184,12 @@ pub(super) fn lookup(
     }
     let result = value
         .as_ref()
-        .map(|plan| plan.as_ref().map(|plan| plan.display(now, style)))
+        .map(|plan| {
+            plan.as_ref().map(|plan| Metadata {
+                name: plan.display(now, style),
+                price: plan.price.clone(),
+            })
+        })
         .map_err(|error| *error);
     *cached = Some(Cached { until, value });
     result
@@ -169,7 +209,7 @@ mod tests {
         credentials: &Credentials,
         now: DateTime<Utc>,
     ) -> Result<Option<String>, &'static str> {
-        super::lookup(http, path, credentials, now, &English)
+        super::lookup(http, path, credentials, now, &English).map(|plan| plan.map(|p| p.name))
     }
     fn now() -> DateTime<Utc> {
         "2026-10-23T04:00:00Z".parse().unwrap()
@@ -184,6 +224,56 @@ mod tests {
                 "scheduled_plan_change":{"plan_type":"prolite","changes_at":"2026-10-26T13:33:19Z"}}
         }}})
         .to_string()
+    }
+    #[test]
+    fn a_null_or_empty_scheduled_change_never_expires_a_normal_renewal() {
+        for change in [Value::Null, serde_json::json!({})] {
+            let mut data: Value = serde_json::from_str(&scheduled()).unwrap();
+            data["accounts"]["a"]["entitlement"]["scheduled_plan_change"] = change;
+            let price = parse(&data.to_string(), "a").unwrap().unwrap().price.unwrap();
+            assert_eq!(price.scheduled, None);
+            assert_eq!(price.at(now() + Duration::days(100)), Some(20_000));
+        }
+    }
+    #[test]
+    fn an_unknown_scheduled_target_expires_the_known_price_at_its_date() {
+        for code in ["pro", "prolite"] {
+            let mut data: Value = serde_json::from_str(&scheduled()).unwrap();
+            data["accounts"]["a"]["account"]["plan_type"] = code.into();
+            data["accounts"]["a"]["entitlement"]["scheduled_plan_change"]["plan_type"] = "team".into();
+            let price = parse(&data.to_string(), "a").unwrap().unwrap().price.unwrap();
+            let at: DateTime<Utc> = "2026-10-26T13:33:19Z".parse().unwrap();
+            assert_eq!(
+                price.at(at - Duration::milliseconds(1)),
+                Some(if code == "pro" { 20_000 } else { 10_000 })
+            );
+            assert_eq!(price.at(at), None);
+            assert_eq!(price.at(at + Duration::days(2)), None);
+        }
+    }
+    #[test]
+    fn prices_use_codes_and_only_explicit_dated_changes() {
+        let mut data: Value = serde_json::from_str(&scheduled()).unwrap();
+        data["accounts"]["a"]["account"]["plan_display_name"] = "Custom display".into();
+        data["accounts"]["a"]["entitlement"]["scheduled_plan_change"]
+            .as_object_mut()
+            .unwrap()
+            .remove("changes_at");
+        let price = parse(&data.to_string(), "a").unwrap().unwrap().price.unwrap();
+        let change: DateTime<Utc> = "2026-10-26T13:33:19Z".parse().unwrap();
+        assert_eq!(price.at(change - Duration::seconds(1)), Some(20_000));
+        assert_eq!(price.at(change), Some(10_000));
+        data["accounts"]["a"]["entitlement"]
+            .as_object_mut()
+            .unwrap()
+            .remove("scheduled_plan_change");
+        assert_eq!(
+            parse(&data.to_string(), "a").unwrap().unwrap().price.unwrap().scheduled,
+            None
+        );
+        data["accounts"]["a"]["account"]["plan_type"] = "unknown".into();
+        data["accounts"]["a"]["account"]["plan_display_name"] = "Pro".into();
+        assert!(parse(&data.to_string(), "a").unwrap().unwrap().price.is_none());
     }
     // The fixture instant can fall on October 26 or 27 locally. Expected
     // labels must follow the host date too, so both sides of UTC are covered.

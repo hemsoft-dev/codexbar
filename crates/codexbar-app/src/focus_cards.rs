@@ -282,7 +282,8 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
                     .when(severity >= Severity::Watch, |this| {
                         this.child(div().size_2().rounded_full().bg(severity_color(severity, cx)))
                     })
-                    .child(div().text_sm().font_semibold().child(metric.used_display())),
+                    .child(div().text_sm().font_semibold().child(metric.used_display()))
+                    .children(crate::sus::metric(metric, now, &format!("focus-metric-{ix}-sus"), cx)),
             )
             .when(!detail.is_empty(), |this| {
                 this.child(div().text_xs().text_color(muted).child(detail))
@@ -434,6 +435,7 @@ fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot
                     cx,
                 )),
         )
+        .children(crate::sus::metric(metric, now, &format!("focus-bar-{slot}-sus"), cx))
         .children(pace.map(|pace| div().text_sm().text_color(muted).child(pace)));
     let card = Card::new(window_title(metric), window_period(metric, now), body)
         .id(format!("focus-bar-card-{slot}"))
@@ -887,7 +889,17 @@ fn share_card(
                 .takeaway("No spend limit is set for this account");
         }
         if let Metric::Activity { .. } = metric {
-            return Card::new(metric.label().to_owned(), "Activity", body).takeaway("A count with no limit or reset");
+            return Card::new(
+                metric.label().to_owned(),
+                "Activity",
+                body.children(crate::sus::metric(
+                    metric,
+                    now,
+                    &format!("focus-activity-{slot}-sus"),
+                    cx,
+                )),
+            )
+            .takeaway("Tracked activity, no quota percentage or reset");
         }
         let takeaway = metric
             .days_of_credit()
@@ -941,11 +953,18 @@ fn share_card(
             format!("{caption} · {credits}")
         };
     }
-    Card::new(title, window_period(metric, now), ring)
-        .in_slot(slot, 1)
-        .hover_group(crate::ring_size::GROUP)
-        .takeaway(takeaway)
-        .caption(caption)
+    Card::new(
+        title,
+        window_period(metric, now),
+        v_flex()
+            .size_full()
+            .child(div().flex_1().min_h_0().child(ring))
+            .children(crate::sus::metric(metric, now, &format!("focus-share-{slot}-sus"), cx)),
+    )
+    .in_slot(slot, 1)
+    .hover_group(crate::ring_size::GROUP)
+    .takeaway(takeaway)
+    .caption(caption)
 }
 
 /// The chosen ring metrics that the account still reports with a share of a limit, in the order chosen.
@@ -1005,6 +1024,12 @@ fn rings_card(
                         .render(),
                 ),
             )
+            .children(crate::sus::metric(
+                metric,
+                now,
+                &format!("focus-limits-{}-sus", metric.key()),
+                cx,
+            ))
             // The reset line is kept even when a limit has no reset, such as Claude's Extra usage, so its ring sits
             // level with the others.
             .child(

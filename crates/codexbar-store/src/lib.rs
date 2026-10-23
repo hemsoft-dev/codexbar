@@ -17,3 +17,5 @@ pub mod widgets;
 pub use demo::demo_history;
 pub use enrich::{TREND_DAYS, enrich};
 pub use history::{HistoryStore, Sample, default_history_path};
+
+pub mod subscription_price;

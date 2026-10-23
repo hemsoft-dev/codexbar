@@ -362,7 +362,7 @@ impl Dashboard {
                     .update_window(window_handle, |_, window, cx| crate::placement::capture(window, cx))
                     .ok();
                 let alive = this.update(cx, |this, cx| {
-                    this.now = Utc::now();
+                    this.now = crate::sus::now(cx);
                     if let Some(placement) = placement {
                         this.note_placement(placement, cx);
                     }
@@ -1406,9 +1406,28 @@ impl Dashboard {
         self.set_accounts(accounts, cx);
     }
 
+    #[cfg(any(test, feature = "capture"))]
+    pub(crate) fn capture_sus_phase(&mut self, phase: u8, base: DateTime<Utc>, cx: &mut Context<Self>) {
+        assert!(matches!(self.source, DataSource::Demo));
+        let now = if phase == 1 { base + Duration::seconds(2) } else { base };
+        crate::sus::capture_time(now, cx);
+        self.states.clear();
+        self.placeholders.clear();
+        self.selected = Some(codexbar_core::AccountId::new("gemini-personal"));
+        self.set_accounts(crate::sus::fixture(base, phase), cx);
+        self.now = now;
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_now(now);
+            table.refresh(cx);
+        });
+        self.selected = Some(codexbar_core::AccountId::new("gemini-personal"));
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.ranked_with = alert_inputs(cx);
-        self.now = Utc::now();
+        self.now = crate::sus::now(cx);
         let urgency = self.urgency_of(&accounts, cx);
         accounts = arrange(accounts, &self.layout, |id| {
             urgency.get(id).copied().unwrap_or_default()
@@ -1549,7 +1568,18 @@ impl Dashboard {
             Some(AccountState::Unavailable(_)) => " (unavailable)".to_owned(),
             _ => String::new(),
         };
-        format!("CodexBar - {}{used}{reset}{freshness}", top.display_name())
+        let scores = top
+            .metrics()
+            .iter()
+            .filter_map(|m| codexbar_core::sus::text(m, self.now))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let score = if scores.is_empty() {
+            String::new()
+        } else {
+            format!(", {scores}")
+        };
+        format!("CodexBar - {}{used}{reset}{score}{freshness}", top.display_name())
     }
 
     fn focused(&self) -> Option<&AccountSnapshot> {
@@ -1666,6 +1696,28 @@ impl Dashboard {
                     .gap_2()
                     .pr_2()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child({
+                        let fleet = crate::sus::fleet(&self.accounts, &self.states, &self.owned_ids, self.now, cx);
+                        gpui_kit::component::h_flex()
+                            .gap_1()
+                            .child(div().text_xs().child("Fleet"))
+                            .child(crate::sus::badge(fleet.score, "fleet-sus", "Fleet SUS", cx))
+                            .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                                if fleet.subscriptions == 0 {
+                                    "no eligible subscriptions".to_owned()
+                                } else {
+                                    format!(
+                                        "{} · {} subscriptions",
+                                        if fleet.equal_weights {
+                                            "equal weights"
+                                        } else {
+                                            "price weighted"
+                                        },
+                                        fleet.subscriptions
+                                    )
+                                },
+                            ))
+                    })
                     .child(div().text_sm().text_color(cx.theme().muted_foreground).child(updated))
                     .child(
                         Button::new("refresh")

@@ -24,7 +24,8 @@ Keychain item) the Grok CLI and Cursor keep, and renews the Grok sign-in through
 
 - The two weekly limits are separate windows with separate resets, and are never added together.
 - The Weekly SuperGrok limit follows the [Grok rules](GROK.md#what-is-shown): unified billing and a current weekly
-  period only; an omitted percent is 0% only for a verified paid plan, and the card says so.
+  period and an explicit valid percentage only. Missing quota data can show tracked local
+  CLI activity with SUS n/a; activity never becomes a quota percentage. See [SUS sources](SUS.md#grokx-source-for-chief).
 - The Weekly Grok Bot limit takes `usagePercent` and `nextResetTimestampUtc`. An explicit zero is reported usage. A
   missing, `null`, negative or malformed percent, a missing or passed reset, a pooled team allowance
   (`usesPooledEnterpriseAllowance`) or a plan without an included allowance shows no meter and says why.

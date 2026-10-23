@@ -915,14 +915,31 @@ fn bar_cell(
 ) -> gpui_kit::AnyElement {
     let muted = cx.theme().muted_foreground;
     let used = match metric {
-        Metric::Activity { .. } => return no_bar(id, muted),
+        Metric::Activity { .. } => {
+            return gpui_kit::component::h_flex()
+                .gap_2()
+                .child(no_bar(id, muted))
+                .children(crate::sus::metric(metric, now, &format!("{id}-sus"), cx))
+                .into_any_element();
+        }
         Metric::Credits { .. } => match metric.progress() {
             Some(progress) => progress,
             None => return no_bar(id, muted),
         },
         _ => metric.used_fraction().unwrap_or_else(|| assessment.pressure()),
     };
-    bar(id, &bar_projection(metric, used, row, now), row, cx)
+    h_flex()
+        .w_full()
+        .gap_2()
+        .items_center()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(bar(id, &bar_projection(metric, used, row, now), row, cx)),
+        )
+        .children(crate::sus::metric(metric, now, &format!("{id}-sus"), cx))
+        .into_any_element()
 }
 
 /// The bar for a row with no primary metric: the account's pressure, with nothing to project.
@@ -933,6 +950,14 @@ fn bar_cell_without_metric(
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
+    if matches!(row.provider(), Provider::Grok | Provider::XSubscription) {
+        return h_flex()
+            .gap_2()
+            .items_center()
+            .child(no_bar(id, cx.theme().muted_foreground))
+            .child(crate::sus::badge(None, &format!("{id}-sus"), "Quota unavailable", cx))
+            .into_any_element();
+    }
     bar(id, &Projection::bare(assessment.pressure()).graded(severity), row, cx)
 }
 

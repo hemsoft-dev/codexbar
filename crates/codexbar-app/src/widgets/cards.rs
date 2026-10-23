@@ -221,6 +221,8 @@ pub struct TileView {
     pub status: Option<String>,
     /// Freshness or what's wrong: "Last known, 5m ago", "Unavailable", "Resets in 2d".
     pub note: Option<String>,
+    pub sus: Option<String>,
+    pub sus_score: Option<u8>,
 }
 
 impl TileView {
@@ -235,6 +237,8 @@ impl TileView {
             percent: None,
             status: None,
             note: Some(note.to_owned()),
+            sus: None,
+            sus_score: None,
         }
     }
 
@@ -311,6 +315,14 @@ impl TileView {
             percent,
             status,
             note,
+            sus: found.sus_eligible.then(|| {
+                found
+                    .sus
+                    .filter(|s| *s <= 100)
+                    .map(|s| format!("SUS {s}"))
+                    .unwrap_or_else(|| "SUS n/a".into())
+            }),
+            sus_score: found.sus.filter(|s| *s <= 100),
         }
     }
 }
@@ -386,6 +398,16 @@ fn tile(view: &TileView, compact: bool) -> Value {
     name["size"] = json!("Small");
     name["wrap"] = json!(false);
     items.push(name);
+    if let Some(sus) = &view.sus {
+        let mut score = text(sus.clone());
+        score["color"] = json!(match view.sus_score {
+            Some(90..=100) => "Good",
+            Some(75..=89) => "Warning",
+            Some(_) => "Attention",
+            None => "Default",
+        });
+        items.push(score);
+    }
     if let Some(big) = &view.big {
         let mut figure = text(big.clone());
         figure["size"] = json!(if compact { "Medium" } else { "Large" });
@@ -597,6 +619,8 @@ mod tests {
                 status: None,
                 projected_percent: None,
                 outlook: None,
+                sus: None,
+                sus_eligible: false,
             }],
         }
     }
@@ -796,6 +820,8 @@ mod tests {
             status: None,
             projected_percent: None,
             outlook: None,
+            sus: None,
+            sus_eligible: false,
         });
         snapshot.accounts[0].metrics[0].resets_at = Some(now() + chrono::Duration::hours(50));
         snapshot.accounts[0].status = Some("At risk".into());

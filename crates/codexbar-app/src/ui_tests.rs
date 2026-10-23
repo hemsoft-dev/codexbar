@@ -748,7 +748,7 @@ fn legacy_history_stays_put_while_no_account_is_configured(cx: &mut TestAppConte
 #[gpui_kit::test]
 fn legacy_history_stays_put_when_settings_are_from_a_newer_version(cx: &mut TestAppContext) {
     // A newer schema can't be read, so the hub falls back to defaults; nothing may move on their say-so.
-    let newer = r#"{ "accountConfigurationVersion": 2, "accounts": [] }"#;
+    let newer = r#"{ "accountConfigurationVersion": 3, "accounts": [] }"#;
     assert_eq!(legacy_history_after_migration(cx, newer, "migrate-newer"), (1, 0));
 }
 
@@ -7928,4 +7928,198 @@ fn a_scheduled_plan_keeps_the_account_name_visible_in_a_normal_width_row(cx: &mu
         })
         .unwrap();
     assert!(width >= 30., "the plan must leave readable account text, got {width}px");
+}
+
+#[gpui_kit::test]
+fn sus_rendering_and_fleet_use_the_same_forecasts_and_effective_prices(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("sus-rendering", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let base = "2026-10-23T14:00:00Z".parse().unwrap();
+    for (phase, expected) in [
+        (0, "Fleet SUS: SUS 63, red"),
+        (1, "Fleet SUS: SUS 65, red"),
+        (2, "Fleet SUS: SUS 72, red"),
+        (4, "Fleet SUS: SUS 74, red"),
+        (5, "Fleet SUS: SUS 70, red"),
+        (6, "Fleet SUS: SUS 60, red"),
+        (7, "Fleet SUS: SUS 60, red"),
+    ] {
+        cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(phase, base, cx)));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        assert_eq!(label(cx, handle, "fleet-sus").as_deref(), Some(expected));
+        assert_eq!(
+            label(cx, handle, "progress-cell-codex-personal-sus").as_deref(),
+            Some(if phase == 7 {
+                "Weekly: SUS 40, red"
+            } else {
+                "Weekly: SUS 48, red"
+            })
+        );
+        assert_eq!(
+            label(cx, handle, "focus-metric-1-sus").as_deref(),
+            Some("Argon weekly: SUS 84, yellow")
+        );
+    }
+    cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(3, base, cx)));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(
+        label(cx, handle, "focus-metric-1-sus").as_deref(),
+        Some("Argon weekly: SUS n/a, unavailable")
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-x-subscription-sus").as_deref(),
+        Some("Tracked activity has no quota: SUS n/a, unavailable")
+    );
+}
+
+#[gpui_kit::test]
+fn sus_price_dialog_saves_unknown_without_changing_account_identity(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "sus-price-editor",
+        r#"{"accountConfigurationVersion":1,"accounts":[{"id":"price-account","providerId":"Codex","displayLabel":"Work","enabled":true,"authenticationMethod":"Automatic"}]}"#,
+    );
+    let (handle, _) = open_dashboard(cx, &settings);
+    cx.update_window(handle, |_, window, cx| {
+        crate::sus_price::open("price-account", window, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "sus-price-save");
+    cx.update(|cx| {
+        let account = SettingsHub::global(cx)
+            .settings()
+            .accounts()
+            .iter()
+            .find(|r| r.id == "price-account")
+            .unwrap();
+        assert_eq!(account.label, "Work");
+        assert_eq!(account.sus_price.as_ref().unwrap().monthly_cents, None);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        crate::sus_price::open("price-account", window, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "sus-current-price");
+    type_text(cx, handle, "200");
+    click(cx, handle, "sus-next-price");
+    type_text(cx, handle, "100");
+    click(cx, handle, "sus-price-at");
+    type_text(cx, handle, "2026-10-26T09:33:19-04:00");
+    click(cx, handle, "sus-price-save");
+    cx.update(|cx| {
+        let account = SettingsHub::global(cx)
+            .settings()
+            .accounts()
+            .iter()
+            .find(|r| r.id == "price-account")
+            .unwrap();
+        let price = account.sus_price.as_ref().unwrap();
+        assert_eq!(price.monthly_cents, Some(20_000));
+        assert_eq!(price.scheduled.unwrap().0, Some(10_000));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        crate::sus_price::open("price-account", window, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "sus-price-provider");
+    cx.update(|cx| {
+        assert!(
+            SettingsHub::global(cx)
+                .settings()
+                .accounts()
+                .iter()
+                .find(|r| r.id == "price-account")
+                .unwrap()
+                .sus_price
+                .is_none()
+        )
+    });
+}
+
+#[gpui_kit::test]
+fn sus_overrides_follow_automatic_source_records_and_clear_without_refetch(cx: &mut TestAppContext) {
+    use codexbar_core::{AccountId, AccountSnapshot, Provider, sus::Price};
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("sus-automatic-overrides", "{}");
+    let (_, _) = open_dashboard(cx, &settings);
+    let base = "2026-10-23T14:00:00Z".parse().unwrap();
+    let fixtures = crate::sus::fixture(base, 0);
+    let accounts: Vec<_> = [
+        ("codex-credential-id", Provider::Codex, "automatic-codex", 1usize),
+        ("claude", Provider::Claude, "automatic-claude", 0),
+    ]
+    .into_iter()
+    .map(|(id, provider, record, index)| {
+        AccountSnapshot::new(AccountId::new(id), provider, fixtures[index].metrics().to_vec(), base)
+            .with_subscription_record(record.to_owned())
+            .with_subscription_price(Price::fixed(20_000))
+    })
+    .collect();
+    cx.update(|cx| {
+        let mut codex = AccountRecord::new(names::CODEX, "CLI", AuthMethod::Automatic);
+        codex.id = "automatic-codex".into();
+        codex.sus_price = Some(Price::fixed(10_000));
+        let mut claude = AccountRecord::new(names::CLAUDE, "CLI", AuthMethod::Automatic);
+        claude.id = "automatic-claude".into();
+        claude.sus_price = Some(Price::fixed(20_000));
+        SettingsHub::update(cx, |s| {
+            s.upsert(codex)?;
+            s.upsert(claude)
+        })
+        .unwrap();
+        let fleet = crate::sus::fleet(&accounts, &Default::default(), &Default::default(), base, cx);
+        assert_eq!(fleet.score.unwrap().value(), 67);
+        assert_eq!(fleet.subscriptions, 2);
+        assert!(!fleet.equal_weights);
+        let records = SettingsHub::global(cx).settings().accounts().to_vec();
+        SettingsHub::update(cx, |s| {
+            for mut record in records {
+                record.sus_price = None;
+                s.upsert(record)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            crate::sus::fleet(&accounts, &Default::default(), &Default::default(), base, cx)
+                .score
+                .unwrap()
+                .value(),
+            62
+        );
+        let mut unknown = SettingsHub::global(cx).settings().accounts()[0].clone();
+        unknown.sus_price = Some(Price {
+            monthly_cents: None,
+            scheduled: None,
+        });
+        SettingsHub::update(cx, |s| s.upsert(unknown)).unwrap();
+        assert!(crate::sus::fleet(&accounts, &Default::default(), &Default::default(), base, cx).equal_weights);
+    });
+}
+
+#[gpui_kit::test]
+fn fleet_counts_subscriptions_once_including_two_paid_accounts_of_one_vendor(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("sus-separate-subscriptions", "{}");
+    let (_, _) = open_dashboard(cx, &settings);
+    let base = "2026-10-23T14:00:00Z".parse().unwrap();
+    let mut accounts = crate::sus::fixture(base, 5);
+    accounts.push(accounts[0].clone());
+    cx.update(|cx| {
+        let fleet = crate::sus::fleet(&accounts, &Default::default(), &Default::default(), base, cx);
+        assert_eq!(fleet.score.unwrap().value(), 70);
+        assert_eq!(fleet.subscriptions, 4);
+        assert!(!fleet.equal_weights);
+    });
 }

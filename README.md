@@ -23,6 +23,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 
 ## Features
 
+- **Weekly SUS** beside quota bars, with a fleet score, price weights and explicit unavailable states. [Calculation and provider sources](docs/SUS.md).
 - **Subscription plans** from provider account data, including Claude Max 5x/20x when reported. Generic sources explain missing tier detail; [plan sources and refresh behavior](docs/SUBSCRIPTION_PLANS.md).
 - **System tray** icon with a usage tooltip
 - **Dashboard** with an account table, focus cards, usage history and window curves; wide enough, the table shows

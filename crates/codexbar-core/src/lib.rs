@@ -8,6 +8,7 @@ pub mod layout;
 mod metric;
 mod severity;
 pub mod spend;
+pub mod sus;
 
 pub use account::{AccountDetail, AccountId, AccountSnapshot, LimitSeries, Provider, WindowCurve, sort_by_urgency};
 pub use metric::{Currency, Metric, Money, Outlook, Pace, format_credits, group_thousands, window_length_from_seconds};

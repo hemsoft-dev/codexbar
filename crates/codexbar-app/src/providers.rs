@@ -221,6 +221,7 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         homes.push(path.clone());
         identities.extend(identity.clone());
         let mut provider = CodexProvider::new(UreqClient::new(), path)
+            .with_subscription_record(record.id.clone())
             .with_date_style(crate::locale::style())
             .with_renewer(Arc::new(CodexCliRenewer));
         if managed {
@@ -273,7 +274,9 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         }
         folders.push(credentials.clone());
         identities.extend(identity.clone());
-        let mut provider = ClaudeProvider::new(UreqClient::new(), credentials).with_renewer(Arc::new(ClaudeCliRenewer));
+        let mut provider = ClaudeProvider::new(UreqClient::new(), credentials)
+            .with_subscription_record(record.id.clone())
+            .with_renewer(Arc::new(ClaudeCliRenewer));
         if managed {
             provider = provider.with_profile(profile).managed();
         }

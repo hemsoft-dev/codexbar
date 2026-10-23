@@ -821,6 +821,7 @@ pub struct ClaudeProvider<H: HttpClient> {
     /// Where the signed-in account is named (`.claude.json`); without it every sign-in is the legacy account.
     profile: Option<PathBuf>,
     account: Option<(String, String)>,
+    record_id: Option<String>,
     hint: &'static str,
     renewer: Option<Arc<dyn Renewer>>,
 }
@@ -832,6 +833,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
             credentials_path,
             profile: None,
             account: None,
+            record_id: None,
             hint: EXPIRED_HINT,
             renewer: None,
         }
@@ -843,7 +845,12 @@ impl<H: HttpClient> ClaudeProvider<H> {
         self
     }
 
-    /// Reports one configured account: `id` is the dashboard account it is expected under, `label` its name.
+    /// Records the configured source without changing the dashboard identity.
+    pub fn with_subscription_record(mut self, id: impl Into<String>) -> Self {
+        self.record_id = Some(id.into());
+        self
+    }
+
     pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
         self.account = Some((id.into(), label.into()));
         self
@@ -970,6 +977,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
                         if plan == "Max" {
                             account = account.with_message("Claude reports Max, but its current profile does not identify the 5x or 20x tier.");
                         }
+                        if let Some(price)=codexbar_core::sus::known_price(Provider::Claude,&plan) {account=account.with_subscription_price(price);}
                         Ok(account.with_plan(plan))
                     }
                     None => Ok(account.with_message("Claude's current account profile did not provide a plan. Usage is current; the sign-in's cached tier is not used.")),
@@ -1071,15 +1079,23 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
                     .map(|(until, _)| Err(ProviderError::RateLimited { retry_at: *until }))
             });
         match held {
-            Some(Ok(cached)) => return Ok(vec![AccountOutcome::Fresh(cached)]),
+            Some(Ok(cached)) => {
+                return Ok(vec![AccountOutcome::Fresh(
+                    cached.with_subscription_record(self.record_id.clone()),
+                )]);
+            }
             Some(Err(error)) => return failed(error),
             None => {}
         }
         match self.fresh(now) {
             Ok(usage) => {
-                let mut account = AccountSnapshot::new(id.clone(), Provider::Claude, usage.metrics().to_vec(), now);
+                let mut account = AccountSnapshot::new(id.clone(), Provider::Claude, usage.metrics().to_vec(), now)
+                    .with_subscription_record(self.record_id.clone());
                 if let Some(label) = self.label_for() {
                     account = account.with_label(label);
+                }
+                if let Some(price) = usage.subscription_price() {
+                    account = account.with_subscription_price(price.clone());
                 }
                 if let Some(plan) = usage.plan() {
                     account = account.with_plan(plan);
@@ -1441,8 +1457,15 @@ mod tests {
     #[test]
     fn fetch_caches_fresh_results() {
         let (provider, _file) = provider("cache", vec![HttpResponse::new(200, FIXTURE)]);
-        provider.fetch(now()).unwrap();
-        provider.fetch(now() + Duration::minutes(5)).unwrap();
+        let mut provider = provider.with_subscription_record("automatic-original");
+        assert_eq!(
+            provider.fetch(now()).unwrap()[0].subscription_record(),
+            Some("automatic-original")
+        );
+        provider.record_id = Some("automatic-current".into());
+        let cached = provider.fetch(now() + Duration::minutes(5)).unwrap();
+        assert_eq!(cached[0].id().as_str(), "claude");
+        assert_eq!(cached[0].subscription_record(), Some("automatic-current"));
         assert_eq!(provider.http.calls.load(Ordering::SeqCst), 1);
         provider.fetch(now() + Duration::minutes(11)).unwrap();
         assert_eq!(provider.http.calls.load(Ordering::SeqCst), 2);

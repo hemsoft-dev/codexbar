@@ -1,7 +1,7 @@
 # Account configuration
 
 CodexBar's accounts live in `settings.json` (in `%USERPROFILE%\.codexbar`) as
-`accountConfigurationVersion: 1` and an `accounts` array. Accounts are added,
+`accountConfigurationVersion: 2` and an `accounts` array. Accounts are added,
 edited, switched off and removed in **Settings > Accounts**; every change is
 saved at once. Removing an account and Reset accounts ask first, and so does
 signing a signed-in Cursor account in again. Signing a Codex, Claude or Copilot
@@ -22,6 +22,7 @@ account in again with another identity replaces it without asking (see
 | `legacyCardKey` | Kept from older CodexBar versions for ordering |
 | `copilotEnterprise`, `copilotOrganization`, `copilotPoolTotal` | Copilot org billing: the organization alone for a Copilot Business organization (#233), plus the enterprise for an Enterprise seat; written only when set |
 | `githubBillingOrganization` | The organization a GitHub Billing account follows; absent for the signed-in user's own billing |
+| `susPrice` | Optional monthly USD cents and an explicitly dated future price for [fleet SUS](SUS.md); absent uses provider metadata, a blank current price means unknown |
 | `geminiCodingFromCli` | A Gemini account also shows the Antigravity CLI's coding quotas; written only when on |
 
 None of these are secrets. Pasted keys and cookies, the GitHub tokens of
@@ -65,6 +66,10 @@ account-neutral `claude` id, because its profile file can name another account
 than its credentials.
 
 ## Compatibility
+
+Version 2 adds persisted SUS price overrides. Version 1 account records and
+legacy settings still load with their existing IDs. Saving upgrades the file
+to version 2, so older builds refuse to overwrite the new price fields.
 
 - A missing or syntax-invalid `settings.json` behaves like an empty one.
 - A file from a newer CodexBar (a higher `accountConfigurationVersion`), an

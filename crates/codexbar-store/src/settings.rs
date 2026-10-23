@@ -1,9 +1,9 @@
 //! The shared `~/.codexbar/settings.json` (or the older `codexbar-settings.json`), in the account-scoped format the
-//! WPF app introduced in #114 (`docs/ACCOUNT_CONFIGURATION.md`). Both apps read and write the same file during the
-//! migration, so this module follows that contract exactly:
+//! WPF app introduced in #114 (`docs/ACCOUNT_CONFIGURATION.md`). Version 2 adds SUS prices; older builds refuse
+//! this version rather than discard those fields. Versions 0 and 1 remain readable:
 //!
 //! - The document is kept as raw JSON, so every field this app does not own round-trips untouched.
-//! - `accountConfigurationVersion` above 1, or a versioned file without a valid `accounts` array, is never
+//! - `accountConfigurationVersion` above 2, or a versioned file without a valid `accounts` array, is never
 //!   overwritten.
 //! - Legacy settings (version 0) migrate in memory with the same deterministic IDs as the WPF app.
 //! - Every write holds the exclusive `settings.write.lock`, re-reads the file under it, refuses account edits that
@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 /// The account schema version this app understands.
-pub const ACCOUNT_CONFIGURATION_VERSION: i64 = 1;
+pub const ACCOUNT_CONFIGURATION_VERSION: i64 = 2;
 const PRIMARY_FILE: &str = "settings.json";
 const FALLBACK_FILE: &str = "codexbar-settings.json";
 const LOCK_FILE: &str = "settings.write.lock";
@@ -135,6 +135,8 @@ pub struct AccountRecord {
     /// Gemini (#107): also show the coding quotas of the Antigravity CLI's own sign-in, which the user confirmed is
     /// this account's Google account.
     pub gemini_coding: bool,
+    /// Explicit price override for fleet SUS. None uses provider metadata.
+    pub sus_price: Option<codexbar_core::sus::Price>,
 }
 
 impl AccountRecord {
@@ -154,6 +156,7 @@ impl AccountRecord {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         }
     }
 
@@ -182,6 +185,9 @@ impl AccountRecord {
         }
         if self.gemini_coding {
             map.insert("geminiCodingFromCli".into(), json!(true));
+        }
+        if let Some(price) = &self.sus_price {
+            map.insert("susPrice".into(), crate::subscription_price::to_json(price));
         }
         Value::Object(map)
     }
@@ -217,6 +223,12 @@ impl AccountRecord {
                 .filter(|total| *total > 0),
             billing_organization: text("githubBillingOrganization").map(str::to_owned),
             gemini_coding: object.get("geminiCodingFromCli").and_then(Value::as_bool) == Some(true),
+            sus_price: object.get("susPrice").filter(|v| !v.is_null()).map(|v| {
+                crate::subscription_price::from_json(v).unwrap_or(codexbar_core::sus::Price {
+                    monthly_cents: None,
+                    scheduled: None,
+                })
+            }),
         })
     }
 }
@@ -564,7 +576,7 @@ fn read_document(dir: &Path) -> (PathBuf, Value) {
     (dir.join(PRIMARY_FILE), Value::Null)
 }
 
-/// Accounts as stored (version 1) or as migrated in memory (version 0).
+/// Version 2 persists SUS prices. Version 1 shares the account decoder; version 0 migrates in memory.
 fn accounts_of(doc: &Value) -> Result<Vec<AccountRecord>, SettingsError> {
     if let Some(providers) = doc.get("providers").and_then(Value::as_object) {
         let mut seen = HashSet::new();
@@ -578,7 +590,7 @@ fn accounts_of(doc: &Value) -> Result<Vec<AccountRecord>, SettingsError> {
         None => Ok(migrate_legacy(doc)),
         Some(version) => match version.as_i64() {
             Some(0) => Ok(migrate_legacy(doc)),
-            Some(ACCOUNT_CONFIGURATION_VERSION) => {
+            Some(1) | Some(ACCOUNT_CONFIGURATION_VERSION) => {
                 let list = doc
                     .get("accounts")
                     .and_then(Value::as_array)
@@ -653,6 +665,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         });
     }
 
@@ -701,6 +714,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         });
     }
     if known.is_empty() && copilot_entry.is_some() {
@@ -718,6 +732,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         });
     }
     accounts
@@ -988,6 +1003,24 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn sus_prices_round_trip_and_malformed_overrides_remain_unknown() {
+        let mut record = AccountRecord::new(names::CODEX, "Work", AuthMethod::Automatic);
+        record.sus_price = Some(codexbar_core::sus::Price {
+            monthly_cents: Some(20_000),
+            scheduled: Some((Some(10_000), "2026-10-26T13:33:19Z".parse().unwrap())),
+        });
+        assert_eq!(AccountRecord::from_json(&record.to_json()).unwrap(), record);
+        let mut json = record.to_json();
+        json["susPrice"] = json!({"monthlyCents":-1});
+        let unknown = AccountRecord::from_json(&json).unwrap();
+        assert_eq!(unknown.sus_price.unwrap().monthly_cents, None);
+        assert_eq!(unknown.id, record.id);
+        assert_eq!(unknown.label, record.label);
+        json.as_object_mut().unwrap().remove("susPrice");
+        assert!(AccountRecord::from_json(&json).unwrap().sus_price.is_none());
+    }
+
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     struct TempDir(PathBuf);
@@ -1093,9 +1126,48 @@ mod tests {
     }
 
     #[test]
+    fn version_one_upgrades_without_losing_identity_and_version_two_keeps_prices() {
+        let mut record = AccountRecord::new(names::CODEX, "Work", AuthMethod::Automatic);
+        let original = record.clone();
+        let dir = TempDir::with(
+            PRIMARY_FILE,
+            &json!({"accountConfigurationVersion":1,"accounts":[record.to_json()],"unowned":"keep"}).to_string(),
+        );
+        let mut settings = Settings::load(&dir.0).unwrap();
+        assert_eq!(settings.accounts(), std::slice::from_ref(&original));
+        record.sus_price = Some(codexbar_core::sus::Price {
+            monthly_cents: Some(20_000),
+            scheduled: Some((Some(10_000), "2026-10-26T13:33:19Z".parse().unwrap())),
+        });
+        settings.upsert(record.clone()).unwrap();
+        settings.save().unwrap();
+        let saved = dir.read(PRIMARY_FILE);
+        assert_eq!(saved["accountConfigurationVersion"], 2);
+        assert_eq!(saved["unowned"], "keep");
+        assert_eq!(saved["accounts"][0]["id"], original.id);
+        assert_eq!(saved["accounts"][0]["displayLabel"], original.label);
+        assert!(
+            saved["accountConfigurationVersion"].as_i64().unwrap() > 1,
+            "a version-1 reader must refuse the file"
+        );
+        let mut reopened = Settings::load(&dir.0).unwrap();
+        assert_eq!(reopened.accounts(), std::slice::from_ref(&record));
+        reopened.set_zoom_level(1.5);
+        reopened.save().unwrap();
+        assert_eq!(
+            Settings::load(&dir.0).unwrap().accounts(),
+            std::slice::from_ref(&record)
+        );
+    }
+
+    #[test]
     fn load_newer_version_refuses_and_save_never_overwrites() {
-        let dir = TempDir::with(PRIMARY_FILE, r#"{"accountConfigurationVersion":2,"accounts":[]}"#);
+        let dir = TempDir::with(PRIMARY_FILE, r#"{"accountConfigurationVersion":3,"accounts":[]}"#);
         assert_eq!(Settings::load(&dir.0).unwrap_err(), SettingsError::NewerVersion);
+        let before = fs::read(dir.0.join(PRIMARY_FILE)).unwrap();
+        let mut fallback = Settings::load_or_default(&dir.0);
+        assert_eq!(fallback.save(), Err(SettingsError::NewerVersion));
+        assert_eq!(fs::read(dir.0.join(PRIMARY_FILE)).unwrap(), before);
     }
 
     #[test]
@@ -1132,7 +1204,7 @@ mod tests {
         settings.save().unwrap();
 
         let saved = dir.read(FALLBACK_FILE);
-        assert_eq!(saved["accountConfigurationVersion"], 1);
+        assert_eq!(saved["accountConfigurationVersion"], 2);
         assert_eq!(saved["zoomLevel"], 1.25, "fields this app doesn't own survive");
         assert_eq!(saved["providerCardOrder"], json!(["Codex", "Claude"]));
         assert_eq!(
