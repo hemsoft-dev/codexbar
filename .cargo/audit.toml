@@ -1,0 +1,15 @@
+[advisories]
+# No exceptions. See docs/RUST_DEPENDENCY_SECURITY.md before adding one.
+ignore = []
+informational_warnings = ["unmaintained", "unsound", "notice"]
+
+[output]
+deny = ["unsound"]
+format = "json"
+quiet = false
+show_tree = false
+
+[database]
+url = "https://github.com/RustSec/advisory-db.git"
+fetch = true
+stale = false
