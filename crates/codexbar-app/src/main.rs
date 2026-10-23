@@ -37,6 +37,8 @@ mod settings_view;
 mod smooth_plot;
 mod spend_view;
 mod status;
+mod sus;
+mod sus_price;
 mod theme;
 mod tray;
 #[cfg(test)]
@@ -47,9 +49,10 @@ mod version;
 mod version_scheme;
 #[cfg(windows)]
 mod widget_builder;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod widget_feed;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
 mod widgets;
 mod zoom;
 

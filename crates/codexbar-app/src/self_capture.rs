@@ -18,6 +18,7 @@ use crate::dashboard::{Dashboard, DashboardView};
 use crate::theme::Appearance;
 
 mod antigravity;
+mod sus;
 
 /// Starts the capture if `CODEXBAR_CAPTURE_DIR` is set and this is the demo.
 pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>) {
@@ -30,7 +31,8 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
         return;
     }
     let _ = std::fs::create_dir_all(&dir);
-    if std::env::var_os("CODEXBAR_CAPTURE_ANTIGRAVITY").is_some() {
+    if std::env::var_os("CODEXBAR_CAPTURE_ANTIGRAVITY").is_some() || std::env::var_os("CODEXBAR_CAPTURE_SUS").is_some()
+    {
         let hub = crate::settings_hub::SettingsHub::global(cx);
         assert!(
             hub.dir().starts_with(&dir) && hub.settings().accounts().is_empty(),
@@ -190,6 +192,9 @@ async fn run(
     }
     if std::env::var_os("CODEXBAR_CAPTURE_ANTIGRAVITY").is_some() {
         saved.extend(antigravity::run(cx, handle, dashboard, dir).await);
+    }
+    if std::env::var_os("CODEXBAR_CAPTURE_SUS").is_some() {
+        saved.extend(sus::run(cx, handle, dashboard, dir).await);
     }
     // Optional synthetic plan states. The normal live adapters never read these fixture values.
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {

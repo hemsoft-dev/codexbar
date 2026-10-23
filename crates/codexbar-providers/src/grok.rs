@@ -23,8 +23,6 @@ const SETTINGS: &str = "https://cli-chat-proxy.grok.com/v1/settings";
 const ISSUER: &str = "https://auth.x.ai";
 const SIGN_IN_HINT: &str = "Sign in to Grok in CodexBar settings.";
 const OTHER_ACCOUNT: &str = "The Grok CLI here is signed in to a different xAI account than this one. Sign in again.";
-/// Plans whose weekly pool the omitted-usage convention applies to; exact names only.
-const PAID_PLANS: [&str; 4] = ["SuperGrok Lite", "SuperGrok", "SuperGrok Plus", "SuperGrok Heavy"];
 /// A token is renewed when it expires within this long.
 const RENEW_MARGIN: Duration = Duration::minutes(5);
 /// The CLI is asked to renew a home at most this often.
@@ -227,9 +225,6 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
         }
     };
     if let Some((start, end)) = weekly {
-        let alternatives = ["productUsage", "used"]
-            .iter()
-            .any(|key| config.get(*key).is_some_and(|v| !v.is_null()));
         match config.get("creditUsagePercent") {
             Some(Value::Number(number)) => match number.as_f64().filter(|p| p.is_finite() && *p >= 0.0) {
                 Some(percent) => {
@@ -244,21 +239,6 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
                 }
                 None => usage.messages.push("Grok's weekly usage is malformed.".to_owned()),
             },
-            // The CLI's own display treats an omitted percent as zero; CodexBar does so only for a verified paid plan
-            // with no other usage field, and says so.
-            None if !alternatives && plan.is_some_and(|plan| PAID_PLANS.contains(&plan)) => {
-                usage.metrics.push(Metric::Window {
-                    label: "Weekly usage".into(),
-                    used: 0.0,
-                    resets_at: end,
-                    pace: None,
-                    length: (start < end).then(|| end - start),
-                });
-                usage.messages.push(
-                    "No included usage reported by Grok: 0% follows the Grok CLI's convention, not a measurement."
-                        .to_owned(),
-                );
-            }
             None => usage.messages.push("Grok didn't report this week's usage.".to_owned()),
             Some(Value::Null) => usage.messages.push("Grok reported no weekly usage figure.".to_owned()),
             Some(_) => usage.messages.push("Grok's weekly usage is malformed.".to_owned()),
@@ -375,6 +355,37 @@ impl<H: HttpClient> GrokProvider<H> {
     /// The weekly pool, Extra Usage Credits and plan, read with the CLI's sign-in and renewed through the CLI when
     /// needed.
     pub fn usage(&self, now: DateTime<Utc>) -> Result<GrokUsage, ProviderError> {
+        let result = self.remote_usage(now);
+        match result {
+            Ok(mut usage) => {
+                if !usage.metrics.iter().any(|m| matches!(m, Metric::Window { .. })) {
+                    let activity = crate::grok_activity::read(&self.home, now);
+                    usage.metrics.extend(activity.metric);
+                    usage.messages.extend(activity.messages);
+                }
+                Ok(usage)
+            }
+            Err(error) => {
+                // Refused/mismatched identities never become another account's activity.
+                self.auth()?;
+                let activity = crate::grok_activity::read(&self.home, now);
+                let Some(metric) = activity.metric else {
+                    return Err(error);
+                };
+                let mut messages = vec![format!(
+                    "Quota unavailable: {error}. Showing tracked local activity only; SUS n/a."
+                )];
+                messages.extend(activity.messages);
+                Ok(GrokUsage {
+                    plan: None,
+                    metrics: vec![metric],
+                    messages,
+                })
+            }
+        }
+    }
+
+    fn remote_usage(&self, now: DateTime<Utc>) -> Result<GrokUsage, ProviderError> {
         let mut auth = self.auth()?;
         if auth.expires_at.is_some_and(|at| at - now <= RENEW_MARGIN) && may_renew(&self.home) {
             self.cli.renew(&self.home);
@@ -392,7 +403,7 @@ impl<H: HttpClient> GrokProvider<H> {
             401 | 403 => return Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
             status => return Err(ProviderError::Http { status }),
         }
-        // The plan is optional; a failed lookup only means the omitted-usage convention doesn't apply.
+        // The plan is optional and never supplies a missing usage percentage.
         let plan = self
             .get(SETTINGS, &auth)
             .ok()
@@ -516,12 +527,12 @@ mod tests {
     }
 
     #[test]
-    fn omitted_usage_is_zero_only_for_a_verified_paid_plan_with_nothing_else() {
+    fn omitted_usage_is_unavailable_even_for_a_verified_paid_plan() {
         // Franz's live shape on 2026-10-12: no percent, a zero prepaid balance, plan SuperGrok.
         let body = billing(r#","prepaidBalance":{"val":0},"onDemandUsed":{"val":0}"#);
         let usage = parse_billing(&body, Some("SuperGrok"), now()).unwrap();
-        assert_eq!(usage.metrics[0].used_fraction(), Some(0.0));
-        assert!(usage.messages[0].starts_with("No included usage reported by Grok"));
+        assert!(usage.metrics.iter().all(|m| m.used_fraction().is_none()));
+        assert!(usage.messages.iter().any(|m| m.contains("didn't report this week")));
         // An unknown plan, no plan, or another usage field: unavailable, never zero.
         for (plan, extra) in [
             (Some("Grok Free"), ""),
@@ -664,6 +675,50 @@ mod tests {
         }
     }
 
+    #[test]
+    fn activity_is_a_fallback_and_never_replaces_a_reported_quota() {
+        for (name, body, has_quota) in [
+            ("activity", billing(""), false),
+            ("quota-before-activity", billing(r#","creditUsagePercent":10"#), true),
+        ] {
+            let home = Home::with(name, AUTH);
+            let path = home.0.join("sessions/day/session");
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(
+                path.join("usage.json"),
+                r#"{"sessionId":"s","turns":[{"turnNumber":1,"endedAt":"2026-10-12T11:00:00Z"}]}"#,
+            )
+            .unwrap();
+            let proxy = Proxy(
+                Mutex::new(vec![HttpResponse::new(200, body), HttpResponse::new(200, "{}")]),
+                Mutex::new(Vec::new()),
+            );
+            let provider = GrokProvider::new(
+                proxy,
+                Arc::new(Renewer(home.0.clone(), AtomicUsize::new(0))),
+                home.0.clone(),
+                Some("sub-1".into()),
+                "activity-record",
+                "Me",
+            );
+            let account = provider.fetch(now()).unwrap().remove(0);
+            assert_eq!(
+                account.metrics().iter().any(|m| matches!(m, Metric::Window { .. })),
+                has_quota
+            );
+            assert_eq!(
+                account
+                    .metrics()
+                    .iter()
+                    .any(|m| matches!(m, Metric::Activity { count: 1, .. })),
+                !has_quota
+            );
+            if !has_quota {
+                assert!(account.metrics().iter().all(|m| m.used_fraction().is_none()));
+                assert!(account.messages().iter().any(|m| m.contains("other machines")));
+            }
+        }
+    }
     #[test]
     fn a_fetch_renews_through_the_cli_when_refused_and_keeps_the_subject() {
         let home = Home::with("renew", AUTH);

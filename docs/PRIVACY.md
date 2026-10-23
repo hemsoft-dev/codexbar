@@ -109,3 +109,14 @@ renewal. CodexBar stores only the coding-feed setting. Cancel closes its own
 CLI process, keeps vendor credentials and never inspects the user's browser.
 Previously saved Gemini Apps sessions remain separate; new Google cookie
 extraction and controlled-browser sign-in are disabled.
+
+## Weekly utilization scores
+
+SUS is calculated locally from existing quota forecasts. Fleet SUS uses monthly
+price metadata or your explicit price settings. Prices and known scheduled
+changes persist with usage snapshots; they contain no payment instruments.
+When Grok quota data is unavailable, CodexBar may count turn metadata in the
+local Grok CLI home. It reads session IDs, turn numbers and completion times,
+not prompts or token counts. It does not send this activity to a server, scan
+other machines, or turn activity into quota percentages. See [SUS sources and
+coverage](SUS.md).

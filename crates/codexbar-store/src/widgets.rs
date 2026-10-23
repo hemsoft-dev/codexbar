@@ -279,6 +279,10 @@ pub struct WidgetMetric {
     /// before the reset; none with nothing to project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outlook: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sus: Option<u8>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sus_eligible: bool,
 }
 
 impl WidgetSnapshot {
@@ -394,6 +398,8 @@ mod tests {
                     status: Some("At risk".into()),
                     projected_percent: Some(130.0),
                     outlook: Some("2d 12h early".into()),
+                    sus: None,
+                    sus_eligible: false,
                 }],
             }],
         )

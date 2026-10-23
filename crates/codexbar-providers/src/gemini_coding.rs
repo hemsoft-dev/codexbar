@@ -20,9 +20,10 @@ use crate::{CommandError, CommandRunner};
 const TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
 /// One coding quota CodexBar shows: the bucket id and window it comes from, and its metric label.
-const BUCKETS: [(&str, &str, &str, i64); 4] = [
+const BUCKETS: [(&str, &str, &str, i64); 5] = [
     ("gemini-5h", "5h", "Gemini Models five-hour", 5),
     ("gemini-weekly", "weekly", "Gemini Models weekly", 7 * 24),
+    ("gemini-argon-wtu-weekly", "weekly", "Argon weekly", 7 * 24),
     ("3p-5h", "5h", "Other models five-hour", 5),
     ("3p-weekly", "weekly", "Other models weekly", 7 * 24),
 ];
@@ -84,7 +85,9 @@ fn reset(value: Option<&Value>) -> Option<DateTime<Utc>> {
 /// Parses the CLI's `/usage` JSON at `now`.
 pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingError> {
     let value: Value = serde_json::from_str(stdout.trim()).map_err(|_| CodingError::Unknown)?;
-    if value.get("status").and_then(Value::as_str) != Some("SUCCESS") {
+    if value.get("status").and_then(Value::as_str) != Some("SUCCESS")
+        || value.get("num_turns").and_then(Value::as_u64) != Some(0)
+    {
         return Err(CodingError::NoUsage);
     }
     let command = value.get("command").ok_or(CodingError::NoUsage)?;
@@ -233,7 +236,7 @@ mod tests {
             "0.69 remaining is 31% used"
         );
         assert_eq!(usage.metrics[3].resets_at(), "2026-10-17T12:37:38Z".parse().ok());
-        assert!(usage.notes.is_empty());
+        assert_eq!(usage.notes, ["Argon weekly: not reported by Antigravity."]);
         let keys: Vec<String> = usage.metrics.iter().map(Metric::key).collect();
         assert_eq!(
             keys,
@@ -243,6 +246,31 @@ mod tests {
                 "other-models-five-hour",
                 "other-models-weekly"
             ]
+        );
+    }
+
+    #[test]
+    fn captured_cli_structure_exposes_gemini_argon_and_3p_as_separate_pools() {
+        let text = include_str!("../fixtures/antigravity-usage-20261023.json");
+        let now = "2026-10-23T14:00:00Z".parse().unwrap();
+        let usage = parse(text, now).unwrap();
+        assert_eq!(usage.metrics.len(), 5);
+        assert!(usage.notes.is_empty());
+        let argon = usage.metrics.iter().find(|m| m.label() == "Argon weekly").unwrap();
+        assert!((argon.used_fraction().unwrap() - 0.17).abs() < 1e-9);
+        assert_eq!(argon.window_length(), Some(Duration::days(7)));
+        let malformed = text.replace("gemini-argon-wtu-weekly", "unknown-model");
+        let partial = parse(&malformed, now).unwrap();
+        assert_eq!(partial.metrics.len(), 4);
+        assert!(
+            partial
+                .notes
+                .iter()
+                .any(|n| n == "Argon weekly: not reported by Antigravity.")
+        );
+        assert_eq!(
+            parse(&text.replace("\"num_turns\": 0", "\"num_turns\": 1"), now),
+            Err(CodingError::NoUsage)
         );
     }
 
@@ -265,6 +293,7 @@ mod tests {
             usage.notes,
             [
                 "Gemini Models weekly: reported in a shape CodexBar doesn't know.",
+                "Argon weekly: not reported by Antigravity.",
                 "Other models five-hour: reported in a shape CodexBar doesn't know.",
                 "Other models weekly: its reset time has passed.",
             ]
@@ -304,7 +333,7 @@ mod tests {
         assert_eq!(parse("not json", now()), Err(CodingError::Unknown));
         assert_eq!(
             parse(
-                r#"{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[]}}}"#,
+                r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[]}}}"#,
                 now()
             ),
             Err(CodingError::Unknown)

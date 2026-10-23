@@ -224,6 +224,14 @@ fn preview_tile(ix: usize, view: &TileView, compact: bool, cx: &App) -> impl Int
             view.line.clone().filter(|_| !compact || view.big.is_none()),
             |this, line| this.child(div().text_xs().child(line)),
         )
+        .when_some(view.sus.as_ref(), |this, _| {
+            this.child(crate::sus::badge(
+                view.sus_score.and_then(codexbar_core::sus::Score::from_value),
+                &format!("widget-{ix}-sus"),
+                "Widget weekly score",
+                cx,
+            ))
+        })
         .when_some(view.percent, |this, percent| {
             this.child(
                 div().h(px(6.)).w_full().rounded(px(3.)).bg(track).child(

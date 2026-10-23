@@ -147,6 +147,9 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
         .filter(|plan| !plan.is_empty())
     {
         account = account.with_plan(codex_plan_name(plan));
+        if let Some(price) = codexbar_core::sus::known_price(Provider::Codex, &plan.to_ascii_lowercase()) {
+            account = account.with_subscription_price(price);
+        }
     }
     Ok(account)
 }
@@ -418,7 +421,9 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
         let outcome = match result {
             Ok(mut usage) => {
                 match subscription::lookup(&self.http, &self.auth_path, &credentials, now, self.date_style) {
-                    Ok(Some(plan)) => usage = usage.with_plan(plan),
+                    Ok(Some(plan)) => {
+                        usage = usage.with_plan(plan.name).with_subscription_price(plan.price);
+                    }
                     Ok(None) => {}
                     Err(message) => usage = usage.with_message(message),
                 }
@@ -428,6 +433,9 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
                 }
                 if let Some(plan) = usage.plan() {
                     account = account.with_plan(plan);
+                }
+                if let Some(price) = usage.subscription_price() {
+                    account = account.with_subscription_price(price.clone());
                 }
                 for message in usage.messages() {
                     account = account.with_message(message.clone());

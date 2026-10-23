@@ -128,6 +128,9 @@ impl<H: HttpClient> GeminiProvider<H> {
             return Err(first_error.unwrap_or(ProviderError::NotSignedIn { hint: SETUP_HINT }));
         }
         let mut account = AccountSnapshot::new(AccountId::new(self.account.clone()), Provider::Gemini, metrics, now);
+        if self.coding.is_some() {
+            account = account.with_subscription_price(codexbar_core::sus::Price::fixed(1999));
+        }
         if !self.label.trim().is_empty() {
             account = account.with_label(self.label.trim());
         }
@@ -216,7 +219,7 @@ mod tests {
         })))
     }
 
-    const USAGE: &str = r#"{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"buckets":[
+    const USAGE: &str = r#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[{"buckets":[
         {"id":"gemini-5h","window":"5h","remaining_fraction":0.5,"reset_time":"2026-10-12T03:00:00Z"},
         {"id":"gemini-weekly","window":"weekly","remaining_fraction":0.9,"reset_time":"2026-10-15T00:00:00Z"},
         {"id":"3p-5h","window":"5h","remaining_fraction":1,"reset_time":"2026-10-12T03:00:00Z"},
@@ -252,7 +255,10 @@ mod tests {
         assert_eq!(account.metrics().len(), 4);
         assert_eq!(
             account.messages(),
-            ["Gemini Apps website usage is separate and not connected; new website sign-in is unavailable here."]
+            [
+                "Gemini Apps website usage is separate and not connected; new website sign-in is unavailable here.",
+                "Argon weekly: not reported by Antigravity."
+            ]
         );
     }
 

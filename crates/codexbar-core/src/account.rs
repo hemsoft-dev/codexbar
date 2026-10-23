@@ -178,13 +178,20 @@ impl AccountDetail {
     }
 }
 
+/// Optional plan and price metadata kept behind one pointer to keep snapshots compact.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Subscription {
+    plan: Option<Box<str>>,
+    price: Option<crate::sus::Price>,
+}
+
 /// The latest known state of one account.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccountSnapshot {
     id: AccountId,
     provider: Provider,
     label: Option<String>,
-    plan: Option<Box<str>>,
+    subscription: Option<Box<Subscription>>,
     metrics: Vec<Metric>,
     trend: Vec<f64>,
     detail: AccountDetail,
@@ -200,7 +207,7 @@ impl AccountSnapshot {
             id,
             provider,
             label: None,
-            plan: None,
+            subscription: None,
             metrics,
             trend: Vec::new(),
             detail: AccountDetail::default(),
@@ -227,12 +234,32 @@ impl AccountSnapshot {
     /// The effective subscription reported by the provider, separate from a user-assigned account name.
     pub fn with_plan(mut self, plan: impl Into<String>) -> Self {
         let plan = plan.into();
-        self.plan = (!plan.trim().is_empty()).then(|| plan.trim().into());
+        self.subscription.get_or_insert_default().plan = (!plan.trim().is_empty()).then(|| plan.trim().into());
+        self.clear_empty_subscription();
         self
     }
 
     pub fn plan(&self) -> Option<&str> {
-        self.plan.as_deref()
+        self.subscription.as_ref()?.plan.as_deref()
+    }
+
+    pub fn with_subscription_price(mut self, price: impl Into<Option<crate::sus::Price>>) -> Self {
+        self.subscription.get_or_insert_default().price = price.into();
+        self.clear_empty_subscription();
+        self
+    }
+    pub fn subscription_price(&self) -> Option<&crate::sus::Price> {
+        self.subscription.as_ref()?.price.as_ref()
+    }
+
+    fn clear_empty_subscription(&mut self) {
+        if self
+            .subscription
+            .as_ref()
+            .is_some_and(|s| s.plan.is_none() && s.price.is_none())
+        {
+            self.subscription = None;
+        }
     }
 
     /// Daily pressure for the trend sparkline, oldest first.

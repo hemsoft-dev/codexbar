@@ -135,6 +135,8 @@ pub struct AccountRecord {
     /// Gemini (#107): also show the coding quotas of the Antigravity CLI's own sign-in, which the user confirmed is
     /// this account's Google account.
     pub gemini_coding: bool,
+    /// Explicit price override for fleet SUS. None uses provider metadata.
+    pub sus_price: Option<codexbar_core::sus::Price>,
 }
 
 impl AccountRecord {
@@ -154,6 +156,7 @@ impl AccountRecord {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         }
     }
 
@@ -182,6 +185,9 @@ impl AccountRecord {
         }
         if self.gemini_coding {
             map.insert("geminiCodingFromCli".into(), json!(true));
+        }
+        if let Some(price) = &self.sus_price {
+            map.insert("susPrice".into(), crate::subscription_price::to_json(price));
         }
         Value::Object(map)
     }
@@ -217,6 +223,12 @@ impl AccountRecord {
                 .filter(|total| *total > 0),
             billing_organization: text("githubBillingOrganization").map(str::to_owned),
             gemini_coding: object.get("geminiCodingFromCli").and_then(Value::as_bool) == Some(true),
+            sus_price: object.get("susPrice").filter(|v| !v.is_null()).map(|v| {
+                crate::subscription_price::from_json(v).unwrap_or(codexbar_core::sus::Price {
+                    monthly_cents: None,
+                    scheduled: None,
+                })
+            }),
         })
     }
 }
@@ -653,6 +665,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         });
     }
 
@@ -701,6 +714,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         });
     }
     if known.is_empty() && copilot_entry.is_some() {
@@ -718,6 +732,7 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         });
     }
     accounts
@@ -987,6 +1002,24 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
+
+    #[test]
+    fn sus_prices_round_trip_and_malformed_overrides_remain_unknown() {
+        let mut record = AccountRecord::new(names::CODEX, "Work", AuthMethod::Automatic);
+        record.sus_price = Some(codexbar_core::sus::Price {
+            monthly_cents: Some(20_000),
+            scheduled: Some((10_000, "2026-10-26T13:33:19Z".parse().unwrap())),
+        });
+        assert_eq!(AccountRecord::from_json(&record.to_json()).unwrap(), record);
+        let mut json = record.to_json();
+        json["susPrice"] = json!({"monthlyCents":-1});
+        let unknown = AccountRecord::from_json(&json).unwrap();
+        assert_eq!(unknown.sus_price.unwrap().monthly_cents, None);
+        assert_eq!(unknown.id, record.id);
+        assert_eq!(unknown.label, record.label);
+        json.as_object_mut().unwrap().remove("susPrice");
+        assert!(AccountRecord::from_json(&json).unwrap().sus_price.is_none());
+    }
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 

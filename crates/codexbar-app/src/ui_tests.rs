@@ -7929,3 +7929,114 @@ fn a_scheduled_plan_keeps_the_account_name_visible_in_a_normal_width_row(cx: &mu
         .unwrap();
     assert!(width >= 30., "the plan must leave readable account text, got {width}px");
 }
+
+#[gpui_kit::test]
+fn sus_rendering_and_fleet_use_the_same_forecasts_and_effective_prices(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("sus-rendering", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let base = "2026-10-23T14:00:00Z".parse().unwrap();
+    for (phase, expected) in [
+        (0, "Fleet SUS: SUS 63, red"),
+        (1, "Fleet SUS: SUS 65, red"),
+        (2, "Fleet SUS: SUS 72, red"),
+        (4, "Fleet SUS: SUS 74, red"),
+    ] {
+        cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(phase, base, cx)));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        assert_eq!(label(cx, handle, "fleet-sus").as_deref(), Some(expected));
+        assert_eq!(
+            label(cx, handle, "progress-cell-codex-personal-sus").as_deref(),
+            Some("Weekly: SUS 48, red")
+        );
+        assert_eq!(
+            label(cx, handle, "focus-metric-1-sus").as_deref(),
+            Some("Argon weekly: SUS 84, yellow")
+        );
+    }
+    cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(3, base, cx)));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(
+        label(cx, handle, "focus-metric-1-sus").as_deref(),
+        Some("Argon weekly: SUS n/a, unavailable")
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-x-subscription-sus").as_deref(),
+        Some("Tracked activity has no quota: SUS n/a, unavailable")
+    );
+}
+
+#[gpui_kit::test]
+fn sus_price_dialog_saves_unknown_without_changing_account_identity(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "sus-price-editor",
+        r#"{"accountConfigurationVersion":1,"accounts":[{"id":"price-account","providerId":"Codex","displayLabel":"Work","enabled":true,"authenticationMethod":"Automatic"}]}"#,
+    );
+    let (handle, _) = open_dashboard(cx, &settings);
+    cx.update_window(handle, |_, window, cx| {
+        crate::sus_price::open("price-account", window, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "sus-price-save");
+    cx.update(|cx| {
+        let account = SettingsHub::global(cx)
+            .settings()
+            .accounts()
+            .iter()
+            .find(|r| r.id == "price-account")
+            .unwrap();
+        assert_eq!(account.label, "Work");
+        assert_eq!(account.sus_price.as_ref().unwrap().monthly_cents, None);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        crate::sus_price::open("price-account", window, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "sus-current-price");
+    type_text(cx, handle, "200");
+    click(cx, handle, "sus-next-price");
+    type_text(cx, handle, "100");
+    click(cx, handle, "sus-price-at");
+    type_text(cx, handle, "2026-10-26T09:33:19-04:00");
+    click(cx, handle, "sus-price-save");
+    cx.update(|cx| {
+        let account = SettingsHub::global(cx)
+            .settings()
+            .accounts()
+            .iter()
+            .find(|r| r.id == "price-account")
+            .unwrap();
+        let price = account.sus_price.as_ref().unwrap();
+        assert_eq!(price.monthly_cents, Some(20_000));
+        assert_eq!(price.scheduled.unwrap().0, 10_000);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        crate::sus_price::open("price-account", window, cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "sus-price-provider");
+    cx.update(|cx| {
+        assert!(
+            SettingsHub::global(cx)
+                .settings()
+                .accounts()
+                .iter()
+                .find(|r| r.id == "price-account")
+                .unwrap()
+                .sus_price
+                .is_none()
+        )
+    });
+}

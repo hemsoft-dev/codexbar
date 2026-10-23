@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use crate::settings::{AccountRecord, AuthMethod, Settings};
 
 pub const SNAPSHOTS_FILE: &str = "snapshots.json";
-/// Version 3 adds reported plans. Version 2 added currencies, spend and messages.
+/// Version 4 adds subscription prices. Version 3 added reported plans. Version 2 added currencies, spend and messages.
 /// Version 1 files read as US dollars with no messages.
-const VERSION: u64 = 3;
+const VERSION: u64 = 4;
 
 /// Loads the last-good snapshots in `dir`. Missing, unreadable or newer files give none; entries that can't be read
 /// are skipped.
@@ -79,6 +79,7 @@ fn account_to_json(account: &AccountSnapshot) -> Value {
         "provider": account.provider().key(),
         "label": account.label(),
         "plan": account.plan(),
+        "subscriptionPrice": account.subscription_price().map(crate::subscription_price::to_json),
         "fetchedAt": account.fetched_at().to_rfc3339(),
         "metrics": account.metrics().iter().map(metric_to_json).collect::<Vec<_>>(),
         "messages": account.messages(),
@@ -108,6 +109,12 @@ fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) 
     }
     if let Some(plan) = plan {
         account = account.with_plan(plan);
+    }
+    if let Some(price) = value
+        .get("subscriptionPrice")
+        .and_then(crate::subscription_price::from_json)
+    {
+        account = account.with_subscription_price(price);
     }
     for message in value.get("messages").and_then(Value::as_array).into_iter().flatten() {
         if let Some(message) = message.as_str() {
@@ -368,6 +375,28 @@ mod tests {
     }
 
     #[test]
+    fn prices_round_trip_and_version_three_without_prices_still_loads() {
+        let dir = Dir::new("sus-price");
+        let price = codexbar_core::sus::Price {
+            monthly_cents: Some(20_000),
+            scheduled: Some((10_000, now() + chrono::Duration::days(2))),
+        };
+        let account = AccountSnapshot::new(AccountId::new("stable"), Provider::Codex, Vec::new(), now())
+            .with_label("Work")
+            .with_subscription_price(price);
+        save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
+        assert_eq!(load_snapshots(&dir.0).as_slice(), std::slice::from_ref(&account));
+        let path = dir.0.join(SNAPSHOTS_FILE);
+        let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        doc["version"] = 3.into();
+        doc["accounts"][0].as_object_mut().unwrap().remove("subscriptionPrice");
+        std::fs::write(path, doc.to_string()).unwrap();
+        let restored = load_snapshots(&dir.0);
+        assert_eq!(restored[0].id(), account.id());
+        assert_eq!(restored[0].label(), account.label());
+        assert!(restored[0].subscription_price().is_none());
+    }
+    #[test]
     fn effective_plan_round_trips_separately_from_the_account_name() {
         let dir = Dir::new("plan");
         let account = AccountSnapshot::new(AccountId::new("plan"), Provider::Claude, Vec::new(), now())
@@ -377,7 +406,7 @@ mod tests {
         assert_eq!(load_snapshots(&dir.0), [account]);
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap()).unwrap();
         assert_eq!(
-            doc["version"], 3,
+            doc["version"], 4,
             "version-2 builds must refuse to overwrite persisted plans"
         );
     }
@@ -400,7 +429,7 @@ mod tests {
         assert_eq!(loaded[0].plan(), None);
         save_snapshots(&dir.0, &loaded).unwrap();
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap()).unwrap();
-        assert_eq!(doc["version"], 3);
+        assert_eq!(doc["version"], 4);
         assert_eq!(load_snapshots(&dir.0), loaded);
     }
 
@@ -773,7 +802,7 @@ mod tests {
         assert_eq!(loaded[0].metrics()[0].used_display(), "$18.42 left");
         save_snapshots(&dir.0, &loaded).unwrap();
         let text = std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap();
-        assert!(text.contains(r#""version": 3"#), "rewritten in the current format");
+        assert!(text.contains(r#""version": 4"#), "rewritten in the current format");
     }
 
     #[test]
@@ -782,14 +811,14 @@ mod tests {
         assert!(load_snapshots(&dir.0).is_empty());
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), "{ nope").unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
-        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 4, "accounts": [] }"#).unwrap();
+        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 5, "accounts": [] }"#).unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
     }
 
     #[test]
     fn a_newer_file_is_never_overwritten() {
         let dir = Dir::new("newer");
-        let newer = r#"{ "version": 4, "accounts": [] }"#;
+        let newer = r#"{ "version": 5, "accounts": [] }"#;
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), newer).unwrap();
         let account = AccountSnapshot::new(AccountId::new("c"), Provider::Cursor, Vec::new(), now());
         assert!(save_snapshots(&dir.0, &[account]).is_err());

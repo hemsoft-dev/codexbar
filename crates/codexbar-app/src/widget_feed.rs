@@ -9,6 +9,7 @@ use codexbar_store::widgets::{WidgetAccount, WidgetGroup, WidgetHealth, WidgetMe
 use crate::account_table::{AccountState, States};
 
 /// The longest the dashboard goes without rewriting the snapshot while it runs.
+#[cfg(windows)]
 pub const HEARTBEAT: chrono::Duration = chrono::Duration::minutes(5);
 
 /// The snapshot for `accounts`, which arrive arranged as the table shows them.
@@ -81,6 +82,8 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
         outlook: crate::usage_bar::outlook(metric, account, now),
+        sus: codexbar_core::sus::weekly(metric, now).map(|s| s.value()),
+        sus_eligible: codexbar_core::sus::text(metric, now).is_some(),
     }
 }
 
@@ -148,6 +151,21 @@ mod tests {
             BTreeMap::from([("claude-1".to_owned(), "g1".to_owned())]),
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn weekly_scores_reach_widgets_and_turns_never_become_percentages() {
+        let accounts = crate::sus::fixture(now(), 0);
+        let snapshot = build(&accounts, &States::new(), &Layout::default(), now());
+        let codex = snapshot.accounts.iter().find(|a| a.id == "codex-personal").unwrap();
+        assert_eq!(codex.metrics[0].sus, Some(48));
+        let claude = snapshot.accounts.iter().find(|a| a.id == "claude-personal").unwrap();
+        assert!(!claude.metrics[0].sus_eligible);
+        assert_eq!(claude.metrics[1].sus, Some(76));
+        let x = snapshot.accounts.iter().find(|a| a.id == "x-subscription").unwrap();
+        assert_eq!(x.metrics[0].used_percent, None);
+        assert!(x.metrics[0].sus_eligible);
+        assert_eq!(x.metrics[0].sus, None);
     }
 
     #[test]

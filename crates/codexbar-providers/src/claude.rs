@@ -970,6 +970,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
                         if plan == "Max" {
                             account = account.with_message("Claude reports Max, but its current profile does not identify the 5x or 20x tier.");
                         }
+                        if let Some(price)=codexbar_core::sus::known_price(Provider::Claude,&plan) {account=account.with_subscription_price(price);}
                         Ok(account.with_plan(plan))
                     }
                     None => Ok(account.with_message("Claude's current account profile did not provide a plan. Usage is current; the sign-in's cached tier is not used.")),
@@ -1080,6 +1081,9 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
                 let mut account = AccountSnapshot::new(id.clone(), Provider::Claude, usage.metrics().to_vec(), now);
                 if let Some(label) = self.label_for() {
                     account = account.with_label(label);
+                }
+                if let Some(price) = usage.subscription_price() {
+                    account = account.with_subscription_price(price.clone());
                 }
                 if let Some(plan) = usage.plan() {
                     account = account.with_plan(plan);

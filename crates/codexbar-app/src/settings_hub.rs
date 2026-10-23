@@ -184,6 +184,7 @@ impl SettingsHub {
             copilot_pool_total: None,
             billing_organization: None,
             gemini_coding: false,
+            sus_price: None,
         }
     }
 
