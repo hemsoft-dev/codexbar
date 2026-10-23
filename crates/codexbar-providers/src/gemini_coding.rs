@@ -139,17 +139,7 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
                     label: label.to_owned(),
                     used,
                     resets_at,
-                    pace: if window == "weekly" {
-                        elapsed_pace_after(
-                            used,
-                            resets_at - Duration::hours(hours),
-                            resets_at,
-                            now,
-                            Duration::hours(12),
-                        )
-                    } else {
-                        elapsed_pace(used, resets_at - Duration::hours(hours), resets_at, now)
-                    },
+                    pace: bucket_pace(used, hours, resets_at, now),
                     length: Some(Duration::hours(hours)),
                 });
             }
@@ -163,6 +153,16 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
         return Err(CodingError::Unknown);
     }
     Ok(usage)
+}
+
+/// Coding weeks mature with SUS; short windows retain the existing relative maturity guard.
+fn bucket_pace(used: f64, hours: i64, resets_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<codexbar_core::Pace> {
+    let start = resets_at - Duration::hours(hours);
+    if hours == 7 * 24 {
+        elapsed_pace_after(used, start, resets_at, now, Duration::hours(12))
+    } else {
+        elapsed_pace(used, start, resets_at, now)
+    }
 }
 
 /// Runs the CLI and reads its coding quotas.

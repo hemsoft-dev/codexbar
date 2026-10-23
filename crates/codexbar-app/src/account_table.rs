@@ -168,15 +168,14 @@ impl WindowKind {
 
     /// The account's window of this kind, when it reports one.
     pub fn in_account(self, account: &AccountSnapshot) -> Option<&Metric> {
-        if self == Self::Weekly
-            && let Some(weekly) = gemini_models_weekly(account)
-        {
-            return Some(weekly);
-        }
-        account
-            .metrics()
-            .iter()
-            .find(|metric| matches!(metric, Metric::Window { .. }) && Self::of(metric.label()) == Some(self))
+        gemini_models_weekly(account)
+            .filter(|_| self == Self::Weekly)
+            .or_else(|| {
+                account
+                    .metrics()
+                    .iter()
+                    .find(|metric| matches!(metric, Metric::Window { .. }) && Self::of(metric.label()) == Some(self))
+            })
     }
 }
 
@@ -198,9 +197,10 @@ fn gemini_models_weekly(account: &AccountSnapshot) -> Option<&Metric> {
 /// times a day. Only the all-model "Weekly" window counts: a model-scoped one ("Weekly Opus") doesn't pace the whole
 /// subscription. Everything else (focus cards, the tooltip, alerts, widgets) keeps the primary metric.
 pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
-    if let Some(weekly) = gemini_models_weekly(account) {
-        return Some(weekly);
-    }
+    gemini_models_weekly(account).or_else(|| primary_or_claude_weekly(account))
+}
+
+fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
     let primary = account.primary()?;
     if account.provider() == Provider::Claude
         && WindowKind::of(primary.label()) == Some(WindowKind::FiveHour)
