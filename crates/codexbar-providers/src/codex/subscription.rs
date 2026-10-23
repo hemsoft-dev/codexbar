@@ -3,6 +3,7 @@
 use super::{Credentials, codex_plan_name};
 use crate::HttpClient;
 use chrono::{DateTime, Duration, Local, Utc};
+use codexbar_core::format::DateStyle;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::path::{Path, PathBuf};
@@ -24,13 +25,13 @@ struct Plan {
 }
 
 impl Plan {
-    fn display(&self, now: DateTime<Utc>) -> String {
+    fn display(&self, now: DateTime<Utc>, style: &dyn DateStyle) -> String {
         match &self.scheduled {
             Some((name, at)) if *at > now => {
                 format!(
                     "{} → {name} on {}",
                     self.name,
-                    at.with_timezone(&Local).format("%b %-d")
+                    style.month_day(at.with_timezone(&Local).date_naive())
                 )
             }
             _ => self.name.clone(),
@@ -90,6 +91,7 @@ pub(super) fn lookup(
     path: &Path,
     credentials: &Credentials,
     now: DateTime<Utc>,
+    style: &dyn DateStyle,
 ) -> Result<Option<String>, &'static str> {
     let account_id = credentials.account_id.as_deref().ok_or(UNAVAILABLE)?;
     // No tokens or raw account identifiers are retained in the cache key.
@@ -113,7 +115,7 @@ pub(super) fn lookup(
         return value
             .value
             .as_ref()
-            .map(|plan| plan.as_ref().map(|plan| plan.display(now)))
+            .map(|plan| plan.as_ref().map(|plan| plan.display(now, style)))
             .map_err(|error| *error);
     }
     let bearer = format!("Bearer {}", credentials.access_token);
@@ -147,7 +149,7 @@ pub(super) fn lookup(
     }
     let result = value
         .as_ref()
-        .map(|plan| plan.as_ref().map(|plan| plan.display(now)))
+        .map(|plan| plan.as_ref().map(|plan| plan.display(now, style)))
         .map_err(|error| *error);
     *cached = Some(Cached { until, value });
     result
@@ -160,6 +162,15 @@ mod tests {
     use crate::{HttpResponse, ProviderError, UsageProvider};
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    use codexbar_core::format::English;
+    fn lookup(
+        http: &impl HttpClient,
+        path: &Path,
+        credentials: &Credentials,
+        now: DateTime<Utc>,
+    ) -> Result<Option<String>, &'static str> {
+        super::lookup(http, path, credentials, now, &English)
+    }
     fn now() -> DateTime<Utc> {
         "2026-10-23T04:00:00Z".parse().unwrap()
     }
@@ -243,16 +254,52 @@ mod tests {
     fn schedule_uses_the_explicit_change_time_and_does_not_apply_the_downgrade_early() {
         let plan = parse(&scheduled(), "a").unwrap().unwrap();
         assert_eq!(plan.name, "Pro");
-        assert_eq!(plan.display(now()), "Pro → Pro Lite on Oct 26");
+        assert_eq!(plan.display(now(), &English), "Pro → Pro Lite on Oct 26");
         let at = plan.scheduled.as_ref().unwrap().1;
         assert_eq!(at, "2026-10-26T13:33:19Z".parse::<DateTime<Utc>>().unwrap());
-        assert_eq!(plan.display(at), "Pro");
+        assert_eq!(plan.display(at, &English), "Pro");
         let missing = scheduled().replace("changes_at", "unrecognized_time");
         assert!(
             parse(&missing, "a").unwrap().unwrap().scheduled.is_none(),
             "renewal alone cannot invent a change date"
         );
     }
+    #[test]
+    fn scheduled_dates_use_the_selected_style_even_from_cached_metadata() {
+        struct DayFirst;
+        impl DateStyle for DayFirst {
+            fn time(&self, at: chrono::NaiveDateTime) -> String {
+                English.time(at)
+            }
+            fn weekday(&self, at: chrono::NaiveDate) -> String {
+                English.weekday(at)
+            }
+            fn month_day(&self, at: chrono::NaiveDate) -> String {
+                format!("{}. Okt.", at.format("%-d"))
+            }
+        }
+        let http = Arc::new(Http::new(HttpResponse::new(200, scheduled())));
+        let path = path();
+        std::fs::write(&path, r#"{"tokens":{"access_token":"test-token","account_id":"a"}}"#).unwrap();
+        let first = CodexProvider::new(http.clone(), path.clone())
+            .fetch(now())
+            .unwrap()
+            .remove(0);
+        let localized = CodexProvider::new(http.clone(), path.clone())
+            .with_date_style(&DayFirst)
+            .fetch(now())
+            .unwrap()
+            .remove(0);
+        assert_eq!(first.plan(), Some("Pro → Pro Lite on Oct 26"));
+        assert_eq!(localized.plan(), Some("Pro → Pro Lite on 26. Okt."));
+        assert_eq!(
+            http.requests.lock().unwrap().len(),
+            1,
+            "the cached metadata is formatted again"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn cache_survives_provider_reconstruction_and_refreshes_after_four_hours() {
         let http = Arc::new(Http::new(HttpResponse::new(200, scheduled())));

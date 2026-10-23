@@ -195,7 +195,11 @@ pub struct UnknownBilling;
 pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Result<GrokUsage, UnknownBilling> {
     let value: Value = serde_json::from_str(body).map_err(|_| UnknownBilling)?;
     let config = value.get("config").and_then(Value::as_object).ok_or(UnknownBilling)?;
-    let mut usage = GrokUsage::default();
+    let mut usage = GrokUsage {
+        plan: plan.filter(|plan| !plan.trim().is_empty()).map(str::to_owned),
+        ..GrokUsage::default()
+    };
+
     let unified = config.get("isUnifiedBillingUser").and_then(Value::as_bool) == Some(true);
     if !unified {
         usage
@@ -289,7 +293,6 @@ pub fn parse_billing(body: &str, plan: Option<&str>, now: DateTime<Utc>) -> Resu
             .messages
             .push("Grok's Extra Usage Credits are malformed.".to_owned()),
     }
-    usage.plan = plan.filter(|plan| !plan.trim().is_empty()).map(str::to_owned);
     if let Some(plan) = usage.plan.as_deref() {
         usage.messages.push(format!("Plan: {plan}."));
     }
@@ -581,6 +584,15 @@ mod tests {
     }
 
     #[test]
+    fn a_non_unified_account_preserves_its_reported_plan_without_inventing_a_pool() {
+        let body = r#"{"config":{"isUnifiedBillingUser":false}}"#;
+        let usage = parse_billing(body, Some("SuperGrok Lite"), now()).unwrap();
+        assert_eq!(usage.plan.as_deref(), Some("SuperGrok Lite"));
+        assert!(usage.metrics.is_empty());
+        assert!(usage.messages.iter().any(|m| m.contains("no weekly pool")));
+    }
+
+    #[test]
     fn the_plan_reads_from_either_key_spelling() {
         assert_eq!(
             parse_plan(r#"{"subscription_tier_display":"SuperGrok"}"#).as_deref(),
@@ -676,6 +688,29 @@ mod tests {
         assert_eq!(account.display_name(), "Grok · Me · SuperGrok");
         assert_eq!(account.metrics()[0].used_fraction(), Some(0.1));
         assert_eq!(renewer.1.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_non_unified_fetch_still_names_the_provider_reported_plan() {
+        let home = Home::with("plan-without-pool", AUTH);
+        let proxy = Proxy(
+            Mutex::new(vec![
+                HttpResponse::new(200, r#"{"config":{"isUnifiedBillingUser":false}}"#),
+                HttpResponse::new(200, r#"{"subscription_tier_display":"SuperGrok Lite"}"#),
+            ]),
+            Mutex::new(Vec::new()),
+        );
+        let provider = GrokProvider::new(
+            proxy,
+            Arc::new(Renewer(home.0.clone(), AtomicUsize::new(0))),
+            home.0.clone(),
+            None,
+            "gk-plan",
+            "Me",
+        );
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.plan(), Some("SuperGrok Lite"));
+        assert!(account.metrics().is_empty());
     }
 
     #[test]

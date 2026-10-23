@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use codexbar_core::format::{DateStyle, English};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Pace, Provider};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -290,6 +291,7 @@ pub struct CodexProvider<H: HttpClient> {
     account: Option<(String, String)>,
     hint: &'static str,
     renewer: Option<Arc<dyn Renewer>>,
+    date_style: &'static dyn DateStyle,
 }
 
 impl<H: HttpClient> CodexProvider<H> {
@@ -300,6 +302,7 @@ impl<H: HttpClient> CodexProvider<H> {
             account: None,
             hint: SIGN_IN_HINT,
             renewer: None,
+            date_style: &English,
         }
     }
 
@@ -319,6 +322,12 @@ impl<H: HttpClient> CodexProvider<H> {
     /// Renews sign-ins that are about to expire, or were refused, through `renewer`.
     pub fn with_renewer(mut self, renewer: Arc<dyn Renewer>) -> Self {
         self.renewer = Some(renewer);
+        self
+    }
+
+    /// The app's date formatter, so account metadata follows its locale contract.
+    pub fn with_date_style(mut self, style: &'static dyn DateStyle) -> Self {
+        self.date_style = style;
         self
     }
 
@@ -408,7 +417,7 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
         let id = credentials.account();
         let outcome = match result {
             Ok(mut usage) => {
-                match subscription::lookup(&self.http, &self.auth_path, &credentials, now) {
+                match subscription::lookup(&self.http, &self.auth_path, &credentials, now, self.date_style) {
                     Ok(Some(plan)) => usage = usage.with_plan(plan),
                     Ok(None) => {}
                     Err(message) => usage = usage.with_message(message),

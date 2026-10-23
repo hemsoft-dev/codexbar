@@ -427,9 +427,17 @@ mod tests {
         homes: &Homes,
         sand: Option<HttpResponse>,
     ) -> (XSubscriptionProvider<Server>, Arc<Mutex<Vec<String>>>) {
-        let seen = Arc::new(Mutex::new(Vec::new()));
         let billing = r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-10-15T16:32:13+00:00",
             "end":"2026-10-22T16:32:13+00:00"},"isUnifiedBillingUser":true,"creditUsagePercent":12,"prepaidBalance":{}}}"#;
+        x_subscription_with_billing(homes, sand, billing)
+    }
+
+    fn x_subscription_with_billing(
+        homes: &Homes,
+        sand: Option<HttpResponse>,
+        billing: &str,
+    ) -> (XSubscriptionProvider<Server>, Arc<Mutex<Vec<String>>>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
         let grok_http = Server {
             grok: Mutex::new(vec![
                 HttpResponse::new(200, billing),
@@ -446,6 +454,15 @@ mod tests {
         let grok = GrokProvider::new(grok_http, Arc::new(NoRenew), homes.0.join("grok"), None, "xs-1", "");
         let provider = XSubscriptionProvider::new(grok, cursor_http, homes.0.join("cursor-auth.json"), "xs-1", "Me");
         (provider, seen)
+    }
+
+    #[test]
+    fn a_non_unified_x_subscription_keeps_its_plan_without_a_quota() {
+        let homes = Homes::new("plan-without-pool", false);
+        let (provider, _) = x_subscription_with_billing(&homes, None, r#"{"config":{"isUnifiedBillingUser":false}}"#);
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.plan(), Some("SuperGrok"));
+        assert!(account.metrics().is_empty());
     }
 
     #[test]

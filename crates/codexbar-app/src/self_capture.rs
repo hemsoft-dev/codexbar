@@ -218,10 +218,9 @@ async fn run(
         }
     }
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
-        for (plan, name) in [
-            ("Pro → Pro Lite on Oct 26", "plan-codex"),
-            ("Pro Lite", "plan-codex-changed"),
-        ] {
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        let scheduled = format!("Pro → Pro Lite on {}", crate::locale::style().month_day(date));
+        for (plan, name) in [(scheduled.as_str(), "plan-codex"), ("Pro Lite", "plan-codex-changed")] {
             cx.update(|cx| {
                 dashboard.update(cx, |dashboard, cx| {
                     dashboard.capture_demo_plan("codex-personal", plan, cx);

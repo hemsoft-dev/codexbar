@@ -16,7 +16,7 @@ longer supplies.
 | Claude | `/api/oauth/profile`, `organization.organization_type` and `organization.rate_limit_tier` | Exact `default_claude_max_5x` and `default_claude_max_20x` values display Max 5x and Max 20x. An unknown Max tier displays Max with a note. Pro, Team and Enterprise follow the current organization type. |
 | Copilot | Existing `copilot_internal/user`, `copilot_plan`; organization `/copilot/billing`, `plan_type` | Displays the explicit plan value with readable capitalization. No tier is inferred from premium-request or AI-credit allowances. Optional org lookup failure preserves configured pool totals. |
 | GitHub Billing | Existing user/org profile, `plan.name` | Displays the reported profile plan even if allowance detail is unavailable. Missing permission leaves the plan unknown, with the existing billing explanation. |
-| Grok / X Subscription | Existing authenticated CLI settings, `subscription_tier_display` or its supported alternative spelling | Displays the provider's explicit name. It does not infer an X bundle tier from Grok Bot quotas or SuperGrok usage. |
+| Grok / X Subscription | Existing authenticated CLI settings, `subscription_tier_display` or its supported alternative spelling | Displays the provider's explicit name even when no unified billing pool exists. It does not infer an X bundle tier from Grok Bot quotas or SuperGrok usage. |
 | OpenCode Go + Zen | Existing Console `/api/go/status` subscription result | A subscription belonging to the signed-in member displays Go. Zen credit balances alone do not identify a subscription. |
 | Cursor | `GetPlanInfo`, `planInfo.planName`, using the existing Connect RPC sign-in | Displays the exact provider name. `GetCurrentPeriodUsage` supplies usage, not a guessed subscription tier. Optional plan lookup failure does not discard usage; 429 Retry-After is honored. |
 | Gemini | Existing Apps usage and Antigravity CLI usage | The connected usage shapes provide quotas, without an explicit subscription plan field. No plan is guessed from a quota or model list. |
@@ -45,7 +45,10 @@ refresh reads the newly effective plan. The label shows the current plan until
 the provider changes it; an upcoming target is never applied early. Lookup
 failures are cached for four hours and honor longer Retry-After delays. They
 preserve usage and fall back to its current `plan_type`, with a lookup-failure
-note. Other providers keep their normal source refreshes.
+note. The app passes its existing date style into the provider, so scheduled
+dates follow the user's month/day order and translated month names. Cached
+metadata is formatted again on each usage refresh. Other providers keep their
+normal source refreshes.
 
 ## Evidence
 
