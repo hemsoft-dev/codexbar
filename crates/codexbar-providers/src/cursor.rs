@@ -291,8 +291,14 @@ impl<H: HttpClient> CursorProvider<H> {
     }
 
     fn current_plan(&self, token: &str, headers: &[(&str, &str)], now: DateTime<Utc>) -> Option<String> {
-        // Bind holds to this exact sign-in without retaining the token itself.
-        let identity = format!("{:x}", Sha256::digest(token.as_bytes()));
+        // JWT refreshes rotate credentials, not the account. Keep the hold across rotation without retaining
+        // tokens; opaque credentials need a token hash so unrelated sign-ins do not share the legacy id's hold.
+        let account = account_id_for_token(token);
+        let identity = if account.as_str() == LEGACY_ID {
+            format!("opaque-{:x}", Sha256::digest(token.as_bytes()))
+        } else {
+            account.as_str().to_owned()
+        };
         {
             let mut holds = PLAN_BACKOFF.lock().unwrap_or_else(|error| error.into_inner());
             holds.retain(|(_, _, until)| *until > now);
@@ -681,8 +687,12 @@ mod tests {
         }
     }
 
+    // These tests advance virtual clocks while sharing the process-wide backoff cache.
+    static PLAN_TEST_CLOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn cursor_plan_rate_limits_do_not_block_usage_refreshes() {
+        let _clock = PLAN_TEST_CLOCK.lock().unwrap();
         let auth = Auth::new("plans-rate-limit", "plan-rate-limit");
         let provider = CursorProvider::new(
             PlanHttp {
@@ -704,6 +714,79 @@ mod tests {
             provider.fetch(now() + Duration::minutes(61)).unwrap()[0].plan(),
             Some("Premium")
         );
+    }
+
+    #[test]
+    fn cursor_plan_backoff_survives_jwt_rotation_and_provider_reconstruction() {
+        let _clock = PLAN_TEST_CLOCK.lock().unwrap();
+        use std::sync::atomic::Ordering;
+        let auth = Auth::new("plans-rotated-jwt", "rotation-account");
+        let first = CursorProvider::new(
+            PlanHttp {
+                profiles: Mutex::new(vec![HttpResponse {
+                    retry_after_secs: Some(3600),
+                    ..HttpResponse::new(429, "")
+                }]),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            },
+            auth.0.clone(),
+        );
+        assert_eq!(first.fetch(now()).unwrap()[0].plan(), None);
+        let rotated = token("rotation-account").replace(".signature", ".rotated-signature");
+        assert_ne!(rotated, token("rotation-account"));
+        std::fs::write(&auth.0, serde_json::json!({"accessToken":rotated}).to_string()).unwrap();
+        let profile = |name| HttpResponse::new(200, serde_json::json!({"planInfo":{"planName":name}}).to_string());
+        let rebuilt = CursorProvider::new(
+            PlanHttp {
+                profiles: Mutex::new(vec![profile("Other account"), profile("Premium")]),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            },
+            auth.0.clone(),
+        );
+        let held = rebuilt.fetch(now() + Duration::minutes(2)).unwrap();
+        assert_eq!(held[0].plan(), None);
+        assert!(!held[0].metrics().is_empty(), "only plan metadata is held");
+        assert_eq!(rebuilt.http.calls.load(Ordering::SeqCst), 0);
+        auth.sign_in("different-rotation-account");
+        assert_eq!(
+            rebuilt.fetch(now() + Duration::minutes(3)).unwrap()[0].plan(),
+            Some("Other account")
+        );
+        auth.sign_in("rotation-account");
+        assert_eq!(rebuilt.fetch(now() + Duration::minutes(4)).unwrap()[0].plan(), None);
+        assert_eq!(
+            rebuilt.fetch(now() + Duration::minutes(61)).unwrap()[0].plan(),
+            Some("Premium")
+        );
+        assert_eq!(rebuilt.http.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn opaque_cursor_tokens_keep_distinct_plan_backoff_keys() {
+        let _clock = PLAN_TEST_CLOCK.lock().unwrap();
+        let auth = Auth::new("plans-opaque", "unused");
+        let write_token =
+            |token| std::fs::write(&auth.0, serde_json::json!({"accessToken":token}).to_string()).unwrap();
+        write_token("opaque-first");
+        let provider = CursorProvider::new(
+            PlanHttp {
+                profiles: Mutex::new(vec![
+                    HttpResponse::new(429, ""),
+                    HttpResponse::new(200, r#"{"planInfo":{"planName":"Premium"}}"#),
+                ]),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            },
+            auth.0.clone(),
+        );
+        assert_eq!(provider.fetch(now()).unwrap()[0].plan(), None);
+        write_token("opaque-second");
+        assert_eq!(
+            provider.fetch(now() + Duration::minutes(1)).unwrap()[0].plan(),
+            Some("Premium")
+        );
+        write_token("opaque-first");
+        assert_eq!(provider.fetch(now() + Duration::minutes(2)).unwrap()[0].plan(), None);
+        assert_eq!(provider.http.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     struct Auth(PathBuf);

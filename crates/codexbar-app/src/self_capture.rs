@@ -236,6 +236,22 @@ async fn run(
         });
     }
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
+        cx.update(|cx| {
+            dashboard.update(cx, |dashboard, cx| {
+                dashboard.capture_demo_plan("copilot-hemsoft", "Pro+", cx);
+                dashboard.focus_account(
+                    &crate::handoff::FocusRequest {
+                        account: "copilot-hemsoft".into(),
+                        metric: None,
+                    },
+                    cx,
+                );
+            })
+        });
+        settle(cx).await;
+        if save(cx, handle, dir, "plan-copilot") {
+            saved.push("plan-copilot".into());
+        }
         let date = chrono::NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
         let scheduled = format!("Pro → Pro Lite on {}", crate::locale::style().month_day(date));
         for (plan, name) in [(scheduled.as_str(), "plan-codex"), ("Pro Lite", "plan-codex-changed")] {

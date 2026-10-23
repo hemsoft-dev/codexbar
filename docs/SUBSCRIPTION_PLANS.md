@@ -30,11 +30,11 @@ Old generic `Pro` stays generic because the previous writer collapsed both
 | --- | --- | --- |
 | ChatGPT / Codex | `/backend-api/accounts/check/v4-2023-04-27`, selected account and entitlement; existing `/backend-api/wham/usage` fallback | Prefers `account.plan_display_name`, otherwise maps explicit `account.plan_type`: `pro` is Pro, `prolite` is Pro Lite, `promax` is Pro Max. A future `entitlement.scheduled_plan_change` with an explicit `changes_at` displays the target and local date, for example Pro → Pro Lite on Oct 26. |
 | Claude | `/api/oauth/profile`, `organization.organization_type` and `organization.rate_limit_tier` | Exact `default_claude_max_5x` and `default_claude_max_20x` values display Max 5x and Max 20x. An unknown Max tier displays Max with a note. Pro, Team and Enterprise follow the current organization type. |
-| Copilot | Existing `copilot_internal/user`, `copilot_plan`; organization `/copilot/billing`, `plan_type` | Displays the explicit plan value with readable capitalization. No tier is inferred from premium-request or AI-credit allowances. Optional org lookup failure preserves configured pool totals. |
+| Copilot | Existing `copilot_internal/user`, `copilot_plan`; organization `/copilot/billing`, `plan_type` | Maps explicit Copilot codes to product names: `individual` → Pro, `individual_pro` → Pro+, `individual_max` → Max, `individual_edu` → Student, and organization Business/Enterprise. Explicit Free/Student access SKUs take precedence; unknown codes stay verbatim. No tier is inferred from premium-request or AI-credit allowances. Optional org lookup failure preserves configured pool totals. |
 | GitHub Billing | Existing user/org profile, `plan.name` | Displays the reported profile plan even if allowance detail is unavailable. Missing permission leaves the plan unknown, with the existing billing explanation. |
 | Grok / X Subscription | Existing authenticated CLI settings, `subscription_tier_display` or its supported alternative spelling | Displays the provider's explicit name even when no unified billing pool exists. It does not infer an X bundle tier from Grok Bot quotas or SuperGrok usage. |
 | OpenCode Go + Zen | Existing Console `/api/go/status` subscription result | A subscription belonging to the signed-in member displays Go. Zen credit balances alone do not identify a subscription. |
-| Cursor | `GetPlanInfo`, `planInfo.planName`, using the existing Connect RPC sign-in | Displays the exact provider name. `GetCurrentPeriodUsage` supplies usage, not a guessed subscription tier. Optional plan lookup failure does not discard usage; 429 Retry-After is honored. |
+| Cursor | `GetPlanInfo`, `planInfo.planName`, using the existing Connect RPC sign-in | Displays the exact provider name. `GetCurrentPeriodUsage` supplies usage, not a guessed subscription tier. Optional plan lookup failure does not discard usage; 429 Retry-After survives JWT rotation and provider reconstruction using the stable subject identity, with an opaque-token hash fallback. |
 | Gemini | Existing Apps usage and Antigravity CLI usage | The connected usage shapes provide quotas, without an explicit subscription plan field. No plan is guessed from a quota or model list. |
 | OpenRouter / Moonshot | Existing credit/balance endpoints | A prepaid balance is not a subscription plan. The generic provider name remains. |
 | Greptile | Existing read-only review-activity endpoint | Review counts do not identify a billing plan. The generic name remains. |
@@ -98,3 +98,6 @@ for the existing sources and their permission limits.
 The generic plan-unavailable note is shown only for an account backed by a
 successful fetch or restored last-good data. Loading and failed-first-fetch
 placeholders show their actual status without claiming the source lacks a plan.
+
+Copilot mappings follow [VS Code's entitlement resolver](https://github.com/microsoft/vscode/blob/acb9c660323c221b27beff0ed2e0e1ae7c4ffebe/src/vs/workbench/services/chat/common/chatEntitlementService.ts#L1029)
+and its product-name formatter; no subscription tier is inferred from quota sizes.

@@ -87,14 +87,37 @@ pub fn parse_user(payload: &str, username: &str, now: DateTime<Utc>) -> Result<A
     }
 
     let mut account = AccountSnapshot::new(account_id(username), Provider::Copilot, metrics, now).with_label(username);
-    if let Some(plan) = json
-        .get("copilot_plan")
-        .and_then(Value::as_str)
-        .filter(|plan| !plan.trim().is_empty())
-    {
-        account = account.with_plan(crate::codex::plan_name(plan));
+    let plan = match json.get("access_type_sku").and_then(Value::as_str) {
+        Some("free_limited_copilot") => Some("Free".to_owned()),
+        Some("free_educational_quota") => Some("Student".to_owned()),
+        _ if json.get("can_signup_for_limited").and_then(Value::as_bool) == Some(true) => None,
+        _ => json
+            .get("copilot_plan")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|plan| !plan.is_empty())
+            .map(copilot_plan_name),
+    };
+    if let Some(plan) = plan {
+        account = account.with_plan(plan);
     }
     Ok(account)
+}
+
+/// Product names from VS Code's Copilot entitlement mapping. In particular, individual_pro is Pro+, not Pro.
+/// Unknown codes stay verbatim rather than inventing a product name from their spelling.
+fn copilot_plan_name(code: &str) -> String {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "individual" => "Pro",
+        "individual_pro" => "Pro+",
+        "individual_max" => "Max",
+        "individual_edu" => "Student",
+        "business" => "Business",
+        "enterprise" => "Enterprise",
+        "free" => "Free",
+        _ => code.trim(),
+    }
+    .to_owned()
 }
 
 /// Quotas in display order. Paid plans meter premium requests; Copilot Free meters chat and completions.
@@ -708,7 +731,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             .get("plan_type")
             .and_then(Value::as_str)
             .filter(|name| !name.trim().is_empty())
-            .map(crate::codex::plan_name);
+            .map(copilot_plan_name);
         let computed = json
             .pointer("/seat_breakdown/total")
             .and_then(Value::as_u64)
@@ -1238,7 +1261,7 @@ mod tests {
     #[test]
     fn parse_user_premium_quota_maps_used_limit_and_reset() {
         let account = parse_user(USER, "HemSoft", now()).unwrap();
-        assert_eq!(account.display_name(), "Copilot · HemSoft · Individual Pro");
+        assert_eq!(account.display_name(), "Copilot · HemSoft · Pro+");
         let Some(Metric::Quota {
             used, limit, resets_at, ..
         }) = account.primary()
@@ -1252,6 +1275,29 @@ mod tests {
     }
 
     #[test]
+    fn copilot_plan_codes_and_explicit_skus_use_product_names() {
+        // The same entitlement mapping as VS Code, never inferred from quota amounts.
+        for (code, sku, signup, expected) in [
+            ("individual", None, false, Some("Pro")),
+            ("individual_pro", None, false, Some("Pro+")),
+            ("individual_max", None, false, Some("Max")),
+            ("individual_edu", None, false, Some("Student")),
+            ("business", None, false, Some("Business")),
+            ("enterprise", None, false, Some("Enterprise")),
+            ("individual", Some("free_limited_copilot"), false, Some("Free")),
+            ("individual", Some("free_educational_quota"), false, Some("Student")),
+            ("individual", None, true, None),
+            ("future_plan_CODE", None, false, Some("future_plan_CODE")),
+        ] {
+            let payload =
+                serde_json::json!({"copilot_plan":code,"access_type_sku":sku,"can_signup_for_limited":signup});
+            let account = parse_user(&payload.to_string(), "dev", now()).unwrap();
+            assert_eq!(account.plan(), expected, "{payload}");
+            assert!(account.metrics().is_empty(), "a plan requires no quota inference");
+        }
+    }
+
+    #[test]
     fn parse_user_unlimited_quota_has_no_metric() {
         let payload = r#"{"quota_reset_date":"2026-11-01","quota_snapshots":{"premium_interactions":{"entitlement":0,"remaining":0,"unlimited":true}}}"#;
         assert!(parse_user(payload, "x", now()).unwrap().metrics().is_empty());
@@ -1259,11 +1305,12 @@ mod tests {
 
     #[test]
     fn parse_user_free_plan_reports_chat_and_completions() {
-        let payload = r#"{"copilot_plan":"individual","quota_reset_date":"2026-11-01","quota_snapshots":{
+        let payload = r#"{"copilot_plan":"individual","access_type_sku":"free_limited_copilot","quota_reset_date":"2026-11-01","quota_snapshots":{
             "chat":{"entitlement":200,"remaining":199,"unlimited":false},
             "completions":{"entitlement":2000,"remaining":2000,"unlimited":false},
             "premium_interactions":{"entitlement":0,"remaining":0,"unlimited":false}}}"#;
         let account = parse_user(payload, "HemSoft", now()).unwrap();
+        assert_eq!(account.plan(), Some("Free"));
         let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
         assert_eq!(labels, ["Chat messages", "Code completions"]);
         assert_eq!(account.primary().unwrap().used_display(), "1");
