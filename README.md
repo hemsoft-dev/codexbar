@@ -74,6 +74,8 @@ there. The Automatic method reads that sign-in. Dates follow the system's locale
 CI scans the locked Rust dependencies for vulnerabilities and unsoundness.
 See [Rust dependency security](docs/RUST_DEPENDENCY_SECURITY.md) for the pinned
 scanner, local commands, report artifacts and exception policy.
+CI also measures [Rust production coverage and per-function CRAP](docs/RUST_TEST_METRICS.md)
+and rejects regressions against the base revision.
 
 ```powershell
 git clone https://github.com/hemsoft-dev/codexbar.git

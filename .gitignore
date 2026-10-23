@@ -68,6 +68,8 @@ node_modules/
 
 CoverageReport/
 artifacts/security/
+artifacts/rust-metrics/
+__pycache__/
 
 # Local dotnet tools (tool-path installs)
 .tools/

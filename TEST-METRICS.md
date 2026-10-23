@@ -1,5 +1,10 @@
 # Test Metrics
 
+This file is a historical snapshot of the retired C# / WPF app under `src/`.
+Its coverage and mutation percentages do not describe the current Rust product.
+See [Rust test metrics](docs/RUST_TEST_METRICS.md) for current measurements,
+scope, artifacts and regression gates.
+
 ## Coverage & Quality Snapshot
 
 | Metric                  | Before | After | Delta |
