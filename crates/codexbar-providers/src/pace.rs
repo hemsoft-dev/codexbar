@@ -9,14 +9,22 @@ const MIN_ELAPSED_FRACTION: f64 = 0.1;
 /// Usage so far divided by time elapsed in the period `[start, resets_at)`, or `None` while the period is too young.
 pub fn elapsed_pace(used: f64, start: DateTime<Utc>, resets_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<Pace> {
     let length = resets_at - start;
-    let elapsed = now - start;
-    if length <= Duration::zero() || now >= resets_at {
-        return None;
-    }
-    let min_elapsed = Duration::minutes(MIN_ELAPSED_MINUTES).max(Duration::seconds(
+    let minimum = Duration::minutes(MIN_ELAPSED_MINUTES).max(Duration::seconds(
         (length.num_seconds() as f64 * MIN_ELAPSED_FRACTION) as i64,
     ));
-    if elapsed < min_elapsed {
+    elapsed_pace_after(used, start, resets_at, now, minimum)
+}
+
+/// Projects after an explicit maturity point. Antigravity weekly pools mature with SUS at 12 hours (#262).
+pub fn elapsed_pace_after(
+    used: f64,
+    start: DateTime<Utc>,
+    resets_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    minimum: Duration,
+) -> Option<Pace> {
+    let elapsed = now - start;
+    if resets_at <= start || now >= resets_at || elapsed < minimum {
         return None;
     }
     Some(Pace::per_hour(used / (elapsed.num_seconds() as f64 / 3600.0)))
@@ -28,6 +36,27 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn explicit_maturity_rejects_invalid_future_and_expired_periods() {
+        let at = now();
+        for (start, reset) in [
+            (at, at),
+            (at, at - Duration::hours(1)),
+            (at + Duration::hours(1), at + Duration::days(7)),
+            (at - Duration::days(7), at),
+        ] {
+            assert_eq!(elapsed_pace_after(0.03, start, reset, at, Duration::hours(12)), None);
+        }
+        let zero = elapsed_pace_after(
+            0.,
+            at - Duration::hours(12),
+            at + Duration::hours(156),
+            at,
+            Duration::hours(12),
+        );
+        assert_eq!(zero.unwrap().fraction_per_hour(), 0.);
     }
 
     #[test]

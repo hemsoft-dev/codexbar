@@ -8179,7 +8179,7 @@ fn progress_bars_and_markers_are_centered_with_or_without_sus(cx: &mut TestAppCo
             cx.update_window(handle, |_, window, cx| {
                 window.render_frame(cx);
                 for (account, window_kind, has_sus) in [
-                    ("gemini", Some("5h"), false),
+                    ("gemini", Some("weekly"), true),
                     ("copilot-work", None, false),
                     ("openrouter", None, false),
                     ("claude-personal", Some("weekly"), true),
@@ -8222,6 +8222,78 @@ fn progress_bars_and_markers_are_centered_with_or_without_sus(cx: &mut TestAppCo
                         }
                     }
                 }
+            })
+            .unwrap();
+        }
+    }
+}
+
+/// #262: the same CLI-derived weekly forecast reaches the row, marker, ring and SUS in both layouts.
+#[gpui_kit::test]
+fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("gemini-weekly-maturity", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    for wide in [false, true] {
+        gpui_kit::VisualTestContext::from_window(handle, cx)
+            .simulate_resize(size(px(if wide { 2600. } else { 1440. }), px(1000.)));
+        for mature in [false, true] {
+            cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_gemini_weekly(mature, cx)));
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            let used = if wide { "window-weekly-gemini" } else { "used-gemini" };
+            let bar = if wide {
+                "window-weekly-gemini-bar"
+            } else {
+                "progress-cell-gemini"
+            };
+            let forecast = if wide {
+                "window-weekly-gemini-at-reset"
+            } else {
+                "at-reset-gemini"
+            };
+            assert_eq!(label(cx, handle, used).as_deref(), Some("Gemini Models weekly: 3%"));
+            assert_eq!(
+                label(
+                    cx,
+                    handle,
+                    if wide {
+                        "window-weekly-gemini-bar-sus"
+                    } else {
+                        "progress-cell-gemini-sus"
+                    }
+                )
+                .as_deref(),
+                Some(if mature {
+                    "Gemini Models weekly: SUS 42, red"
+                } else {
+                    "Gemini Models weekly: SUS n/a, unavailable"
+                })
+            );
+            assert_eq!(
+                label(cx, handle, forecast).as_deref(),
+                Some(if mature {
+                    "Gemini Models weekly: 42% at reset"
+                } else {
+                    "Gemini Models weekly at reset: no forecast"
+                })
+            );
+            let ring = label(cx, handle, "focus-share").unwrap();
+            assert!(ring.starts_with("Gemini Models weekly: 3% used"), "{ring}");
+            assert_eq!(ring.contains("42% at reset"), mature, "{ring}");
+            assert_eq!(
+                label(cx, handle, "sparkline-gemini").as_deref(),
+                Some("14-day sparkline: 3 samples, latest 3%")
+            );
+            let resets = if wide {
+                "window-weekly-gemini-resets"
+            } else {
+                "resets-gemini"
+            };
+            assert!(label(cx, handle, resets).unwrap().ends_with("in 7d"));
+            cx.update_window(handle, |_, window, _| {
+                assert_eq!(window.try_find(format!("{bar}-projected")).is_some(), mature);
+                assert!(window.try_find("window-5h-gemini-bar-sus").is_none());
             })
             .unwrap();
         }
