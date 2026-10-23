@@ -17,6 +17,8 @@ use gpui_kit::{AnyWindowHandle, App, AppContext as _, AsyncApp, Entity};
 use crate::dashboard::{Dashboard, DashboardView};
 use crate::theme::Appearance;
 
+mod antigravity;
+
 /// Starts the capture if `CODEXBAR_CAPTURE_DIR` is set and this is the demo.
 pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>) {
     let Some(dir) = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(PathBuf::from) else {
@@ -28,6 +30,13 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
         return;
     }
     let _ = std::fs::create_dir_all(&dir);
+    if std::env::var_os("CODEXBAR_CAPTURE_ANTIGRAVITY").is_some() {
+        let hub = crate::settings_hub::SettingsHub::global(cx);
+        assert!(
+            hub.dir().starts_with(&dir) && hub.settings().accounts().is_empty(),
+            "Antigravity fixture capture requires fresh isolated settings under the evidence directory"
+        );
+    }
     cx.spawn(async move |cx| {
         let report = run(cx, handle, &dashboard, &dir).await;
         let _ = std::fs::write(dir.join("report.json"), report.to_string());
@@ -178,6 +187,9 @@ async fn run(
     settle(cx).await;
     if save(cx, handle, dir, "settings-about-dark") {
         saved.push("settings-about-dark".into());
+    }
+    if std::env::var_os("CODEXBAR_CAPTURE_ANTIGRAVITY").is_some() {
+        saved.extend(antigravity::run(cx, handle, dashboard, dir).await);
     }
     // Optional synthetic plan states. The normal live adapters never read these fixture values.
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {

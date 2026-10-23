@@ -10,7 +10,8 @@ use crate::gemini_apps::{self, AppsSession};
 use crate::gemini_coding::{self, CodingError};
 use crate::{AccountOutcome, CommandRunner, HttpClient, ProviderError, UsageProvider};
 
-const SETUP_HINT: &str = "Sign in to Gemini Apps in CodexBar settings.";
+const SETUP_HINT: &str =
+    "Connect Antigravity in Settings > Accounts. New Gemini Apps website sign-in is unavailable here.";
 
 pub struct GeminiProvider<H: HttpClient> {
     http: H,
@@ -99,7 +100,10 @@ impl<H: HttpClient> GeminiProvider<H> {
                 messages.push(format!("Gemini Apps: {error}"));
                 first_error = Some(error.clone());
             }
-            None if self.coding.is_some() => messages.push("Gemini Apps: not signed in.".to_owned()),
+            None if self.coding.is_some() => messages.push(
+                "Gemini Apps website usage is separate and not connected; new website sign-in is unavailable here."
+                    .to_owned(),
+            ),
             None => {}
         }
         match &coding {
@@ -246,7 +250,10 @@ mod tests {
         let provider = GeminiProvider::new(Offline, None, "gm-1", "Personal").with_coding(agy(USAGE));
         let account = provider.fetch(now()).unwrap().remove(0);
         assert_eq!(account.metrics().len(), 4);
-        assert_eq!(account.messages(), ["Gemini Apps: not signed in."]);
+        assert_eq!(
+            account.messages(),
+            ["Gemini Apps website usage is separate and not connected; new website sign-in is unavailable here."]
+        );
     }
 
     #[test]

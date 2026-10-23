@@ -13,7 +13,7 @@ differences that remain, and why.
 | GitHub Billing: included allowances and budgets | Yes | Yes | Windows also counts billable usage past an allowance without repository visibility ([GITHUB_BILLING.md](GITHUB_BILLING.md)) |
 | Grok | Yes | Yes, experimental | Windows signs in through the official Grok CLI in a home per account ([GROK.md](GROK.md)) |
 | X Subscription: SuperGrok and Grok Bot weekly limits, Extra Usage Credits | Planned ([codexbar-ios#458](https://github.com/hemsoft-dev/codexbar-ios/issues/458)) | Yes, experimental | Windows reads the Grok CLI's and the Cursor app's own sign-ins ([X_SUBSCRIPTION.md](X_SUBSCRIPTION.md)) |
-| Google Gemini: Gemini Apps limits | Yes | Yes, experimental | Windows signs in through a temporary Edge or Chrome profile instead of a web view ([GEMINI.md](GEMINI.md)) |
+| Google Gemini: Gemini Apps limits | Yes | Saved sessions only, experimental | New controlled-browser sign-in is retired; Antigravity coding quotas connect independently through the native CLI ([GEMINI.md](GEMINI.md)) |
 | Google Gemini: coding quotas | Yes | Yes, experimental | Windows reads them through Google's Antigravity CLI (`agy`) instead of its own OAuth client; one Gemini account can show them ([GEMINI.md](GEMINI.md)) |
 
 Copilot organization billing on Windows is configured per account. With an

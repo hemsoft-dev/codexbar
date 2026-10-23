@@ -19,7 +19,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 | **GitHub Billing** | Browser sign-in through the GitHub CLI | This month's spend across GitHub products, for you or an organization |
 | **Grok** (experimental) | Grok CLI sign-in (`grok login`) | A paid plan's weekly usage and Extra Usage Credits |
 | **X Subscription** (experimental) | Grok CLI sign-in and Cursor sign-in | Weekly SuperGrok and Grok Bot limits, Extra Usage Credits |
-| **Gemini** (experimental) | Google sign-in in a temporary Edge or Chrome window | Gemini Apps five-hour and weekly limits |
+| **Gemini / Antigravity** (experimental) | Antigravity CLI shared local sign-in; previously saved Gemini Apps sessions | Antigravity coding quotas; Gemini Apps limits when a saved session still works |
 
 ## Features
 
@@ -91,7 +91,7 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 7. **OpenCode Go / Zen**: Add an OpenCode Go account in Settings > Accounts (OAuth, the default); CodexBar opens OpenCode's approval page, where you approve it and pick the workspace. Add one account per workspace. The older setup still works: an account with the Browser session method, the dashboard auth cookie and your workspace id (`wrk_…`), or `OPENCODE_GO_AUTH_COOKIE` and `OPENCODE_GO_WORKSPACE_ID`. OpenCode Zen uses the same cookie unless you give it its own (`OPENCODE_ZEN_AUTH_COOKIE`)
 8. **Greptile**: Create an organization API key in Greptile and add a Greptile account with it in Settings. Greptile runs only for an account that is switched on; `GREPTILE_API_KEY` supplies the key for an enabled account that has none saved and never turns Greptile on by itself. CodexBar counts the organization's completed code reviews; see [docs/GREPTILE.md](docs/GREPTILE.md)
 9. **GitHub Billing**: Add a GitHub Billing account in Settings > Accounts, with an organization name or blank for your own billing. CodexBar signs it in with your browser through the GitHub CLI; see [docs/GITHUB_BILLING.md](docs/GITHUB_BILLING.md)
-10. **Gemini** (experimental): Add a Gemini account in Settings > Accounts. CodexBar opens Gemini in a temporary Edge or Chrome window where you sign in to Google. For the coding quotas, sign in to Google's Antigravity CLI (`agy`) and set the account's Coding quotas to it; see [docs/GEMINI.md](docs/GEMINI.md)
+10. **Gemini / Antigravity** (experimental): Add a Gemini account in Settings > Accounts and choose **Connect Antigravity**. CodexBar reuses the CLI's local sign-in, or hands off to its normal default-browser sign-in, then verifies usage. Previously saved Gemini Apps sessions remain separate; new website sign-in is unavailable. See [docs/GEMINI.md](docs/GEMINI.md)
 11. **Grok** (experimental): Sign in with the Grok CLI (`grok login`) and add a Grok account in Settings (Automatic), or choose OAuth to sign an account in through the CLI in a folder of its own; see [docs/GROK.md](docs/GROK.md)
 12. **X Subscription** (experimental): Sign in with the Grok CLI (`grok login`) and to Cursor (step 4), then add an X Subscription account in Settings. It shows what Grok's Settings > Usage shows, each once; see [docs/X_SUBSCRIPTION.md](docs/X_SUBSCRIPTION.md)
 

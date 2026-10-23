@@ -42,7 +42,7 @@ the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.m
 | GitHub Billing | | OAuth: the GitHub CLI's device sign-in, token kept by CodexBar, apart from Copilot |
 | Grok | Automatic (the Grok CLI's own `~/.grok` or `GROK_HOME`) | OAuth: its own Grok CLI home, through `grok login` (experimental) |
 | X Subscription | Automatic (the Grok CLI's own sign-in and the Cursor app's) | (experimental; see [X_SUBSCRIPTION.md](X_SUBSCRIPTION.md)) |
-| Gemini | | Browser session: a temporary Edge or Chrome profile, two Google session cookies kept by CodexBar (experimental) |
+| Gemini | | Connect Antigravity through its shared local CLI sign-in and default browser; previously saved Gemini Apps sessions remain separate (experimental) |
 | OpenCode Go / Zen | Browser session (a copied dashboard cookie) | OAuth (OpenCode Go): OpenCode's device approval in the browser, sign-in kept by CodexBar |
 
 Accounts CodexBar signs in show **Sign in…**, **Sign in again…** and **Sign out**

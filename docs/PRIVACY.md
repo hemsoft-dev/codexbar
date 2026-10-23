@@ -24,7 +24,7 @@ key makes no request. To stop one, add an account for it in Settings > Accounts
 | Greptile | `https://api.greptile.com/mcp` (only the read-only `list_code_reviews` tool) | Your organization API key |
 | Grok | `https://cli-chat-proxy.grok.com/v1/billing` and `…/v1/settings` (its plan); `https://auth.x.ai` userinfo once at sign-in | The Grok CLI's sign-in (`auth.json` in the account's Grok home) |
 | X Subscription | The Grok endpoints above, with the Grok CLI's sign-in; `https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus` (the Grok Bot limit), with the Cursor sign-in | Each sign-in only on its own service: the Grok CLI's `auth.json`, the Cursor sign-in (`auth.json`) |
-| Gemini | `https://gemini.google.com/usage` and `https://gemini.google.com/_/BardChatUi/data/batchexecute` (the usage RPC only) | Two Google session cookies (`__Secure-1PSID`, `__Secure-1PSIDTS`) kept by CodexBar |
+| Gemini | `https://gemini.google.com/usage` and `https://gemini.google.com/_/BardChatUi/data/batchexecute` (the usage RPC only) | Previously saved Google session cookies (`__Secure-1PSID`, `__Secure-1PSIDTS`); new website sign-in is unavailable |
 | GitHub Billing | `https://api.github.com/user`; the owner's `…/settings/billing/usage/summary` and `…/settings/billing/usage`; for an organization `…/orgs/{org}` (its plan) and `…/settings/billing/budgets`; `…/repos/{owner}/{repo}` for repositories in this month's Actions usage (their visibility, remembered for six hours) | The account's own GitHub CLI token, kept by CodexBar |
 | OpenCode Go / Zen | OAuth accounts: `https://opencode.ai/console/api/go/status` and `…/console/api/billing/status`; cookie accounts: `https://opencode.ai/workspace/…` | The account's OpenCode sign-in (OAuth), or your dashboard auth cookie |
 
@@ -43,7 +43,7 @@ A Gemini account with coding quotas on runs Google's Antigravity CLI
 quotas from Google with its own sign-in. It runs no model turn.
 
 Signing an account in from Settings runs the provider's own CLI (Codex CLI,
-GitHub CLI, Claude Code or the Cursor CLI), which talks to that provider's
+GitHub CLI, Claude Code, Cursor CLI or Antigravity CLI), which talks to that provider's
 sign-in service. CodexBar opens the provider's sign-in page in your default
 browser. OpenCode has no such CLI step: CodexBar asks the OpenCode Console
 (`https://opencode.ai/console/auth/…`) for an approval code, opens its approval
@@ -101,3 +101,11 @@ removes everything else CodexBar stored.
 
 Alerts (nearing or hitting a limit) are shown as Windows notifications. They
 contain the account's name and the alert, never a secret.
+
+Antigravity connection checks reuse the CLI's native-keyring sign-in through
+its usage command. Explicitly opening sign-in launches plain `agy`, with no
+model prompt, and the vendor owns default-browser consent and credential
+renewal. CodexBar stores only the coding-feed setting. Cancel closes its own
+CLI process, keeps vendor credentials and never inspects the user's browser.
+Previously saved Gemini Apps sessions remain separate; new Google cookie
+extraction and controlled-browser sign-in are disabled.

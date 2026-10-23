@@ -6,44 +6,51 @@ Gemini's own reset times. It is not Gemini API, Gemini CLI or Code Assist quota;
 it can also show the Gemini coding quotas (#107, below). The integration is
 **experimental** and off until a Gemini account is added.
 
-## Signing in
+## Connect Antigravity
 
-Gemini Apps has no OAuth grant or CLI that can read these limits for another
-program, so the sign-in uses a website session, as in the iOS app:
+In Settings > Accounts, add or select a Gemini account and choose **Connect
+Antigravity**. CodexBar checks the existing local Antigravity session through
+its version-gated `/usage` command. A successful response enables **Coding
+quotas** for that account without opening a sign-in window.
 
-1. Add a Gemini account in Settings > Accounts (method Browser session).
-   CodexBar opens `gemini.google.com/usage` in Microsoft Edge or Google Chrome
-   on a **new, empty, temporary profile** in the settings folder
-   (`gemini\browser-…`). Your own browser profiles and their cookies are never
-   read.
-2. Sign in to Google there yourself, with the account whose usage to show.
-   Passwords, MFA and Google's checks happen entirely in the browser.
-3. CodexBar asks the browser for its cookies through the browser's DevTools
-   protocol (`Storage.getCookies`) every two seconds. It never reads page
-   contents or passwords and runs no script in the page.
-4. Only secure, unexpired `.google.com` cookies on the root path named
-   `__Secure-1PSID` and the optional `__Secure-1PSIDTS` count. Host-only,
-   narrower-path, insecure and other cookies are ignored; two different values
-   for one name fail. With them, CodexBar reads both Gemini Apps limits; only a
-   session that reads both is kept. A session Gemini rejects waits for new
-   cookies; a network or server failure, or a single limit, is tried again
-   after a wait that grows from five seconds to a minute.
-5. The two values are saved in Windows Credential Manager under the account
-   (`CodexBar:account:<id>:gemini-apps`), replacing any earlier ones in one
-   write. The browser is closed and its profile deleted. Cancel, a closed window
-   or a timeout (10 minutes) saves nothing and deletes the profile too; folders
-   an interrupted sign-in left behind are deleted at the next start.
+If that check fails, the dialog explains the failure. **Open Antigravity
+sign-in** starts the installed `agy` in its own terminal, with no prompt or
+model turn. Complete the CLI's normal sign-in in your default system browser,
+then choose **Check connection**. A terminal opening or closing is never taken
+as proof of authentication: the usage check must succeed. Missing or old CLI
+versions require installation or an update first.
 
-Sign out deletes CodexBar's copy. It doesn't sign you out of Google.
+Antigravity owns the browser consent, OAuth client, redirects, credentials and
+renewal. Its [documented authentication flow](https://www.antigravity.google/docs/install?tab=cli)
+reuses the OS secure keyring shared by its app, CLI and IDE integrations; when
+needed, its local CLI opens the default browser. CodexBar neither borrows an
+OAuth client nor reads or copies the CLI's tokens. The local handoff removes
+inherited SSH detection variables so the vendor does not select its separate
+remote URL/code workflow.
 
-Gemini's session cookies say nothing CodexBar can check about whose they are.
-Signing an account in again asks for the same Google account, since another
-account's usage would continue this one's history; add another Gemini account
-for a different Google account. Gemini accounts always use this browser
-sign-in, whatever method was chosen. A temporary profile the browser kept
-locked is deleted again when the sign-in ends, and a failure to delete it, or
-to list the folder, is shown in Settings. One sign-in runs at a time, each in a
-new folder with an unpredictable name.
+The dialog times out after ten minutes. Cancel, timeout and successful
+verification close only CodexBar's owned CLI process, not the user's browser.
+Credentials Antigravity has already saved remain its own. **Disconnect coding
+quotas** disables this account's feed without signing the shared CLI out.
+One Gemini account can use that shared sign-in. Connect the same Google
+account whose history belongs here: CodexBar cannot verify the CLI's Google
+identity, and changing it can mix usage in an existing account's history.
+
+## Previously saved Gemini Apps sessions
+
+Gemini Apps website usage and Antigravity coding quotas are separate. Existing
+Gemini Apps sessions remain in the OS credential store and keep working until
+the website rejects or expires them. Account IDs, labels and history are kept.
+**Forget saved Gemini Apps session** removes only CodexBar's saved copy; removing
+the CodexBar account also forgets its copy, without signing Google out.
+
+New Gemini Apps website sign-in is unavailable in CodexBar. The former
+controlled Edge/Chrome cookie flow is retired because Google can reject that
+browser. An Antigravity OAuth token cannot provide Google website cookies,
+and there is no supported native OAuth source for these website limits.
+CodexBar does not use an embedded browser, CDP, cookie extraction, user-agent
+spoofing or a browser-policy bypass for Google sign-in. Profiles left by the
+retired flow are cleaned at startup; user browser profiles are untouched.
 
 ## Reading usage
 
@@ -71,10 +78,10 @@ borrows no OAuth client and stores no token.
   1.1.11 on, the first whose non-interactive `/usage` starts no agent turn. An
   older CLI, or a version it can't read, is never asked, so `/usage` is never
   sent to the model as a prompt.
-- Set the Gemini account's **Coding quotas** to *From the Antigravity CLI* in
-  Settings. Sign in to the CLI by running `agy` once. Choose it only for the
-  Google account `agy` is signed in to: CodexBar can't check, and matching
-  labels prove nothing.
+- Use **Connect Antigravity** in Settings to verify the CLI session, or select
+  *From the Antigravity CLI* explicitly for an already configured session.
+  Choose it only for the Google account `agy` is signed in to: CodexBar cannot
+  check, and matching labels prove nothing.
 - The CLI keeps one sign-in for the Windows user (in Windows' credential store,
   not its home folder), so one Gemini account can show coding quotas.
 - Buckets map by id and window, never by display name: `gemini-5h`,
@@ -94,21 +101,16 @@ borrows no OAuth client and stores no token.
 - The two cookies are Google session credentials, not a Gemini-only key: they can
   reach more of the Google account. They are kept only in Credential Manager,
   sent only to `gemini.google.com`, and never logged or shown.
-- While a sign-in runs, the browser's DevTools port accepts connections from
-  this PC, so another program running as you could read that temporary
-  profile's cookies too. The browser runs in a kill-on-close Windows job and
-  the profile is deleted when the attempt ends.
-- Edge signs a new profile in to the Windows Microsoft account by itself; those
-  Microsoft cookies stay in the temporary profile and are deleted with it.
+- New authentication runs through the vendor CLI and normal browser. On Windows
+  only the owned CLI root is terminated; a kill-on-close job would also capture
+  a newly started default browser, so it is deliberately not used for this handoff.
 - This is Gemini's private web contract, not a published API: the RPC id and
   page tokens can change without notice, and the integration then fails with a
   "format changed" message rather than guessing.
 
-## Not verified here
+## Qualification
 
-The coding quotas were read live through the installed CLI (`agy` 1.3.3) on
-2026-10-12: four buckets, `num_turns` 0. The browser mechanism was checked on a hidden desktop (Edge started on a fresh
-profile, DevTools answered, cookies were listed, the browser closed and the
-profile was deleted). A real Google sign-in, and a comparison of both limits and
-resets with the same account's Usage page, are left to the account owner, along
-with a review of Google's terms before release.
+The previous coding adapter was read live through `agy` 1.3.3 on
+2026-10-12: four buckets and `num_turns` 0. That historical result does not
+qualify the new connection UI. See [Windows connection checks](ANTIGRAVITY_LOGIN_TESTING.md)
+for current-head evidence and the explicit manual Google-consent boundary.
