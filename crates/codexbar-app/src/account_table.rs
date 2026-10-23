@@ -594,7 +594,7 @@ impl TableDelegate for AccountTable {
                     div()
                         .id(ElementId::Name(format!("account-name-{}", row.id().as_str()).into()))
                         .test_support()
-                        .aria_label(row.display_name())
+                        .aria_label(row.account_name())
                         .truncate()
                         .child(row.account_name()),
                 )

@@ -6,7 +6,9 @@ history. The Usage table keeps the plan in its own label so a long account
 name cannot hide the tier. The focused account, alerts and tray use the full
 account name and plan. Last-good snapshots retain the reported plan at restart;
 a successful refresh replaces it, including removing a plan the source no
-longer supplies.
+longer supplies. Snapshots are written as schema version 3, so older builds
+refuse to overwrite plans they do not understand. Versions 1 and 2 remain
+readable and upgrade on the next save.
 
 ## Sources and limits
 

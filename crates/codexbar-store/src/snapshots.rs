@@ -1,7 +1,7 @@
 //! Last-good account snapshots (#76), kept in `snapshots.json` next to the settings so the dashboard shows every
 //! account at startup before the first fetch returns, and keeps usage visible while a provider is failing.
 //!
-//! Only usage is stored: account ids, provider keys, labels, metric names, numbers and times. Never keys, tokens or
+//! Only usage is stored: account ids, provider keys, labels, reported plans, metric names, numbers and times. Never keys, tokens or
 //! cookies. Written to a temp file and swapped in; an unreadable or foreign file is ignored, never misread.
 
 use std::io;
@@ -12,8 +12,9 @@ use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric, Money, Pace, P
 use serde_json::{Value, json};
 
 pub const SNAPSHOTS_FILE: &str = "snapshots.json";
-/// Version 2 added currencies, spend and messages. Version 1 files read as US dollars with no messages.
-const VERSION: u64 = 2;
+/// Version 3 adds reported plans. Version 2 added currencies, spend and messages.
+/// Version 1 files read as US dollars with no messages.
+const VERSION: u64 = 3;
 
 /// Loads the last-good snapshots in `dir`. Missing, unreadable or newer files give none; entries that can't be read
 /// are skipped.
@@ -279,6 +280,33 @@ mod tests {
             .with_plan("Max 5x");
         save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
         assert_eq!(load_snapshots(&dir.0), [account]);
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap()).unwrap();
+        assert_eq!(
+            doc["version"], 3,
+            "version-2 builds must refuse to overwrite persisted plans"
+        );
+    }
+
+    #[test]
+    fn version_two_snapshots_without_plans_load_and_upgrade_without_losing_existing_data() {
+        let dir = Dir::new("legacy-version-two");
+        let account = AccountSnapshot::new(AccountId::new("legacy"), Provider::Claude, Vec::new(), now())
+            .with_label("Work")
+            .with_message("Last good usage");
+        let mut value = account_to_json(&account);
+        value.as_object_mut().unwrap().remove("plan");
+        std::fs::write(
+            dir.0.join(SNAPSHOTS_FILE),
+            json!({"version": 2, "accounts": [value]}).to_string(),
+        )
+        .unwrap();
+        let loaded = load_snapshots(&dir.0);
+        assert_eq!(loaded, [account]);
+        assert_eq!(loaded[0].plan(), None);
+        save_snapshots(&dir.0, &loaded).unwrap();
+        let doc: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap()).unwrap();
+        assert_eq!(doc["version"], 3);
+        assert_eq!(load_snapshots(&dir.0), loaded);
     }
 
     #[test]
@@ -394,7 +422,7 @@ mod tests {
         assert_eq!(loaded[0].metrics()[0].used_display(), "$18.42 left");
         save_snapshots(&dir.0, &loaded).unwrap();
         let text = std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap();
-        assert!(text.contains(r#""version": 2"#), "rewritten in the current format");
+        assert!(text.contains(r#""version": 3"#), "rewritten in the current format");
     }
 
     #[test]
@@ -403,14 +431,14 @@ mod tests {
         assert!(load_snapshots(&dir.0).is_empty());
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), "{ nope").unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
-        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 3, "accounts": [] }"#).unwrap();
+        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 4, "accounts": [] }"#).unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
     }
 
     #[test]
     fn a_newer_file_is_never_overwritten() {
         let dir = Dir::new("newer");
-        let newer = r#"{ "version": 3, "accounts": [] }"#;
+        let newer = r#"{ "version": 4, "accounts": [] }"#;
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), newer).unwrap();
         let account = AccountSnapshot::new(AccountId::new("c"), Provider::Cursor, Vec::new(), now());
         assert!(save_snapshots(&dir.0, &[account]).is_err());

@@ -7680,13 +7680,17 @@ fn subscription_plans_are_visible_and_unknown_sources_explain_the_fallback(cx: &
     let (handle, dashboard) = open_dashboard(cx, &settings);
     assert_eq!(
         label(cx, handle, "account-name-claude-personal").as_deref(),
-        Some("Claude · personal · Max 20x")
+        Some("Claude · personal")
     );
-    assert!(
-        label(cx, handle, "account-name-codex-personal")
-            .unwrap()
-            .contains("Pro")
+    assert_eq!(
+        label(cx, handle, "plan-badge-claude-personal").as_deref(),
+        Some("Max 20x")
     );
+    assert_eq!(
+        label(cx, handle, "account-name-codex-personal").as_deref(),
+        Some("ChatGPT · Codex (personal)")
+    );
+    assert_eq!(label(cx, handle, "plan-badge-codex-personal").as_deref(), Some("Pro"));
     let request = crate::handoff::FocusRequest {
         account: "cursor".into(),
         metric: None,
@@ -7711,6 +7715,10 @@ fn a_scheduled_plan_keeps_the_account_name_visible_in_a_normal_width_row(cx: &mu
     cx.run_until_parked();
     let handle = cx.windows()[0];
     assert_eq!(label(cx, handle, "plan-badge-codex-personal").as_deref(), Some(plan));
+    assert_eq!(
+        label(cx, handle, "account-name-codex-personal").as_deref(),
+        Some("ChatGPT · Codex (personal)")
+    );
     let width = cx
         .update_window(handle, |_, window, _| {
             f32::from(window.find("account-name-codex-personal").bounds().size.width)
