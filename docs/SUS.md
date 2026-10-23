@@ -22,29 +22,35 @@ threshold and effective price changes.
 
 ## Fleet and prices
 
-Average and round each provider's eligible weekly pools first. Exclude `n/a`
-pools and unavailable/restored/failed providers. Weight each scored provider
-once by its monthly USD price. Multiple pools never multiply its price. If any
-scored provider's price is unknown, all scored providers have equal weight.
-With no eligible providers, fleet SUS is `n/a`. The header names the weight mode
-and the number of contributing providers.
+Average and round each subscription account's eligible weekly pools first.
+Exclude `n/a` pools and unavailable/restored/failed accounts. Weight each scored
+subscription once by its monthly USD price. Separate paid accounts at the same
+vendor remain separate subscriptions; multiple pools within one account never
+multiply its price. If any scored subscription's price is unknown, all scored
+subscriptions have equal weight. With no eligible subscriptions, fleet SUS is
+`n/a`. The header names the weight mode and the number of contributing
+subscriptions.
 
 The requested default weights are Codex `pro` and Claude Max 20x $200, Codex
 `prolite` and Claude Max 5x $100, and connected Antigravity coding quotas $19.99.
 These are explicit defaults, not prices inferred from quota sizes. Other tiers
 are unknown. Codex account metadata supplies an explicit scheduled plan change
 and its `changes_at`, or `entitlement.renews_at` when that change has no own date.
-A renewal date alone never schedules a downgrade. Claude's current profile tier
-updates on refresh; Codex metadata retains its existing four-hour cache.
+A renewal date alone never schedules a downgrade. An explicitly dated target
+with an unknown price expires the old known price at that instant and switches
+the fleet to equal weights. Claude's current profile tier updates on refresh; Codex metadata retains its existing four-hour cache.
 
 In Settings > Accounts, **SUS price…** overrides the monthly USD price and can
 set a next price with a known RFC3339 effective instant including its timezone.
-A blank current price explicitly means unknown. **Use provider price** removes
+A blank current price explicitly means unknown. A blank next price with an
+effective instant becomes unknown at that date. **Use provider price** removes
 the override. Account settings schema 2 preserves these overrides and reads
-version 1 records; older writers refuse schema 2. A future price applies exactly at its configured instant. Set
+version 1 records; older writers refuse schema 2. A future price applies
+exactly at its configured instant. Set
 Claude's scheduled downgrade here if its API supplies no billing date. No
-billing date is guessed. Overrides preserve the account ID, credentials and
-usage history. Snapshot schema 4 persists price metadata; versions 1–3 still
+billing date is guessed. The configured source record travels with automatic Codex and Claude results,
+so overrides also match their credential-derived dashboard IDs. Overrides
+preserve the account ID, credentials and usage history. Snapshot schema 4 persists price metadata; versions 1–3 still
 load, and older writers reject schema 4 rather than discard its new fields.
 
 ## Antigravity sources
@@ -105,8 +111,9 @@ from `<Grok CLI home>/sessions/*/*/usage.json`, using `sessionId`,
 once. The inclusive seven-day interval excludes future timestamps. This covers
 only that local CLI home, excluding web, T3 and other machines. Malformed or
 unreadable files produce a partial-coverage note; wholly unreadable data is
-unavailable. Reads have file and aggregate size limits. A missing activity
-source never becomes an invented zero. Turn counts have no percentage or SUS.
+unavailable. Reads have file and aggregate size limits. At least one successfully parsed usage file is required to show a count. Empty
+folders and missing activity sources never become an invented zero; a parsed
+file with no in-range turns can legitimately report zero. Turn counts have no percentage or SUS.
 
 ## Reproduce UI evidence
 

@@ -292,6 +292,7 @@ pub struct CodexProvider<H: HttpClient> {
     auth_path: PathBuf,
     /// The dashboard account and name this adapter reports, when it serves one configured account of several.
     account: Option<(String, String)>,
+    record_id: Option<String>,
     hint: &'static str,
     renewer: Option<Arc<dyn Renewer>>,
     date_style: &'static dyn DateStyle,
@@ -303,14 +304,19 @@ impl<H: HttpClient> CodexProvider<H> {
             http,
             auth_path,
             account: None,
+            record_id: None,
             hint: SIGN_IN_HINT,
             renewer: None,
             date_style: &English,
         }
     }
 
-    /// Reports one configured account: `id` is the dashboard account it is expected under (its signed-in identity, or
-    /// the record id before a sign-in), `label` its name ("Work", shown as "Work · Pro").
+    /// Records the configured source without changing the credential-derived dashboard identity.
+    pub fn with_subscription_record(mut self, id: impl Into<String>) -> Self {
+        self.record_id = Some(id.into());
+        self
+    }
+
     pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
         self.account = Some((id.into(), label.into()));
         self
@@ -427,7 +433,8 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
                     Ok(None) => {}
                     Err(message) => usage = usage.with_message(message),
                 }
-                let mut account = AccountSnapshot::new(id.clone(), Provider::Codex, usage.metrics().to_vec(), now);
+                let mut account = AccountSnapshot::new(id.clone(), Provider::Codex, usage.metrics().to_vec(), now)
+                    .with_subscription_record(self.record_id.clone());
                 if let Some(label) = self.label_for() {
                     account = account.with_label(label);
                 }
@@ -765,9 +772,12 @@ mod tests {
     #[test]
     fn fetch_success_sends_bearer_and_account_headers() {
         let file = auth_file(r#"{"tokens":{"access_token":"tok","account_id":"acct"}}"#);
-        let provider = CodexProvider::new(FakeHttp::status(200, FIXTURE), file.path().to_path_buf());
+        let provider = CodexProvider::new(FakeHttp::status(200, FIXTURE), file.path().to_path_buf())
+            .with_subscription_record("automatic-record");
         let accounts = provider.fetch(now()).unwrap();
         assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].subscription_record(), Some("automatic-record"));
+        assert_eq!(accounts[0].id(), &read_credentials(file.path()).unwrap().account());
         let headers = provider.http.seen_headers.lock().unwrap().clone();
         assert!(headers.contains(&("Authorization".into(), "Bearer tok".into())));
         assert!(headers.contains(&("ChatGPT-Account-Id".into(), "acct".into())));

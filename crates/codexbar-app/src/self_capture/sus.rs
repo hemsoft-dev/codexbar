@@ -26,6 +26,7 @@ pub(super) async fn run(
             (2, "unknown-price", 72),
             (3, "fresh-window", 64),
             (4, "verified-x", 74),
+            (5, "two-codex-subscriptions", 70),
         ] {
             cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(phase, base, cx)));
             settle(cx).await;
@@ -63,7 +64,7 @@ pub(super) async fn run(
         record.id = "sus-price-fixture".into();
         record.sus_price = Some(codexbar_core::sus::Price {
             monthly_cents: Some(20_000),
-            scheduled: Some((10_000, "2026-10-26T13:33:19Z".parse().unwrap())),
+            scheduled: Some((Some(10_000), "2026-10-26T13:33:19Z".parse().unwrap())),
         });
         crate::settings_hub::SettingsHub::update(cx, |s| s.upsert(record)).unwrap();
         cx.update_window(handle, |_, window, cx| {

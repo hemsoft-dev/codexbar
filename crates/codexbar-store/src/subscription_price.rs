@@ -15,7 +15,10 @@ pub fn from_json(value: &Value) -> Option<Price> {
     let scheduled = match obj.get("scheduled") {
         None | Some(Value::Null) => None,
         Some(v) => Some((
-            cents(v.get("monthlyCents")?)?,
+            match v.get("monthlyCents")? {
+                Value::Null => None,
+                value => Some(cents(value)?),
+            },
             DateTime::parse_from_rfc3339(v.get("effectiveAt")?.as_str()?)
                 .ok()?
                 .with_timezone(&Utc),
@@ -60,10 +63,21 @@ pub fn display_usd(cents: Option<u64>) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn a_dated_unknown_price_survives_persistence_without_becoming_zero() {
+        let at: DateTime<Utc> = "2026-10-26T13:33:19Z".parse().unwrap();
+        let price = Price {
+            monthly_cents: Some(20_000),
+            scheduled: Some((None, at)),
+        };
+        assert_eq!(from_json(&to_json(&price)), Some(price.clone()));
+        assert_eq!(price.at(at), None);
+        assert_eq!(from_json(&json!({"scheduled":{"effectiveAt":at.to_rfc3339()}})), None);
+    }
+    #[test]
     fn prices_round_trip_without_guessing_dates() {
         let p = Price {
             monthly_cents: Some(20000),
-            scheduled: Some((10000, "2026-10-26T13:33:19Z".parse().unwrap())),
+            scheduled: Some((Some(10000), "2026-10-26T13:33:19Z".parse().unwrap())),
         };
         assert_eq!(from_json(&to_json(&p)), Some(p));
         assert_eq!(from_json(&json!({"monthlyCents":0})), None);

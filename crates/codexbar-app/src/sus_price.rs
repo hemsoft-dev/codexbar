@@ -45,7 +45,7 @@ pub fn open(id: &str, window: &mut Window, cx: &mut App) {
         cx,
     );
     let next = field(
-        display_usd(price.as_ref().and_then(|p| p.scheduled.map(|p| p.0))),
+        display_usd(price.as_ref().and_then(|p| p.scheduled.and_then(|p| p.0))),
         "Next monthly USD",
         window,
         cx,
@@ -70,7 +70,7 @@ pub fn open(id: &str, window: &mut Window, cx: &mut App) {
         dialog.title(format!("SUS price: {}", record.label))
             .w(crate::zoom::scaled(520., cx))
             .child(v_flex().gap_3()
-                .child(div().text_sm().child("Monthly USD prices weight fleet SUS. A blank current price means unknown and uses equal weights. Set a future price only with a known effective instant including its timezone."))
+                .child(div().text_sm().child("Monthly USD prices weight fleet SUS. A blank current price means unknown and uses equal weights. A dated blank next price becomes unknown at that instant. Set a future price only with a known effective instant including its timezone."))
                 .child(div().child("Current monthly USD"))
                 .child(Input::new(&current).id("sus-current-price"))
                 .child(div().child("Next monthly USD"))
@@ -103,13 +103,13 @@ fn parse(current: &str, next: &str, at: &str) -> Result<Price, &'static str> {
     let target = parse_usd(next)?;
     let scheduled = match (target, at.trim().is_empty()) {
         (None, true) => None,
-        (Some(cents), false) => Some((
-            cents,
+        (target, false) => Some((
+            target,
             DateTime::parse_from_rfc3339(at.trim())
                 .map_err(|_| "Enter a valid effective instant with its timezone.")?
                 .with_timezone(&Utc),
         )),
-        _ => return Err("A scheduled price needs both a price and an effective instant."),
+        _ => return Err("A scheduled price needs an effective instant."),
     };
     Ok(Price {
         monthly_cents,
@@ -123,10 +123,17 @@ mod tests {
     fn schedules_require_a_known_instant_and_unknown_stays_unknown() {
         assert_eq!(parse("", "", "").unwrap().at(Utc::now()), None);
         assert!(parse("200", "100", "").is_err());
-        assert!(parse("200", "", "2026-10-26T09:33:19-04:00").is_err());
+        assert_eq!(
+            parse("200", "", "2026-10-26T09:33:19-04:00")
+                .unwrap()
+                .scheduled
+                .unwrap()
+                .0,
+            None
+        );
         assert!(parse("200", "100", "2026-10-26").is_err());
         let price = parse("200", "100", "2026-10-26T09:33:19-04:00").unwrap();
         assert_eq!(price.monthly_cents, Some(20_000));
-        assert_eq!(price.scheduled.unwrap().0, 10_000);
+        assert_eq!(price.scheduled.unwrap().0, Some(10_000));
     }
 }

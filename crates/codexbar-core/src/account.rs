@@ -181,6 +181,7 @@ impl AccountDetail {
 /// Optional plan and price metadata kept behind one pointer to keep snapshots compact.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct Subscription {
+    record_id: Option<String>,
     plan: Option<Box<str>>,
     price: Option<crate::sus::Price>,
 }
@@ -252,11 +253,21 @@ impl AccountSnapshot {
         self.subscription.as_ref()?.price.as_ref()
     }
 
+    /// The configured record that supplied this subscription, independent of its dashboard identity.
+    pub fn with_subscription_record(mut self, record_id: impl Into<Option<String>>) -> Self {
+        self.subscription.get_or_insert_default().record_id = record_id.into();
+        self.clear_empty_subscription();
+        self
+    }
+    pub fn subscription_record(&self) -> Option<&str> {
+        self.subscription.as_ref()?.record_id.as_deref()
+    }
+
     fn clear_empty_subscription(&mut self) {
         if self
             .subscription
             .as_ref()
-            .is_some_and(|s| s.plan.is_none() && s.price.is_none())
+            .is_some_and(|s| s.plan.is_none() && s.price.is_none() && s.record_id.is_none())
         {
             self.subscription = None;
         }

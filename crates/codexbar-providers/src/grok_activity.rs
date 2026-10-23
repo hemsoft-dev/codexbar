@@ -109,7 +109,10 @@ pub fn read(home: &Path, now: DateTime<Utc>) -> Activity {
     if partial {
         messages.push("Some local activity files could not be read; the tracked count is incomplete.".into());
     }
-    let metric = (!partial || valid > 0).then(|| Metric::Activity {
+    if valid == 0 {
+        messages.push("No readable local activity source was found; activity is unavailable, SUS n/a.".into());
+    }
+    let metric = (valid > 0).then(|| Metric::Activity {
         label: "Turns/7d".into(),
         count: events.values().map(|turns| turns.len() as u64).sum(),
     });
@@ -118,6 +121,32 @@ pub fn read(home: &Path, now: DateTime<Utc>) -> Activity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_empty_layout_is_unavailable_but_a_parsed_zero_is_measured() {
+        let dir = std::env::temp_dir().join(format!("codexbar-grok-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sessions/day/no-usage-file")).unwrap();
+        assert!(read(&dir, Utc::now()).metric.is_none());
+        assert!(
+            read(&dir, Utc::now())
+                .messages
+                .iter()
+                .any(|m| m.contains("unavailable"))
+        );
+        fs::write(
+            dir.join("sessions/day/no-usage-file/usage.json"),
+            r#"{"sessionId":"s","turns":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read(&dir, Utc::now()).metric,
+            Some(Metric::Activity {
+                label: "Turns/7d".into(),
+                count: 0
+            })
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn local_metadata_deduplicates_and_keeps_exact_seven_day_bounds() {
         let dir = std::env::temp_dir().join(format!("codexbar-grok-activity-{}", std::process::id()));

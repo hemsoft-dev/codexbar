@@ -1704,10 +1704,10 @@ impl Dashboard {
                             .child(crate::sus::badge(fleet.score, "fleet-sus", "Fleet SUS", cx))
                             .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
                                 if fleet.subscriptions == 0 {
-                                    "no eligible providers".to_owned()
+                                    "no eligible subscriptions".to_owned()
                                 } else {
                                     format!(
-                                        "{} · {} providers",
+                                        "{} · {} subscriptions",
                                         if fleet.equal_weights {
                                             "equal weights"
                                         } else {

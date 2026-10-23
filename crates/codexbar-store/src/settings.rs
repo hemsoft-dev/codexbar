@@ -1008,7 +1008,7 @@ mod tests {
         let mut record = AccountRecord::new(names::CODEX, "Work", AuthMethod::Automatic);
         record.sus_price = Some(codexbar_core::sus::Price {
             monthly_cents: Some(20_000),
-            scheduled: Some((10_000, "2026-10-26T13:33:19Z".parse().unwrap())),
+            scheduled: Some((Some(10_000), "2026-10-26T13:33:19Z".parse().unwrap())),
         });
         assert_eq!(AccountRecord::from_json(&record.to_json()).unwrap(), record);
         let mut json = record.to_json();
@@ -1137,7 +1137,7 @@ mod tests {
         assert_eq!(settings.accounts(), std::slice::from_ref(&original));
         record.sus_price = Some(codexbar_core::sus::Price {
             monthly_cents: Some(20_000),
-            scheduled: Some((10_000, "2026-10-26T13:33:19Z".parse().unwrap())),
+            scheduled: Some((Some(10_000), "2026-10-26T13:33:19Z".parse().unwrap())),
         });
         settings.upsert(record.clone()).unwrap();
         settings.save().unwrap();

@@ -96,7 +96,8 @@ pub fn text(metric: &Metric, now: DateTime<Utc>) -> Option<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Price {
     pub monthly_cents: Option<u64>,
-    pub scheduled: Option<(u64, DateTime<Utc>)>,
+    /// A dated target may itself be unknown; the old price must then stop applying.
+    pub scheduled: Option<(Option<u64>, DateTime<Utc>)>,
 }
 impl Price {
     pub fn fixed(cents: u64) -> Self {
@@ -107,15 +108,15 @@ impl Price {
     }
     pub fn at(&self, now: DateTime<Utc>) -> Option<u64> {
         match self.scheduled {
-            Some((cents, at)) if now >= at => Some(cents),
+            Some((cents, at)) if now >= at => cents,
             _ => self.monthly_cents,
         }
         .filter(|p| *p > 0)
     }
 }
 
-/// Average each subscription's eligible pools, then charge its price once. Missing scores are excluded.
-pub fn provider_score(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<Score> {
+/// Average one account's eligible pools. Missing scores are excluded.
+pub fn subscription_score(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<Score> {
     let scores: Vec<_> = account
         .metrics()
         .iter()
@@ -231,7 +232,7 @@ mod tests {
             vec![metric(Duration::hours(24), 0.8), metric(Duration::hours(24), 1.)],
             now(),
         );
-        assert_eq!(provider_score(&a, now()), Some(Score(90)));
+        assert_eq!(subscription_score(&a, now()), Some(Score(90)));
         assert_eq!(
             fleet([(Some(Score(76)), Some(20_000)), (Some(Score(48)), Some(20_000))]).score,
             Some(Score(62))
@@ -254,7 +255,7 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let price = Price {
                 monthly_cents: Some(20_000),
-                scheduled: Some((10_000, now())),
+                scheduled: Some((Some(10_000), now())),
             };
             assert_eq!(price.at(now() - Duration::milliseconds(1)), Some(20_000));
             assert_eq!(price.at(now()), Some(10_000));

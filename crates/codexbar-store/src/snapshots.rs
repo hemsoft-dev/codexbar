@@ -79,6 +79,7 @@ fn account_to_json(account: &AccountSnapshot) -> Value {
         "provider": account.provider().key(),
         "label": account.label(),
         "plan": account.plan(),
+        "subscriptionRecord": account.subscription_record(),
         "subscriptionPrice": account.subscription_price().map(crate::subscription_price::to_json),
         "fetchedAt": account.fetched_at().to_rfc3339(),
         "metrics": account.metrics().iter().map(metric_to_json).collect::<Vec<_>>(),
@@ -115,6 +116,9 @@ fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) 
         .and_then(crate::subscription_price::from_json)
     {
         account = account.with_subscription_price(price);
+    }
+    if let Some(record) = value.get("subscriptionRecord").and_then(Value::as_str) {
+        account = account.with_subscription_record(record.to_owned());
     }
     for message in value.get("messages").and_then(Value::as_array).into_iter().flatten() {
         if let Some(message) = message.as_str() {
@@ -379,11 +383,12 @@ mod tests {
         let dir = Dir::new("sus-price");
         let price = codexbar_core::sus::Price {
             monthly_cents: Some(20_000),
-            scheduled: Some((10_000, now() + chrono::Duration::days(2))),
+            scheduled: Some((Some(10_000), now() + chrono::Duration::days(2))),
         };
         let account = AccountSnapshot::new(AccountId::new("stable"), Provider::Codex, Vec::new(), now())
             .with_label("Work")
-            .with_subscription_price(price);
+            .with_subscription_price(price)
+            .with_subscription_record("configured-source".to_owned());
         save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
         assert_eq!(load_snapshots(&dir.0).as_slice(), std::slice::from_ref(&account));
         let path = dir.0.join(SNAPSHOTS_FILE);

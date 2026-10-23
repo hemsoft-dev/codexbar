@@ -86,7 +86,10 @@ fn parse(payload: &str, account_id: &str) -> PlanResult {
         });
     let mut price = text(account, "plan_type")
         .and_then(|code| codexbar_core::sus::known_price(codexbar_core::Provider::Codex, &code.to_ascii_lowercase()));
-    if let Some(change) = record.pointer("/entitlement/scheduled_plan_change") {
+    if let Some(change) = record
+        .pointer("/entitlement/scheduled_plan_change")
+        .filter(|change| self::name(change).is_some())
+    {
         let target = text(change, "plan_type")
             .and_then(|code| {
                 codexbar_core::sus::known_price(codexbar_core::Provider::Codex, &code.to_ascii_lowercase())
@@ -96,7 +99,7 @@ fn parse(payload: &str, account_id: &str) -> PlanResult {
             .or_else(|| record.get("entitlement").and_then(|e| text(e, "renews_at")))
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|at| at.with_timezone(&Utc));
-        if let (Some(target), Some(at)) = (target, at) {
+        if let Some(at) = at {
             price
                 .get_or_insert(codexbar_core::sus::Price {
                     monthly_cents: None,
@@ -221,6 +224,32 @@ mod tests {
                 "scheduled_plan_change":{"plan_type":"prolite","changes_at":"2026-10-26T13:33:19Z"}}
         }}})
         .to_string()
+    }
+    #[test]
+    fn a_null_or_empty_scheduled_change_never_expires_a_normal_renewal() {
+        for change in [Value::Null, serde_json::json!({})] {
+            let mut data: Value = serde_json::from_str(&scheduled()).unwrap();
+            data["accounts"]["a"]["entitlement"]["scheduled_plan_change"] = change;
+            let price = parse(&data.to_string(), "a").unwrap().unwrap().price.unwrap();
+            assert_eq!(price.scheduled, None);
+            assert_eq!(price.at(now() + Duration::days(100)), Some(20_000));
+        }
+    }
+    #[test]
+    fn an_unknown_scheduled_target_expires_the_known_price_at_its_date() {
+        for code in ["pro", "prolite"] {
+            let mut data: Value = serde_json::from_str(&scheduled()).unwrap();
+            data["accounts"]["a"]["account"]["plan_type"] = code.into();
+            data["accounts"]["a"]["entitlement"]["scheduled_plan_change"]["plan_type"] = "team".into();
+            let price = parse(&data.to_string(), "a").unwrap().unwrap().price.unwrap();
+            let at: DateTime<Utc> = "2026-10-26T13:33:19Z".parse().unwrap();
+            assert_eq!(
+                price.at(at - Duration::milliseconds(1)),
+                Some(if code == "pro" { 20_000 } else { 10_000 })
+            );
+            assert_eq!(price.at(at), None);
+            assert_eq!(price.at(at + Duration::days(2)), None);
+        }
     }
     #[test]
     fn prices_use_codes_and_only_explicit_dated_changes() {

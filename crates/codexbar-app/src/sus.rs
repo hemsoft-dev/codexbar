@@ -57,7 +57,7 @@ pub fn fleet(
     cx: &App,
 ) -> sus::Fleet {
     let hub = SettingsHub::global(cx);
-    let mut groups: BTreeMap<&'static str, (Vec<Score>, Vec<Option<u64>>)> = BTreeMap::new();
+    let mut subscriptions = BTreeMap::new();
     for account in accounts {
         if states
             .get(account.id().as_str())
@@ -65,37 +65,29 @@ pub fn fleet(
         {
             continue;
         }
-        let scores: Vec<_> = account.metrics().iter().filter_map(|m| sus::weekly(m, now)).collect();
-        if scores.is_empty() {
-            continue;
-        }
-        let price = hub
+        let score = sus::subscription_score(account, now);
+        let record = hub
             .settings()
             .accounts()
             .iter()
-            .find(|r| {
-                r.id == account.id().as_str()
-                    || owned.iter().any(|(record, account_id)| {
-                        record.split('#').next() == Some(r.id.as_str()) && account_id == account.id().as_str()
-                    })
-            })
+            .filter(|r| r.enabled)
+            .find(|r| Some(r.id.as_str()) == account.subscription_record())
+            .or_else(|| {
+                hub.settings().accounts().iter().filter(|r| r.enabled).find(|r| {
+                    account.subscription_record().is_none()
+                        && (r.id == account.id().as_str()
+                            || owned.iter().any(|(record, account_id)| {
+                                record.split('#').next() == Some(r.id.as_str()) && account_id == account.id().as_str()
+                            }))
+                })
+            });
+        let price = record
             .and_then(|r| r.sus_price.as_ref())
             .or_else(|| account.subscription_price())
             .and_then(|p| p.at(now));
-        let group = groups.entry(account.provider().key()).or_default();
-        group.0.extend(scores);
-        group.1.push(price);
+        subscriptions.entry(account.id().as_str()).or_insert((score, price));
     }
-    sus::fleet(groups.into_values().map(|(scores, prices)| {
-        let mean = scores.iter().map(|s| s.value() as f64).sum::<f64>() / scores.len() as f64;
-        let score = sus::calculate(mean, None, 1., 168.);
-        let price = prices
-            .first()
-            .copied()
-            .flatten()
-            .filter(|p| prices.iter().all(|v| *v == Some(*p)));
-        (score, price)
-    }))
+    sus::fleet(subscriptions.into_values())
 }
 
 #[cfg(any(test, feature = "capture"))]
@@ -114,7 +106,7 @@ pub fn fixture(base: DateTime<Utc>, phase: u8) -> Vec<AccountSnapshot> {
     };
     let price = codexbar_core::sus::Price {
         monthly_cents: Some(20_000),
-        scheduled: Some((10_000, base + Duration::seconds(1))),
+        scheduled: Some((Some(10_000), base + Duration::seconds(1))),
     };
     let claude = account(
         "claude-personal",
@@ -180,7 +172,19 @@ pub fn fixture(base: DateTime<Utc>, phase: u8) -> Vec<AccountSnapshot> {
         },
     )
     .with_message("Synthetic fixture. Activity covers this CLI home only; other activity is unknown.");
-    vec![claude, codex, ag, x]
+    let mut accounts = vec![claude, codex, ag, x];
+    if phase == 5 {
+        accounts.push(
+            account(
+                "codex-second",
+                Provider::Codex,
+                vec![window("Weekly", 0.5, 0.5 / 96., 96)],
+            )
+            .with_plan("Pro Lite")
+            .with_subscription_price(codexbar_core::sus::Price::fixed(10_000)),
+        );
+    }
+    accounts
 }
 
 #[cfg(any(test, feature = "capture"))]
