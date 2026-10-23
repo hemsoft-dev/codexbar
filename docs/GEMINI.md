@@ -69,7 +69,7 @@ but `gemini.google.com`.
 
 The coding quotas are the Antigravity daily quota summary: the **Gemini Models**
 and **Other models** (Claude and GPT) groups, each with a five-hour and a weekly
-limit. CodexBar reads them through Google's own Antigravity CLI,
+limit, plus a separate **Argon weekly** bucket. CodexBar reads them through Google's own Antigravity CLI,
 `agy -p "/usage" --output-format json`, a documented script interface that runs
 no model turn. The CLI keeps its own Google sign-in and renews it, so CodexBar
 borrows no OAuth client and stores no token.
@@ -88,7 +88,9 @@ borrows no OAuth client and stores no token.
   `gemini-weekly`, `3p-5h` and `3p-weekly` become **Gemini Models five-hour**,
   **Gemini Models weekly**, **Other models five-hour** and **Other models
   weekly**. Percent used is `1 − remaining_fraction`, and resets come only from
-  `reset_time`.
+  `reset_time`. `gemini-argon-wtu-weekly` maps independently to **Argon weekly**;
+  third-party buckets never substitute for Gemini or Argon. Weekly windows show
+  [SUS](SUS.md) when enough forecast data exists.
 - A missing, duplicate, disabled, malformed or expired bucket stays unavailable
   with a note, and the valid ones still show. With no usable bucket and no Gemini Apps
   limits, the account says so instead of asking for a sign-in.
@@ -114,3 +116,7 @@ The previous coding adapter was read live through `agy` 1.3.3 on
 2026-10-12: four buckets and `num_turns` 0. That historical result does not
 qualify the new connection UI. See [Windows connection checks](ANTIGRAVITY_LOGIN_TESTING.md)
 for current-head evidence and the explicit manual Google-consent boundary.
+
+The SUS implementation also checked the structured producer shape with CLI 1.4.6
+on October 23, 2026, including the separate Argon bucket and zero model turns.
+The checked-in response fixture uses synthetic fractions and reset instants.

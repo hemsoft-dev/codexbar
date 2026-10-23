@@ -31,11 +31,11 @@ token, and `…/v1/settings` for the plan name.
 
 - **Weekly usage** shows only for unified billing with a current weekly period,
   from `creditUsagePercent`, resetting at the period's end.
-- When the percent is omitted, the Grok CLI itself shows 0%. CodexBar does too
-  only for a verified paid plan (SuperGrok Lite, SuperGrok, SuperGrok Plus or
-  SuperGrok Heavy, exact names) with no other usage field, and says the 0% is
-  that convention, not a measurement. An explicit `null`, a malformed value, an
-  unknown plan or another usage field leaves it unavailable.
+- An omitted, null or malformed percentage is unavailable, including on paid
+  plans. Only an explicit valid value can produce a quota meter or SUS.
+- Without quota data, tracked local CLI turns over seven days can show with
+  `SUS n/a`. Coverage excludes web, T3 and other machines. See the exact fields,
+  bounds and weekly score rules in [SUS sources](SUS.md#grokx-source-for-chief).
 - **Extra usage credits** (`prepaidBalance`, USD cents) are a balance of their
   own, never part of the weekly pool. An empty object is zero, as the CLI reads
   it; a missing or malformed one is not.

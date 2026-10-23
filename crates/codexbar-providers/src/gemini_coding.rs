@@ -2,8 +2,8 @@
 //! (`agy -p "/usage" --output-format json`, a documented script interface that runs no model turn). The CLI keeps its
 //! own Google sign-in and renews it; CodexBar borrows no OAuth client and stores no token.
 //!
-//! Four buckets map to stable metrics by id and window, never by display name: `gemini-5h`, `gemini-weekly`, `3p-5h`
-//! and `3p-weekly`. Percent used is `1 - remaining_fraction`, and resets come only from `reset_time`. A missing,
+//! Five buckets map to stable metrics by id and window, never by display name: `gemini-5h`, `gemini-weekly`, `3p-5h`
+//! and `3p-weekly`, plus the independent `gemini-argon-wtu-weekly`. Percent used is `1 - remaining_fraction`, and resets come only from `reset_time`. A missing,
 //! duplicate, malformed or expired bucket stays unavailable, and the valid ones still show.
 
 use std::path::PathBuf;
