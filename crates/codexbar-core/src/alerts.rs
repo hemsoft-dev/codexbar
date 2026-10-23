@@ -154,7 +154,8 @@ pub fn evaluate(
     let mut out = Evaluation::default();
     for account in refreshed {
         let id = account.id().as_str();
-        for metric in account.metrics() {
+        out.recovered.extend(informational_alert_keys(account, active));
+        for metric in account.status_metrics() {
             let first_new = out.notify.len();
             let current = metric_slot(metric);
             // An alert already held for this window keeps its slot, so a reset estimate that drifts by a few seconds
@@ -219,6 +220,24 @@ pub fn evaluate(
         }
     }
     out
+}
+
+/// Successful partial Gemini results must clear held alerts from unused or now-missing status pools.
+fn informational_alert_keys(account: &AccountSnapshot, active: &BTreeSet<String>) -> Vec<String> {
+    if account.provider() != crate::Provider::Gemini {
+        return Vec::new();
+    }
+    active
+        .iter()
+        .filter(|key| {
+            let Some((id, slot, _)) = split_key(key) else {
+                return false;
+            };
+            let key = slot.split_once('@').map_or(slot, |(key, _)| key);
+            id == account.id().as_str() && !account.status_metrics().any(|metric| metric.key() == key)
+        })
+        .cloned()
+        .collect()
 }
 
 /// An alert that holds on an account right now, with its context, for the account's card (#88).
@@ -390,6 +409,19 @@ enum Condition {
 /// `condition` for one of `account`'s metrics. A used-up window the account's credits carry raises no severity alert,
 /// and one already held recovers (#150); threshold usage alerts stay independent.
 fn account_condition(
+    settings: &AlertSettings,
+    account: &AccountSnapshot,
+    metric: &Metric,
+    kind: AlertKind,
+    now: DateTime<Utc>,
+) -> Condition {
+    if !account.is_status_metric(metric) {
+        return Condition::Clear;
+    }
+    credit_condition(settings, account, metric, kind, now)
+}
+
+fn credit_condition(
     settings: &AlertSettings,
     account: &AccountSnapshot,
     metric: &Metric,
@@ -588,6 +620,82 @@ mod tests {
                 evaluation.notify.into_iter().map(|alert| alert.title).collect()
             })
             .collect()
+    }
+
+    #[test]
+    fn gemini_status_ignores_unused_pools_and_clears_their_held_alerts() {
+        use crate::{AccountId, Pace, Provider};
+        let at: DateTime<Utc> = "2026-10-23T16:38:00Z".parse().unwrap();
+        let metric = |label: &str, used, pace| Metric::Window {
+            label: label.into(),
+            used,
+            pace: Some(Pace::per_hour(pace)),
+            resets_at: at + chrono::Duration::hours(156),
+            length: Some(chrono::Duration::days(7)),
+        };
+        let argon = metric("Argon weekly", 0.9, 0.2);
+        let other = metric("Other models weekly", 1., 0.2);
+        let models = metric("Gemini Models weekly", 0.03, 0.0025);
+        let settings = AlertSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let held = alert_key("gemini", &metric_slot(&argon), AlertKind::Warning);
+        let absent_held = alert_key("gemini", "gemini-apps-weekly@1", AlertKind::Usage);
+        let wrong_account = alert_key("another", &metric_slot(&argon), AlertKind::Warning);
+        let active: BTreeSet<_> = [held.clone(), absent_held.clone(), wrong_account, "malformed".into()]
+            .into_iter()
+            .collect();
+        for metrics in [
+            vec![argon.clone()],
+            vec![argon.clone(), other, models.clone()],
+            vec![models.clone()],
+        ] {
+            let account = AccountSnapshot::new(AccountId::new("gemini"), Provider::Gemini, metrics, at);
+            let out = evaluate(&settings, &active, std::slice::from_ref(&account), at);
+            assert!(out.notify.is_empty());
+            assert!(out.covered.is_empty());
+            assert_eq!(
+                out.recovered.into_iter().collect::<BTreeSet<_>>(),
+                [held.clone(), absent_held.clone()].into_iter().collect()
+            );
+            assert!(account_alerts(&settings, &active, &account, at).is_empty());
+            assert_eq!(account.assess(at).severity(), Severity::Normal);
+        }
+        let risky_models = metric("Gemini Models weekly", 0.9, 0.2);
+        let account = AccountSnapshot::new(
+            AccountId::new("gemini"),
+            Provider::Gemini,
+            vec![argon.clone(), risky_models],
+            at,
+        );
+        let out = evaluate(&settings, &active, std::slice::from_ref(&account), at);
+        assert!(!out.notify.is_empty());
+        assert!(out.notify.iter().all(|alert| alert.metric == "Gemini Models weekly"));
+        assert!(
+            account_alerts(&settings, &Default::default(), &account, at)
+                .iter()
+                .all(|a| a.metric == "Gemini Models weekly")
+        );
+        assert!(account.assess(at).severity() >= Severity::AtRisk);
+        let models_held = alert_key("gemini", &metric_slot(&account.metrics()[1]), AlertKind::Warning);
+        let model_active: BTreeSet<_> = [models_held.clone()].into_iter().collect();
+        assert!(
+            informational_alert_keys(&account, &model_active).is_empty(),
+            "keep a valid Models alert held"
+        );
+        let missing = AccountSnapshot::new(AccountId::new("gemini"), Provider::Gemini, vec![argon.clone()], at);
+        let recovered = evaluate(&settings, &model_active, &[missing], at);
+        assert_eq!(recovered.recovered, vec![models_held]);
+        assert!(recovered.notify.is_empty());
+        let other_provider = AccountSnapshot::new(AccountId::new("other"), Provider::Claude, vec![argon], at);
+        assert!(
+            other_provider.assess(at).severity() >= Severity::AtRisk,
+            "other provider policy is unchanged"
+        );
+        let empty = AccountSnapshot::new(AccountId::new("gemini"), Provider::Gemini, vec![], at);
+        assert_eq!(empty.status_metrics().count(), 0);
+        assert!(informational_alert_keys(&other_provider, &active).is_empty());
     }
 
     #[test]

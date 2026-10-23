@@ -230,6 +230,44 @@ mod tests {
     }
 
     #[test]
+    fn partial_or_late_cli_results_never_use_argon_for_subscription_status() {
+        let at: DateTime<Utc> = "2026-10-23T16:38:00Z".parse().unwrap();
+        let original: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/antigravity-weekly-age.json")).unwrap();
+        for mode in ["missing", "present", "disabled", "invalid", "expired", "present"] {
+            let mut input = original.clone();
+            let buckets = input
+                .pointer_mut("/command/data/groups/0/buckets")
+                .unwrap()
+                .as_array_mut()
+                .unwrap();
+            if mode == "missing" {
+                buckets.retain(|b| b["id"] == "gemini-argon-wtu-weekly");
+            } else {
+                let model = buckets.iter_mut().find(|b| b["id"] == "gemini-weekly").unwrap();
+                match mode {
+                    "disabled" => model["disabled"] = true.into(),
+                    "invalid" => model["remaining_fraction"] = 1.2.into(),
+                    "expired" => model["reset_time"] = "2026-10-23T16:38:00Z".into(),
+                    _ => {}
+                }
+            }
+            let accounts = GeminiProvider::new(Offline, None, "gemini", "Test")
+                .with_coding(agy(&input.to_string()))
+                .fetch(at)
+                .unwrap();
+            let account = &accounts[0];
+            assert!(account.metrics().iter().any(|m| m.key() == "argon-weekly"));
+            assert_eq!(account.status_metrics().count(), usize::from(mode == "present"));
+            assert_eq!(account.assess(at).severity(), codexbar_core::Severity::Normal);
+            assert_eq!(
+                codexbar_core::sus::subscription_score(account, at).map(|s| s.value()),
+                (mode == "present").then_some(42)
+            );
+        }
+    }
+
+    #[test]
     fn an_unreadable_session_is_reported_not_taken_for_signed_out() {
         let provider = GeminiProvider::new(Offline, None, "gm-1", "Personal").with_unreadable_session();
         let outcome = provider.fetch_outcomes(now()).unwrap();

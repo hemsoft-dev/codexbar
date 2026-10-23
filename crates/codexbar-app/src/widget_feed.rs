@@ -77,13 +77,17 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         value,
         used_percent: metric.used_fraction().map(|used| (used * 100.0).clamp(0.0, 100.0)),
         resets_at: metric.resets_at(),
-        status: codexbar_core::assess(metric, now).label().map(str::to_owned),
+        status: account.assess_metric(metric, now).label().map(str::to_owned),
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
         projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
         outlook: crate::usage_bar::outlook(metric, account, now),
-        sus: codexbar_core::sus::weekly(metric, now).map(|s| s.value()),
-        sus_eligible: codexbar_core::sus::text(metric, now).is_some(),
+        sus: codexbar_core::sus::weekly(metric, now)
+            .filter(|_| account.is_status_metric(metric))
+            .map(|s| s.value()),
+        sus_eligible: codexbar_core::sus::text(metric, now)
+            .filter(|_| account.is_status_metric(metric))
+            .is_some(),
     }
 }
 

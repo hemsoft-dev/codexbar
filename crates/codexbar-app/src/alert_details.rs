@@ -17,8 +17,7 @@ use crate::status::severity_color;
 pub fn projected_from(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<Severity> {
     let effective = account.assess(now).severity();
     let observed = account
-        .metrics()
-        .iter()
+        .status_metrics()
         .filter(|metric| !account.credits_cover(metric))
         .map(observed_severity)
         .max()

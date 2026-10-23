@@ -24,7 +24,7 @@ pub(super) async fn run(
             (0, "weighted", 63),
             (1, "downgraded", 65),
             (2, "unknown-price", 72),
-            (3, "fresh-window", 64),
+            (3, "fresh-window", 63),
             (4, "verified-x", 74),
             (5, "two-codex-subscriptions", 70),
             (6, "calendar-week", 60),
@@ -58,13 +58,9 @@ pub(super) async fn run(
                             .and_then(|node| node.label().map(str::to_owned));
                         assert_eq!(x.as_deref(), Some("Weekly SuperGrok limit: SUS 22, red"));
                     }
-                    assert_eq!(
-                        window.find("focus-metric-1-sus").label(),
-                        Some(if phase == 3 {
-                            "Argon weekly: SUS n/a, unavailable"
-                        } else {
-                            "Argon weekly: SUS 84, yellow"
-                        })
+                    assert!(
+                        window.try_find("focus-metric-1-sus").is_none(),
+                        "Argon is informational"
                     );
                 })
             })

@@ -234,6 +234,23 @@ fn area_fill(color: Hsla) -> Background {
 
 /// Every metric the account reports, compactly (#82): the cards chart two of them, and a provider like Claude can
 /// return more (model-scoped weekly limits, usage credits, a credit balance). Each says its value, reset and projection.
+pub fn subscription_note(account: &AccountSnapshot, cx: &App) -> Option<AnyElement> {
+    use gpui_kit::{StatefulInteractiveElement as _, TestSupportExt as _};
+    if account.provider() != codexbar_core::Provider::Gemini || account.status_metrics().next().is_some() {
+        return None;
+    }
+    Some(
+        div()
+            .id("gemini-models-weekly-unavailable")
+            .test_support()
+            .aria_label("Gemini Models weekly: n/a. Other pools are informational.")
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("Gemini Models weekly: n/a. Other pools are informational.")
+            .into_any_element(),
+    )
+}
+
 pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Option<AnyElement> {
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     if account.metrics().len() < 2 {
@@ -262,7 +279,7 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         } else {
             format!("{}: {}, {detail}", metric.label(), metric.used_display())
         };
-        let severity = codexbar_core::assess(metric, now).severity();
+        let severity = account.assess_metric(metric, now).severity();
         v_flex()
             .id(("account-metric", ix))
             .role(Role::Note)
@@ -283,7 +300,13 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
                         this.child(div().size_2().rounded_full().bg(severity_color(severity, cx)))
                     })
                     .child(div().text_sm().font_semibold().child(metric.used_display()))
-                    .children(crate::sus::metric(metric, now, &format!("focus-metric-{ix}-sus"), cx)),
+                    .children(crate::sus::metric(
+                        account,
+                        metric,
+                        now,
+                        &format!("focus-metric-{ix}-sus"),
+                        cx,
+                    )),
             )
             .when(!detail.is_empty(), |this| {
                 this.child(div().text_xs().text_color(muted).child(detail))
@@ -373,7 +396,7 @@ fn limit_graph<'a>(account: &'a AccountSnapshot, metric: &'a Metric, now: DateTi
         kind: ValueKind::of(metric),
         counted: counted_metric(metric),
         title: Some(window_title(metric)),
-        severity: codexbar_core::assess(metric, now).severity(),
+        severity: account.assess_metric(metric, now).severity(),
     }
 }
 
@@ -435,14 +458,20 @@ fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot
                     cx,
                 )),
         )
-        .children(crate::sus::metric(metric, now, &format!("focus-bar-{slot}-sus"), cx))
+        .children(crate::sus::metric(
+            account,
+            metric,
+            now,
+            &format!("focus-bar-{slot}-sus"),
+            cx,
+        ))
         .children(pace.map(|pace| div().text_sm().text_color(muted).child(pace)));
     let card = Card::new(window_title(metric), window_period(metric, now), body)
         .id(format!("focus-bar-card-{slot}"))
         .takeaway(pool_takeaway(1.0 - used))
         .caption(reset_caption(metric, now));
     // A window the account's credits carry (#150) raises no alert, as the account's own assessment doesn't.
-    let severity = codexbar_core::assess(metric, now).severity();
+    let severity = account.assess_metric(metric, now).severity();
     if severity >= Severity::AtRisk && !account.credits_cover(metric) {
         card.alert(severity_color(severity, cx))
     } else {
@@ -893,6 +922,7 @@ fn share_card(
                 metric.label().to_owned(),
                 "Activity",
                 body.children(crate::sus::metric(
+                    account,
                     metric,
                     now,
                     &format!("focus-activity-{slot}-sus"),
@@ -959,7 +989,13 @@ fn share_card(
         v_flex()
             .size_full()
             .child(div().flex_1().min_h_0().child(ring))
-            .children(crate::sus::metric(metric, now, &format!("focus-share-{slot}-sus"), cx)),
+            .children(crate::sus::metric(
+                account,
+                metric,
+                now,
+                &format!("focus-share-{slot}-sus"),
+                cx,
+            )),
     )
     .in_slot(slot, 1)
     .hover_group(crate::ring_size::GROUP)
@@ -1025,6 +1061,7 @@ fn rings_card(
                 ),
             )
             .children(crate::sus::metric(
+                account,
                 metric,
                 now,
                 &format!("focus-limits-{}-sus", metric.key()),
@@ -1402,7 +1439,7 @@ fn most_severe_after_primary(
         .enumerate()
         .filter(|(_, metric)| keep(metric))
         .max_by(|(a_ix, a), (b_ix, b)| {
-            let severity = |metric: &Metric| codexbar_core::assess(metric, now).severity();
+            let severity = |metric: &Metric| account.assess_metric(metric, now).severity();
             severity(a).cmp(&severity(b)).then(b_ix.cmp(a_ix))
         })
         .map(|(_, metric)| metric)

@@ -552,11 +552,11 @@ mod tests {
                 "OpenRouter",
                 "ChatGPT · Codex (team)",
                 "X Subscription · Personal",
-                "Gemini · Personal",
                 "GitHub Billing · HemSoft",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
                 "Grok · SuperGrok",
+                "Gemini · Personal",
                 "Greptile · HemSoft",
                 "Moonshot (Kimi)",
             ]
