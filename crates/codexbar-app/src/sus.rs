@@ -18,7 +18,10 @@ pub fn badge(score: Option<Score>, id: &str, label: &str, cx: &App) -> AnyElemen
         .unwrap_or_else(|| "SUS n/a".into());
     let (color, band) = match score.map(Score::band) {
         Some(Band::Green) => (cx.theme().success, "green"),
-        Some(Band::Yellow) => (cx.theme().warning, "yellow"),
+        Some(Band::Yellow) => (
+            gpui_kit::rgb(if cx.theme().is_dark() { 0xe3b341 } else { 0x9a6700 }).into(),
+            "yellow",
+        ),
         Some(Band::Red) => (cx.theme().danger, "red"),
         None => (cx.theme().muted_foreground, "unavailable"),
     };
