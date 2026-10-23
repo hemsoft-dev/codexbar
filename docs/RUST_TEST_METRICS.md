@@ -51,7 +51,9 @@ Production scope is handwritten functions under the four product crates'
 `src/` trees. LLVM line and branch records are intersected with the union of
 those spans. Inline test modules, test functions and test-only helpers are
 excluded, including `cfg(all(test, ...))`; `cfg(any(test, windows))` remains
-eligible production code. Closures belong to their containing function.
+eligible production code. The nonshipping `capture` feature is treated as
+disabled, including capture fixtures embedded in product source files.
+Closures belong to their containing function.
 
 File exclusions are explicit in the collector:
 

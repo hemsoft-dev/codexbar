@@ -85,8 +85,11 @@ class MetricsIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             primary = ValueError("original measurement failure")
             cleanup = RuntimeError("cleanup failure")
+            retained = Path(temp) / "retained"
+            retained.mkdir()
             with patch.object(metrics, "run", side_effect=[None, cleanup]), \
-                    patch.object(metrics, "collect", side_effect=primary):
+                    patch.object(metrics, "collect", side_effect=primary), \
+                    patch.object(metrics.tempfile, "mkdtemp", return_value=str(retained)):
                 with self.assertRaises(ValueError) as caught:
                     metrics.ci(Path(temp), Path(temp) / "out", Path(temp) / "target", "a" * 40)
                 self.assertIs(caught.exception, primary)

@@ -10,6 +10,16 @@ use syn::{Attribute, Meta, Token, punctuated::Punctuated, spanned::Spanned, visi
 fn production_cfg(meta: &Meta) -> Option<bool> {
     match meta {
         Meta::Path(path) if path.is_ident("test") => Some(false),
+        Meta::NameValue(value) if value.path.is_ident("feature") => {
+            if let syn::Expr::Lit(expr) = &value.value
+                && let syn::Lit::Str(name) = &expr.lit
+                && name.value() == "capture"
+            {
+                Some(false)
+            } else {
+                None
+            }
+        }
         Meta::List(list) => {
             let args = list
                 .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
@@ -137,6 +147,7 @@ mod tests {
             #[cfg(all(test, windows))] mod tests { fn hidden() {} }
             #[cfg(test)] impl Foo { fn hidden_method() {} }
             #[gpui::test] fn integration() {}
+            #[cfg(any(test, feature = "capture"))] fn screenshot_fixture() {}
             #[cfg(not(test))] fn production_only() {}
             #[cfg(any(test, windows))] fn windows_production() {}
             fn decisions(value: i32) -> i32 { if value > 0 { value } else { -value } }

@@ -127,7 +127,7 @@ def production_report(root, cache_path, lcov_path):
     totals["functions"] = len(entries)
     totals["unmapped_functions"] = sum(e["line_coverage"] is None for e in entries)
     return {"schema": 1, "basis": "production-function executable lines; unknown coverage pessimistic",
-            "scope": EXCLUDES, "pins": PINS, "totals": totals,
+            "scope": {"excluded_files": EXCLUDES, "test": False, "capture_feature": False}, "pins": PINS, "totals": totals,
             "entries": sorted(entries, key=lambda e: e["id"])}
 
 
