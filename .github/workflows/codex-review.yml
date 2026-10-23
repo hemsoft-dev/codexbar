@@ -25,19 +25,18 @@ permissions:
   issues: read
   statuses: write
 
-concurrency:
-  group: codex-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
-  cancel-in-progress: false
-
 jobs:
   review:
     if: >-
       (github.event_name != 'issue_comment' ||
         (github.event.issue.pull_request &&
          github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
-         github.event.comment.user.type == 'Bot' &&
-         contains(github.event.comment.body, '<!-- codex-review-state:v1'))) &&
+         github.event.comment.user.type == 'Bot')) &&
       (github.event_name != 'pull_request_review' || github.event.review.user.id == 8227352)
+    concurrency:
+      group: codex-review-${{ github.event.pull_request.number || github.event.issue.number || inputs.number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,10 +52,10 @@ jobs:
               core.notice('Bootstrap: trusted main does not contain the review helper yet; no review status issued');
               return;
             }
-            const { run } = require(helper);
+            const { run, workflowRunContext } = require(helper);
             if (context.eventName === 'workflow_run') {
               for (const pr of context.payload.workflow_run.pull_requests) {
-                await run({ github, context: { ...context, payload: { pull_request: { number: pr.number } } }, core });
+                await run({ github, context: workflowRunContext(context, pr.number), core });
               }
             } else {
               await run({ github, context, core });

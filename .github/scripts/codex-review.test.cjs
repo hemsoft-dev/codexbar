@@ -1,11 +1,11 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { codexVerdict, fallbackReceipt, eligibleEvent, triggerIncluded, run } = require('./codex-review.cjs');
+const { codexVerdict, fallbackReceipt, eligibleEvent, triggerIncluded, workflowRunContext, run } = require('./codex-review.cjs');
 const head = 'a'.repeat(40);
 const clean = { commit_sha: head, status: 'completed', has_any_findings: false, has_unresolved_findings: false };
 const summary = (result, user = { login: 'chatgpt-codex-connector[bot]', type: 'Bot' }) => ({
-  user, body: `<!-- codex-review-state:v1 ${JSON.stringify({ code_review: result })} -->`, updated_at: '2026-10-22', html_url: 'https://github.com/review'
+  id: 42, node_id: 'comment42', user, body: `<!-- codex-review-state:v1 ${JSON.stringify({ code_review: result })} -->`, updated_at: '2026-10-22', html_url: 'https://github.com/review'
 });
 
 test('only a completed clean bot verdict for the exact head passes', () => {
@@ -40,16 +40,24 @@ test('fallback requires the named maintainer, exact head, model and explicit cle
 
 const merge = 'c'.repeat(40);
 function client({ moved = false, mergeMoved = false, reviews = [], comments = [],
-  freshComments = comments, freshReviews = reviews, permission = 'admin', payload = { pull_request: { number: 1 } } } = {}) {
+  freshComments = comments, freshReviews = reviews, permission = 'admin', priorStatuses = [], statusError, payload = { pull_request: { number: 1 } } } = {}) {
   const statuses = []; let reads = 0; let commentReads = 0; let reviewReads = 0;
-  const github = { paginate: async method => method(), rest: {
+  const github = { graphql: async (_query, { id }) => {
+    const comment = [...freshComments, ...comments].find(item => item.node_id === id);
+    return { node: comment ? { body: comment.body, updatedAt: comment.updated_at,
+      author: { login: 'chatgpt-codex-connector', __typename: 'Bot' },
+      lastEditedAt: comment.editedAt ?? null, editor: comment.editor ?? null } : null };
+  }, paginate: async method => method(), rest: {
     pulls: { get: async () => {
       const later = reads++ > 0;
       return { data: { state: 'open', base: { ref: 'main' }, head: { sha: moved && later ? 'b'.repeat(40) : head },
         merge_commit_sha: mergeMoved && later ? 'd'.repeat(40) : merge } };
     }, listReviews: async () => reviewReads++ ? freshReviews : reviews },
     issues: { listComments: async () => commentReads++ ? freshComments : comments },
-    repos: { createCommitStatus: async value => statuses.push(value), getCollaboratorPermissionLevel: async () => ({ data: { permission } }) }
+    repos: { listCommitStatusesForRef: async () => priorStatuses, createCommitStatus: async value => {
+      if (statusError?.(value)) throw new Error('status write failed');
+      statuses.push(value);
+    }, getCollaboratorPermissionLevel: async () => ({ data: { permission } }) }
   } };
   return { github, statuses, context: { repo: { owner: 'hemsoft-dev', repo: 'codexbar' }, payload }, core: { info() {} } };
 }
@@ -58,18 +66,19 @@ const result = fixture => fixture.statuses.at(-1).state;
 test('a concurrent head or merge change cannot publish success', async () => {
   for (const change of [{ moved: true }, { mergeMoved: true }]) {
     const fixture = client({ ...change, comments: [summary(clean)] }); await run(fixture);
-    assert.equal(fixture.statuses.length, 2);
-    assert.ok(fixture.statuses.every(status => status.state === 'pending'));
+    const gates = fixture.statuses.filter(item => item.context === 'codex-review');
+    assert.equal(gates.length, 2);
+    assert.ok(gates.every(status => status.state === 'pending'));
   }
 });
 test('missing evidence publishes pending on both head and test merge', async () => {
   const fixture = client(); await run(fixture);
-  assert.deepEqual(fixture.statuses.slice(-2).map(status => status.sha), [head, merge]);
+  assert.deepEqual(fixture.statuses.slice(-2).map(status => status.sha), [merge, head]);
   assert.equal(result(fixture), 'pending');
 });
 test('clean review publishes success on head and test merge', async () => {
   const fixture = client({ comments: [summary(clean)] }); await run(fixture);
-  assert.deepEqual(fixture.statuses.slice(-2).map(status => [status.sha, status.state]), [[head, 'success'], [merge, 'success']]);
+  assert.deepEqual(fixture.statuses.slice(-2).map(status => [status.sha, status.state]), [[merge, 'success'], [head, 'success']]);
 });
 test('fallback also verifies live maintainer permission', async () => {
   const allowed = client({ reviews: [fallback] }); await run(allowed); assert.equal(result(allowed), 'success');
@@ -120,4 +129,47 @@ test('unrelated comments and reviews cannot revoke a clean gate', async () => {
     await run(fixture); assert.equal(fixture.statuses.length, 0);
   }
   assert.equal(eligibleEvent({ eventName: 'issue_comment', payload: { issue: { pull_request: {} }, comment: summary(clean) } }), true);
+});
+
+const watermark = (id, at, state = 'success') => ({ context: 'codex-review-evidence', state,
+  creator: { login: 'github-actions[bot]', type: 'Bot' }, description: JSON.stringify({ id, at }) });
+test('a collaborator edit is not trusted on either an event or manual refresh', async () => {
+  for (const eventName of ['issue_comment', 'workflow_dispatch']) {
+    const forged = { ...summary(clean), editedAt: '2026-10-22', editor: { login: 'writer', __typename: 'User' } };
+    const fixture = client({ comments: [forged], payload: { issue: { number: 1, pull_request: {} }, comment: forged, action: 'edited' } });
+    fixture.context.eventName = eventName;
+    await run(fixture); assert.equal(result(fixture), 'failure');
+  }
+  const restored = { ...summary(clean), editedAt: '2026-10-22', editor: { login: 'chatgpt-codex-connector', __typename: 'Bot' } };
+  const fixture = client({ comments: [restored] }); await run(fixture); assert.equal(result(fixture), 'success');
+});
+test('deletion latches failure instead of reviving an older clean summary on refresh', async () => {
+  const deleted = { ...summary({ ...clean, has_any_findings: true }), id: 43, updated_at: '2026-10-23' };
+  const fixture = client({ comments: [summary(clean)], payload: { issue: { number: 1, pull_request: {} }, comment: deleted, action: 'deleted' } });
+  fixture.context.eventName = 'issue_comment';
+  await run(fixture); assert.equal(result(fixture), 'failure');
+  const latch = fixture.statuses.find(item => item.context === 'codex-review-evidence');
+  const refresh = client({ comments: [summary(clean)], priorStatuses: [{ ...latch, creator: { login: 'github-actions[bot]', type: 'Bot' } }] });
+  await run(refresh); assert.equal(result(refresh), 'failure');
+});
+test('a missing recorded summary fails even if its deletion event was not delivered', async () => {
+  const fixture = client({ comments: [summary(clean)], priorStatuses: [watermark(43, '2026-10-23')] });
+  await run(fixture); assert.equal(result(fixture), 'failure');
+});
+test('a newer authenticated bot update recovers a deletion latch', async () => {
+  const fixture = client({ comments: [{ ...summary(clean), id: 44, updated_at: '2026-10-24' }],
+    priorStatuses: [watermark(43, '2026-10-23', 'failure')] });
+  await run(fixture); assert.equal(result(fixture), 'success');
+});
+test('partial pending publication cannot retain evaluated merge success', async () => {
+  const fixture = client({ comments: [summary(clean)], statusError: value => value.sha === head });
+  await assert.rejects(run(fixture), /status write failed/);
+  assert.deepEqual(fixture.statuses.map(item => [item.sha, item.state]), [[merge, 'pending']]);
+});
+test('workflow-run dispatch preserves an inherited Actions repo getter', async () => {
+  const fixture = client({ comments: [summary(clean)] });
+  const original = Object.assign(Object.create({ get repo() { return { owner: 'hemsoft-dev', repo: 'codexbar' }; } }),
+    { eventName: 'workflow_run', payload: {} });
+  fixture.context = workflowRunContext(original, 1);
+  await run(fixture); assert.equal(result(fixture), 'success');
 });

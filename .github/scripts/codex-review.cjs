@@ -1,6 +1,7 @@
 'use strict';
 
 const CONTEXT = 'codex-review';
+const EVIDENCE = 'codex-review-evidence';
 const MAINTAINER_ID = 8227352;
 const CODEX = 'chatgpt-codex-connector[bot]';
 
@@ -44,7 +45,7 @@ function eligibleEvent(context) {
   if (context.eventName === 'issue_comment') {
     const comment = context.payload.comment;
     return !!context.payload.issue?.pull_request && comment?.user?.login === CODEX &&
-      comment.user.type === 'Bot' && !!comment.body?.includes('<!-- codex-review-state:v1');
+      comment.user.type === 'Bot';
   }
   if (context.eventName === 'pull_request_review') return context.payload.review?.user?.id === MAINTAINER_ID;
   return true;
@@ -71,6 +72,15 @@ function triggerIncluded(context, comments, reviews) {
 async function snapshot(github, owner, repo, number) {
   const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
   const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number: number, per_page: 100 });
+  for (const comment of comments.filter(item => item.user?.login === CODEX && item.user?.type === 'Bot')) {
+    const { node } = await github.graphql(`query($id: ID!) { node(id: $id) { ... on IssueComment {
+      body updatedAt lastEditedAt author { login __typename } editor { login __typename }
+    } } }`, { id: comment.node_id });
+    const bot = actor => actor?.__typename === 'Bot' && actor.login === 'chatgpt-codex-connector';
+    comment.authenticated = !!node && bot(node.author) &&
+      (node.lastEditedAt ? bot(node.editor) : node.editor === null) &&
+      node.body === comment.body && node.updatedAt === comment.updated_at;
+  }
   return { comments, reviews };
 }
 
@@ -79,10 +89,58 @@ async function snapshot(github, owner, repo, number) {
 function fingerprint({ comments, reviews }) {
   return JSON.stringify({
     comments: comments.filter(item => item.user?.login === CODEX).map(item =>
-      [item.id, item.user, item.updated_at, item.body]),
+      [item.id, item.user, item.updated_at, item.body, item.authenticated]),
     reviews: reviews.filter(item => item.user?.id === MAINTAINER_ID).map(item =>
       [item.id, item.user, item.commit_id, item.state, item.body])
   });
+}
+
+// A head-bound, Actions-authored watermark survives deletion and later dispatches.
+// A tamper/deletion latch clears only after a newer authenticated bot update.
+async function evidenceVerdict(github, owner, repo, head, context, evidence) {
+  const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef,
+    { owner, repo, ref: head, per_page: 100 });
+  const prior = statuses.find(item => item.context === EVIDENCE &&
+    item.creator?.login === 'github-actions[bot]' && item.creator?.type === 'Bot');
+  let watermark;
+  if (prior) {
+    try { watermark = JSON.parse(prior.description); } catch { throw new Error('Invalid review evidence watermark'); }
+    if (!Number.isSafeInteger(watermark.id) || !Number.isFinite(Date.parse(watermark.at))) {
+      throw new Error('Invalid review evidence watermark');
+    }
+  }
+  const summaries = evidence.comments.filter(item => item.user?.login === CODEX &&
+    (item.body?.includes('<!-- codex-review-state:v1') || item.id === watermark?.id))
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
+  const latest = summaries[0];
+  const deleted = context.eventName === 'issue_comment' && context.payload.action === 'deleted' &&
+    (context.payload.comment.body?.includes('<!-- codex-review-state:v1') || context.payload.comment.id === watermark?.id);
+  const tampered = latest && (!latest.authenticated || !latest.body?.includes('<!-- codex-review-state:v1'));
+  const vanished = watermark && !evidence.comments.some(item => item.id === watermark.id) &&
+    (!latest || Date.parse(latest.updated_at) <= Date.parse(watermark.at));
+  const stale = watermark && latest && Date.parse(latest.updated_at) < Date.parse(watermark.at);
+  const latched = watermark && prior.state === 'failure' &&
+    (!latest || Date.parse(latest.updated_at) <= Date.parse(watermark.at));
+  if (deleted || tampered || vanished || stale || latched) {
+    // Preserve an existing latch timestamp on refresh, so a future legitimate
+    // bot update can recover without a human resetting or bypassing the gate.
+    const record = prior?.state === 'failure' ? watermark : {
+      id: context.payload.comment?.id ?? watermark?.id ?? latest.id, at: new Date().toISOString()
+    };
+    await github.rest.repos.createCommitStatus({ owner, repo, sha: head, context: EVIDENCE,
+      state: 'failure', description: JSON.stringify(record) });
+    return { state: 'failure', description: 'Review evidence was deleted, edited by another actor, or is stale' };
+  }
+  if (latest) {
+    await github.rest.repos.createCommitStatus({ owner, repo, sha: head, context: EVIDENCE,
+      state: 'success', description: JSON.stringify({ id: latest.id, at: latest.updated_at }) });
+  }
+  return codexVerdict(evidence.comments, head);
+}
+
+// Explicitly copy the repo getter; spreading Actions Context drops it.
+function workflowRunContext(context, number) {
+  return { ...context, repo: context.repo, payload: { pull_request: { number } } };
 }
 
 async function run({ github, context, core }) {
@@ -94,7 +152,7 @@ async function run({ github, context, core }) {
   if (pr.state !== 'open' || pr.base.ref !== 'main') return;
   const head = pr.head.sha;
   const merge = pr.merge_commit_sha;
-  const shas = [...new Set([head, merge].filter(Boolean))];
+  const shas = [...new Set([merge, head].filter(Boolean))];
   const publish = async verdict => {
     for (const sha of shas) {
       await github.rest.repos.createCommitStatus({ owner, repo, sha, context: CONTEXT, ...verdict });
@@ -104,14 +162,17 @@ async function run({ github, context, core }) {
   // therefore leaves the gate pending rather than retaining cached consent.
   await publish({ state: 'pending', description: 'Revalidating current-head review evidence' });
   const first = await snapshot(github, owner, repo, number);
-  let verdict = codexVerdict(first.comments, head);
+  let verdict = { state: 'pending', description: 'Review evidence has not been validated' };
   const latest = first.reviews.filter(review => review.user?.id === MAINTAINER_ID && review.commit_id === head).at(-1);
   const fallback = latest && fallbackReceipt(latest, head) ? latest : null;
   const fresh = await snapshot(github, owner, repo, number);
   const unchanged = triggerIncluded(context, fresh.comments, fresh.reviews) && fingerprint(first) === fingerprint(fresh);
   if (!unchanged) {
     verdict = { state: 'pending', description: 'Review evidence changed; a fresh event must revalidate it' };
-  } else if (fallback && verdict.state === 'pending') {
+  } else {
+    verdict = await evidenceVerdict(github, owner, repo, head, context, fresh);
+  }
+  if (unchanged && fallback && verdict.state === 'pending') {
     const { data: permission } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: fallback.user.login });
     if (['admin', 'maintain'].includes(permission.permission)) {
       verdict = { state: 'success', description: 'Clean current-head Claude Opus fallback review', target_url: fallback.html_url };
@@ -128,4 +189,4 @@ async function run({ github, context, core }) {
   core.info(`${CONTEXT} ${head} / ${merge}: ${verdict.state}`);
 }
 
-module.exports = { codexVerdict, fallbackReceipt, eligibleEvent, triggerIncluded, run };
+module.exports = { codexVerdict, fallbackReceipt, eligibleEvent, triggerIncluded, workflowRunContext, run };

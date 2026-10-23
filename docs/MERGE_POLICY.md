@@ -8,7 +8,9 @@ requirement. A clean comment-only Codex review is sufficient review evidence.
 
 The review gate reads the connected Codex bot's structured summary, not a
 comment that merely says `@codex review`, an eyes reaction, or another user's
-copy of a result. The summary must name the complete current head SHA, be
+copy of a result. The gate authenticates the summary's author and last editor using GraphQL.
+A collaborator's edit cannot become a bot verdict, including on manual or CI
+refresh. The summary must name the complete current head SHA, be
 completed, and report no findings. Running, malformed, missing, or old-head
 results cannot pass. Each new head needs its own review. The workflow reads
 GitHub metadata and executes only the script from trusted main, never PR code.
@@ -34,11 +36,23 @@ merge through native conversation protection.
 The gate refreshes on PR head changes, bot comment updates, reviews and CI
 completion. It publishes to both the reviewed head and its current test merge
 revision, and rejects a concurrent change to either. It revokes prior success
-before evaluation, checks that the triggering edit or deletion is visible,
+on the test merge revision first, then the head, before evaluation. It checks
+that the triggering edit or deletion is visible,
 and reads mutable evidence again immediately before publishing a verdict. A
 maintainer can refresh existing evidence with
 `gh workflow run codex-review.yml -f number=PR_NUMBER`. This does not request a
 review or change the evidence requirements. There is no polling or schedule.
+
+The Actions-authored `codex-review-evidence` status on the reviewed head records
+which summary and update the gate observed. It is an audit watermark, not a
+substitute required check. Deleting recorded evidence, or a deletion event for
+another review summary, latches failure rather than reviving older clean text.
+A newer authenticated bot update clears the latch. Refreshes preserve it.
+Unrelated public comments and reviews are excluded before job concurrency.
+Eligible jobs use the documented `queue: max` mode so pending evidence events
+are queued rather than replaced. The installed actionlint 1.7.12 does not yet
+recognize that field; validation suppresses only its specific unknown-key
+error. See GitHub's [concurrency syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency).
 
 ## Required check setup
 
