@@ -16,7 +16,7 @@ GitHub metadata and executes only the script from trusted main, never PR code.
 Request `@codex review` once per head. If it remains hung for an hour, or the
 integration explicitly refuses the review, use the maintainer-authorized
 Claude Opus 5.5 fallback. Fix findings and repeat review until clean. Publish
-its clean result as a COMMENT review on the exact commit, as `HemSoft`, with
+its clean result as a COMMENT review on the exact commit, as the trusted maintainer, GitHub user ID `8227352`, with
 this first-line receipt, followed by the review's scope and evidence:
 
 ```text
@@ -24,13 +24,18 @@ this first-line receipt, followed by the review's scope and evidence:
 ```
 
 Use `unavailable` instead of `hung` for an explicit integration refusal.
-The gate verifies the review's actual commit and live maintainer permission.
-The latest HemSoft review on that head must carry the clean receipt. It cannot
+The gate verifies the review's actual commit, stable author ID and live
+maintainer permission using the author's current login.
+The latest review from that user on that head must carry the clean receipt. It cannot
 override Codex's completed findings. This is a reviewed alternative to a hung
 integration, not a switch that skips review. Unresolved threads still block
 merge through native conversation protection.
 
-The gate refreshes on PR head changes, bot comment updates and reviews. A
+The gate refreshes on PR head changes, bot comment updates, reviews and CI
+completion. It publishes to both the reviewed head and its current test merge
+revision, and rejects a concurrent change to either. It revokes prior success
+before evaluation, checks that the triggering edit or deletion is visible,
+and reads mutable evidence again immediately before publishing a verdict. A
 maintainer can refresh existing evidence with
 `gh workflow run codex-review.yml -f number=PR_NUMBER`. This does not request a
 review or change the evidence requirements. There is no polling or schedule.

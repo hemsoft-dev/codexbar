@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { codexVerdict, fallbackReceipt, run } = require('./codex-review.cjs');
+const { codexVerdict, fallbackReceipt, triggerIncluded, run } = require('./codex-review.cjs');
 const head = 'a'.repeat(40);
 const clean = { commit_sha: head, status: 'completed', has_any_findings: false, has_unresolved_findings: false };
 const summary = (result, user = { login: 'chatgpt-codex-connector[bot]', type: 'Bot' }) => ({
@@ -27,7 +27,7 @@ test('a later running or failed result replaces an earlier clean result', () => 
 });
 
 const receipt = { head, clean: true, provider: 'claude', model: 'claude-opus-5-5', codex: 'hung' };
-const fallback = { user: { login: 'HemSoft', type: 'User' }, commit_id: head, state: 'COMMENTED',
+const fallback = { user: { id: 8227352, login: 'HemSoft', type: 'User' }, commit_id: head, state: 'COMMENTED',
   body: `<!-- codexbar-review-fallback:v1 ${JSON.stringify(receipt)} -->`, html_url: 'https://github.com/fallback' };
 test('fallback requires the named maintainer, exact head, model and explicit clean receipt', () => {
   assert.equal(fallbackReceipt(fallback, head), true);
@@ -38,31 +38,69 @@ test('fallback requires the named maintainer, exact head, model and explicit cle
   }
 });
 
-function client({ moved = false, reviews = [], comments = [], permission = 'admin' } = {}) {
-  const statuses = []; let reads = 0;
+const merge = 'c'.repeat(40);
+function client({ moved = false, mergeMoved = false, reviews = [], comments = [],
+  freshComments = comments, freshReviews = reviews, permission = 'admin', payload = { pull_request: { number: 1 } } } = {}) {
+  const statuses = []; let reads = 0; let commentReads = 0; let reviewReads = 0;
   const github = { paginate: async method => method(), rest: {
-    pulls: { get: async () => ({ data: { state: 'open', base: { ref: 'main' }, head: { sha: moved && reads++ ? 'b'.repeat(40) : head } } }), listReviews: async () => reviews },
-    issues: { listComments: async () => comments },
+    pulls: { get: async () => {
+      const later = reads++ > 0;
+      return { data: { state: 'open', base: { ref: 'main' }, head: { sha: moved && later ? 'b'.repeat(40) : head },
+        merge_commit_sha: mergeMoved && later ? 'd'.repeat(40) : merge } };
+    }, listReviews: async () => reviewReads++ ? freshReviews : reviews },
+    issues: { listComments: async () => commentReads++ ? freshComments : comments },
     repos: { createCommitStatus: async value => statuses.push(value), getCollaboratorPermissionLevel: async () => ({ data: { permission } }) }
   } };
-  return { github, statuses, context: { repo: { owner: 'hemsoft-dev', repo: 'codexbar' }, payload: { pull_request: { number: 1 } } }, core: { info() {} } };
+  return { github, statuses, context: { repo: { owner: 'hemsoft-dev', repo: 'codexbar' }, payload }, core: { info() {} } };
 }
+const result = fixture => fixture.statuses.at(-1).state;
 
-test('a concurrent head change cannot publish a stale decision', async () => {
-  const fixture = client({ moved: true }); await run(fixture); assert.equal(fixture.statuses.length, 0);
+test('a concurrent head or merge change cannot publish success', async () => {
+  for (const change of [{ moved: true }, { mergeMoved: true }]) {
+    const fixture = client({ ...change, comments: [summary(clean)] }); await run(fixture);
+    assert.equal(fixture.statuses.length, 2);
+    assert.ok(fixture.statuses.every(status => status.state === 'pending'));
+  }
 });
-test('missing evidence publishes pending on the exact head', async () => {
+test('missing evidence publishes pending on both head and test merge', async () => {
   const fixture = client(); await run(fixture);
-  assert.equal(fixture.statuses[0].sha, head); assert.equal(fixture.statuses[0].state, 'pending');
+  assert.deepEqual(fixture.statuses.slice(-2).map(status => status.sha), [head, merge]);
+  assert.equal(result(fixture), 'pending');
+});
+test('clean review publishes success on head and test merge', async () => {
+  const fixture = client({ comments: [summary(clean)] }); await run(fixture);
+  assert.deepEqual(fixture.statuses.slice(-2).map(status => [status.sha, status.state]), [[head, 'success'], [merge, 'success']]);
 });
 test('fallback also verifies live maintainer permission', async () => {
-  const allowed = client({ reviews: [fallback] }); await run(allowed); assert.equal(allowed.statuses[0].state, 'success');
-  const refused = client({ reviews: [fallback], permission: 'write' }); await run(refused); assert.equal(refused.statuses[0].state, 'pending');
+  const allowed = client({ reviews: [fallback] }); await run(allowed); assert.equal(result(allowed), 'success');
+  const refused = client({ reviews: [fallback], permission: 'write' }); await run(refused); assert.equal(result(refused), 'pending');
 });
-
 test('fallback cannot hide Codex findings or a later non-clean maintainer review', async () => {
   const findings = client({ reviews: [fallback], comments: [summary({ ...clean, has_any_findings: true })] });
-  await run(findings); assert.equal(findings.statuses[0].state, 'failure');
+  await run(findings); assert.equal(result(findings), 'failure');
   const later = client({ reviews: [fallback, { ...fallback, body: 'P2: fix this' }] });
-  await run(later); assert.equal(later.statuses[0].state, 'pending');
+  await run(later); assert.equal(result(later), 'pending');
+});
+test('the maintainer may rename without trusting an unrelated account with the old login', () => {
+  assert.equal(fallbackReceipt({ ...fallback, user: { ...fallback.user, login: 'renamed' } }, head), true);
+  assert.equal(fallbackReceipt({ ...fallback, user: { ...fallback.user, id: 1 } }, head), false);
+});
+test('summary or fallback mutation or deletion before publication leaves pending', async () => {
+  for (const freshComments of [[], [summary({ ...clean, status: 'running' })], [summary({ ...clean, has_any_findings: true })]]) {
+    const fixture = client({ comments: [summary(clean)], freshComments }); await run(fixture);
+    assert.equal(result(fixture), 'pending');
+  }
+  for (const freshReviews of [[], [{ ...fallback, body: 'findings' }]]) {
+    const fixture = client({ reviews: [fallback], freshReviews }); await run(fixture);
+    assert.equal(result(fixture), 'pending');
+  }
+});
+test('a stale API snapshot cannot ignore the triggering edit or deletion', async () => {
+  const old = { ...summary(clean), id: 42 };
+  const edited = { ...old, body: 'running', updated_at: '2026-10-23' };
+  for (const [action, comment] of [['edited', edited], ['deleted', old]]) {
+    const fixture = client({ comments: [old], payload: { issue: { number: 1 }, action, comment } });
+    await run(fixture); assert.equal(result(fixture), 'pending');
+  }
+  assert.equal(triggerIncluded({ payload: { action: 'deleted', comment: old } }, [], []), true);
 });
