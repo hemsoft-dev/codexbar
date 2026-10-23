@@ -42,7 +42,12 @@ jobs:
       - uses: actions/github-script@v8
         with:
           script: |
-            const { run } = require('./.github/scripts/codex-review.cjs');
+            const helper = './.github/scripts/codex-review.cjs';
+            if (!require('node:fs').existsSync(helper)) {
+              core.notice('Bootstrap: trusted main does not contain the review helper yet; no review status issued');
+              return;
+            }
+            const { run } = require(helper);
             if (context.eventName === 'workflow_run') {
               for (const pr of context.payload.workflow_run.pull_requests) {
                 await run({ github, context: { ...context, payload: { pull_request: { number: pr.number } } }, core });

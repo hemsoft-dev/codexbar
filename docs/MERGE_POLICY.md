@@ -42,6 +42,11 @@ review or change the evidence requirements. There is no polling or schedule.
 
 ## Required check setup
 
+During the initial PR, review events can run its workflow before the helper
+exists on trusted main. That bootstrap case emits a notice and issues no
+review status. It cannot satisfy a required `codex-review` check. Never load
+the helper from a PR branch to work around the bootstrap.
+
 After the review workflow has merged to main, preview the additive settings:
 
 ```sh
