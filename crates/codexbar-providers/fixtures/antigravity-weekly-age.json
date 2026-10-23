@@ -1,0 +1,10 @@
+{
+  "status": "SUCCESS", "num_turns": 0,
+  "command": {"name": "usage", "data": {"groups": [{"buckets": [
+    {"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.9, "reset_time": "2026-10-23T19:38:00Z"},
+    {"id": "gemini-weekly", "window": "weekly", "remaining_fraction": 0.97, "reset_time": "2026-10-30T04:38:00Z"},
+    {"id": "gemini-argon-wtu-weekly", "window": "weekly", "remaining_fraction": 0.8, "reset_time": "2026-10-30T04:38:00Z"},
+    {"id": "3p-5h", "window": "5h", "remaining_fraction": 0.7, "reset_time": "2026-10-23T19:38:00Z"},
+    {"id": "3p-weekly", "window": "weekly", "remaining_fraction": 0.6, "reset_time": "2026-10-30T04:38:00Z"}
+  ]}]}}
+}

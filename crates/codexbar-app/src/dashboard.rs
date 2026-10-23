@@ -1425,6 +1425,65 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Synthetic CLI payload through the real parser, for age-boundary rendering without live accounts.
+    #[cfg(any(test, feature = "capture"))]
+    pub(crate) fn capture_gemini_weekly(&mut self, mature: bool, cx: &mut Context<Self>) {
+        use codexbar_core::{AccountDetail, AccountId, LimitSeries, Metric, Provider};
+        assert!(matches!(self.source, DataSource::Demo));
+        let base: DateTime<Utc> = "2026-10-23T16:38:00Z".parse().unwrap();
+        let now = if mature { base } else { base - Duration::seconds(1) };
+        crate::sus::capture_time(now, cx);
+        let mut metrics = vec![
+            Metric::Window {
+                label: "Gemini Apps five-hour".into(),
+                used: 0.18,
+                resets_at: base + Duration::hours(3),
+                pace: Some(codexbar_core::Pace::per_hour(0.09)),
+                length: Some(Duration::hours(5)),
+            },
+            Metric::Window {
+                label: "Gemini Apps weekly".into(),
+                used: 0.65,
+                resets_at: base + Duration::days(2),
+                pace: None,
+                length: Some(Duration::days(7)),
+            },
+        ];
+        metrics.extend(
+            codexbar_providers::gemini_coding::parse(
+                include_str!("../../codexbar-providers/fixtures/antigravity-weekly-age.json"),
+                now,
+            )
+            .unwrap()
+            .metrics,
+        );
+        let account = AccountSnapshot::new(AccountId::new("gemini"), Provider::Gemini, metrics, now)
+            .with_plan("Google AI Pro")
+            .with_trend(vec![0.10, 0.18])
+            .with_detail(AccountDetail::default().with_limit_series(
+                "gemini-models-weekly",
+                LimitSeries {
+                    curve: None,
+                    trend: vec![0.01, 0.02, 0.03],
+                },
+            ));
+        self.states.clear();
+        self.placeholders.clear();
+        self.set_accounts(vec![account], cx);
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "gemini", |choice| {
+            choice.rings = vec!["gemini-models-weekly".into()];
+        });
+        self.focus_account(
+            &crate::handoff::FocusRequest {
+                account: "gemini".into(),
+                metric: Some("gemini-models-weekly".into()),
+            },
+            cx,
+        );
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.ranked_with = alert_inputs(cx);
         self.now = crate::sus::now(cx);

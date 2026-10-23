@@ -140,7 +140,7 @@ pub enum WindowKind {
 impl WindowKind {
     /// Which standard window a metric is, by its label: "5-hour window", "Gemini Apps five-hour", "Weekly",
     /// "Weekly usage", "Weekly SuperGrok". A scoped weekly limit ("Weekly Opus") is weekly too; the first weekly
-    /// metric of an account is the one shown, which providers list before the scoped ones.
+    /// metric of an account is shown, except Gemini prefers its separate Models weekly pool.
     pub fn of(label: &str) -> Option<Self> {
         let label = label.to_ascii_lowercase();
         if label.contains("5-hour") || label.contains("five-hour") || label.contains("5 hour") {
@@ -168,18 +168,39 @@ impl WindowKind {
 
     /// The account's window of this kind, when it reports one.
     pub fn in_account(self, account: &AccountSnapshot) -> Option<&Metric> {
-        account
-            .metrics()
-            .iter()
-            .find(|metric| matches!(metric, Metric::Window { .. }) && Self::of(metric.label()) == Some(self))
+        gemini_models_weekly(account)
+            .filter(|_| self == Self::Weekly)
+            .or_else(|| {
+                account
+                    .metrics()
+                    .iter()
+                    .find(|metric| matches!(metric, Metric::Window { .. }) && Self::of(metric.label()) == Some(self))
+            })
     }
 }
 
+/// The coding pool is distinct from Gemini Apps, Argon and other models, irrespective of their order.
+fn gemini_models_weekly(account: &AccountSnapshot) -> Option<&Metric> {
+    (account.provider() == Provider::Gemini)
+        .then(|| {
+            account
+                .metrics()
+                .iter()
+                .find(|metric| matches!(metric, Metric::Window { .. }) && metric.key() == "gemini-models-weekly")
+        })
+        .flatten()
+}
+
+/// Gemini rows prefer Models weekly (#262). Other views retain their primary metric.
 /// The metric an account's row shows: its primary one, except that a Claude row shows the weekly window when the
 /// primary is the 5-hour one (#246). The week is what paces a Claude subscription; the 5-hour window resets several
 /// times a day. Only the all-model "Weekly" window counts: a model-scoped one ("Weekly Opus") doesn't pace the whole
 /// subscription. Everything else (focus cards, the tooltip, alerts, widgets) keeps the primary metric.
 pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
+    gemini_models_weekly(account).or_else(|| primary_or_claude_weekly(account))
+}
+
+fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
     let primary = account.primary()?;
     if account.provider() == Provider::Claude
         && WindowKind::of(primary.label()) == Some(WindowKind::FiveHour)
@@ -1083,6 +1104,66 @@ mod tests {
 
     fn claude(metrics: Vec<Metric>) -> AccountSnapshot {
         AccountSnapshot::new(AccountId::new("claude-1"), Provider::Claude, metrics, now())
+    }
+
+    #[test]
+    fn gemini_row_and_wide_weekly_cell_select_only_the_models_pool() {
+        use codexbar_core::{AccountDetail, LimitSeries};
+        let apps = window("Gemini Apps five-hour", 0.18, Duration::hours(3), Pace::per_hour(0.09));
+        let models = window(
+            "Gemini Models weekly",
+            0.03,
+            Duration::hours(156),
+            Pace::per_hour(0.0025),
+        );
+        let others = vec![
+            window("Gemini Apps weekly", 0.65, Duration::days(2), Pace::per_hour(0.01)),
+            window("Argon weekly", 0.2, Duration::hours(156), Pace::per_hour(0.01)),
+            window("Other models weekly", 0.4, Duration::hours(156), Pace::per_hour(0.02)),
+        ];
+        let make = |metrics| AccountSnapshot::new(AccountId::new("gemini"), Provider::Gemini, metrics, now());
+        let mut metrics = vec![apps.clone()];
+        metrics.extend(others.clone());
+        metrics.push(models.clone());
+        let row = make(metrics)
+            .with_trend(vec![0.18])
+            .with_detail(AccountDetail::default().with_limit_series(
+                "gemini-models-weekly",
+                LimitSeries {
+                    curve: None,
+                    trend: vec![0.01, 0.02, 0.03],
+                },
+            ));
+        assert_eq!(row_metric(&row), Some(&models));
+        assert_eq!(WindowKind::Weekly.in_account(&row), Some(&models));
+        assert_eq!(WindowKind::FiveHour.in_account(&row), Some(&apps));
+        assert_eq!(row_trend(&row), [0.01, 0.02, 0.03]);
+        assert_eq!(
+            row.primary(),
+            Some(&apps),
+            "focus, alerts and widgets keep their primary"
+        );
+        let absent = make(vec![
+            apps.clone(),
+            others[0].clone(),
+            others[1].clone(),
+            others[2].clone(),
+        ]);
+        assert_eq!(row_metric(&absent), Some(&apps));
+        assert_eq!(WindowKind::Weekly.in_account(&absent), Some(&others[0]));
+        assert_eq!(row_metric(&make(vec![])), None);
+        assert_eq!(WindowKind::Weekly.in_account(&make(vec![])), None);
+        let impostor = Metric::Credits {
+            label: "Gemini Models weekly".into(),
+            balance: Some(1.),
+            start: None,
+        };
+        assert_eq!(row_metric(&make(vec![apps.clone(), impostor])), Some(&apps));
+        assert_eq!(
+            row_metric(&account(vec![apps.clone(), models])),
+            Some(&apps),
+            "not another provider"
+        );
     }
 
     /// #246: Claude lists its 5-hour window first; its row shows the weekly one, which paces the subscription.

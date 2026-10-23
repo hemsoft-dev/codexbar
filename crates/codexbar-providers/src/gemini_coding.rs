@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 use codexbar_core::Metric;
 use serde_json::Value;
 
-use crate::pace::elapsed_pace;
+use crate::pace::{elapsed_pace, elapsed_pace_after};
 use crate::{CommandError, CommandRunner};
 
 /// The CLI's usage command can take a moment to start; it never runs a model turn.
@@ -139,7 +139,7 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
                     label: label.to_owned(),
                     used,
                     resets_at,
-                    pace: elapsed_pace(used, resets_at - Duration::hours(hours), resets_at, now),
+                    pace: bucket_pace(used, hours, resets_at, now),
                     length: Some(Duration::hours(hours)),
                 });
             }
@@ -153,6 +153,16 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
         return Err(CodingError::Unknown);
     }
     Ok(usage)
+}
+
+/// Coding weeks mature with SUS; short windows retain the existing relative maturity guard.
+fn bucket_pace(used: f64, hours: i64, resets_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<codexbar_core::Pace> {
+    let start = resets_at - Duration::hours(hours);
+    if hours == 7 * 24 {
+        elapsed_pace_after(used, start, resets_at, now, Duration::hours(12))
+    } else {
+        elapsed_pace(used, start, resets_at, now)
+    }
 }
 
 /// Runs the CLI and reads its coding quotas.
@@ -216,6 +226,59 @@ mod tests {
           {"name":"Claude and GPT models","buckets":[
             {"id":"3p-weekly","window":"weekly","remaining_fraction":0.8480448126792908,"reset_time":"2026-10-17T12:37:38Z"},
             {"id":"3p-5h","window":"5h","remaining_fraction":0.69,"reset_time":"2026-10-13T06:54:48Z"}]}]}}}"#;
+
+    #[test]
+    fn weekly_forecasts_and_sus_share_the_twelve_hour_maturity_boundary() {
+        let input = include_str!("../fixtures/antigravity-weekly-age.json");
+        let start: DateTime<Utc> = "2026-10-23T04:38:00Z".parse().unwrap();
+        for age in [
+            Duration::hours(12) - Duration::seconds(1),
+            Duration::hours(12),
+            Duration::hours(15) + Duration::minutes(52),
+            Duration::hours(16) + Duration::minutes(48),
+            Duration::days(3),
+        ] {
+            let now = start + age;
+            let usage = parse(input, now).unwrap();
+            for key in ["gemini-models-weekly", "argon-weekly", "other-models-weekly"] {
+                let metric = usage.metrics.iter().find(|m| m.key() == key).unwrap();
+                if age < Duration::hours(12) {
+                    assert_eq!(metric.projected_at_reset(now), None);
+                    assert_eq!(codexbar_core::sus::weekly(metric, now), None);
+                } else {
+                    let expected = metric.used_fraction().unwrap() * 168. / (age.num_seconds() as f64 / 3600.);
+                    assert!((metric.projected_at_reset(now).unwrap() - expected).abs() < 1e-9);
+                    assert!(codexbar_core::sus::weekly(metric, now).is_some());
+                    if age == Duration::hours(12) && key == "gemini-models-weekly" {
+                        assert!((expected - 0.42).abs() < 1e-9);
+                        assert_eq!(codexbar_core::sus::weekly(metric, now).unwrap().value(), 42);
+                    }
+                }
+            }
+            for metric in usage.metrics.iter().filter(|m| m.label().contains("five-hour")) {
+                assert_eq!(codexbar_core::sus::text(metric, now), None);
+            }
+        }
+        let expired = parse(input, start + Duration::days(7)).unwrap();
+        assert!(expired.metrics.is_empty());
+        for invalid in [
+            input.replace("0.97", "1.1"),
+            input.replace("gemini-weekly", "missing-weekly"),
+            input.replace(
+                "\"id\": \"gemini-weekly\"",
+                "\"disabled\": true, \"id\": \"gemini-weekly\"",
+            ),
+        ] {
+            let usage = parse(&invalid, start + Duration::hours(12)).unwrap();
+            assert!(!usage.metrics.iter().any(|m| m.key() == "gemini-models-weekly"));
+        }
+        let early_five_hour = parse(input, "2026-10-23T14:48:00Z".parse().unwrap()).unwrap();
+        assert_eq!(
+            early_five_hour.metrics[0].projected_at_reset(start),
+            None,
+            "five-hour maturity remains ten percent of its period"
+        );
+    }
 
     #[test]
     fn buckets_map_by_id_and_window_with_used_as_one_minus_remaining() {
