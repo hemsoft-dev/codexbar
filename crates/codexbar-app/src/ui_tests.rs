@@ -8309,9 +8309,10 @@ fn live_gemini_status_from_saved_provider_data() {
             timeout: Duration,
         ) -> Result<codexbar_providers::CommandOutput, codexbar_providers::CommandError> {
             let result = codexbar_providers::SystemCommandRunner.run(program, args, timeout)?;
-            if args.first() == Some(&"-p") {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.stdout) {
-                    let buckets: Vec<_>=value.pointer("/command/data/groups").and_then(|v|v.as_array()).into_iter().flatten()
+            if args.first() == Some(&"-p")
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.stdout)
+            {
+                let buckets: Vec<_>=value.pointer("/command/data/groups").and_then(|v|v.as_array()).into_iter().flatten()
                         .filter_map(|g|g["buckets"].as_array()).flatten().filter_map(|b| {
                             let id=b["id"].as_str()?;
                             if !["gemini-weekly","gemini-5h","gemini-argon-wtu-weekly","3p-weekly","3p-5h"].contains(&id){return None;}
@@ -8319,11 +8320,10 @@ fn live_gemini_status_from_saved_provider_data() {
                             Some(serde_json::json!({"id":id,"remaining_fraction":b["remaining_fraction"].as_f64(),
                                 "reset_time":reset,"window":b["window"].as_str().filter(|w|["weekly","5h"].contains(w)),"disabled":b["disabled"].as_bool()}))
                         }).collect();
-                    println!(
-                        "sanitized CLI quotas: {}",
-                        serde_json::json!({"success":result.success,"zeroTurns":value["num_turns"]==0,"buckets":buckets})
-                    );
-                }
+                println!(
+                    "sanitized CLI quotas: {}",
+                    serde_json::json!({"success":result.success,"zeroTurns":value["num_turns"]==0,"buckets":buckets})
+                );
             }
             Ok(result)
         }
