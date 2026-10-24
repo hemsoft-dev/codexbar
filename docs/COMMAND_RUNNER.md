@@ -44,7 +44,9 @@ keeping the root unreaped until the owned group is signalled. This reserves the
 PID and prevents a reused group ID from receiving a kill signal. After reaping,
 termination verification never sends another kill. Linux first queries process
 group membership and reads `/proc/<pid>/stat` only for members of the owned
-group. It distinguishes live states from zombie/dead states, so delayed reaping
+group. ENOENT or ESRCH while reading a member's record means it disappeared;
+other read errors fail cleanup. It distinguishes live states from zombie/dead
+states, so delayed reaping
 by PID 1 or a subreaper does not turn a completed command into a failure. The
 scan shares the one-second cleanup deadline. macOS uses libproc to list the
 owned group's members and inspect their BSD process states, also excluding

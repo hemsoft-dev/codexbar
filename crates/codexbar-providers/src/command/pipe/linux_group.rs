@@ -57,9 +57,14 @@ fn group_of(pid: i32) -> io::Result<Option<u32>> {
 }
 
 fn read_record(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
+    record_result(std::fs::read(path))
+}
+
+fn record_result(result: io::Result<Vec<u8>>) -> io::Result<Option<Vec<u8>>> {
+    match result {
         Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        // procfs can report ESRCH from a descriptor opened before the task was reaped.
+        Err(error) if error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH) => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -85,6 +90,35 @@ fn malformed() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_process_reaped_during_its_stat_read_is_absent_but_other_errors_fail_closed() {
+        assert_eq!(record_result(Ok(b"stat".to_vec())).unwrap(), Some(b"stat".to_vec()));
+        assert_eq!(record_result(Err(io::ErrorKind::NotFound.into())).unwrap(), None);
+        assert_eq!(
+            record_result(Err(io::Error::from_raw_os_error(libc::ESRCH))).unwrap(),
+            None
+        );
+        for error in [
+            io::Error::from_raw_os_error(libc::EIO),
+            io::ErrorKind::PermissionDenied.into(),
+            io::Error::other("fixture"),
+        ] {
+            assert!(record_result(Err(error)).is_err());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reading_an_open_stat_descriptor_after_reaping_reports_a_vanished_member() {
+        use std::io::Read as _;
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let mut stat = std::fs::File::open(format!("/proc/{}/stat", child.id())).unwrap();
+        child.wait().unwrap();
+        let error = stat.read_to_end(&mut Vec::new()).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::ESRCH));
+        assert_eq!(record_result(Err(error)).unwrap(), None);
+    }
 
     #[test]
     fn process_state_separates_terminated_members_from_live_and_reused_pids() {
