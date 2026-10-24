@@ -4,6 +4,9 @@
 
 use std::process::{Child, Command};
 
+#[cfg(windows)]
+mod job_drain;
+
 /// A started child in its job.
 pub(crate) struct Contained {
     pub child: Child,
@@ -348,38 +351,9 @@ mod job {
     }
 
     impl Job {
-        /// Stop the entire owned job before returning. Closing the handle alone can leave termination in flight.
+        /// Stop and wait for verified job members, rescanning for descendants created during cleanup.
         pub fn terminate(&self) -> std::io::Result<()> {
-            use windows::Win32::System::JobObjects::TerminateJobObject;
-            // SAFETY: an owned job handle; the exit code is used only for still-running members.
-            unsafe { TerminateJobObject(self.0, 1) }.map_err(std::io::Error::other)?;
-            let start = std::time::Instant::now();
-            while self.active_processes()? != 0 {
-                if start.elapsed() >= std::time::Duration::from_secs(1) {
-                    return Err(std::io::Error::other("command job cleanup timed out"));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Ok(())
-        }
-
-        fn active_processes(&self) -> std::io::Result<u32> {
-            use windows::Win32::System::JobObjects::{
-                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation, QueryInformationJobObject,
-            };
-            let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
-            // SAFETY: a valid job and correctly sized writable accounting structure.
-            unsafe {
-                QueryInformationJobObject(
-                    Some(self.0),
-                    JobObjectBasicAccountingInformation,
-                    std::ptr::from_mut(&mut info).cast(),
-                    std::mem::size_of_val(&info) as u32,
-                    None,
-                )
-            }
-            .map_err(std::io::Error::other)?;
-            Ok(info.ActiveProcesses)
+            super::job_drain::terminate(self.0)
         }
     }
 

@@ -34,9 +34,17 @@ on that synchronous handle. See Microsoft's
 ## Process ownership
 
 Windows reuses the existing suspended-start, kill-on-close Job Object, so the CLI
-and its descendants enter the job before running. Explicit termination checks
-its active-process count before returning. See
-[`TerminateJobObject`](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject).
+and its descendants enter the job before running. Explicit cleanup snapshots the
+job's process IDs, opens each process with terminate/query/synchronize rights,
+and verifies that the retained handle belongs to this job before stopping it.
+It waits for each process handle to become signaled, then rescans for descendants
+created during cleanup. All scans and waits share one second; snapshots are
+bounded to 4096 members and fail closed on truncation. PID reuse cannot redirect
+termination outside this job. Kill-on-close remains the fallback if verification
+fails. Job accounting alone is not used as a termination barrier. See the
+[job process-list contract](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_process_id_list)
+and Microsoft's
+[process-termination contract](https://learn.microsoft.com/en-us/windows/win32/procthread/terminating-a-process).
 
 Unix query commands start in their own process group. Exit observation uses
 [`waitid` with `WNOWAIT`](https://pubs.opengroup.org/onlinepubs/9699919799/functions/waitid.html),
