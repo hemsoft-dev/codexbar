@@ -82,6 +82,8 @@ selected domain, provider and persistence assertions with a pinned tool.
 scoped dependency overrides and Node.js prerequisites.
 [Provider command collection](docs/COMMAND_RUNNER.md) documents bounded output,
 deadlines and subprocess cleanup, with credential-free native fixtures.
+[Retired C# CI selection](docs/CI_INPUTS.md) explains which inputs still run the
+legacy gates and how the existing build check verifies their results.
 
 ```powershell
 git clone https://github.com/hemsoft-dev/codexbar.git

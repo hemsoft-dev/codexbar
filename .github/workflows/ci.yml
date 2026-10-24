@@ -183,8 +183,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Test CI input selection and current-job outcome enforcement
+        run: python scripts/tests/test_ci_inputs.py
+
+      - name: Select retired C# qualification
+        id: inputs
+        run: python scripts/ci-inputs.py select
 
       - name: Setup .NET
+        id: dotnet
+        if: steps.inputs.outputs.retired == 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
@@ -220,31 +236,46 @@ jobs:
       - name: Markdown Lint
         run: npm run lint:md
 
+      - name: Test CI workflow bindings
+        run: node --test scripts/tests/ci-workflow.test.cjs
+
       - name: Copilot Metrics PowerShell Tests
         shell: pwsh
         run: ./scripts/tests/CopilotMetrics.Core.Tests.ps1
 
       - name: Restore
+        id: restore
+        if: steps.inputs.outputs.retired == 'true'
         run: dotnet restore
 
       - name: Build
+        id: build
+        if: steps.inputs.outputs.retired == 'true'
         run: dotnet build --no-restore --verbosity minimal
 
       - name: Format Check
+        id: format
+        if: steps.inputs.outputs.retired == 'true'
         run: dotnet format --verify-no-changes --verbosity minimal
 
       - name: Test
+        id: test
+        if: steps.inputs.outputs.retired == 'true'
         run: dotnet test --no-build --verbosity minimal
 
       - name: Restore Tools
+        id: tools
+        if: steps.inputs.outputs.retired == 'true'
         run: dotnet tool restore
 
       - name: Mutation Testing (Core)
+        id: mutations
+        if: steps.inputs.outputs.retired == 'true'
         working-directory: src/CodexBar.Core.Tests
         run: dotnet stryker --verbosity warning
 
       - name: Upload Mutation Report
-        if: always()
+        if: always() && steps.inputs.outputs.retired == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: stryker-report
@@ -252,6 +283,8 @@ jobs:
           retention-days: 14
 
       - name: Security Audit
+        id: security
+        if: steps.inputs.outputs.retired == 'true'
         shell: pwsh
         run: |
           $json = dotnet list package --vulnerable --include-transitive --format json
@@ -274,3 +307,17 @@ jobs:
             Write-Error "Vulnerable packages detected!"
             exit 1
           }
+
+      - name: Verify current-job retired qualification
+        if: always()
+        env:
+          CI_STEPS_JSON: ${{ toJSON(steps) }}
+        run: python scripts/ci-inputs.py verify
+
+      - name: Upload CI input selection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-inputs
+          path: artifacts/ci-inputs.json
+          retention-days: 14
