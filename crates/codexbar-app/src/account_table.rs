@@ -140,7 +140,7 @@ pub enum WindowKind {
 impl WindowKind {
     /// Which standard window a metric is, by its label: "5-hour window", "Gemini Apps five-hour", "Weekly",
     /// "Weekly usage", "Weekly SuperGrok". A scoped weekly limit ("Weekly Opus") is weekly too; the first weekly
-    /// metric of an account is shown, except Gemini prefers its separate Models weekly pool.
+    /// metric of an account is shown. Gemini eligibility permits only Models weekly.
     pub fn of(label: &str) -> Option<Self> {
         let label = label.to_ascii_lowercase();
         if label.contains("5-hour") || label.contains("five-hour") || label.contains("5 hour") {
@@ -174,11 +174,9 @@ impl WindowKind {
     }
 }
 
-/// Gemini rows prefer Models weekly (#262). Other views retain their primary metric.
-/// The metric an account's row shows: its primary one, except that a Claude row shows the weekly window when the
-/// primary is the 5-hour one (#246). The week is what paces a Claude subscription; the 5-hour window resets several
-/// times a day. Only the all-model "Weekly" window counts: a model-scoped one ("Weekly Opus") doesn't pace the whole
-/// subscription. Everything else (focus cards, the tooltip, alerts, widgets) keeps the primary metric.
+/// The row uses the account's first eligible status metric. Gemini permits only Models weekly (#265).
+/// Claude selects its unscoped Weekly window when its first metric is five-hour (#246).
+/// Focus cards can still select any informational metric independently.
 pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
     primary_or_claude_weekly(account)
 }
