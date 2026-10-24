@@ -1,0 +1,71 @@
+# Provider command collection
+
+`SystemCommandRunner` runs usage-query CLIs through the existing platform
+program lookup. It does not invoke a shell, opens no console window, and closes
+stdin. Interactive sign-in flows use their separate login adapters.
+
+## Output and deadline policy
+
+- Read stdout and stderr while the child runs. Each loop drains at most one
+  8 KiB chunk from each stream, then checks completion and the deadline again.
+  Neither stream can starve the other or keep an output loop alive indefinitely.
+- Capture at most **8 MiB per stream**. Exceeding either limit returns
+  `CommandError::Failed`, terminates the owned process tree and discards partial
+  output. Bytes stay in memory. No payload is written to diagnostic files or logs.
+- Decode UTF-8 after collection, preserving characters split across chunks and
+  the previous replacement behavior for invalid UTF-8. Nonzero exit codes return
+  `CommandOutput { success: false, .. }` with the collected output.
+- The supplied timeout starts after successful process creation and covers both
+  pipe EOF and process exit. Idle checks sleep at most 25 ms. A timeout returns
+  `TimedOut` after cleanup; cleanup failure returns `Failed` instead of claiming
+  that termination completed. Process creation itself is a native system call.
+- Verify owned tree termination for up to one additional second. Stop and reap
+  the root on every return path, including setup, read and output-limit failures.
+  OS scheduling and native process creation/termination calls are outside a
+  real-time scheduling guarantee.
+
+There are **no reader threads or asynchronous reader tasks** to detach or join.
+On Unix the parent uses nonblocking anonymous-pipe reads. On Windows it queries
+available bytes before reading, with exclusive ownership of each read handle.
+No other thread can consume the reported bytes or serialize an overlapping read
+on that synchronous handle. See Microsoft's
+[`PeekNamedPipe` contract](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-peeknamedpipe).
+
+## Process ownership
+
+Windows reuses the existing suspended-start, kill-on-close Job Object, so the CLI
+and its descendants enter the job before running. Explicit termination checks
+its active-process count before returning. See
+[`TerminateJobObject`](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject).
+
+Unix query commands start in their own process group. Exit observation uses
+[`waitid` with `WNOWAIT`](https://pubs.opengroup.org/onlinepubs/9699919799/functions/waitid.html),
+keeping the root unreaped until the owned group is signalled. This reserves the
+PID and prevents a reused group ID from receiving a kill signal. After reaping,
+termination verification uses signal zero only; it never sends another kill.
+Normal descendants in the job/group are cleaned up even if the root exits first
+or a descendant redirects its output. A deliberately escaping Unix process that
+creates a new session is outside this process-group contract.
+
+The collector keeps the same principle as Rust's
+[`Child::wait_with_output`](https://doc.rust-lang.org/std/process/struct.Child.html#method.wait_with_output):
+read both streams while waiting, rather than waiting for exit before reading.
+Its explicit deadline and output cap also cover a descendant holding a pipe open.
+
+## Credential-free qualification
+
+```sh
+cargo test -p codexbar-providers --test command_runner --locked
+```
+
+The test executable launches itself as a native fixture, never an installed
+provider CLI. It checks exact 1 MiB stdout-only, stderr-only and simultaneous
+output, the 8 MiB boundary on both streams, overflow rejection, UTF-8 across a
+chunk boundary, invalid UTF-8, nonzero exit, null stdin and missing executables.
+It also checks a hung root, an exited root whose descendant keeps pipes open,
+and a descendant with redirected output. An exclusively locked file in an owned
+temporary directory proves that the fixture started and released its live
+resources before the runner returned. Deadlines include a bounded cleanup margin.
+
+Workspace tests and CI run this harness on Windows, macOS and Linux. No account,
+credential store, browser, desktop input or live provider response is involved.

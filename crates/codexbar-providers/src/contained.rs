@@ -11,6 +11,19 @@ pub(crate) struct Contained {
     _job: Option<job::Job>,
 }
 
+impl Contained {
+    /// Ends the job's descendants and reaps the root. Unix callers stop their owned group before this call.
+    pub(crate) fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(windows)]
+        let job_result = self._job.as_ref().map_or(Ok(()), job::Job::terminate);
+        let _ = self.child.kill();
+        let status = self.child.wait();
+        #[cfg(windows)]
+        job_result?;
+        status
+    }
+}
+
 /// Spawns `command` with no console window, inside a kill-on-close job.
 pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
     spawn_with(command, false)
@@ -331,6 +344,42 @@ mod job {
             // SAFETY: the child's handle is valid while `child` lives, which outlasts this call.
             unsafe { AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())) }.ok()?;
             Some(job)
+        }
+    }
+
+    impl Job {
+        /// Stop the entire owned job before returning. Closing the handle alone can leave termination in flight.
+        pub fn terminate(&self) -> std::io::Result<()> {
+            use windows::Win32::System::JobObjects::TerminateJobObject;
+            // SAFETY: an owned job handle; the exit code is used only for still-running members.
+            unsafe { TerminateJobObject(self.0, 1) }.map_err(std::io::Error::other)?;
+            let start = std::time::Instant::now();
+            while self.active_processes()? != 0 {
+                if start.elapsed() >= std::time::Duration::from_secs(1) {
+                    return Err(std::io::Error::other("command job cleanup timed out"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Ok(())
+        }
+
+        fn active_processes(&self) -> std::io::Result<u32> {
+            use windows::Win32::System::JobObjects::{
+                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JobObjectBasicAccountingInformation, QueryInformationJobObject,
+            };
+            let mut info = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            // SAFETY: a valid job and correctly sized writable accounting structure.
+            unsafe {
+                QueryInformationJobObject(
+                    Some(self.0),
+                    JobObjectBasicAccountingInformation,
+                    std::ptr::from_mut(&mut info).cast(),
+                    std::mem::size_of_val(&info) as u32,
+                    None,
+                )
+            }
+            .map_err(std::io::Error::other)?;
+            Ok(info.ActiveProcesses)
         }
     }
 
