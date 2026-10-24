@@ -794,6 +794,20 @@ mod tests {
     }
 
     #[test]
+    fn an_idle_callback_retries_socket_timeouts_until_the_sign_in_deadline() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let timeout = Duration::from_millis(600);
+        let started = Instant::now();
+        let result = read_head(&mut stream, started + timeout, &AtomicBool::new(false));
+        assert!(result.is_none());
+        // An individual socket timeout must retry, rather than ending the callback read early.
+        assert!(started.elapsed() >= timeout);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
     fn a_slow_connection_cannot_hold_the_sign_in_past_its_deadline() {
         let authorization = Authorization::begin(&client()).unwrap();
         let addr = authorization.local_addr().unwrap();
