@@ -118,6 +118,22 @@ fn check_deadline(deadline: std::time::Instant) -> io::Result<()> {
     Ok(())
 }
 
+/// Both Unix backends stop at the first live member and share the scan's cleanup deadline.
+#[cfg(unix)]
+fn scan_group<T>(
+    members: impl IntoIterator<Item = T>,
+    deadline: std::time::Instant,
+    mut is_live: impl FnMut(T) -> io::Result<bool>,
+) -> io::Result<bool> {
+    for member in members {
+        check_deadline(deadline)?;
+        if is_live(member)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(target_os = "linux")]
 fn group_has_live_members(id: u32, deadline: std::time::Instant) -> io::Result<bool> {
     linux_group::has_live_members(id, deadline)

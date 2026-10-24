@@ -2558,6 +2558,91 @@ fn a_row_cannot_be_dropped_inside_another_group(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn minute_ticks_refresh_compact_history_and_smart_order_without_a_fetch(cx: &mut TestAppContext) {
+    use codexbar_store::summary::Point;
+    let settings = TempSettings::new("minute-history-order", r#"{ "refreshIntervalSeconds": 0 }"#);
+    let base = chrono::Utc::now();
+    let account = |id: &str, provider, used, resets, pace| {
+        AccountSnapshot::new(
+            AccountId::new(id),
+            provider,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used,
+                resets_at: base + resets,
+                pace,
+                length: None,
+            }],
+            base,
+        )
+    };
+    let dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(FixedProvider(vec![
+            account(
+                "codex-clock",
+                Provider::Codex,
+                0.7,
+                chrono::Duration::hours(4),
+                Some(codexbar_core::Pace::per_hour(0.1)),
+            ),
+            account("claude-clock", Provider::Claude, 0.85, chrono::Duration::days(1), None),
+        ]))],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    assert_eq!(shown_ids(cx, &dashboard), ["codex-clock", "claude-clock"]);
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.select_row(0, cx)));
+    let fetched = cx.update(|cx| dashboard.read(cx).last_refresh_for_test());
+    let first_tick = base + chrono::Duration::minutes(2);
+    cx.update(|cx| {
+        let dashboard = dashboard.read(cx);
+        let metric = dashboard.account("codex-clock").unwrap().metrics()[0].key();
+        dashboard
+            .history()
+            .lock()
+            .unwrap()
+            .insert_points("codex-clock", &metric, &[Point::new(first_tick, 0.42)]);
+        crate::sus::capture_time(first_tick, cx);
+    });
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    let compact = label(cx, handle, "trend-cell-codex-clock").unwrap();
+    assert!(compact.contains("Latest 42%"), "{compact}");
+    assert_eq!(
+        shown_ids(cx, &dashboard),
+        ["codex-clock", "claude-clock"],
+        "the first minute update did not replace the order"
+    );
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).selected_id()).as_deref(),
+        Some("codex-clock")
+    );
+    // The same pace no longer projects Codex running out before reset; selection follows its id.
+    cx.update(|cx| crate::sus::capture_time(base + chrono::Duration::hours(2), cx));
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-clock", "codex-clock"]);
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).selected_id()).as_deref(),
+        Some("codex-clock")
+    );
+    // Manual order is left alone on later minute ticks.
+    click(cx, handle, ("order-mode", 1usize));
+    let manual = shown_ids(cx, &dashboard);
+    cx.update(|cx| crate::sus::capture_time(base + chrono::Duration::minutes(121), cx));
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), manual);
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).last_refresh_for_test()),
+        fetched,
+        "no provider fetch was needed"
+    );
+}
+
+#[gpui_kit::test]
 fn smart_order_puts_urgent_accounts_first_and_manual_comes_back(cx: &mut TestAppContext) {
     let settings = TempSettings::new("smart-order", "{}");
     let dashboard = open_live(

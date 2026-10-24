@@ -3,13 +3,9 @@ use std::io;
 use std::time::Instant;
 
 pub(super) fn has_live_members(group: u32, deadline: Instant) -> io::Result<bool> {
-    for pid in group_pids(group)? {
-        super::check_deadline(deadline)?;
-        if pid > 0 && member_is_live(pid, group)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    super::scan_group(group_pids(group)?.into_iter().filter(|pid| *pid > 0), deadline, |pid| {
+        member_is_live(pid, group)
+    })
 }
 
 fn group_pids(group: u32) -> io::Result<Vec<libc::pid_t>> {

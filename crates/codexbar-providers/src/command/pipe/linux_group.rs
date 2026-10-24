@@ -14,13 +14,9 @@ fn live_in(
     deadline: Instant,
     query: &impl Fn(i32) -> io::Result<Option<u32>>,
 ) -> io::Result<bool> {
-    for entry in std::fs::read_dir(root)? {
-        super::check_deadline(deadline)?;
-        if member_is_live(entry?, group, query)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    super::scan_group(std::fs::read_dir(root)?, deadline, |entry| {
+        member_is_live(entry?, group, query)
+    })
 }
 
 fn member_is_live(
