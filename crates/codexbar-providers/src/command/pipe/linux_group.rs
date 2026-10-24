@@ -70,14 +70,17 @@ fn live_record(stat: &str, group: u32) -> io::Result<bool> {
     let (_, fields) = stat.rsplit_once(") ").ok_or_else(malformed)?;
     let mut fields = fields.split_whitespace();
     let state = fields.next().ok_or_else(malformed)?;
-    let pgid = fields.nth(1).ok_or_else(malformed)?;
-    // do_task_stat can retain its -1 sentinel after the task loses its signal group during exit.
-    if pgid == "-1" {
-        return Ok(false);
-    }
-    let pgid = pgid.parse::<u32>().map_err(|_| malformed())?;
+    let pgid = record_group(fields.nth(1))?;
     // Recheck the group, since the PID could have been reused between getpgid and this snapshot.
-    Ok(pgid == group && !["Z", "X"].contains(&state))
+    Ok(pgid == Some(group) && !["Z", "X"].contains(&state))
+}
+
+fn record_group(field: Option<&str>) -> io::Result<Option<u32>> {
+    // do_task_stat can retain its -1 sentinel after the task loses its signal group during exit.
+    match field.ok_or_else(malformed)? {
+        "-1" => Ok(None),
+        pgid => pgid.parse::<u32>().map(Some).map_err(|_| malformed()),
+    }
 }
 
 fn malformed() -> io::Error {
