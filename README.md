@@ -80,6 +80,8 @@ The [Rust mutation qualification](docs/RUST_MUTATION_TESTING.md) also verifies
 selected domain, provider and persistence assertions with a pinned tool.
 [Markdown tooling security](docs/NPM_ADVISORIES.md) covers the npm advisory gate,
 scoped dependency overrides and Node.js prerequisites.
+[Provider command collection](docs/COMMAND_RUNNER.md) documents bounded output,
+deadlines and subprocess cleanup, with credential-free native fixtures.
 
 ```powershell
 git clone https://github.com/hemsoft-dev/codexbar.git

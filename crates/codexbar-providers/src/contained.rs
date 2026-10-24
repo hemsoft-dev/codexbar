@@ -4,11 +4,29 @@
 
 use std::process::{Child, Command};
 
+#[cfg(any(windows, test))]
+mod drain;
+#[cfg(windows)]
+mod job_drain;
+
 /// A started child in its job.
 pub(crate) struct Contained {
     pub child: Child,
     #[cfg(windows)]
     _job: Option<job::Job>,
+}
+
+impl Contained {
+    /// Ends the job's descendants and reaps the root. Unix callers stop their owned group before this call.
+    pub(crate) fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(windows)]
+        let job_result = self._job.as_ref().map_or(Ok(()), job::Job::terminate);
+        let _ = self.child.kill();
+        let status = self.child.wait();
+        #[cfg(windows)]
+        job_result?;
+        status
+    }
 }
 
 /// Spawns `command` with no console window, inside a kill-on-close job.
@@ -331,6 +349,13 @@ mod job {
             // SAFETY: the child's handle is valid while `child` lives, which outlasts this call.
             unsafe { AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())) }.ok()?;
             Some(job)
+        }
+    }
+
+    impl Job {
+        /// Stop and wait for verified job members, rescanning for descendants created during cleanup.
+        pub fn terminate(&self) -> std::io::Result<()> {
+            super::job_drain::terminate(self.0)
         }
     }
 
