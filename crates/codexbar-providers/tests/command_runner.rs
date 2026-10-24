@@ -54,7 +54,7 @@ fn fixture(args: &[String]) -> ! {
                 std::thread::sleep(Duration::from_secs(60));
             }
         }
-        "descendant" | "detached-output" => {
+        "descendant" | "detached-output" | "redirected-inherited" => {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command.args(["hang", &args[1]]).stdin(Stdio::null());
             #[cfg(windows)]
@@ -62,8 +62,10 @@ fn fixture(args: &[String]) -> ! {
                 use std::os::windows::process::CommandExt as _;
                 command.creation_flags(0x0800_0000); // The fixture's descendant must stay hidden too.
             }
-            if args[0] == "detached-output" {
+            if args[0] != "descendant" {
                 command.stdout(Stdio::null()).stderr(Stdio::null());
+                #[cfg(windows)]
+                capture_inheritance(args[0] == "detached-output");
             }
             #[expect(
                 clippy::zombie_processes,
@@ -79,6 +81,33 @@ fn fixture(args: &[String]) -> ! {
         _ => panic!("unknown fixture"),
     }
     std::process::exit(0);
+}
+
+#[cfg(windows)]
+fn capture_inheritance(clear: bool) {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows::Win32::Foundation::{
+        GetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation,
+    };
+    // Rust's Windows spawn inherits every inheritable handle, including old standard handles even
+    // when the descendant's standard streams are redirected. This fixture owns these two handles.
+    for raw in [std::io::stdout().as_raw_handle(), std::io::stderr().as_raw_handle()] {
+        let handle = HANDLE(raw);
+        let mut flags = 0;
+        // SAFETY: valid standard handles supplied by the runner, and writable flag storage.
+        unsafe { GetHandleInformation(handle, &mut flags) }.unwrap();
+        assert_ne!(
+            flags & HANDLE_FLAG_INHERIT.0,
+            0,
+            "the control must inherit the captured pipe"
+        );
+        if clear {
+            // SAFETY: only this fixture's captured handles change; the new descendant uses null streams.
+            unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }.unwrap();
+            unsafe { GetHandleInformation(handle, &mut flags) }.unwrap();
+            assert_eq!(flags & HANDLE_FLAG_INHERIT.0, 0);
+        }
+    }
 }
 
 struct Scratch(PathBuf);
@@ -220,7 +249,17 @@ fn main() {
         Err(CommandError::NotFound)
     );
     let scratch = Scratch::new();
-    for mode in ["hang", "descendant", "overflow", "detached-output"] {
+    #[cfg(not(windows))]
+    let modes = ["hang", "descendant", "overflow", "detached-output"];
+    #[cfg(windows)]
+    let modes = [
+        "hang",
+        "descendant",
+        "overflow",
+        "detached-output",
+        "redirected-inherited",
+    ];
+    for mode in modes {
         println!("qualify command fixture: {mode}");
         let marker = scratch.marker(mode);
         let start = Instant::now();

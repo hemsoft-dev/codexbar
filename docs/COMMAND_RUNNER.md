@@ -83,7 +83,15 @@ provider CLI. It checks exact 1 MiB stdout-only, stderr-only and simultaneous
 output, the 8 MiB boundary on both streams, overflow rejection, UTF-8 across a
 chunk boundary, invalid UTF-8, nonzero exit, null stdin and missing executables.
 It also checks a hung root, an exited root whose descendant keeps pipes open,
-and a descendant with redirected output. A separate atomically published ready
+and a descendant with redirected output. On Windows, redirecting the standard
+streams does not stop Rust's process spawn from inheriting other inheritable
+handles. The redirected-output fixture clears `HANDLE_FLAG_INHERIT` on its
+captured handles before spawning its descendant. A separate Windows control
+leaves those handles inheritable despite null standard streams and must time
+out. Both paths still require confirmed process termination and resource release.
+See [Rust's Windows spawn implementation](https://github.com/rust-lang/rust/blob/main/library/std/src/sys/process/windows.rs)
+and [Microsoft's handle-inheritance flags](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-sethandleinformation).
+A separate atomically published ready
 file proves that each fixture acquired its resource before the test proceeds.
 The test never reads a file while the fixture holds its exclusive lock. On
 Windows and macOS it first verifies the fixture process's terminated/absent
