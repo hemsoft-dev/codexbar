@@ -337,9 +337,11 @@ impl AccountSnapshot {
 
     /// Information-only pools never color a status or raise risk, even when selected explicitly in a card.
     pub fn assess_metric(&self, metric: &Metric, now: DateTime<Utc>) -> Assessment {
-        self.is_status_metric(metric)
-            .then(|| assess(metric, now))
-            .unwrap_or_default()
+        if self.is_status_metric(metric) {
+            assess(metric, now)
+        } else {
+            Assessment::default()
+        }
     }
 
     pub fn primary(&self) -> Option<&Metric> {
