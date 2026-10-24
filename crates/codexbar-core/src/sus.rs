@@ -123,8 +123,7 @@ impl Price {
 /// Average one account's eligible pools. Missing scores are excluded.
 pub fn subscription_score(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<Score> {
     let scores: Vec<_> = account
-        .metrics()
-        .iter()
+        .status_metrics()
         .filter_map(|metric| weekly(metric, now))
         .collect();
     (!scores.is_empty())
@@ -184,6 +183,39 @@ mod tests {
             length: Some(Duration::days(7)),
         }
     }
+    #[test]
+    fn unused_argon_cannot_replace_a_missing_models_weekly_status() {
+        let at = now();
+        let argon = Metric::Window {
+            label: "Argon weekly".into(),
+            used: 0.9,
+            resets_at: at + Duration::days(5),
+            pace: Some(crate::Pace::per_hour(0.1)),
+            length: Some(Duration::days(7)),
+        };
+        let account = AccountSnapshot::new(crate::AccountId::new("gemini"), Provider::Gemini, vec![argon], at);
+        assert_eq!(
+            subscription_score(&account, at),
+            None,
+            "unused Argon must not supply SUS"
+        );
+        assert_eq!(
+            account.assess(at).severity(),
+            crate::Severity::Normal,
+            "unused Argon must not raise risk"
+        );
+        let alerts = crate::alerts::evaluate(
+            &crate::alerts::AlertSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            &Default::default(),
+            &[account],
+            at,
+        );
+        assert!(alerts.notify.is_empty(), "unused Argon must not notify");
+    }
+
     #[test]
     fn a_reached_quota_uses_the_same_zero_time_to_limit_as_its_bar() {
         let metric = Metric::Window {
@@ -296,10 +328,10 @@ mod tests {
         }
     }
     #[test]
-    fn fleet_averages_pools_before_weighting_one_subscription() {
+    fn fleet_averages_eligible_pools_before_weighting_one_subscription() {
         let a = AccountSnapshot::new(
-            AccountId::new("ag"),
-            Provider::Gemini,
+            AccountId::new("multiple-pools"),
+            Provider::Claude,
             vec![metric(Duration::hours(24), 0.8), metric(Duration::hours(24), 1.)],
             now(),
         );

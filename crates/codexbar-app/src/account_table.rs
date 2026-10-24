@@ -140,7 +140,7 @@ pub enum WindowKind {
 impl WindowKind {
     /// Which standard window a metric is, by its label: "5-hour window", "Gemini Apps five-hour", "Weekly",
     /// "Weekly usage", "Weekly SuperGrok". A scoped weekly limit ("Weekly Opus") is weekly too; the first weekly
-    /// metric of an account is shown, except Gemini prefers its separate Models weekly pool.
+    /// metric of an account is shown. Gemini eligibility permits only Models weekly.
     pub fn of(label: &str) -> Option<Self> {
         let label = label.to_ascii_lowercase();
         if label.contains("5-hour") || label.contains("five-hour") || label.contains("5 hour") {
@@ -168,40 +168,21 @@ impl WindowKind {
 
     /// The account's window of this kind, when it reports one.
     pub fn in_account(self, account: &AccountSnapshot) -> Option<&Metric> {
-        gemini_models_weekly(account)
-            .filter(|_| self == Self::Weekly)
-            .or_else(|| {
-                account
-                    .metrics()
-                    .iter()
-                    .find(|metric| matches!(metric, Metric::Window { .. }) && Self::of(metric.label()) == Some(self))
-            })
+        account
+            .status_metrics()
+            .find(|metric| matches!(metric, Metric::Window { .. }) && Self::of(metric.label()) == Some(self))
     }
 }
 
-/// The coding pool is distinct from Gemini Apps, Argon and other models, irrespective of their order.
-fn gemini_models_weekly(account: &AccountSnapshot) -> Option<&Metric> {
-    (account.provider() == Provider::Gemini)
-        .then(|| {
-            account
-                .metrics()
-                .iter()
-                .find(|metric| matches!(metric, Metric::Window { .. }) && metric.key() == "gemini-models-weekly")
-        })
-        .flatten()
-}
-
-/// Gemini rows prefer Models weekly (#262). Other views retain their primary metric.
-/// The metric an account's row shows: its primary one, except that a Claude row shows the weekly window when the
-/// primary is the 5-hour one (#246). The week is what paces a Claude subscription; the 5-hour window resets several
-/// times a day. Only the all-model "Weekly" window counts: a model-scoped one ("Weekly Opus") doesn't pace the whole
-/// subscription. Everything else (focus cards, the tooltip, alerts, widgets) keeps the primary metric.
+/// The row uses the account's first eligible status metric. Gemini permits only Models weekly (#265).
+/// Claude selects its unscoped Weekly window when its first metric is five-hour (#246).
+/// Focus cards can still select any informational metric independently.
 pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
-    gemini_models_weekly(account).or_else(|| primary_or_claude_weekly(account))
+    primary_or_claude_weekly(account)
 }
 
 fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
-    let primary = account.primary()?;
+    let primary = account.status_metrics().next()?;
     if account.provider() == Provider::Claude
         && WindowKind::of(primary.label()) == Some(WindowKind::FiveHour)
         && matches!(primary, Metric::Window { .. })
@@ -218,12 +199,17 @@ fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
 /// The daily trend of the metric an account's row shows (#246): the account's own trend for its primary metric, else
 /// that limit's stored series.
 fn row_trend(account: &AccountSnapshot) -> &[f64] {
-    match (row_metric(account), account.primary()) {
-        (Some(metric), Some(primary)) if metric.key() != primary.key() => account
+    row_metric(account).map_or(&[], |metric| trend_of_metric(account, metric))
+}
+
+fn trend_of_metric<'a>(account: &'a AccountSnapshot, metric: &Metric) -> &'a [f64] {
+    if account.primary().is_some_and(|primary| metric.key() == primary.key()) {
+        account.trend()
+    } else {
+        account
             .detail()
             .limit_series(&metric.key())
-            .map_or(&[], |series| series.trend.as_slice()),
-        _ => account.trend(),
+            .map_or(&[], |series| series.trend.as_slice())
     }
 }
 
@@ -581,7 +567,7 @@ impl TableDelegate for AccountTable {
                     WindowCell::Percent => percent_cell(metric, name, &id, muted),
                     WindowCell::Bar => match metric {
                         Some(metric) => bar_cell(metric, row, &assessment, self.now, &format!("{id}-bar"), cx),
-                        None => blank_cell(&format!("{id}-bar"), kind.title(), muted),
+                        None => missing_window_bar(kind, row, &assessment, severity, &format!("{id}-bar"), cx),
                     },
                     WindowCell::AtReset => match metric {
                         Some(metric) => at_reset_cell(metric, row, self.now, &format!("{id}-at-reset"), name, cx),
@@ -656,14 +642,19 @@ impl TableDelegate for AccountTable {
             Col::Limit => div()
                 .text_color(muted)
                 .truncate()
-                .child(primary.map(limit_label).unwrap_or_default())
+                .child(primary.map(limit_label).unwrap_or_else(|| missing_limit_label(row)))
                 .into_any_element(),
             Col::Used => {
-                let used = primary.map(Metric::used_display).unwrap_or_default();
+                let used = primary
+                    .map(Metric::used_display)
+                    .unwrap_or_else(|| missing_used_label(row));
                 div()
                     .id(ElementId::Name(format!("used-{}", row.id().as_str()).into()))
                     .test_support()
-                    .aria_label(format!("{}: {used}", primary.map(limit_label).unwrap_or_default()))
+                    .aria_label(format!(
+                        "{}: {used}",
+                        primary.map(limit_label).unwrap_or_else(|| missing_limit_label(row))
+                    ))
                     .w_full()
                     .text_right()
                     .child(used)
@@ -940,7 +931,7 @@ fn bar_cell(
             return gpui_kit::component::h_flex()
                 .gap_2()
                 .child(no_bar(id, muted))
-                .children(crate::sus::metric(metric, now, &format!("{id}-sus"), cx))
+                .children(crate::sus::metric(row, metric, now, &format!("{id}-sus"), cx))
                 .into_any_element();
         }
         Metric::Credits { .. } => match metric.progress() {
@@ -960,8 +951,37 @@ fn bar_cell(
                 .min_w_0()
                 .child(bar(id, &bar_projection(metric, used, row, now), row, cx)),
         )
-        .children(crate::sus::metric(metric, now, &format!("{id}-sus"), cx))
+        .children(crate::sus::metric(row, metric, now, &format!("{id}-sus"), cx))
         .into_any_element()
+}
+
+fn missing_used_label(row: &AccountSnapshot) -> String {
+    if row.provider() == Provider::Gemini {
+        "n/a".into()
+    } else {
+        String::new()
+    }
+}
+fn missing_limit_label(row: &AccountSnapshot) -> String {
+    if row.provider() == Provider::Gemini {
+        "Gemini Models weekly".into()
+    } else {
+        String::new()
+    }
+}
+fn missing_window_bar(
+    kind: WindowKind,
+    row: &AccountSnapshot,
+    assessment: &codexbar_core::Assessment,
+    severity: codexbar_core::Severity,
+    id: &str,
+    cx: &gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    if row.provider() == Provider::Gemini && kind == WindowKind::Weekly {
+        bar_cell_without_metric(id, assessment, severity, row, cx)
+    } else {
+        blank_cell(id, kind.title(), cx.theme().muted_foreground)
+    }
 }
 
 /// The bar for a row with no primary metric: the account's pressure, with nothing to project.
@@ -972,7 +992,10 @@ fn bar_cell_without_metric(
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
-    if matches!(row.provider(), Provider::Grok | Provider::XSubscription) {
+    if matches!(
+        row.provider(),
+        Provider::Gemini | Provider::Grok | Provider::XSubscription
+    ) {
         return h_flex()
             .gap_2()
             .items_center()
@@ -1136,7 +1159,7 @@ mod tests {
             ));
         assert_eq!(row_metric(&row), Some(&models));
         assert_eq!(WindowKind::Weekly.in_account(&row), Some(&models));
-        assert_eq!(WindowKind::FiveHour.in_account(&row), Some(&apps));
+        assert_eq!(WindowKind::FiveHour.in_account(&row), None);
         assert_eq!(row_trend(&row), [0.01, 0.02, 0.03]);
         assert_eq!(
             row.primary(),
@@ -1149,8 +1172,8 @@ mod tests {
             others[1].clone(),
             others[2].clone(),
         ]);
-        assert_eq!(row_metric(&absent), Some(&apps));
-        assert_eq!(WindowKind::Weekly.in_account(&absent), Some(&others[0]));
+        assert_eq!(row_metric(&absent), None);
+        assert_eq!(WindowKind::Weekly.in_account(&absent), None);
         assert_eq!(row_metric(&make(vec![])), None);
         assert_eq!(WindowKind::Weekly.in_account(&make(vec![])), None);
         let impostor = Metric::Credits {
@@ -1158,7 +1181,7 @@ mod tests {
             balance: Some(1.),
             start: None,
         };
-        assert_eq!(row_metric(&make(vec![apps.clone(), impostor])), Some(&apps));
+        assert_eq!(row_metric(&make(vec![apps.clone(), impostor])), None);
         assert_eq!(
             row_metric(&account(vec![apps.clone(), models])),
             Some(&apps),

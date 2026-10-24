@@ -1,0 +1,54 @@
+{
+  "version": 4,
+  "source": "Sanitized saved provider snapshot from home; not a raw API response",
+  "observedAt": "2026-10-23T23:41:15.2740957Z",
+  "accounts": [
+    {
+      "id": "gemini",
+      "provider": "gemini",
+      "fetchedAt": "2026-10-23T23:40:52.613431+00:00",
+      "metrics": [
+        {
+          "kind": "window",
+          "label": "Gemini Models five-hour",
+          "used": 0.0,
+          "resetsAt": "2026-10-24T04:40:55+00:00",
+          "pacePerHour": null,
+          "lengthSeconds": 18000
+        },
+        {
+          "kind": "window",
+          "label": "Gemini Models weekly",
+          "used": 0.027857840061187633,
+          "resetsAt": "2026-10-30T04:38:05+00:00",
+          "pacePerHour": 0.0014626310648019527,
+          "lengthSeconds": 604800
+        },
+        {
+          "kind": "window",
+          "label": "Argon weekly",
+          "used": 0.3131752014160156,
+          "resetsAt": "2026-10-30T04:02:19+00:00",
+          "pacePerHour": 0.01594375468580963,
+          "lengthSeconds": 604800
+        },
+        {
+          "kind": "window",
+          "label": "Other models five-hour",
+          "used": 0.0,
+          "resetsAt": "2026-10-24T04:40:55+00:00",
+          "pacePerHour": null,
+          "lengthSeconds": 18000
+        },
+        {
+          "kind": "window",
+          "label": "Other models weekly",
+          "used": 0.0,
+          "resetsAt": "2026-10-30T23:40:55+00:00",
+          "pacePerHour": null,
+          "lengthSeconds": 604800
+        }
+      ]
+    }
+  ]
+}

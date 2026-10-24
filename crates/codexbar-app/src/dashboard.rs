@@ -1484,6 +1484,58 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Read the same sanitized saved quota shape seen on home, without live provider access or user state.
+    #[cfg(any(test, feature = "capture"))]
+    pub(crate) fn capture_gemini_status(&mut self, present: bool, cx: &mut Context<Self>) {
+        use codexbar_core::{AccountDetail, LimitSeries};
+        assert!(matches!(self.source, DataSource::Demo));
+        let mut fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/gemini-home-snapshot-20261023.json")).unwrap();
+        if !present {
+            fixture["accounts"][0]["metrics"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|m| m["label"] == "Argon weekly");
+        }
+        let dir = SettingsHub::global(cx).dir().join("gemini-status-fixture");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("snapshots.json"), serde_json::to_vec(&fixture).unwrap()).unwrap();
+        let account = codexbar_store::snapshots::load_snapshots(&dir).remove(0);
+        let now = account.fetched_at();
+        let account = account
+            .with_detail(AccountDetail::default().with_limit_series(
+                "gemini-models-weekly",
+                LimitSeries {
+                    curve: None,
+                    trend: vec![0.01, 0.02, 0.027857840061187633],
+                },
+            ))
+            .with_trend(vec![0.3, 0.3131752014160156]);
+        crate::sus::capture_time(now, cx);
+        self.states.clear();
+        self.placeholders.clear();
+        self.set_accounts(vec![account], cx);
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "gemini", |choice| {
+            choice.rings = vec![
+                if present {
+                    "gemini-models-weekly"
+                } else {
+                    "argon-weekly"
+                }
+                .into(),
+            ];
+        });
+        self.focus_account(
+            &crate::handoff::FocusRequest {
+                account: "gemini".into(),
+                metric: None,
+            },
+            cx,
+        );
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.ranked_with = alert_inputs(cx);
         self.now = crate::sus::now(cx);
@@ -1628,8 +1680,7 @@ impl Dashboard {
             _ => String::new(),
         };
         let scores = top
-            .metrics()
-            .iter()
+            .status_metrics()
             .filter_map(|m| codexbar_core::sus::text(m, self.now))
             .collect::<Vec<_>>()
             .join(", ");
@@ -2008,6 +2059,7 @@ impl Dashboard {
                 )
                 .child(self.group_controls(account, cx))
                 .children(crate::alert_details::alert_details(&details, self.now, cx))
+                .children(crate::focus_cards::subscription_note(account, cx))
                 .children(crate::focus_cards::metric_list(account, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
                 .children(

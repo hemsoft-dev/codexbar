@@ -1797,7 +1797,7 @@ fn the_resets_column_always_shows_time_left(cx: &mut TestAppContext) {
             chrono::Duration::days(8) + chrono::Duration::hours(2),
         ),
         window("weeks", Provider::Grok, chrono::Duration::days(40)),
-        window("months", Provider::Gemini, chrono::Duration::days(95)),
+        window("months", Provider::Cursor, chrono::Duration::days(95)),
     ]));
     let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
     cx.run_until_parked();
@@ -7957,19 +7957,13 @@ fn sus_rendering_and_fleet_use_the_same_forecasts_and_effective_prices(cx: &mut 
                 "Weekly: SUS 48, red"
             })
         );
-        assert_eq!(
-            label(cx, handle, "focus-metric-1-sus").as_deref(),
-            Some("Argon weekly: SUS 84, yellow")
-        );
+        assert_eq!(label(cx, handle, "focus-metric-1-sus").as_deref(), None);
     }
     cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_sus_phase(3, base, cx)));
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
-    assert_eq!(
-        label(cx, handle, "focus-metric-1-sus").as_deref(),
-        Some("Argon weekly: SUS n/a, unavailable")
-    );
+    assert_eq!(label(cx, handle, "focus-metric-1-sus").as_deref(), None);
     assert_eq!(
         label(cx, handle, "progress-cell-x-subscription-sus").as_deref(),
         Some("Tracked activity has no quota: SUS n/a, unavailable")
@@ -8298,4 +8292,209 @@ fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut Tes
             .unwrap();
         }
     }
+}
+
+/// Explicit, read-only Windows qualification. No GPUI app/window is created by this ordinary Rust test.
+#[test]
+#[ignore = "requires an explicitly authorized local snapshot directory"]
+fn live_gemini_status_from_saved_provider_data() {
+    let dir = std::env::var_os("CODEXBAR_GEMINI_DIAGNOSTIC_DIR").expect("set the authorized snapshot directory");
+    // This uses the app's hidden, bounded, zero-turn CLI path. Only recognized quota fields may be printed.
+    struct QuotaDiagnostic;
+    impl codexbar_providers::CommandRunner for QuotaDiagnostic {
+        fn run(
+            &self,
+            program: &str,
+            args: &[&str],
+            timeout: Duration,
+        ) -> Result<codexbar_providers::CommandOutput, codexbar_providers::CommandError> {
+            let result = codexbar_providers::SystemCommandRunner.run(program, args, timeout)?;
+            if args.first() == Some(&"-p")
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.stdout)
+            {
+                let buckets: Vec<_>=value.pointer("/command/data/groups").and_then(|v|v.as_array()).into_iter().flatten()
+                        .filter_map(|g|g["buckets"].as_array()).flatten().filter_map(|b| {
+                            let id=b["id"].as_str()?;
+                            if !["gemini-weekly","gemini-5h","gemini-argon-wtu-weekly","3p-weekly","3p-5h"].contains(&id){return None;}
+                            let reset=b["reset_time"].as_str().and_then(|s|chrono::DateTime::parse_from_rfc3339(s).ok());
+                            Some(serde_json::json!({"id":id,"remaining_fraction":b["remaining_fraction"].as_f64(),
+                                "reset_time":reset,"window":b["window"].as_str().filter(|w|["weekly","5h"].contains(w)),"disabled":b["disabled"].as_bool()}))
+                        }).collect();
+                println!(
+                    "sanitized CLI quotas: {}",
+                    serde_json::json!({"success":result.success,"zeroTurns":value["num_turns"]==0,"buckets":buckets})
+                );
+            }
+            Ok(result)
+        }
+    }
+    let cli_now = chrono::Utc::now();
+    match codexbar_providers::gemini_coding::fetch(&QuotaDiagnostic, cli_now) {
+        Ok(usage) => {
+            let live = AccountSnapshot::new(
+                AccountId::new("gemini-diagnostic"),
+                Provider::Gemini,
+                usage.metrics,
+                cli_now,
+            );
+            assert_gemini_status_policy(&live, cli_now);
+            println!(
+                "live CLI policy verified: Models only, SUS {:?}, risk {:?}",
+                codexbar_core::sus::subscription_score(&live, cli_now).map(|s| s.value()),
+                live.assess(cli_now).severity()
+            );
+        }
+        Err(error) => println!("live CLI unavailable: {error:?}; the saved snapshot qualification follows"),
+    }
+    let accounts = codexbar_store::snapshots::load_snapshots(std::path::Path::new(&dir));
+    let account = accounts
+        .iter()
+        .find(|a| a.provider() == Provider::Gemini)
+        .expect("Gemini snapshot missing");
+    let now = chrono::Utc::now();
+    assert_gemini_status_policy(account, now);
+    let metric = crate::account_table::row_metric(account);
+    println!(
+        "{}",
+        serde_json::json!({
+            "fetchedAt":account.fetched_at(), "rowMetric":metric.map(|m| m.key()),
+            "used":metric.and_then(|m| m.used_fraction()),
+            "projected":metric.and_then(|m| m.projected_at_reset(now)),
+            "sus":codexbar_core::sus::subscription_score(account, now).map(|s| s.value()),
+            "risk":format!("{:?}",account.assess(now).severity()),
+            "availableMetricKeys":account.metrics().iter().map(|m| m.key()).collect::<Vec<_>>()
+        })
+    );
+    let missing = codexbar_core::AccountSnapshot::new(
+        codexbar_core::AccountId::new("gemini"),
+        Provider::Gemini,
+        account
+            .metrics()
+            .iter()
+            .filter(|m| m.key() != "gemini-models-weekly")
+            .cloned()
+            .collect(),
+        account.fetched_at(),
+    );
+    assert_gemini_status_policy(&missing, now);
+    assert!(crate::account_table::row_metric(&missing).is_none());
+    assert_eq!(missing.assess(now).severity(), codexbar_core::Severity::Normal);
+    assert_eq!(codexbar_core::sus::subscription_score(&missing, now), None);
+    println!("missing Models weekly: row n/a, SUS n/a, Normal risk, no alerts");
+}
+
+fn assert_gemini_status_policy(account: &codexbar_core::AccountSnapshot, now: chrono::DateTime<chrono::Utc>) {
+    let model = account
+        .metrics()
+        .iter()
+        .find(|m| matches!(m, codexbar_core::Metric::Window { .. }) && m.key() == "gemini-models-weekly");
+    assert_eq!(
+        crate::account_table::row_metric(account).map(|m| m.key()),
+        model.map(|m| m.key())
+    );
+    assert_eq!(
+        codexbar_core::sus::subscription_score(account, now),
+        model.and_then(|m| codexbar_core::sus::weekly(m, now))
+    );
+    assert_eq!(
+        account.assess(now),
+        model.map(|m| codexbar_core::assess(m, now)).unwrap_or_default()
+    );
+    let settings = codexbar_core::alerts::AlertSettings {
+        enabled: true,
+        ..Default::default()
+    };
+    let alerts = codexbar_core::alerts::evaluate(&settings, &Default::default(), std::slice::from_ref(account), now);
+    assert!(alerts.notify.iter().all(|a| a.metric == "Gemini Models weekly"));
+    assert!(
+        codexbar_core::alerts::account_alerts(&settings, &Default::default(), account, now)
+            .iter()
+            .all(|a| a.metric == "Gemini Models weekly")
+    );
+}
+
+#[gpui_kit::test]
+fn gemini_status_never_substitutes_argon_across_missing_and_late_models(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("gemini-status-pool", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    for wide in [false, true] {
+        gpui_kit::VisualTestContext::from_window(handle, cx)
+            .simulate_resize(size(px(if wide { 2600. } else { 1440. }), px(1000.)));
+        for present in [false, true, false, true] {
+            cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_gemini_status(present, cx)));
+            cx.run_until_parked();
+            cx.update_window(handle, |_, w, cx| w.render_frame(cx)).unwrap();
+            let used = if wide { "window-weekly-gemini" } else { "used-gemini" };
+            let text = label(cx, handle, used).unwrap();
+            assert!(
+                if present {
+                    text == "Gemini Models weekly: 3%"
+                } else {
+                    text.contains(if wide { "not applicable" } else { "n/a" })
+                },
+                "{text}"
+            );
+            let badge = if wide {
+                "window-weekly-gemini-bar-sus"
+            } else {
+                "progress-cell-gemini-sus"
+            };
+            assert_eq!(
+                label(cx, handle, badge).as_deref(),
+                Some(if present {
+                    "Gemini Models weekly: SUS 25, red"
+                } else {
+                    "Quota unavailable: SUS n/a, unavailable"
+                })
+            );
+            assert_eq!(label(cx, handle, "fleet-sus").unwrap().contains("SUS 25"), present);
+            assert!(
+                label(cx, handle, "severity-tag-gemini").is_none(),
+                "unused Argon must not raise account risk"
+            );
+            assert!(
+                label(cx, handle, "focus-metric-2-sus").is_none(),
+                "Argon is informational"
+            );
+            assert_eq!(
+                label(cx, handle, "gemini-models-weekly-unavailable").is_some(),
+                !present
+            );
+        }
+    }
+}
+
+#[test]
+fn saved_home_quota_shape_uses_models_for_status_and_widgets_only() {
+    let settings = TempSettings::new("home-quota-policy", "{}");
+    std::fs::write(
+        settings.0.join("snapshots.json"),
+        include_str!("../fixtures/gemini-home-snapshot-20261023.json"),
+    )
+    .unwrap();
+    let account = codexbar_store::snapshots::load_snapshots(&settings.0).remove(0);
+    let now = account.fetched_at();
+    assert_gemini_status_policy(&account, now);
+    assert_eq!(
+        codexbar_core::sus::subscription_score(&account, now).unwrap().value(),
+        25
+    );
+    assert_eq!(account.assess(now).severity(), codexbar_core::Severity::Normal);
+    let snapshot = crate::widget_feed::build(&[account], &Default::default(), &Default::default(), now);
+    assert!(snapshot.accounts[0].status.is_none());
+    let argon = snapshot.accounts[0]
+        .metrics
+        .iter()
+        .find(|m| m.key == "argon-weekly")
+        .unwrap();
+    assert!(argon.status.is_none());
+    assert!(argon.sus.is_none());
+    assert!(!argon.sus_eligible);
+    let models = snapshot.accounts[0]
+        .metrics
+        .iter()
+        .find(|m| m.key == "gemini-models-weekly")
+        .unwrap();
+    assert_eq!(models.sus, Some(25));
+    assert!(models.sus_eligible);
 }

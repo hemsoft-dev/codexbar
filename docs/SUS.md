@@ -29,6 +29,11 @@ threshold and effective price changes.
 ## Fleet and prices
 
 Average and round each subscription account's eligible weekly pools first.
+Gemini uses **Gemini Models weekly only** for subscription status. Argon,
+third-party models and Gemini Apps remain informational and never supply its
+row, subscription/fleet SUS, risk, severity ordering or alerts. Missing Models
+weekly stays `n/a`; another pool never replaces it. Its existing alert keys clear
+on a successful partial refresh. Other providers keep their existing policies.
 Exclude `n/a` pools and unavailable/restored/failed accounts. Weight each scored
 subscription once by its monthly USD price. Separate paid accounts at the same
 vendor remain separate subscriptions; multiple pools within one account never
@@ -66,7 +71,9 @@ CLI 1.1.11 or later, `SUCCESS`, `command.name == "usage"`, and `num_turns == 0`.
 It reads `command.data.groups[].buckets[]`: `id`, `window`,
 `remaining_fraction` and `reset_time`. Weekly Gemini, Argon and third-party pools
 have separate metric keys. Missing Gemini or Argon is reported explicitly;
-third-party pools never substitute for either.
+only `gemini-weekly` supplies Gemini subscription status. Argon and third-party
+pools remain visible as neutral details, with no SUS or risk badge. They never
+substitute when Models weekly is unavailable.
 
 The new fixture preserves the structured shape and bucket IDs observed in a
 bounded zero-turn read of Antigravity CLI 1.4.6 on October 23, 2026. Its fractions

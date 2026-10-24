@@ -39,7 +39,19 @@ pub fn badge(score: Option<Score>, id: &str, label: &str, cx: &App) -> AnyElemen
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .into_any_element()
 }
-pub fn metric(metric: &Metric, now: DateTime<Utc>, id: &str, cx: &App) -> Option<AnyElement> {
+pub fn metric(
+    account: &AccountSnapshot,
+    metric: &Metric,
+    now: DateTime<Utc>,
+    id: &str,
+    cx: &App,
+) -> Option<AnyElement> {
+    if !account.is_status_metric(metric) {
+        return None;
+    }
+    metric_badge(metric, now, id, cx)
+}
+fn metric_badge(metric: &Metric, now: DateTime<Utc>, id: &str, cx: &App) -> Option<AnyElement> {
     if sus::is_weekly(metric) {
         Some(badge(sus::weekly(metric, now), id, metric.label(), cx))
     } else if matches!(metric,Metric::Activity{label,..} if label=="Turns/7d") {

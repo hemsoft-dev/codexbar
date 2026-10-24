@@ -389,7 +389,7 @@ impl Projection {
         account: &codexbar_core::AccountSnapshot,
         now: DateTime<Utc>,
     ) -> Self {
-        let projection = Self::of(metric, used, now);
+        let projection = status_projection(Self::of(metric, used, now), account, metric);
         if account.credits_cover(metric) {
             projection.calm()
         } else {
@@ -401,6 +401,14 @@ impl Projection {
     pub fn graded(mut self, severity: codexbar_core::Severity) -> Self {
         self.runway = Runway::of_severity(severity);
         self
+    }
+}
+
+fn status_projection(projection: Projection, account: &codexbar_core::AccountSnapshot, metric: &Metric) -> Projection {
+    if account.is_status_metric(metric) {
+        projection
+    } else {
+        projection.graded(codexbar_core::Severity::Normal)
     }
 }
 

@@ -325,6 +325,25 @@ impl AccountSnapshot {
         &self.metrics
     }
 
+    /// Subscription status uses Models weekly for Gemini; its other pools remain informational (#265).
+    pub fn is_status_metric(&self, metric: &Metric) -> bool {
+        self.provider != Provider::Gemini
+            || matches!(metric, Metric::Window { .. } if metric.key() == "gemini-models-weekly")
+    }
+
+    pub fn status_metrics(&self) -> impl Iterator<Item = &Metric> {
+        self.metrics.iter().filter(|metric| self.is_status_metric(metric))
+    }
+
+    /// Information-only pools never color a status or raise risk, even when selected explicitly in a card.
+    pub fn assess_metric(&self, metric: &Metric, now: DateTime<Utc>) -> Assessment {
+        if self.is_status_metric(metric) {
+            assess(metric, now)
+        } else {
+            Assessment::default()
+        }
+    }
+
     pub fn primary(&self) -> Option<&Metric> {
         self.metrics.first()
     }
@@ -341,11 +360,11 @@ impl AccountSnapshot {
         self.fetched_at
     }
 
-    /// The most urgent assessment across all of the account's metrics. A fully used window doesn't block an account
+    /// The most urgent assessment across the account's status metrics. Informational pools do not count.
+    /// A fully used window doesn't block an account
     /// that can still spend credits (#150).
     pub fn assess(&self, now: DateTime<Utc>) -> Assessment {
-        self.metrics
-            .iter()
+        self.status_metrics()
             .filter(|metric| !self.credits_cover(metric))
             .map(|metric| assess(metric, now))
             .max()
