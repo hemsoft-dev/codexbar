@@ -2,6 +2,11 @@
 use std::io::{self, Read};
 use std::process::Child;
 
+#[cfg(all(unix, any(target_os = "linux", test)))]
+mod linux_group;
+#[cfg(target_os = "macos")]
+mod mac_group;
+
 #[cfg(unix)]
 pub(super) trait Pipe: Read + std::os::fd::AsRawFd {}
 #[cfg(unix)]
@@ -93,25 +98,47 @@ pub(super) fn stop_group(child: &Child) {
     let _ = unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
 }
 
-/// SIGKILL delivery is asynchronous for descendants. Observe group disappearance after reaping the root.
-/// This probes only; after reaping we never signal the group again, since the ID could eventually be reused.
+/// Verify termination, not disappearance. Linux zombies may remain visible until somebody else reaps them.
+/// After reaping the root these probes never send another kill signal, since the group ID could be reused.
 #[cfg(unix)]
 pub(super) fn wait_group(id: u32) -> io::Result<()> {
-    let start = std::time::Instant::now();
-    loop {
-        // SAFETY: signal zero only checks existence; it cannot kill any process, even if the group ID was reused.
-        if unsafe { libc::kill(-(id as libc::pid_t), 0) } == -1 {
-            let error = io::Error::last_os_error();
-            return if error.raw_os_error() == Some(libc::ESRCH) {
-                Ok(())
-            } else {
-                Err(error)
-            };
-        }
-        if start.elapsed() >= std::time::Duration::from_secs(1) {
-            return Err(io::Error::other("command group cleanup timed out"));
-        }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while group_has_live_members(id, deadline)? {
+        check_deadline(deadline)?;
         std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn check_deadline(deadline: std::time::Instant) -> io::Result<()> {
+    if std::time::Instant::now() >= deadline {
+        return Err(io::Error::other("command group cleanup timed out"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn group_has_live_members(id: u32, deadline: std::time::Instant) -> io::Result<bool> {
+    linux_group::has_live_members(id, deadline)
+}
+
+#[cfg(target_os = "macos")]
+fn group_has_live_members(id: u32, deadline: std::time::Instant) -> io::Result<bool> {
+    mac_group::has_live_members(id, deadline)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn group_has_live_members(id: u32, _: std::time::Instant) -> io::Result<bool> {
+    // SAFETY: signal zero is a read-only fallback for Unix targets outside the supported macOS/Linux matrix.
+    if unsafe { libc::kill(-(id as libc::pid_t), 0) } == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(false)
+    } else {
+        Err(error)
     }
 }
 
@@ -135,9 +162,37 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cleanup_verification_times_out_without_signalling_an_existing_group() {
-        // SAFETY: getpgrp reads our own group. wait_group uses signal zero only and must not wait forever for us.
+        // SAFETY: getpgrp reads our own group. wait_group only queries state and must not wait forever for us.
         let group = unsafe { libc::getpgrp() } as u32;
         assert!(wait_group(group).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_ignores_an_exited_member_held_as_a_zombie() {
+        use std::os::unix::process::CommandExt as _;
+        struct Reap(Child);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Reap(
+            std::process::Command::new("/usr/bin/true")
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        );
+        let start = std::time::Instant::now();
+        while !finished(&mut child.0).unwrap() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(2));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // SAFETY: signal zero probes the owned zombie's group without changing it. WNOWAIT has not reaped it.
+        #[cfg(target_os = "linux")]
+        assert_eq!(unsafe { libc::kill(-(child.0.id() as libc::pid_t), 0) }, 0);
+        wait_group(child.0.id()).expect("a terminated zombie is not a live child");
     }
 
     #[cfg(unix)]

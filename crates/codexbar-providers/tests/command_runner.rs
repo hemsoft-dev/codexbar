@@ -25,6 +25,10 @@ fn hold(path: &Path) -> File {
     file.lock().unwrap();
     file.write_all(b"ready").unwrap();
     file.flush().unwrap();
+    let ready = path.with_extension("ready");
+    let staging = path.with_extension("ready.tmp");
+    std::fs::write(&staging, std::process::id().to_string()).unwrap();
+    std::fs::rename(staging, ready).unwrap();
     file
 }
 
@@ -53,6 +57,11 @@ fn fixture(args: &[String]) -> ! {
         "descendant" | "detached-output" => {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command.args(["hang", &args[1]]).stdin(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt as _;
+                command.creation_flags(0x0800_0000); // The fixture's descendant must stay hidden too.
+            }
             if args[0] == "detached-output" {
                 command.stdout(Stdio::null()).stderr(Stdio::null());
             }
@@ -62,7 +71,7 @@ fn fixture(args: &[String]) -> ! {
             )]
             let _child = command.spawn().unwrap();
             let start = Instant::now();
-            while std::fs::read(&args[1]).unwrap_or_default() != b"ready" {
+            while !Path::new(&args[1]).with_extension("ready").is_file() {
                 assert!(start.elapsed() < Duration::from_secs(2));
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -92,11 +101,73 @@ impl Drop for Scratch {
 }
 
 fn released(path: &Path) {
-    assert_eq!(std::fs::read(path).unwrap(), b"ready", "the fixture really started");
-    File::open(path)
+    let pid: u32 = std::fs::read_to_string(path.with_extension("ready"))
         .unwrap()
-        .try_lock()
-        .expect("the child/descendant must have released its live lock");
+        .parse()
+        .unwrap();
+    assert!(pid > 0, "the fixture really started");
+    #[cfg(windows)]
+    assert_process_exited(pid);
+    #[cfg(target_os = "macos")]
+    assert_process_exited(pid);
+    let mut file = File::open(path).unwrap();
+    let start = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            // Exit has been verified separately; OS file-lock cleanup can finish slightly later.
+            Err(std::fs::TryLockError::WouldBlock)
+                if cfg!(any(windows, target_os = "macos")) && start.elapsed() < Duration::from_secs(1) =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("fixture resource was not released: {error}"),
+        }
+    }
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).unwrap();
+    assert_eq!(contents, "ready");
+}
+
+#[cfg(target_os = "macos")]
+fn assert_process_exited(pid: u32) {
+    // SAFETY: this is a read-only query of our fixture PID, with an exactly sized output buffer.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of_val(&info) as i32;
+    let count = unsafe {
+        libc::proc_pidinfo(
+            pid as i32,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            std::ptr::from_mut(&mut info).cast(),
+            size,
+        )
+    };
+    if count == 0 {
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+    } else {
+        assert_eq!(count, size);
+        assert_eq!(info.pbi_status, libc::SZOMB, "fixture {pid} must already be terminated");
+    }
+}
+
+#[cfg(windows)]
+fn assert_process_exited(pid: u32) {
+    use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    // SAFETY: this fixture PID comes from its own isolated ready file. Open only for a nonblocking exit query.
+    match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+        Ok(handle) => {
+            let state = unsafe { WaitForSingleObject(handle, 0) };
+            let _ = unsafe { CloseHandle(handle) };
+            assert_eq!(state, WAIT_OBJECT_0, "the fixture process must already be terminated");
+        }
+        Err(error) => assert_eq!(
+            error.code(),
+            ERROR_INVALID_PARAMETER.to_hresult(),
+            "only an absent PID qualifies"
+        ),
+    }
 }
 
 fn main() {

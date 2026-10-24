@@ -42,7 +42,17 @@ Unix query commands start in their own process group. Exit observation uses
 [`waitid` with `WNOWAIT`](https://pubs.opengroup.org/onlinepubs/9699919799/functions/waitid.html),
 keeping the root unreaped until the owned group is signalled. This reserves the
 PID and prevents a reused group ID from receiving a kill signal. After reaping,
-termination verification uses signal zero only; it never sends another kill.
+termination verification never sends another kill. Linux first queries process
+group membership and reads `/proc/<pid>/stat` only for members of the owned
+group. It distinguishes live states from zombie/dead states, so delayed reaping
+by PID 1 or a subreaper does not turn a completed command into a failure. The
+scan shares the one-second cleanup deadline. macOS uses libproc to list the
+owned group's members and inspect their BSD process states, also excluding
+zombies through Apple's
+[libproc queries](https://github.com/apple-oss-distributions/xnu/blob/main/libsyscall/wrappers/libproc/libproc.c).
+Its snapshot is bounded to fewer than 4096 members and fails closed if
+that bound is reached. Both platforms recheck group membership against PID reuse;
+neither requires somebody else's reaper to remove an already terminated record.
 Normal descendants in the job/group are cleaned up even if the root exits first
 or a descendant redirects its output. A deliberately escaping Unix process that
 creates a new session is outside this process-group contract.
@@ -63,9 +73,22 @@ provider CLI. It checks exact 1 MiB stdout-only, stderr-only and simultaneous
 output, the 8 MiB boundary on both streams, overflow rejection, UTF-8 across a
 chunk boundary, invalid UTF-8, nonzero exit, null stdin and missing executables.
 It also checks a hung root, an exited root whose descendant keeps pipes open,
-and a descendant with redirected output. An exclusively locked file in an owned
-temporary directory proves that the fixture started and released its live
-resources before the runner returned. Deadlines include a bounded cleanup margin.
+and a descendant with redirected output. A separate atomically published ready
+file proves that each fixture acquired its resource before the test proceeds.
+The test never reads a file while the fixture holds its exclusive lock. On
+Windows and macOS it first verifies the fixture process's terminated/absent
+state, then allows up to one second for the OS to release a file lock. This
+separation also catches a macOS exit/lock-release race observed during the full
+workspace run. Microsoft documents that automatic
+[file unlocking can lag process termination](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex).
+Other platforms require immediate reacquisition after cleanup. The product's
+job/group exit verification stays independent of this filesystem oracle.
+
+A native Unix unit test leaves an exited owned child unreaped while verifying
+that cleanup accepts its terminated state. On Linux it also proves the zombie's
+group remains visible to signal zero. Process-state fixtures cover zombie/dead
+versus sleeping/running/stopped members, PID reuse, disappearing records, errors
+and the scan deadline. Deadlines include a bounded cleanup margin.
 
 Workspace tests and CI run this harness on Windows, macOS and Linux. No account,
 credential store, browser, desktop input or live provider response is involved.
