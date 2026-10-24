@@ -108,5 +108,12 @@ group remains visible to signal zero. Process-state fixtures cover zombie/dead
 versus sleeping/running/stopped members, PID reuse, disappearing records, errors
 and the scan deadline. Deadlines include a bounded cleanup margin.
 
+Linux can also return a successful stat read with process group `-1` during
+teardown. The [kernel's stat producer](https://github.com/torvalds/linux/blob/master/fs/proc/array.c)
+initializes that sentinel before trying to lock the task's signal group. The
+state character was sampled earlier, so it can still describe a running task.
+That snapshot no longer identifies a member of the owned group. The parser
+accepts the exact `-1` sentinel, while other invalid group fields remain errors.
+
 Workspace tests and CI run this harness on Windows, macOS and Linux. No account,
 credential store, browser, desktop input or live provider response is involved.

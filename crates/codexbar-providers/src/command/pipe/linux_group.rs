@@ -70,11 +70,12 @@ fn live_record(stat: &str, group: u32) -> io::Result<bool> {
     let (_, fields) = stat.rsplit_once(") ").ok_or_else(malformed)?;
     let mut fields = fields.split_whitespace();
     let state = fields.next().ok_or_else(malformed)?;
-    let pgid = fields
-        .nth(1)
-        .ok_or_else(malformed)?
-        .parse::<u32>()
-        .map_err(|_| malformed())?;
+    let pgid = fields.nth(1).ok_or_else(malformed)?;
+    // do_task_stat can retain its -1 sentinel after the task loses its signal group during exit.
+    if pgid == "-1" {
+        return Ok(false);
+    }
+    let pgid = pgid.parse::<u32>().map_err(|_| malformed())?;
     // Recheck the group, since the PID could have been reused between getpgid and this snapshot.
     Ok(pgid == group && !["Z", "X"].contains(&state))
 }
@@ -127,6 +128,19 @@ mod tests {
         assert!(!live_record("71 (command) S 3 43 0 0", 42).unwrap());
         for invalid in ["bad", "71 (command) ", "71 (command) S 3", "71 (command) S 3 nope"] {
             assert!(live_record(invalid, 42).is_err());
+        }
+    }
+
+    #[test]
+    fn an_exit_snapshot_without_a_signal_group_is_not_a_live_member() {
+        // Captured from Linux /proc during concurrent read/reap. do_task_stat leaves pgid/sid
+        // at -1 when lock_task_sighand fails. State was sampled earlier and can still be live.
+        for state in ["R", "S", "Z", "X"] {
+            assert!(!live_record(&format!("71 (stat-race) {state} 0 -1 -1 0 -1 4227148"), 42).unwrap());
+        }
+        // Only the kernel's -1 sentinel is accepted; other invalid group fields still fail closed.
+        for group in ["-2", "invalid", "", "999999999999999999999999"] {
+            assert!(live_record(&format!("71 (command) Z 0 {group}"), 42).is_err());
         }
     }
 
