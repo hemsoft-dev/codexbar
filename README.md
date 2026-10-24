@@ -78,6 +78,8 @@ CI also measures [Rust production coverage and per-function CRAP](docs/RUST_TEST
 and rejects regressions against the base revision.
 The [Rust mutation qualification](docs/RUST_MUTATION_TESTING.md) also verifies
 selected domain, provider and persistence assertions with a pinned tool.
+[Markdown tooling security](docs/NPM_ADVISORIES.md) covers the npm advisory gate,
+scoped dependency overrides and Node.js prerequisites.
 
 ```powershell
 git clone https://github.com/hemsoft-dev/codexbar.git
