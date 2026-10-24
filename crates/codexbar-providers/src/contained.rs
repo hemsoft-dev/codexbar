@@ -4,6 +4,8 @@
 
 use std::process::{Child, Command};
 
+#[cfg(any(windows, test))]
+mod drain;
 #[cfg(windows)]
 mod job_drain;
 

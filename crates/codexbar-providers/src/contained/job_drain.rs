@@ -11,22 +11,12 @@ use windows::Win32::System::Threading::{
 
 pub(super) fn terminate(job: HANDLE) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(1);
-    loop {
-        remaining(deadline)?;
-        let pids = members(job)?;
-        if pids.is_empty() {
-            return Ok(());
-        }
-        stop_members(job, pids, deadline)?;
-    }
+    super::drain::run(deadline, || members(job), |pid| stop_member(job, pid, deadline))
 }
 
-fn stop_members(job: HANDLE, pids: Vec<u32>, deadline: Instant) -> io::Result<()> {
-    for pid in pids {
-        remaining(deadline)?;
-        if let Some(member) = Member::open(job, pid)? {
-            member.stop(deadline)?;
-        }
+fn stop_member(job: HANDLE, pid: u32, deadline: Instant) -> io::Result<()> {
+    if let Some(member) = Member::open(job, pid)? {
+        member.stop(deadline)?;
     }
     Ok(())
 }
@@ -105,8 +95,6 @@ impl Drop for Member {
 }
 
 fn remaining(deadline: Instant) -> io::Result<u32> {
-    let left = deadline
-        .checked_duration_since(Instant::now())
-        .ok_or_else(|| io::Error::other("command job cleanup timed out"))?;
+    let left = super::drain::time_left(deadline)?;
     Ok((left.as_millis() + 1).min(u128::from(u32::MAX)) as u32)
 }
