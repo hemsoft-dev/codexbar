@@ -41,6 +41,10 @@ fn fixture(args: &[String]) -> ! {
         #[cfg(windows)]
         "window-observe" => windows_console::observe_from_no_console(),
         #[cfg(windows)]
+        "window-binding" => windows_console::binding_from_no_console(),
+        #[cfg(windows)]
+        "window-parent-binding" => windows_console::binding_control(),
+        #[cfg(windows)]
         "window-tree" | "window-raw-tree" => {
             windows_console::tree(args[1].parse().unwrap(), args[0] == "window-raw-tree")
         }

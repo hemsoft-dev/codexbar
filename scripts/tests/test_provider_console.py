@@ -35,7 +35,98 @@ def fixture(visible=False, console_owner=900):
                                          "window_lifecycle_complete": True}}}
 
 
+def binding_receipt():
+    return {"complete": True, "failure": None, "cleanup_confirmed": True,
+            "scope": "cooperative-owned-fixture-only", "original_visibility_red": False,
+            "provider_or_broker_generation_proof": False, "visible_control_readback": True,
+            "registration": {"creator_api_readback_matches": True, "hwnd": 42, "nonce": 7, "fixture_generation": 1},
+            "ready_us": 1000, "window_lifetime_us": 1000, "elapsed_us": 2000,
+            "creator": {"pid": 100, "process_birth": 200, "tid": 300, "thread_birth": 400},
+            "generator": {"pid": 100, "process_birth": 200, "tid": 301, "thread_birth": 401},
+            "observation": {"native_show_mapped": True, "native_delayed_destroy_mapped": True,
+                            "legacy_resolver_show_rejected": True, "legacy_resolver_destroy_accepted": True,
+                            "native_wrong_generator_rejected": True,
+                            "hook_closed": True, "unattributable_registered_numeric_hwnd_events": 0,
+                            "ready_context": {"desktop": "Default", "input_desktop": "Default", "session": 2,
+                                              "station": {"visible": True}},
+                            "event_count": 4, "event_cap": 8192, "event_cap_hit": False,
+                            "event_loss": False, "queue_drained": True,
+                            "destroy_readback": {"window_query_return": 0, "window_query_error": 1400, "is_window": False},
+                            "negative_policy_controls": {"outcomes": [{"case": name, "rejected": True} for name in
+                                ("unknown-hwnd", "wrong-generation", "wrong-nonce", "wrong-thread-birth", "wrong-generator", "missing-live-owner")]},
+                            "events": [{"phase": "owned-lifecycle-binding-control", "event_kind": kind,
+                                        "hwnd": 42, "creator_tid": 300, "generator_tid": tid, "generator_thread_birth": birth,
+                                        "registered_pid": 100, "process_birth": 200, "fixture_generation": 1,
+                                        "mapping": mapping, "original_visibility_red": False,
+                                        "callback_sequence": sequence, "existing_resolver_error": error}
+                                       for kind, tid, birth, sequence, error, mapping in
+                                       ((0x8002, 301, 401, 3, "WinEvent identity differs from retained window owner/thread",
+                                         "cooperative-fixture-command-generation-only"),
+                                        (0x8001, 300, 400, 5, None, "cooperative-fixture-command-generation-only"),
+                                        (0x8002, 300, 400, 2, None, "rejected-real-creator-event-for-separate-generator-ticket"))]}}
+
+
 class ObserverPolicy(unittest.TestCase):
+    def test_cooperative_binding_gate_requires_complete_native_control_receipt(self):
+        self.assertTrue(POLICY.binding_complete(binding_receipt()))
+        for field in binding_receipt():
+            with self.subTest(missing=field):
+                row = binding_receipt()
+                del row[field]
+                self.assertFalse(POLICY.binding_complete(row))
+
+    def test_binding_control_unknown_or_wrong_identity_prevents_comparison(self):
+        for change in ({"unattributable_registered_numeric_hwnd_events": 1}, {"native_show_mapped": False},
+                       {"native_delayed_destroy_mapped": False}, {"legacy_resolver_show_rejected": False},
+                       {"hook_closed": False}, {"negative_policy_controls": {"outcomes": []}}):
+            row = binding_receipt()
+            row["observation"].update(change)
+            self.assertFalse(POLICY.binding_complete(row))
+        row = binding_receipt()
+        row["generator"]["tid"] = row["creator"]["tid"]
+        self.assertFalse(POLICY.binding_complete(row))
+        row = binding_receipt()
+        row["generator"]["thread_birth"] = 0
+        self.assertFalse(POLICY.binding_complete(row))
+        for events in ([], binding_receipt()["observation"]["events"][:1]):
+            row = binding_receipt()
+            row["observation"]["events"] = events
+            self.assertFalse(POLICY.binding_complete(row))
+        for key, value in (("generator_tid", 300), ("generator_thread_birth", 999),
+                           ("callback_sequence", 6), ("existing_resolver_error", "unrelated API failure")):
+            row = binding_receipt()
+            row["observation"]["events"][0][key] = value
+            self.assertFalse(POLICY.binding_complete(row))
+
+    def test_binding_control_never_substitutes_for_provider_red_or_waives_limits(self):
+        for change in ({"original_visibility_red": True}, {"provider_or_broker_generation_proof": True},
+                       {"ready_us": 2_000_001}, {"window_lifetime_us": 1_000_001},
+                       {"elapsed_us": 10_000_001}, {"cleanup_confirmed": False}):
+            row = binding_receipt()
+            row.update(change)
+            self.assertFalse(POLICY.binding_complete(row))
+        original = fixture()
+        original["binding"] = binding_receipt()
+        self.assertEqual(POLICY.classify(original, fixture())["qualification"], "unqualified")
+
+    def test_binding_control_requires_real_negative_event_and_exact_named_policy_controls(self):
+        for change in ({"event_kind": 0x8001}, {"generator_tid": 999}, {"callback_sequence": 9},
+                       {"generator_thread_birth": 999}, {"existing_resolver_error": "API failure"}):
+            row = binding_receipt()
+            row["observation"]["events"][2].update(change)
+            self.assertFalse(POLICY.binding_complete(row))
+        row = binding_receipt()
+        row["observation"]["negative_policy_controls"]["outcomes"][0]["case"] = "wrong-generator"
+        self.assertFalse(POLICY.binding_complete(row))
+
+    def test_binding_control_missing_desktop_or_event_loss_remains_incomplete(self):
+        for change in ({"event_count": 8193}, {"event_cap_hit": True}, {"event_cap": 8193},
+                       {"event_loss": "unknown"}, {"queue_drained": False},
+                       {"ready_context": {}}, {"ready_context": {"desktop": "other", "input_desktop": "Default"}}):
+            row = binding_receipt()
+            row["observation"].update(change)
+            self.assertFalse(POLICY.binding_complete(row))
+
     def test_shared_hidden_console_host_can_differ_from_all_client_pids(self):
         candidate = fixture()
         self.assertNotIn(candidate["rows"][0]["owner"], [item["pid"] for item in candidate["rows"]])

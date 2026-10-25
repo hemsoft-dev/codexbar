@@ -39,6 +39,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{PCWSTR, w};
 
+#[path = "binding.rs"]
+mod binding;
+pub(super) fn validate_binding() {
+    binding::run();
+}
+
 pub(super) const DIRECTORY_ENV: &str = "CODEXBAR_SYNTHETIC_OBSERVER_DIRECTORY";
 const CAP: usize = 8192;
 const SAMPLE_CAP: usize = 512;
@@ -488,7 +494,10 @@ impl Observer {
         Ok(())
     }
     fn pump_events(&mut self) -> Result<()> {
-        for event in super::hooks::pump()? {
+        self.resolve_events(super::hooks::pump()?)
+    }
+    fn resolve_events(&mut self, events: Vec<super::hooks::Event>) -> Result<()> {
+        for event in events {
             let diagnostic_event = super::diagnostics::Event {
                 hwnd: event.hwnd.0 as u64,
                 thread: event.thread,

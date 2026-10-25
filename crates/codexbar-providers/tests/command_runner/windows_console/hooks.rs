@@ -10,6 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 pub(super) const CAP: usize = 8192;
+#[derive(Clone, Copy)]
 pub(super) struct Event {
     pub hwnd: HWND,
     pub kind: u32,

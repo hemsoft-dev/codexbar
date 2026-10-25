@@ -226,6 +226,22 @@ pub(super) fn no_console_parent() {
     parent("window-parent");
 }
 
+pub(super) fn binding_from_no_console() {
+    if let Err(error) = observer::own_experiment_job() {
+        println!(
+            "{}",
+            serde_json::json!({"result": "owned-lifecycle-binding", "complete": false,
+            "failure": error, "cleanup_confirmed": false, "original_visibility_red": false})
+        );
+        return;
+    }
+    parent("window-parent-binding");
+}
+
+pub(super) fn binding_control() {
+    observer::validate_binding();
+}
+
 fn caller_precondition() {
     let mut clients = [0; 16];
     let count = unsafe { GetConsoleProcessList(&mut clients) };
