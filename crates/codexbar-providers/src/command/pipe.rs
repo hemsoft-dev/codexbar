@@ -1,6 +1,6 @@
 //! Nonblocking reads from the command's exclusively owned anonymous pipes. No reader threads are created.
+use super::Child;
 use std::io::{self, Read};
-use std::process::Child;
 
 #[cfg(all(unix, any(target_os = "linux", test)))]
 mod linux_group;

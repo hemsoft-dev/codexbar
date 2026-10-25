@@ -1,8 +1,49 @@
 # Provider command collection
 
-`SystemCommandRunner` runs usage-query CLIs through the existing platform
-program lookup. It does not invoke a shell, opens no console window, and closes
-stdin. Interactive sign-in flows use their separate login adapters.
+`SystemCommandRunner` runs usage-query CLIs with null stdin and separate capture
+pipes. Native executables run directly. Windows batch shims use the system
+`cmd.exe`, as Rust's `Command` does. Interactive sign-in flows use their separate
+login adapters.
+
+## Windows ordinary descendants
+
+The Windows usage runner creates a new console with
+`STARTF_USESHOWWINDOW` and `SW_HIDE` in `STARTUPINFOEXW`. The console is hidden
+at creation. The runner never calls `ShowWindow`, changes the active desktop,
+or modifies terminal settings. An ordinary console child and grandchild inherit
+that console. Previously `CREATE_NO_WINDOW` left the provider root without a
+console, allowing its ordinary console descendants to allocate visible consoles.
+The previous flag was already present; this is a descendant inheritance repair.
+See Microsoft's [creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
+[console creation](https://learn.microsoft.com/en-us/windows/console/creation-of-a-console)
+and [startup information](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow).
+
+Only `SystemCommandRunner` uses this native launch path. It covers both the
+Gemini version check and usage query, plus Copilot's background GitHub CLI calls.
+The existing login, app-server and browser adapters retain their launch paths.
+The native launcher inherits the caller's primary token, environment, working
+directory and desktop. It supplies an explicit handle list containing null input
+and the two write pipes. Process and thread handles remain noninheritable.
+The provider starts suspended, enters the same kill-on-close job used before,
+then resumes through its retained primary thread handle. Failure to establish
+the job or resume terminates the suspended root. Native launch handles, attribute
+storage and parent copies of child pipe handles have RAII owners.
+See [process creation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
+and [handle-list attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
+
+This boundary covers ordinary console inheritance. It does not prevent a CLI
+from explicitly requesting a separate console, detaching, showing GUI windows,
+or asking a separately running broker to show UI. It is not a hostile-process
+UI sandbox. Windows Terminal/default-terminal configurations need separate
+qualification before deployment. `GetConsoleWindow` can return a message-only
+handle for a pseudoconsole while another terminal displays its output, per
+[Microsoft's contract](https://learn.microsoft.com/en-us/windows/console/getconsolewindow).
+An invisible handle alone is not proof that such a terminal is hidden.
+Microsoft's public console-host
+[handoff decision](https://github.com/microsoft/terminal/blob/98c8c795ebc2560af55e72beba3fa5fd31ceef64/src/server/IoDispatchers.cpp#L154)
+declines delegation for `STARTF_USESHOWWINDOW` with `SW_HIDE` and for an already
+initialized inherited console. That supports the design, but does not establish
+parity with a deployed Windows console host or qualify a terminal configuration.
 
 ## Output and deadline policy
 
@@ -117,3 +158,32 @@ accepts the exact `-1` sentinel, while other invalid group fields remain errors.
 
 Workspace tests and CI run this harness on Windows, macOS and Linux. No account,
 credential store, browser, desktop input or live provider response is involved.
+
+The Windows console fixture starts a no-console caller of the real
+`SystemCommandRunner`. Its provider root starts an ordinary child, which starts
+an ordinary grandchild; neither descendant sets creation flags or visibility
+hints. All three report console HWND, visibility samples, owner, window class,
+console-process membership and desktop. GREEN requires one valid hidden
+`ConsoleWindowClass` HWND shared by the full chain, matching owner and desktop,
+each ancestor in the console-client list, and enumeration on that desktop.
+Null, invalid, foreign and message-only HWNDs cannot pass as hidden-window proof.
+It also verifies the caller's user SID, logon/session, working directory and a
+synthetic inherited environment value, then waits for the console window to
+disappear after the final client exits. These are read-only queries of native
+fixtures. No desktop switch, terminal preference change or provider invocation
+is used.
+
+Additional Windows fixtures compare native argv and batch-shim behavior with
+Rust's existing `Command`, count handles across repeated queries and abruptly
+exit a runner with an owned descendant still running. The latter skips Rust
+destructors and verifies Windows job-handle closure stops that descendant and
+releases its locked resource. Existing finite-output, size-cap, stderr, exit,
+null-input and timeout fixtures still run through the production collector.
+
+The original launcher is retained in regression commit
+[`0000dda`](https://github.com/hemsoft-dev/codexbar/commit/0000dda1e5b7a2cdeb23fe9c8d3fb48f4d1a822d)
+for hosted RED evidence. Execution results and their exact revisions belong in
+[PR #272](https://github.com/hemsoft-dev/codexbar/pull/272). Source inspection or
+successful compilation alone does not establish RED or GREEN. This qualification
+does not establish deployed-image parity, vendor re-exec behavior or game-crash
+causality. Deployment remains a separate operator decision.

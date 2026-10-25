@@ -307,10 +307,7 @@ mod tests {
 }
 
 #[cfg(windows)]
-mod job {
-    use std::os::windows::io::AsRawHandle as _;
-    use std::process::Child;
-
+pub(crate) mod job {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
@@ -330,7 +327,7 @@ mod job {
     unsafe impl Sync for Job {}
 
     impl Job {
-        pub fn kill_on_close(child: &Child) -> Option<Self> {
+        pub fn kill_on_close(child: &impl std::os::windows::io::AsRawHandle) -> Option<Self> {
             // SAFETY: no name and default security; the handle is owned by the returned Job and closed on drop.
             let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.ok()?;
             let job = Self(handle);

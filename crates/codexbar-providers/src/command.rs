@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -23,29 +24,37 @@ pub trait CommandRunner: Send + Sync {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError>;
 }
 
-/// Runs commands with no console window, bounded output and a deadline covering collection and process exit.
+/// Runs background commands with no visible console, bounded output and a deadline covering collection and exit.
 /// Each stream is limited to 8 MiB. Oversized output fails without returning or logging a partial payload.
 #[derive(Default)]
 pub struct SystemCommandRunner;
 
+#[cfg(windows)]
+mod background;
 mod pipe;
+#[cfg(windows)]
+type Child = background::Child;
+#[cfg(not(windows))]
+type Child = std::process::Child;
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const CHECK_INTERVAL: Duration = Duration::from_millis(25);
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError> {
-        let mut command = crate::platform::command(program);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(unix)]
-        {
+        #[cfg(not(windows))]
+        let inner = {
+            let mut command = crate::platform::command(program);
+            command
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
-        }
-        let inner = crate::contained::spawn(&mut command).map_err(spawn_error)?;
+            crate::contained::spawn(&mut command).map_err(spawn_error)?
+        };
+        #[cfg(windows)]
+        let inner = background::spawn(program, args).map_err(spawn_error)?;
         let mut process = Running { inner, stopped: false };
         let output = collect(&mut process.inner.child, timeout);
         let status = process.stop().map_err(|_| CommandError::Failed)?;
@@ -68,7 +77,10 @@ fn spawn_error(error: std::io::Error) -> CommandError {
 
 /// The root remains unreaped until group cleanup, so its process-group ID cannot refer to somebody else's work.
 struct Running {
+    #[cfg(not(windows))]
     inner: crate::contained::Contained,
+    #[cfg(windows)]
+    inner: background::Contained,
     stopped: bool,
 }
 impl Running {
@@ -129,7 +141,7 @@ impl<P: pipe::Pipe> Capture<P> {
     }
 }
 
-fn collect(child: &mut std::process::Child, timeout: Duration) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
+fn collect(child: &mut Child, timeout: Duration) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
     let start = Instant::now();
     let mut stdout = Capture::new(child.stdout.take().ok_or(CommandError::Failed)?)?;
     let mut stderr = Capture::new(child.stderr.take().ok_or(CommandError::Failed)?)?;
