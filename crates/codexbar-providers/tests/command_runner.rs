@@ -34,6 +34,10 @@ fn hold(path: &Path) -> File {
 
 fn fixture(args: &[String]) -> ! {
     match args[0].as_str() {
+        #[cfg(windows)]
+        "window-parent" => windows_console::qualify(),
+        #[cfg(windows)]
+        "window-tree" => windows_console::tree(args[1].parse().unwrap()),
         "emit" => emit(&args[1], args[2].parse().unwrap()),
         "invalid" => std::io::stdout().write_all(&[0xff, b'a']).unwrap(),
         "utf8" => {
@@ -204,6 +208,8 @@ fn main() {
     if !args.is_empty() {
         fixture(&args);
     }
+    #[cfg(windows)]
+    windows_console::no_console_parent();
     let executable = std::env::current_exe().unwrap();
     let program = executable.to_str().unwrap();
     let run = |args: &[&str], timeout| SystemCommandRunner.run(program, args, timeout);
@@ -278,4 +284,102 @@ fn main() {
     println!(
         "command runner: finite streams, cap boundary, overflow, timeout, descendant cleanup, exit status, UTF-8 and null stdin passed"
     );
+}
+
+#[cfg(windows)]
+mod windows_console {
+    use super::*;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Console::GetConsoleWindow;
+    use windows::Win32::System::StationsAndDesktops::{GetThreadDesktop, GetUserObjectInformationW, UOI_NAME};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindowVisible};
+
+    fn desktop(thread: u32) -> String {
+        let mut name = [0u16; 256];
+        // SAFETY: query a live thread's desktop into an exactly sized, writable UTF-16 buffer.
+        unsafe {
+            let handle = GetThreadDesktop(thread).unwrap();
+            GetUserObjectInformationW(
+                HANDLE(handle.0),
+                UOI_NAME,
+                Some(name.as_mut_ptr().cast()),
+                std::mem::size_of_val(&name) as u32,
+                None,
+            )
+            .unwrap();
+        }
+        String::from_utf16(&name[..name.iter().position(|ch| *ch == 0).unwrap()]).unwrap()
+    }
+
+    pub(super) fn tree(depth: u32) {
+        // SAFETY: read-only queries of this fixture's actual console window and owning thread/process.
+        let window = unsafe { GetConsoleWindow() };
+        let mut owner = 0;
+        let thread = unsafe { GetWindowThreadProcessId(window, Some(&mut owner)) };
+        let row = serde_json::json!({
+            "depth": depth, "pid": std::process::id(), "hwnd": window.0 as usize,
+            "visible": unsafe { IsWindowVisible(window) }.as_bool(), "owner": owner,
+            "desktop": desktop(unsafe { GetCurrentThreadId() }),
+            "window_desktop": if thread == 0 { String::new() } else { desktop(thread) },
+        });
+        println!("{row}");
+        std::io::stdout().flush().unwrap();
+        if depth < 2 {
+            // Ordinary child and grandchild. No creation flags, startup hints, vendor settings or hiding.
+            assert!(
+                Command::new(std::env::current_exe().unwrap())
+                    .args(["window-tree", &(depth + 1).to_string()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+    }
+
+    pub(super) fn qualify() {
+        assert!(
+            unsafe { GetConsoleWindow() }.0.is_null(),
+            "the runner's parent must have no console"
+        );
+        let executable = std::env::current_exe().unwrap();
+        let output = SystemCommandRunner
+            .run(
+                executable.to_str().unwrap(),
+                &["window-tree", "0"],
+                Duration::from_secs(10),
+            )
+            .unwrap();
+        assert!(output.success, "native tree failed: {}", output.stderr);
+        let rows: Vec<serde_json::Value> = output
+            .stdout
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        println!("ordinary descendant console observations: {}", output.stdout);
+        assert_eq!(
+            rows.len(),
+            3,
+            "root, ordinary child and ordinary grandchild must report"
+        );
+        for (depth, row) in rows.iter().enumerate() {
+            assert_eq!(row["depth"], depth);
+            assert_eq!(
+                row["visible"], false,
+                "background process allocated a visible console: {row}"
+            );
+        }
+    }
+
+    pub(super) fn no_console_parent() {
+        use std::os::windows::process::CommandExt as _;
+        // Only the test's CodexBar-like parent is suppressed. The production runner launches the root.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg("window-parent")
+            .creation_flags(0x0800_0000)
+            .output()
+            .unwrap();
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
 }
