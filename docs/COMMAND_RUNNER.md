@@ -7,20 +7,31 @@ login adapters.
 
 ## Windows ordinary descendants
 
-The Windows usage runner creates a new console with
-`STARTF_USESHOWWINDOW` and `SW_HIDE` in `STARTUPINFOEXW`. The console is hidden
-at creation. The runner never calls `ShowWindow`, changes the active desktop,
-or modifies terminal settings. An ordinary console child and grandchild inherit
-that console. Previously `CREATE_NO_WINDOW` left the provider root without a
-console, allowing its ordinary console descendants to allocate visible consoles.
-The previous flag was already present; this is a descendant inheritance repair.
+The proposed Windows usage runner requests a new console with
+`STARTF_USESHOWWINDOW` and `SW_HIDE` in `STARTUPINFOEXW`, hiding it at creation.
+The runner never calls `ShowWindow`, changes the active desktop or modifies
+terminal settings. The intended boundary is one hidden console inherited by
+ordinary descendants. The old launcher already used `CREATE_NO_WINDOW`.
+The first hosted ordinary-descendant fixture did not reproduce a visible window:
+root, child and grandchild all reported null HWNDs. A null HWND does not prove
+that a process lacks a console connection. This candidate is unqualified as a
+fix for the reported popup until an actual original-seam visibility
+counterexample and passing candidate evidence exist.
 See Microsoft's [creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
 [console creation](https://learn.microsoft.com/en-us/windows/console/creation-of-a-console)
 and [startup information](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow).
 
 Only `SystemCommandRunner` uses this native launch path. It covers both the
 Gemini version check and usage query, plus Copilot's background GitHub CLI calls.
-The existing login, app-server and browser adapters retain their launch paths.
+The existing login, app-server and browser adapters retain their launch flags
+and stdio behavior. Their owned process creation shares a short launch mutex
+with the native runner. It covers the interval from creating temporary
+inheritable handles through closing every parent copy. Rust's own
+[private spawn mutex](https://github.com/rust-lang/rust/blob/master/library/std/src/sys/process/windows.rs#L321)
+does not include native `CreateProcessW`. An uncoordinated third-party or future
+direct spawn in the same process can still race this interval. The handle list
+restricts what our native child inherits; it cannot control another launcher's
+inheritance policy.
 The native launcher inherits the caller's primary token, environment, working
 directory and desktop. It supplies an explicit handle list containing null input
 and the two write pipes. Process and thread handles remain noninheritable.
@@ -163,7 +174,11 @@ The Windows console fixture starts a no-console caller of the real
 `SystemCommandRunner`. Its provider root starts an ordinary child, which starts
 an ordinary grandchild; neither descendant sets creation flags or visibility
 hints. All three report console HWND, visibility samples, owner, window class,
-console-process membership and desktop. GREEN requires one valid hidden
+console-process membership, startup flags, window station and desktop.
+It exercises both Rust `Command` and raw Win32 children with an explicit standard
+handle list, `STARTF_USESTDHANDLES` and creation flags `0x80400`. Neither route
+requests a new console or calls `FreeConsole` in a descendant.
+Candidate mechanism qualification requires one valid hidden
 `ConsoleWindowClass` HWND shared by the full chain, matching owner and desktop,
 each ancestor in the console-client list, and enumeration on that desktop.
 Null, invalid, foreign and message-only HWNDs cannot pass as hidden-window proof.
@@ -179,10 +194,31 @@ exit a runner with an owned descendant still running. The latter skips Rust
 destructors and verifies Windows job-handle closure stops that descendant and
 releases its locked resource. Existing finite-output, size-cap, stderr, exit,
 null-input and timeout fixtures still run through the production collector.
+The unrelated-pipe sentinel closes its intended writer while a provider still
+holds a locked resource, and requires EOF before provider exit. A leaked
+inheritable writer cannot pass through later job cleanup. A concurrent native
+launch/legacy-launch guard check covers coordination with the existing launcher.
 
-The original launcher is retained in regression commit
+The original launcher is retained in baseline commit
 [`0000dda`](https://github.com/hemsoft-dev/codexbar/commit/0000dda1e5b7a2cdeb23fe9c8d3fb48f4d1a822d)
-for hosted RED evidence. Execution results and their exact revisions belong in
+and its [completed Windows run](https://github.com/hemsoft-dev/codexbar/actions/runs/40172657125/job/121106593366)
+passed, with all three HWNDs null. This is not visibility RED. The same head's
+[macOS overflow fixture](https://github.com/hemsoft-dev/codexbar/actions/runs/40172657125/job/121106593295)
+failed with `TimedOut` instead of `Failed`. The bulk-output cap check now has a
+separate 15-second budget; hung-process cases retain their three-second deadline.
+No Unix production collector semantics changed.
+
+`scripts/qualify-provider-console.py` runs only in hosted Windows CI. It builds
+the current observer against exact original production seam bytes from
+`7bb492fd3622727eee81b1e31f7256a15e71c3dd`, then against the candidate. It uses
+separate Cargo target directories, retains source hashes and candidate backups,
+and restores and verifies candidate bytes in `finally` before normal gates.
+This compares the original production seam, not the entire old build or a
+deployed image. Reports distinguish a visible descendant window on an
+interactive station from no reproduction or noninteractive preconditions.
+Null-HWND architecture differences and compile failures are never visibility
+RED. Candidate shared-hidden-console assertions run separately in workspace
+tests. Execution results and their exact revisions belong in
 [PR #272](https://github.com/hemsoft-dev/codexbar/pull/272). Source inspection or
 successful compilation alone does not establish RED or GREEN. This qualification
 does not establish deployed-image parity, vendor re-exec behavior or game-crash

@@ -30,7 +30,7 @@ impl LoginWindow {
             // Own only the CLI root. A kill-on-close job would also capture the user's default browser, whose
             // existing windows and sessions must survive cancellation. No browser is controlled or inspected.
             command.creation_flags(0x0000_0010);
-            command.spawn()
+            crate::platform::spawn(&mut command)
         };
         #[cfg(not(windows))]
         let process = crate::contained::spawn_console(&mut command);

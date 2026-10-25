@@ -62,7 +62,7 @@ fn spawn_with(command: &mut Command, console: bool) -> std::io::Result<Contained
     }
     #[cfg(windows)]
     {
-        let mut child = command.spawn()?;
+        let mut child = crate::platform::spawn(command)?;
         // Without its job the process could outlive CodexBar (and a GitHub sign-in finish unseen), so it doesn't run.
         let job = job::Job::kill_on_close(&child);
         if job.is_none() || !job::resume(child.id()) {

@@ -37,7 +37,13 @@ fn fixture(args: &[String]) -> ! {
         #[cfg(windows)]
         "window-parent" => windows_console::qualify(),
         #[cfg(windows)]
-        "window-tree" => windows_console::tree(args[1].parse().unwrap()),
+        "window-parent-observe" => windows_console::observe(),
+        #[cfg(windows)]
+        "window-observe" => windows_console::observe_from_no_console(),
+        #[cfg(windows)]
+        "window-tree" | "window-raw-tree" => {
+            windows_console::tree(args[1].parse().unwrap(), args[0] == "window-raw-tree")
+        }
         #[cfg(windows)]
         "runner-exit" => windows_console::exit_with_owned_tree(Path::new(&args[1])),
         #[cfg(windows)]
@@ -212,6 +218,8 @@ fn main() {
     windows_console::no_console_parent();
     #[cfg(windows)]
     windows_console::compatibility();
+    #[cfg(windows)]
+    windows_sentinel::qualify();
     let executable = std::env::current_exe().unwrap();
     let program = executable.to_str().unwrap();
     let run = |args: &[&str], timeout| SystemCommandRunner.run(program, args, timeout);
@@ -271,14 +279,20 @@ fn main() {
         println!("qualify command fixture: {mode}");
         let marker = scratch.marker(mode);
         let start = Instant::now();
-        let result = run(&[mode, marker.to_str().unwrap()], timeout);
+        // Overflow moves more than 16 MiB through two streams. It is a size-cap test, not a 3 s hang test.
+        let deadline = if mode == "overflow" {
+            Duration::from_secs(15)
+        } else {
+            timeout
+        };
+        let result = run(&[mode, marker.to_str().unwrap()], deadline);
         match mode {
             "overflow" => assert_eq!(result, Err(CommandError::Failed)),
             "detached-output" => assert!(result.unwrap().success),
             _ => assert_eq!(result, Err(CommandError::TimedOut)),
         }
         assert!(
-            start.elapsed() < timeout + Duration::from_secs(2),
+            start.elapsed() < deadline + Duration::from_secs(2),
             "deadline and cleanup must remain bounded"
         );
         released(&marker);
@@ -291,3 +305,7 @@ fn main() {
 #[cfg(windows)]
 #[path = "command_runner/windows_console.rs"]
 mod windows_console;
+
+#[cfg(windows)]
+#[path = "command_runner/windows_sentinel.rs"]
+mod windows_sentinel;

@@ -10,6 +10,10 @@ use windows::core::BOOL;
 
 #[path = "windows_console/identity.rs"]
 mod identity;
+#[path = "windows_console/raw.rs"]
+mod raw;
+#[path = "windows_console/station.rs"]
+mod station;
 
 struct WindowSearch {
     target: HWND,
@@ -56,7 +60,7 @@ fn desktop(thread: u32) -> String {
     String::from_utf16(&name[..name.iter().position(|ch| *ch == 0).unwrap()]).unwrap()
 }
 
-pub(super) fn tree(depth: u32) {
+pub(super) fn tree(depth: u32, raw: bool) {
     // SAFETY: read-only queries of this fixture's actual console window and owning thread/process.
     let window = unsafe { GetConsoleWindow() };
     let mut owner = 0;
@@ -78,6 +82,8 @@ pub(super) fn tree(depth: u32) {
         "enumerated": enumerated(window), "members": members[..count],
         "class": String::from_utf16(&class[..length]).unwrap(),
         "identity": identity::current(), "cwd": std::env::current_dir().unwrap(),
+        "station": station::current(),
+        "startup": raw::startup(), "route": if raw { "raw-handle-list" } else { "rust-command" },
         "inherited_env": std::env::var("CODEXBAR_SYNTHETIC_INHERITED").unwrap(),
         "desktop": desktop(unsafe { GetCurrentThreadId() }),
         "window_desktop": if thread == 0 { String::new() } else { desktop(thread) },
@@ -86,13 +92,17 @@ pub(super) fn tree(depth: u32) {
     std::io::stdout().flush().unwrap();
     if depth < 2 {
         // Ordinary child and grandchild. No creation flags, startup hints, vendor settings or hiding.
-        assert!(
-            Command::new(std::env::current_exe().unwrap())
-                .args(["window-tree", &(depth + 1).to_string()])
-                .status()
-                .unwrap()
-                .success()
-        );
+        if raw {
+            raw::child(depth + 1);
+        } else {
+            assert!(
+                Command::new(std::env::current_exe().unwrap())
+                    .args(["window-tree", &(depth + 1).to_string()])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
     }
 }
 
@@ -101,11 +111,17 @@ pub(super) fn qualify() {
         unsafe { GetConsoleWindow() }.0.is_null(),
         "the runner's parent must have no console"
     );
+    for raw in [false, true] {
+        qualify_rows(&collect(raw));
+    }
+}
+
+fn collect(raw: bool) -> Vec<serde_json::Value> {
     let executable = std::env::current_exe().unwrap();
     let output = SystemCommandRunner
         .run(
             executable.to_str().unwrap(),
-            &["window-tree", "0"],
+            &[if raw { "window-raw-tree" } else { "window-tree" }, "0"],
             Duration::from_secs(10),
         )
         .unwrap();
@@ -121,8 +137,12 @@ pub(super) fn qualify() {
         3,
         "root, ordinary child and ordinary grandchild must report"
     );
-    // Reject the actual regression before the positive hidden-console association checks below.
-    for row in &rows {
+    rows
+}
+
+fn qualify_rows(rows: &[serde_json::Value]) {
+    // This is candidate mechanism qualification, distinct from original-seam visible-window reproduction.
+    for row in rows {
         assert_eq!(
             row["visible"], false,
             "background process allocated a visible console: {row}"
@@ -132,7 +152,7 @@ pub(super) fn qualify() {
         assert_eq!(row["depth"], depth);
         assert_ne!(
             row["hwnd"], 0,
-            "missing console is not inherited hidden-console proof: {row}"
+            "QUALIFICATION_PRECONDITION: no real console HWND; cannot prove hidden-console inheritance: {row}"
         );
         assert_ne!(row["owner"], 0, "console owner must be known");
         assert_eq!(row["valid"], true);
@@ -169,11 +189,57 @@ pub(super) fn qualify() {
     }
 }
 
+pub(super) fn observe() {
+    assert!(
+        unsafe { GetConsoleWindow() }.0.is_null(),
+        "observer parent must have no console"
+    );
+    for raw in [false, true] {
+        let rows = collect(raw);
+        let visible_window = rows.iter().skip(1).any(|row| {
+            row["valid"] == true
+                && row["visible"] == true
+                && row["enumerated"] == true
+                && row["owner"] != 0
+                && row["desktop"] == row["window_desktop"]
+        });
+        let interactive = rows
+            .iter()
+            .all(|row| row["station"]["visible"] == true && row["identity"]["session"] != 0);
+        let hidden_shared = rows.iter().all(|row| {
+            row["valid"] == true
+                && row["visible"] == false
+                && row["enumerated"] == true
+                && row["hwnd"] != 0
+                && row["hwnd"] == rows[0]["hwnd"]
+                && row["owner"] != 0
+                && row["owner"] == rows[0]["owner"]
+                && row["desktop"] == row["window_desktop"]
+        });
+        println!(
+            "{}",
+            serde_json::json!({"result": "visibility-observer", "route": if raw { "raw-handle-list" } else { "rust-command" },
+            "visible_descendant_window": visible_window, "interactive_station": interactive,
+            "shared_hidden_console": hidden_shared,
+            "visibility_counterexample": visible_window && interactive,
+            "classification": if !interactive { "unqualified-noninteractive-station" } else if visible_window { "visible-counterexample" } else { "no-reproduction" }})
+        );
+    }
+}
+
+pub(super) fn observe_from_no_console() {
+    parent("window-parent-observe");
+}
+
 pub(super) fn no_console_parent() {
+    parent("window-parent");
+}
+
+fn parent(mode: &str) {
     use std::os::windows::process::CommandExt as _;
     // Only the test's CodexBar-like parent is suppressed. The production runner launches the root.
     let output = Command::new(std::env::current_exe().unwrap())
-        .arg("window-parent")
+        .arg(mode)
         .env("CODEXBAR_SYNTHETIC_INHERITED", "native-fixture")
         .creation_flags(0x0800_0000)
         .output()

@@ -11,10 +11,9 @@ use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::Threading::{
     CREATE_NEW_CONSOLE, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, INFINITE, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread,
-    STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject,
+    EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
+    STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
 use windows::core::{PCWSTR, PWSTR};
 
@@ -43,11 +42,15 @@ impl Child {
     }
 
     pub(super) fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.wait_for(1000)
+    }
+
+    fn wait_for(&mut self, milliseconds: u32) -> io::Result<ExitStatus> {
         let mut code = 0;
         // SAFETY: this process was created by this launcher and its handle stays owned during both queries.
         unsafe {
-            if WaitForSingleObject(HANDLE(self.as_raw_handle()), INFINITE) != WAIT_OBJECT_0 {
-                return Err(io::Error::last_os_error());
+            if WaitForSingleObject(HANDLE(self.as_raw_handle()), milliseconds) != WAIT_OBJECT_0 {
+                return Err(io::Error::other("background process exit could not be confirmed"));
             }
             GetExitCodeProcess(HANDLE(self.as_raw_handle()), &mut code).map_err(io::Error::other)?;
         }
@@ -69,7 +72,9 @@ impl Contained {
     pub(super) fn stop(&mut self) -> io::Result<ExitStatus> {
         let cleanup = self.job.terminate();
         self.child.kill();
-        let status = self.child.wait();
+        // The job drain already spent the one-second cleanup budget and verified retained members.
+        // Never extend it with an unbounded root wait after a failed drain or kill.
+        let status = self.child.wait_for(0);
         cleanup?;
         status
     }
@@ -77,6 +82,9 @@ impl Contained {
 
 pub(super) fn spawn(program: &str, args: &[&str]) -> io::Result<Contained> {
     let (application, mut line) = arguments::command_line(program, args)?;
+    // Cooperate with the legacy contained/login/browser launchers, not just other native usage queries.
+    // Declare before the handles so every error path closes them before releasing this guard.
+    let guard = crate::platform::spawn_guard();
     let input = OpenOptions::new().read(true).open("NUL")?;
     let (stdout, out) = pipe()?;
     let (stderr, err) = pipe()?;
@@ -117,6 +125,7 @@ pub(super) fn spawn(program: &str, args: &[&str]) -> io::Result<Contained> {
     let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess.0) };
     let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread.0) };
     drop((input, out, err, attributes));
+    drop(guard);
     let mut child = Child {
         process,
         stdout: Some(stdout),

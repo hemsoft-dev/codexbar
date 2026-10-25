@@ -190,7 +190,7 @@ fn open_codexbar(target: Option<&host::Target>) {
             command.arg(crate::handoff::METRIC_ARG).arg(metric);
         }
     }
-    let _ = command.spawn();
+    let _ = codexbar_providers::platform::spawn(&mut command);
 }
 
 /// One provider object per client request; the server lives as long as any is held (out-of-process COM's rule).

@@ -70,6 +70,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # GPUI's X11 and Wayland backends link these; the tray icon and the keyring speak D-Bus in pure Rust.
       - name: Install Linux build dependencies
@@ -86,6 +88,20 @@ jobs:
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+
+      - name: Observe original and candidate Windows console seams
+        if: runner.os == 'Windows'
+        env:
+          CONSOLE_CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python scripts/qualify-provider-console.py
+
+      - name: Upload Windows console qualification
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: provider-console
+          path: artifacts/provider-console/
+          retention-days: 14
 
       - name: Format Check
         run: cargo fmt --all --check

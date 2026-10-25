@@ -2,6 +2,20 @@
 
 use std::path::{Path, PathBuf};
 
+/// Serialize CodexBar-owned Windows launches while temporary inheritable standard handles exist.
+/// Rust's private spawn mutex does not include native CreateProcessW callers.
+pub fn spawn(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    #[cfg(windows)]
+    let _guard = spawn_guard();
+    command.spawn()
+}
+
+#[cfg(windows)]
+pub(crate) fn spawn_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LAUNCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LAUNCH.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The user's home folder: `%USERPROFILE%` on Windows, `$HOME` elsewhere.
 pub fn home_dir() -> Option<PathBuf> {
     codexbar_core::home_dir()
@@ -128,12 +142,43 @@ pub fn open_url(url: &str) -> std::io::Result<()> {
         command.arg(url);
         command
     };
-    command.spawn().map(|_| ())
+    spawn(&mut command).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_launch_waits_until_native_inheritable_handles_are_closed() {
+        use std::os::windows::process::CommandExt as _;
+        use std::time::Duration;
+        let guard = spawn_guard();
+        let (started, ready) = std::sync::mpsc::channel();
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .arg("--list")
+                .creation_flags(0x0800_0000)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            started.send(()).unwrap();
+            let mut child = spawn(&mut command).unwrap();
+            finished.send(()).unwrap();
+            assert!(child.wait().unwrap().success());
+        });
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_eq!(
+            result.recv_timeout(Duration::from_millis(200)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(guard);
+        result.recv_timeout(Duration::from_secs(3)).unwrap();
+        worker.join().unwrap();
+    }
 
     /// A program file the system would run.
     fn put(path: &Path) {
