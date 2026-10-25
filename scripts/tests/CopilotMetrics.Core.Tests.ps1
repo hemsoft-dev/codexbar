@@ -150,3 +150,6 @@ Assert-Equal -Expected '' -Actual $pendingEntry.RefreshRunId -Because 'unattempt
 Assert-Equal -Expected 0 -Actual @($pendingEntry.Responses).Count -Because 'an unattempted user has no fabricated response'
 
 Write-Output "Passed $script:testCount Copilot metrics assertions."
+
+& (Join-Path $PSScriptRoot 'CopilotMetrics.Process.Tests.ps1')
+& (Join-Path $PSScriptRoot 'CopilotMetrics.Collector.Tests.ps1')

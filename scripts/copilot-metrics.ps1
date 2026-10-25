@@ -23,6 +23,7 @@ $ErrorActionPreference = 'Stop'
 $InformationPreference = 'Continue'
 
 Import-Module (Join-Path $PSScriptRoot 'CopilotMetrics.Core.psm1') -Force
+Import-Module (Join-Path $PSScriptRoot 'CopilotMetrics.Process.psm1') -Force
 
 $enterpriseName = $Enterprise
 $yearValue = $Year
@@ -209,42 +210,6 @@ function Get-DefaultGitHubUser {
     $null
 }
 
-function Get-GitHubCliToken {
-    param([string]$UserName)
-
-    if ($UserName) {
-        try {
-            $userToken = gh auth token --user $UserName 2>$null
-            if ($userToken) {
-                return [pscustomobject]@{
-                    Token  = [string]$userToken
-                    Source = "gh auth token --user $UserName"
-                }
-            }
-        }
-        catch {
-            throw "No GitHub CLI token found for -GitHubUser $UserName. Run 'gh auth login --user $UserName' or pass -Token."
-        }
-
-        throw "No GitHub CLI token found for -GitHubUser $UserName. Run 'gh auth login --user $UserName' or pass -Token."
-    }
-
-    try {
-        $activeToken = gh auth token 2>$null
-        if ($activeToken) {
-            return [pscustomobject]@{
-                Token  = [string]$activeToken
-                Source = 'gh auth token for the active account'
-            }
-        }
-    }
-    catch {
-        $null = $_
-    }
-
-    $null
-}
-
 if (-not $githubUserValue) {
     $githubUserValue = Get-DefaultGitHubUser
 }
@@ -261,7 +226,7 @@ if (-not $inputPathValue -and -not $Token -and $env:GITHUB_TOKEN) {
     $tokenSource = 'GITHUB_TOKEN'
 }
 if (-not $inputPathValue -and -not $Token) {
-    $githubCliToken = Get-GitHubCliToken -UserName $githubUserValue
+    $githubCliToken = Get-CopilotGitHubCliToken -UserName $githubUserValue
     if ($githubCliToken) {
         $Token = $githubCliToken.Token
         $tokenSource = $githubCliToken.Source
