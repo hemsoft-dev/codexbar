@@ -62,6 +62,10 @@ fn fixture(args: &[String]) -> ! {
         "stdin" => assert_eq!(std::io::stdin().read(&mut [0u8; 1]).unwrap(), 0),
         "hang" | "overflow" => {
             let _held = hold(Path::new(&args[1]));
+            #[cfg(windows)]
+            if args.get(2).is_some_and(|arg| arg == "abrupt-exit") {
+                windows_console::register_abrupt_identity(Path::new(&args[1]));
+            }
             if args[0] == "overflow" {
                 emit("both", LIMIT + 1);
             }
@@ -72,6 +76,10 @@ fn fixture(args: &[String]) -> ! {
         "descendant" | "detached-output" | "redirected-inherited" => {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command.args(["hang", &args[1]]).stdin(Stdio::null());
+            #[cfg(windows)]
+            if args.get(2).is_some_and(|arg| arg == "abrupt-exit") {
+                command.arg("abrupt-exit");
+            }
             if args[0] != "descendant" {
                 command.stdout(Stdio::null()).stderr(Stdio::null());
                 #[cfg(windows)]

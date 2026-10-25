@@ -8,6 +8,8 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowThreadProcessId, IsWindow, IsWindowVisible};
 use windows::core::BOOL;
 
+#[path = "windows_console/abrupt.rs"]
+mod abrupt;
 #[path = "windows_console/hooks.rs"]
 mod hooks;
 #[path = "windows_console/identity.rs"]
@@ -347,26 +349,7 @@ pub(super) fn compatibility() {
         "repeated queries must release process, thread, pipe and job handles"
     );
     let marker = scratch.marker("parent-exit");
-    let status = Command::new(program)
-        .args(["runner-exit", marker.to_str().unwrap()])
-        .creation_flags(0x0800_0000)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    // Job-handle closure on abrupt parent exit is asynchronous. Wait only on our ready-file identity.
-    let start = Instant::now();
-    loop {
-        let file = File::open(&marker).unwrap();
-        if file.try_lock().is_ok() {
-            break;
-        }
-        assert!(
-            start.elapsed() < Duration::from_secs(3),
-            "owned tree outlived its runner process"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    released(&marker);
+    abrupt::qualify(program, &marker);
     println!("Windows native and batch arguments, repeated handle cleanup and abrupt-parent job cleanup passed");
 }
 
@@ -384,21 +367,9 @@ pub(super) fn lookup() {
 }
 
 pub(super) fn exit_with_owned_tree(marker: &Path) -> ! {
-    let marker = marker.to_owned();
-    let runner_marker = marker.clone();
-    std::thread::spawn(move || {
-        let executable = std::env::current_exe().unwrap();
-        let _ = SystemCommandRunner.run(
-            executable.to_str().unwrap(),
-            &["descendant", runner_marker.to_str().unwrap()],
-            Duration::from_secs(60),
-        );
-    });
-    let start = Instant::now();
-    while !marker.with_extension("ready").is_file() {
-        assert!(start.elapsed() < Duration::from_secs(5));
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    // No Rust destructors run: only Windows closing the runner's job handle can stop the owned descendant.
-    std::process::exit(0)
+    abrupt::exit_with_owned_tree(marker)
+}
+
+pub(super) fn register_abrupt_identity(marker: &Path) {
+    abrupt::register_leaf(marker);
 }
