@@ -1,4 +1,4 @@
-//! Credential-free native subprocess fixtures. No shell or installed provider CLI is used.
+//! Credential-free native fixtures and a synthetic Windows batch shim. No installed provider CLI is used.
 use codexbar_providers::{CommandError, CommandRunner, SystemCommandRunner};
 use std::fs::File;
 use std::io::{Read as _, Write as _};

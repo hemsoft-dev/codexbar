@@ -12,9 +12,10 @@ The proposed Windows usage runner requests a new console with
 The runner never calls `ShowWindow`, changes the active desktop or modifies
 terminal settings. The intended boundary is one hidden console inherited by
 ordinary descendants. The old launcher already used `CREATE_NO_WINDOW`.
-The first hosted ordinary-descendant fixture did not reproduce a visible window:
-root, child and grandchild all reported null HWNDs. A null HWND does not prove
-that a process lacks a console connection. This candidate is unqualified as a
+The hosted original production seam did not reproduce a visible window through
+either Rust `Command` or raw Win32 creation on interactive `WinSta0`. Its root,
+child and grandchild reported null HWNDs with populated console-client lists.
+A null HWND does not prove that a process lacks a console connection. This candidate is unqualified as a
 fix for the reported popup until an actual original-seam visibility
 counterexample and passing candidate evidence exist.
 See Microsoft's [creation flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
@@ -170,10 +171,13 @@ accepts the exact `-1` sentinel, while other invalid group fields remain errors.
 Workspace tests and CI run this harness on Windows, macOS and Linux. No account,
 credential store, browser, desktop input or live provider response is involved.
 
-The Windows console fixture starts a no-console caller of the real
+The Windows console fixture starts a detached caller of the real
 `SystemCommandRunner`. Its provider root starts an ordinary child, which starts
 an ordinary grandchild; neither descendant sets creation flags or visibility
-hints. All three report console HWND, visibility samples, owner, window class,
+hints. Only the synthetic caller uses `DETACHED_PROCESS`, and it verifies both
+a null HWND and an empty console-client query before invoking the runner.
+This distinguishes the caller precondition from an invisible console connection.
+All three provider processes report console HWND, visibility samples, owner, window class,
 console-process membership, startup flags, window station and desktop.
 It exercises both Rust `Command` and raw Win32 children with an explicit standard
 handle list, `STARTF_USESTDHANDLES` and creation flags `0x80400`. Neither route
@@ -196,7 +200,9 @@ releases its locked resource. Existing finite-output, size-cap, stderr, exit,
 null-input and timeout fixtures still run through the production collector.
 The unrelated-pipe sentinel closes its intended writer while a provider still
 holds a locked resource, and requires EOF before provider exit. A leaked
-inheritable writer cannot pass through later job cleanup. A concurrent native
+inheritable writer cannot pass through later job cleanup. A retained process
+handle must also remain nonsignaled before and after EOF, independently of file-lock
+release timing. A concurrent native
 launch/legacy-launch guard check covers coordination with the existing launcher.
 
 The original launcher is retained in baseline commit
@@ -223,3 +229,13 @@ tests. Execution results and their exact revisions belong in
 successful compilation alone does not establish RED or GREEN. This qualification
 does not establish deployed-image parity, vendor re-exec behavior or game-crash
 causality. Deployment remains a separate operator decision.
+
+The [`b132c8f` Windows run](https://github.com/hemsoft-dev/codexbar/actions/runs/40174761361/job/121112944158)
+retained `restored: true` and `qualification: unqualified`. Both original routes
+reported no reproduction on interactive `WinSta0`; both candidate routes reported
+one valid, enumerated, shared hidden console. That is mechanism evidence, not
+original visibility RED. Clippy then rejected the legacy `Contained::stop` method
+as unused on Windows, so the full runtime test was skipped. The method is now
+compiled only for the Unix runner that calls it; the native Windows runner keeps
+its own bounded cleanup path. This preserves the observed failure and leaves
+full current-head runtime qualification pending.

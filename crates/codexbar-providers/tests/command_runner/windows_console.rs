@@ -107,10 +107,7 @@ pub(super) fn tree(depth: u32, raw: bool) {
 }
 
 pub(super) fn qualify() {
-    assert!(
-        unsafe { GetConsoleWindow() }.0.is_null(),
-        "the runner's parent must have no console"
-    );
+    caller_precondition();
     for raw in [false, true] {
         qualify_rows(&collect(raw));
     }
@@ -190,10 +187,7 @@ fn qualify_rows(rows: &[serde_json::Value]) {
 }
 
 pub(super) fn observe() {
-    assert!(
-        unsafe { GetConsoleWindow() }.0.is_null(),
-        "observer parent must have no console"
-    );
+    caller_precondition();
     for raw in [false, true] {
         let rows = collect(raw);
         let visible_window = rows.iter().skip(1).any(|row| {
@@ -235,13 +229,30 @@ pub(super) fn no_console_parent() {
     parent("window-parent");
 }
 
+fn caller_precondition() {
+    let mut clients = [0; 16];
+    let count = unsafe { GetConsoleProcessList(&mut clients) };
+    let window = unsafe { GetConsoleWindow() };
+    assert!(window.0.is_null());
+    assert_eq!(
+        count, 0,
+        "the synthetic caller must have no console association, not merely a null HWND"
+    );
+    println!(
+        "{}",
+        serde_json::json!({"result": "caller-precondition", "console_clients": count,
+        "hwnd": window.0 as usize, "station": station::current(), "identity": identity::current()})
+    );
+}
+
 fn parent(mode: &str) {
     use std::os::windows::process::CommandExt as _;
-    // Only the test's CodexBar-like parent is suppressed. The production runner launches the root.
+    // Only the CodexBar-like caller is detached, proving no console association. The production runner launches
+    // the provider root; ordinary children retain their unconfigured creation flags.
     let output = Command::new(std::env::current_exe().unwrap())
         .arg(mode)
         .env("CODEXBAR_SYNTHETIC_INHERITED", "native-fixture")
-        .creation_flags(0x0800_0000)
+        .creation_flags(0x0000_0008) // DETACHED_PROCESS, only on the synthetic caller.
         .output()
         .unwrap();
     print!("{}", String::from_utf8_lossy(&output.stdout));

@@ -16,16 +16,12 @@ pub(crate) struct Contained {
     _job: Option<job::Job>,
 }
 
+#[cfg(not(windows))]
 impl Contained {
-    /// Ends the job's descendants and reaps the root. Unix callers stop their owned group before this call.
+    /// Reaps the Unix root after the caller stops its owned process group.
     pub(crate) fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        #[cfg(windows)]
-        let job_result = self._job.as_ref().map_or(Ok(()), job::Job::terminate);
         let _ = self.child.kill();
-        let status = self.child.wait();
-        #[cfg(windows)]
-        job_result?;
-        status
+        self.child.wait()
     }
 }
 
