@@ -1,6 +1,7 @@
 //! Inert hosted qualification only. No vendor, account, global window contents or external broker probing.
 //! A prearmed WinEvent message pump and independent enumeration cover owned fixture windows.
 //! Retained process intervals qualify temporal coverage. Outside-broker ownership remains unknown.
+use super::diagnostics::{Decision, Diagnostics, OwnedObservation, Reason, Stage};
 use super::*;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,7 +27,7 @@ use windows::Win32::System::JobObjects::{
 use windows::Win32::System::StationsAndDesktops::{
     CloseDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS, OpenInputDesktop,
 };
-use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+use windows::Win32::System::SystemInformation::{GetSystemTimeAsFileTime, GetTickCount64};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetProcessIdOfThread, GetProcessTimes, OpenProcess, OpenThread,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, THREAD_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
@@ -293,6 +294,7 @@ struct Observer {
     max_hook_lag_ms: u32,
     known: BTreeMap<usize, Value>,
     image: String,
+    diagnostics: Diagnostics,
 }
 impl Observer {
     fn retain(&mut self) -> Result<()> {
@@ -471,16 +473,46 @@ impl Observer {
             "hwnd": hwnd.0 as usize, "owner_pid": pid, "owner_creation_time": identity, "thread": tid, "top_level": true,
             "class": String::from_utf16_lossy(&class[..length as usize]), "visible": visible, "desktop": desktop,
             "rect": [rect.left, rect.top, rect.right, rect.bottom]});
+        // Provenance is the independently queried window row about to be persisted. This is history,
+        // not evidence that a later unresolved event belongs to the same HWND generation.
+        self.diagnostics.observe_owned(OwnedObservation {
+            hwnd: hwnd.0 as u64,
+            pid,
+            birth: identity,
+            creator_thread: tid,
+            received_ms: unsafe { GetTickCount64() },
+            evidence_event_index: self.events.len(),
+        });
         self.known.insert(hwnd.0 as usize, row.clone());
         self.events.push(row);
         Ok(())
     }
     fn pump_events(&mut self) -> Result<()> {
         for event in super::hooks::pump()? {
+            let diagnostic_event = super::diagnostics::Event {
+                hwnd: event.hwnd.0 as u64,
+                thread: event.thread,
+                kind: event.kind,
+                generated_ms: event.generated_ms,
+                received_ms: event.received_ms,
+                callback_sequence: event.sequence,
+            };
+            let mut decision = Decision {
+                stage: Stage::Accepted,
+                reason: Reason::Accepted,
+                unresolved_before: self.unresolved_events,
+                unresolved_after: self.unresolved_events,
+                cached_creator_thread_match: None,
+                observation_sequence_before_resolution: self.diagnostics.sequence(),
+                independent_observation: None,
+            };
             let mut pid = 0;
             unsafe { SetLastError(WIN32_ERROR(0)) };
             unsafe { GetWindowThreadProcessId(event.hwnd, Some(&mut pid)) };
             let window_error = if pid == 0 { unsafe { GetLastError() }.0 } else { 0 };
+            if pid == 0 {
+                decision.stage = Stage::WindowOwner;
+            }
             let mut thread_error = String::new();
             // A destroyed HWND can still have a live generating thread. Query only identity, no contents.
             if pid == 0 {
@@ -490,17 +522,23 @@ impl Observer {
                         pid = unsafe { GetProcessIdOfThread(HANDLE(thread.as_raw_handle())) };
                         if pid == 0 {
                             thread_error = format!("GetProcessIdOfThread: {}", unsafe { GetLastError() }.0);
+                            decision.stage = Stage::ThreadOwner;
                         }
                     }
-                    Err(error) => thread_error = failure("OpenThread WinEvent identity", error),
+                    Err(error) => {
+                        thread_error = failure("OpenThread WinEvent identity", error);
+                        decision.stage = Stage::ThreadOpen;
+                    }
                 }
             }
             let previous = self.known.get(&(event.hwnd.0 as usize)).cloned();
+            decision.cached_creator_thread_match = previous.as_ref().map(|row| row["thread"] == event.thread);
             if pid == 0
                 && let Some(row) = &previous
                 && row["thread"] == event.thread
             {
                 pid = row["owner_pid"].as_u64().unwrap_or(0) as u32;
+                decision.stage = Stage::CacheFallback;
             }
             if pid == 0 {
                 self.unresolved_events += 1;
@@ -508,28 +546,54 @@ impl Observer {
                     .unresolved_api_errors
                     .entry(format!("GetWindowThreadProcessId: {window_error}; {thread_error}"))
                     .or_default() += 1;
+                decision.reason = Reason::Unresolved;
+                decision.unresolved_after = self.unresolved_events;
+                self.diagnostics.record(diagnostic_event, decision); // Preserve anonymous decision AFTER increment, BEFORE discard.
                 continue;
             } // Unknown ownership cannot certify complete coverage.
-            if pid != self.anchor && !self.processes.contains_key(&pid) {
-                self.retain()?;
+            if pid != self.anchor
+                && !self.processes.contains_key(&pid)
+                && let Err(error) = self.retain()
+            {
+                decision.stage = Stage::OwnedFilter;
+                decision.reason = Reason::QueryFailed;
+                self.diagnostics.record(diagnostic_event, decision);
+                return Err(error);
             }
             let owned = self.processes.contains_key(&pid);
             let control = pid == self.anchor
                 && (event.hwnd.0 as usize == self.control_hwnd.load(Ordering::SeqCst)
                     || previous.as_ref().is_some_and(|row| row["phase"] == "positive-control"));
             if !owned && !control {
+                decision.stage = Stage::OwnedFilter;
+                decision.reason = Reason::OutsideOwned;
+                self.diagnostics.record(diagnostic_event, decision);
                 continue;
             } // Persist no foreign window tuple or metadata.
             self.max_hook_lag_ms = self.max_hook_lag_ms.max(event.lag_ms);
             if event.kind != EVENT_OBJECT_DESTROY && unsafe { IsWindow(Some(event.hwnd)) }.as_bool() {
-                self.record(event.hwnd)?;
+                if let Err(error) = self.record(event.hwnd) {
+                    decision.stage = Stage::Metadata;
+                    decision.reason = Reason::QueryFailed;
+                    self.diagnostics.record(diagnostic_event, decision);
+                    return Err(error);
+                }
+                if self.diagnostics.sequence() > decision.observation_sequence_before_resolution {
+                    decision.independent_observation = Some(self.diagnostics.sequence());
+                }
             }
             if unsafe { IsWindow(Some(event.hwnd)) }.as_bool()
                 && unsafe { GetAncestor(event.hwnd, GA_ROOT) } != event.hwnd
             {
+                decision.stage = Stage::Metadata;
+                decision.reason = Reason::NotTopLevel;
+                self.diagnostics.record(diagnostic_event, decision);
                 continue;
             }
             let Some(mut row) = self.known.get(&(event.hwnd.0 as usize)).cloned().or(previous) else {
+                decision.stage = Stage::Metadata;
+                decision.reason = Reason::MissingMetadata;
+                self.diagnostics.record(diagnostic_event, decision);
                 return Err("owned WinEvent lacks independently queried window metadata".into());
             };
             let born = if control {
@@ -538,10 +602,16 @@ impl Observer {
                 self.processes[&pid].born
             };
             if row["owner_pid"] != pid || row["owner_creation_time"] != born || row["thread"] != event.thread {
+                decision.stage = Stage::Identity;
+                decision.reason = Reason::IdentityMismatch;
+                self.diagnostics.record(diagnostic_event, decision);
                 return Err("WinEvent identity differs from retained window owner/thread".into());
             }
             if self.events.len() >= CAP {
                 self.cap_hit = true;
+                decision.stage = Stage::EventCap;
+                decision.reason = Reason::CapReached;
+                self.diagnostics.record(diagnostic_event, decision);
                 return Err("window event cap reached".into());
             }
             row["source"] = json!("winevent");
@@ -561,6 +631,7 @@ impl Observer {
             if control && event.kind == EVENT_OBJECT_DESTROY {
                 self.hook_control_destroyed = true;
             }
+            self.diagnostics.record(diagnostic_event, decision);
             self.events.push(row);
         }
         Ok(())
@@ -653,6 +724,7 @@ impl Observer {
                         .is_some_and(|exit| exit > 0 && exit <= coverage_end)
             });
         json!({"events": self.events, "lifetimes": lifetimes, "errors": errors, "control_seen": self.control_seen,
+            "resolver_diagnostics": self.diagnostics.report(),
             "scans": self.scans, "max_scan_gap_us": self.max_gap_us, "event_cap": CAP, "event_cap_hit": self.cap_hit,
             "coverage": {"scope": "owned-fixture-top-level-windows", "method": "prearmed out-of-context WinEvent pump plus independent enumeration",
                 "start_100ns": self.coverage_start, "end_100ns": coverage_end, "hook_closed": hook_closed, "queue_drained": queue_drained,
@@ -806,6 +878,7 @@ pub(super) fn experiment() {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),
+            diagnostics: Diagnostics::new(),
         };
         // READY follows hook installation and a successful pump/scan; providers/control have not started.
         let ready = ready.and_then(|value| {

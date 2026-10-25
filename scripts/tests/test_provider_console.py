@@ -155,6 +155,19 @@ class ObserverPolicy(unittest.TestCase):
         self.assertEqual(POLICY.classify(original, candidate)["qualification"], "unqualified")
         self.assertEqual((original, candidate), saved)
 
+    def test_measurement_diagnostics_cannot_override_unknown_or_lost_events(self):
+        for coverage in ({"unresolved_event_owners": 2}, {"window_lifecycle_complete": False}):
+            candidate = fixture()
+            candidate["observation"]["coverage"].update(coverage)
+            candidate["observation"]["resolver_diagnostics"] = {
+                "counter_increment_preceded_diagnostic": True, "events_with_fresh_owned_cache_observation": [{}],
+                "historical_owned_cache": [{}], "decisions": 100,
+            }
+            self.assertEqual(POLICY.classify(fixture(True), candidate)["qualification"], "unqualified")
+        candidate = fixture()
+        candidate["observation"].update(errors=["callback queue lost events"], resolver_diagnostics={"decisions": 100})
+        self.assertEqual(POLICY.classify(fixture(True), candidate)["qualification"], "unqualified")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,10 +16,13 @@ pub(super) struct Event {
     pub thread: u32,
     pub generated_ms: u32,
     pub lag_ms: u32,
+    pub received_ms: u64,
+    pub sequence: u64,
 }
 thread_local! {
     static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
     static LOST: Cell<bool> = const { Cell::new(false) };
+    static SEQUENCE: Cell<u64> = const { Cell::new(0) };
 }
 unsafe extern "system" fn callback(
     _: HWINEVENTHOOK,
@@ -43,12 +46,20 @@ unsafe extern "system" fn callback(
             LOST.with(|lost| lost.set(true));
             return;
         }
+        let received_ms = unsafe { GetTickCount64() };
+        let sequence = SEQUENCE.with(|counter| {
+            let next = counter.get() + 1;
+            counter.set(next);
+            next
+        });
         queue.push(Event {
             hwnd,
             kind,
             thread,
             generated_ms,
-            lag_ms: (unsafe { GetTickCount64() } as u32).wrapping_sub(generated_ms),
+            lag_ms: (received_ms as u32).wrapping_sub(generated_ms),
+            received_ms,
+            sequence,
         });
     });
 }
@@ -58,6 +69,7 @@ impl Hook {
     pub fn install() -> std::result::Result<Self, String> {
         EVENTS.with(|queue| queue.borrow_mut().clear());
         LOST.with(|lost| lost.set(false));
+        SEQUENCE.with(|counter| counter.set(0));
         let hook = unsafe {
             SetWinEventHook(
                 EVENT_OBJECT_CREATE,

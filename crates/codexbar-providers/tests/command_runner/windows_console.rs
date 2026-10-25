@@ -10,6 +10,8 @@ use windows::core::BOOL;
 
 #[path = "windows_console/abrupt.rs"]
 mod abrupt;
+#[path = "windows_console/diagnostics.rs"]
+mod diagnostics;
 #[path = "windows_console/hooks.rs"]
 mod hooks;
 #[path = "windows_console/identity.rs"]

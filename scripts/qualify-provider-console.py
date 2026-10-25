@@ -14,9 +14,10 @@ SEAM = ["crates/codexbar-providers/src/command.rs",
         "crates/codexbar-providers/src/command/pipe.rs",
         "crates/codexbar-providers/src/contained.rs"]
 FIXTURE = ["crates/codexbar-providers/tests/command_runner.rs",
+           "crates/codexbar-providers/tests/window_diagnostics.rs",
            "crates/codexbar-providers/tests/command_runner/windows_console.rs",
            *[f"crates/codexbar-providers/tests/command_runner/windows_console/{name}.rs"
-             for name in ("raw", "station", "identity", "observer", "hooks", "abrupt")],
+             for name in ("raw", "station", "identity", "observer", "hooks", "abrupt", "diagnostics")],
            "scripts/qualify-provider-console.py", "scripts/tests/test_provider_console.py"]
 ROOT = Path(__file__).resolve().parent.parent
 EXPERIMENT_SECONDS = 30
