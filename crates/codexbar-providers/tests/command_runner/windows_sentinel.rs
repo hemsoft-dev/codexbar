@@ -1,8 +1,9 @@
 //! An unrelated inheritable writer must not enter a live production-launched provider.
 use super::*;
-use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
-use windows::Win32::Foundation::{ERROR_BROKEN_PIPE, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation};
+use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+use windows::Win32::Foundation::{ERROR_BROKEN_PIPE, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_TIMEOUT};
 use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
 
 pub(super) fn qualify() {
     let mut read = HANDLE::default();
@@ -37,6 +38,16 @@ pub(super) fn qualify() {
             std::thread::sleep(Duration::from_millis(5));
         }
         // The provider is alive and holding its lock. Close the sole intended writer while it remains alive.
+        let pid = std::fs::read_to_string(marker.with_extension("ready"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.unwrap();
+        let process = unsafe { OwnedHandle::from_raw_handle(process.0) };
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), 0) },
+            WAIT_TIMEOUT
+        );
         let held = File::open(marker).unwrap();
         assert!(matches!(held.try_lock(), Err(std::fs::TryLockError::WouldBlock)));
         drop(write);
@@ -46,6 +57,11 @@ pub(super) fn qualify() {
             error.code(),
             ERROR_BROKEN_PIPE.to_hresult(),
             "unrelated inheritable writer entered live provider"
+        );
+        assert_eq!(
+            unsafe { WaitForSingleObject(HANDLE(process.as_raw_handle()), 0) },
+            WAIT_TIMEOUT,
+            "sentinel EOF must be verified while the retained provider process is alive"
         );
         assert!(
             matches!(held.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
