@@ -8,8 +8,12 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowThreadProcessId, IsWindow, IsWindowVisible};
 use windows::core::BOOL;
 
+#[path = "windows_console/hooks.rs"]
+mod hooks;
 #[path = "windows_console/identity.rs"]
 mod identity;
+#[path = "windows_console/observer.rs"]
+mod observer;
 #[path = "windows_console/raw.rs"]
 mod raw;
 #[path = "windows_console/station.rs"]
@@ -61,12 +65,19 @@ fn desktop(thread: u32) -> String {
 }
 
 pub(super) fn tree(depth: u32, raw: bool) {
+    // Qualification-only registration/ACK and refreshed samples. Ordinary creation flags stay unchanged.
+    let _observed_lifetime = observer::client_enter(depth, raw);
     // SAFETY: read-only queries of this fixture's actual console window and owning thread/process.
     let window = unsafe { GetConsoleWindow() };
     let mut owner = 0;
     let thread = unsafe { GetWindowThreadProcessId(window, Some(&mut owner)) };
     let mut members = [0; 16];
     let count = unsafe { GetConsoleProcessList(&mut members) } as usize;
+    let list_error = if count == 0 {
+        Some(unsafe { windows::Win32::Foundation::GetLastError() }.0)
+    } else {
+        None
+    };
     assert!(count <= members.len());
     let mut class = [0u16; 256];
     let length = unsafe { GetClassNameW(window, &mut class) } as usize;
@@ -80,6 +91,7 @@ pub(super) fn tree(depth: u32, raw: bool) {
         "visible": visible, "owner": owner,
         "valid": unsafe { IsWindow(Some(window)) }.as_bool(),
         "enumerated": enumerated(window), "members": members[..count],
+        "console_process_list_return": count, "console_process_list_error": list_error,
         "class": String::from_utf16(&class[..length]).unwrap(),
         "identity": identity::current(), "cwd": std::env::current_dir().unwrap(),
         "station": station::current(),
@@ -188,40 +200,21 @@ fn qualify_rows(rows: &[serde_json::Value]) {
 
 pub(super) fn observe() {
     caller_precondition();
-    for raw in [false, true] {
-        let rows = collect(raw);
-        let visible_window = rows.iter().skip(1).any(|row| {
-            row["valid"] == true
-                && row["visible"] == true
-                && row["enumerated"] == true
-                && row["owner"] != 0
-                && row["desktop"] == row["window_desktop"]
-        });
-        let interactive = rows
-            .iter()
-            .all(|row| row["station"]["visible"] == true && row["identity"]["session"] != 0);
-        let hidden_shared = rows.iter().all(|row| {
-            row["valid"] == true
-                && row["visible"] == false
-                && row["enumerated"] == true
-                && row["hwnd"] != 0
-                && row["hwnd"] == rows[0]["hwnd"]
-                && row["owner"] != 0
-                && row["owner"] == rows[0]["owner"]
-                && row["desktop"] == row["window_desktop"]
-        });
-        println!(
-            "{}",
-            serde_json::json!({"result": "visibility-observer", "route": if raw { "raw-handle-list" } else { "rust-command" },
-            "visible_descendant_window": visible_window, "interactive_station": interactive,
-            "shared_hidden_console": hidden_shared,
-            "visibility_counterexample": visible_window && interactive,
-            "classification": if !interactive { "unqualified-noninteractive-station" } else if visible_window { "visible-counterexample" } else { "no-reproduction" }})
-        );
-    }
+    observer::experiment();
 }
 
 pub(super) fn observe_from_no_console() {
+    // The outer inert fixture owns this kill-on-close job until process exit. A script watchdog killing
+    // this retained Popen identity therefore also closes its entire synthetic experiment, never global PIDs.
+    if let Err(error) = observer::own_experiment_job() {
+        println!(
+            "{}",
+            serde_json::json!({"result": "visibility-observer", "route": "raw-handle-list",
+            "ready": false, "classification": "unqualified", "full_observation": false,
+            "failure": error, "coverage": "unknown", "cleanup": "no child launched"})
+        );
+        return;
+    }
     parent("window-parent-observe");
 }
 
@@ -232,25 +225,38 @@ pub(super) fn no_console_parent() {
 fn caller_precondition() {
     let mut clients = [0; 16];
     let count = unsafe { GetConsoleProcessList(&mut clients) };
+    let error = if count == 0 {
+        Some(unsafe { windows::Win32::Foundation::GetLastError() }.0)
+    } else {
+        None
+    };
     let window = unsafe { GetConsoleWindow() };
+    println!(
+        "{}",
+        serde_json::json!({"result": "caller-precondition", "console_process_list_return": count,
+        "console_process_list_error": error, "query_succeeded": count != 0,
+        "creation_contract": "DETACHED_PROCESS on synthetic caller only", "requested_creation_flags": 8,
+        "startup": raw::startup(), "stdio": observer::stdio(),
+        "hwnd": window.0 as usize, "station": station::current(), "identity": identity::current()})
+    );
     assert!(window.0.is_null());
     assert_eq!(
         count, 0,
-        "the synthetic caller must have no console association, not merely a null HWND"
-    );
-    println!(
-        "{}",
-        serde_json::json!({"result": "caller-precondition", "console_clients": count,
-        "hwnd": window.0 as usize, "station": station::current(), "identity": identity::current()})
+        "detached caller unexpectedly has a successful console association query"
     );
 }
 
 fn parent(mode: &str) {
     use std::os::windows::process::CommandExt as _;
-    // Only the CodexBar-like caller is detached, proving no console association. The production runner launches
-    // the provider root; ordinary children retain their unconfigured creation flags.
-    let output = Command::new(std::env::current_exe().unwrap())
-        .arg(mode)
+    // DETACHED_PROCESS is the caller creation contract. A failed console query is reported as failure,
+    // not a successful empty membership list. The production runner configures only the provider root.
+    let scratch = Scratch::new();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command.arg(mode);
+    if mode == "window-parent-observe" {
+        command.env(observer::DIRECTORY_ENV, &scratch.0);
+    }
+    let output = command
         .env("CODEXBAR_SYNTHETIC_INHERITED", "native-fixture")
         .creation_flags(0x0000_0008) // DETACHED_PROCESS, only on the synthetic caller.
         .output()
