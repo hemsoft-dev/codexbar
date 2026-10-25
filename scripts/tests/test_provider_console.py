@@ -9,15 +9,16 @@ POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
 
 
-def fixture(visible=False):
+def fixture(visible=False, console_owner=900):
     lives = [{"depth": depth, "pid": 100 + depth, "parent_pid": 99 + depth,
               "creation_time": 200 + depth, "exit_time": 800 - depth,
               "session": 2, "ack": True, "retained_exit": True} for depth in range(3)]
-    rows = [{"depth": depth, "pid": 100 + depth, "hwnd": 42, "owner": 100,
+    rows = [{"depth": depth, "pid": 100 + depth, "hwnd": 42, "owner": console_owner,
              "valid": True, "enumerated": True, "visible": False,
              "class": "ConsoleWindowClass", "desktop": "Default", "window_desktop": "Default"}
             for depth in range(3)]
-    events = [{"phase": "provider", "source": "winevent", "hwnd": 42,
+    # Independent owned-window evidence is separate from the client-reported shared console HWND.
+    events = [{"phase": "provider", "source": "winevent", "hwnd": 77,
                "owner_pid": 100, "owner_creation_time": 200, "visible": visible,
                "class": "ConsoleWindowClass", "desktop": "Default", "rect": [0, 0, 100, 100]}]
     return {"ready": True, "ready_ack_us": 1000, "failure": None, "protocol_errors": [],
@@ -35,6 +36,44 @@ def fixture(visible=False):
 
 
 class ObserverPolicy(unittest.TestCase):
+    def test_shared_hidden_console_host_can_differ_from_all_client_pids(self):
+        candidate = fixture()
+        self.assertNotIn(candidate["rows"][0]["owner"], [item["pid"] for item in candidate["rows"]])
+        self.assertTrue(POLICY.hidden_association(candidate))
+        self.assertEqual(POLICY.classify(fixture(True), candidate)["qualification"], "red-green")
+
+    def test_shared_console_host_does_not_attribute_a_separate_visible_broker_window(self):
+        original = fixture()
+        original["observation"]["events"][0].update(owner_pid=900, owner_creation_time=999, visible=True)
+        self.assertFalse(POLICY.visible_owned_window(original))
+        self.assertEqual(POLICY.classify(original, fixture())["qualification"], "unqualified")
+
+    def test_shared_owner_still_allows_the_root_client_to_create_the_window(self):
+        self.assertTrue(POLICY.hidden_association(fixture(console_owner=100)))
+
+    def test_invalid_shared_host_and_handle_are_rejected(self):
+        for field in ("owner", "hwnd"):
+            for value in (None, 0, -1, "900", True, 900.0):
+                with self.subTest(field=field, value=value):
+                    candidate = fixture()
+                    for row in candidate["rows"]:
+                        row[field] = value
+                    self.assertFalse(POLICY.hidden_association(candidate))
+
+    def test_shared_host_does_not_weaken_window_validation(self):
+        for field, value in (("owner", 901), ("hwnd", 43), ("valid", False),
+                             ("enumerated", False), ("visible", True), ("class", "OtherWindow"),
+                             ("desktop", "OtherDesktop"), ("window_desktop", "OtherDesktop")):
+            with self.subTest(field=field):
+                candidate = fixture()
+                candidate["rows"][1][field] = value
+                self.assertFalse(POLICY.hidden_association(candidate))
+        for field in ("owner", "hwnd", "valid", "enumerated", "class", "desktop", "window_desktop"):
+            with self.subTest(missing=field):
+                candidate = fixture()
+                del candidate["rows"][1][field]
+                self.assertFalse(POLICY.hidden_association(candidate))
+
     def test_attributable_root_red_and_measured_owned_green(self):
         report = POLICY.classify(fixture(True), fixture())
         self.assertEqual(report["qualification"], "red-green")
@@ -104,7 +143,7 @@ class ObserverPolicy(unittest.TestCase):
         candidate["observation"]["lifetimes"].pop(0)
         self.assertFalse(POLICY.measured_coverage(candidate))
 
-    def test_candidate_visible_or_foreign_hidden_association_is_not_green(self):
+    def test_candidate_visible_or_mismatched_shared_owner_is_not_green(self):
         for candidate in (fixture(True), fixture()):
             if not candidate["visibility_counterexample"]:
                 candidate["rows"][0]["owner"] = 777

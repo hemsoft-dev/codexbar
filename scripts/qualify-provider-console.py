@@ -153,11 +153,18 @@ def visible_owned_window(row):
 
 def hidden_association(row):
     rows = row.get("rows", [])
-    if len(rows) != 3 or not rows[0].get("hwnd") or rows[0].get("owner") != rows[0].get("pid"):
+    if len(rows) != 3:
         return False
+    hwnd, owner = rows[0].get("hwnd"), rows[0].get("owner")
+    if type(hwnd) is not int or hwnd <= 0 or type(owner) is not int or owner <= 0:
+        return False
+    # GetWindowThreadProcessId identifies the window-creating process, which can be a separate
+    # console host. Shared client-reported console association does not attribute broker windows
+    # to a client lifetime; visible_owned_window keeps that independent identity requirement.
     return all(item.get("valid") is True and item.get("enumerated") is True
                and item.get("visible") is False and item.get("class") == "ConsoleWindowClass"
-               and item.get("hwnd") == rows[0]["hwnd"] and item.get("owner") == rows[0]["owner"]
+               and type(item.get("hwnd")) is int and item.get("hwnd") == hwnd
+               and type(item.get("owner")) is int and item.get("owner") == owner
                and item.get("desktop") == item.get("window_desktop") == row.get("ready_context", {}).get("desktop")
                for item in rows)
 
