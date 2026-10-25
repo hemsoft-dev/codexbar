@@ -239,3 +239,31 @@ as unused on Windows, so the full runtime test was skipped. The method is now
 compiled only for the Unix runner that calls it; the native Windows runner keeps
 its own bounded cleanup path. This preserves the observed failure and leaves
 full current-head runtime qualification pending.
+
+The [`58a2ab2` Linux metrics run](https://github.com/hemsoft-dev/codexbar/actions/runs/40176058535/job/121116931821)
+failed its declared comparison. Lines changed from 19981/22785 to 19980/22787;
+the fully covered runner's measured complexity rose from four to five. Native
+Windows functions had no instrumented Linux lines and therefore retained the
+gate's intentionally pessimistic unknown coverage. No measurement scope,
+exclusion, baseline or threshold is changed here.
+
+Windows executable selection and command-line planning now form a portable
+production module, also compiled for tests on Linux and macOS. Tests cover
+application/system/PATH priority, explicit executable identity, missing and
+invalid paths, native versus batch interpreter selection, quotes/backslashes,
+literal shell characters, Unicode and UTF-16 size limits. The hosted Windows
+argv/batch fixtures remain the runtime compatibility check. The encoding follows
+[Microsoft's CRT argument rules](https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments).
+
+Native prepared stdio owns its whitelist memory, inherited child handles and
+launch guard together. Struct field order closes streams before releasing that
+guard on error, following [Rust's drop rules](https://doc.rust-lang.org/reference/destructors.html).
+A separate suspended-process owner holds the exact process/thread through job
+assignment and resume; abandoning an uncommitted launch terminates that retained
+process with bounded confirmation. Native tests exercise suspended abort and
+failed-creation cleanup. They retain duplicate kernel-object handles and use
+[`CompareObjectHandles`](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-compareobjecthandles)
+to avoid confusing reused handle values with leaked resources. The collector
+uses one platform launch constructor; capture, deadlines, job/group cleanup and
+the live unrelated-pipe sentinel remain required. New measurements and native
+test results are pending hosted CI.

@@ -224,9 +224,15 @@ fn main() {
     let program = executable.to_str().unwrap();
     let run = |args: &[&str], timeout| SystemCommandRunner.run(program, args, timeout);
     let timeout = Duration::from_secs(3);
-    let control = Command::new(program)
+    let mut control = Command::new(program);
+    control
         .args(["emit", "stdout", "1048576"])
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let control = codexbar_providers::platform::spawn(&mut control)
+        .unwrap()
+        .wait_with_output()
         .unwrap();
     assert!(control.status.success());
     assert_eq!(control.stdout.len(), MIB);

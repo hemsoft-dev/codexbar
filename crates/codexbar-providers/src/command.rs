@@ -32,29 +32,20 @@ pub struct SystemCommandRunner;
 #[cfg(windows)]
 mod background;
 mod pipe;
+#[cfg(any(windows, test))]
+mod windows_plan;
 #[cfg(windows)]
-type Child = background::Child;
+use background::{Child, Contained, spawn};
 #[cfg(not(windows))]
 type Child = std::process::Child;
+#[cfg(not(windows))]
+type Contained = crate::contained::Contained;
 const OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 const CHECK_INTERVAL: Duration = Duration::from_millis(25);
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError> {
-        #[cfg(not(windows))]
-        let inner = {
-            let mut command = crate::platform::command(program);
-            command
-                .args(args)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            use std::os::unix::process::CommandExt as _;
-            command.process_group(0);
-            crate::contained::spawn(&mut command).map_err(spawn_error)?
-        };
-        #[cfg(windows)]
-        let inner = background::spawn(program, args).map_err(spawn_error)?;
+        let inner = spawn(program, args).map_err(spawn_error)?;
         let mut process = Running { inner, stopped: false };
         let output = collect(&mut process.inner.child, timeout);
         let status = process.stop().map_err(|_| CommandError::Failed)?;
@@ -67,6 +58,19 @@ impl CommandRunner for SystemCommandRunner {
     }
 }
 
+#[cfg(not(windows))]
+fn spawn(program: &str, args: &[&str]) -> std::io::Result<Contained> {
+    use std::os::unix::process::CommandExt as _;
+    let mut command = crate::platform::command(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.process_group(0);
+    crate::contained::spawn(&mut command)
+}
+
 fn spawn_error(error: std::io::Error) -> CommandError {
     if error.kind() == std::io::ErrorKind::NotFound {
         CommandError::NotFound
@@ -77,10 +81,7 @@ fn spawn_error(error: std::io::Error) -> CommandError {
 
 /// The root remains unreaped until group cleanup, so its process-group ID cannot refer to somebody else's work.
 struct Running {
-    #[cfg(not(windows))]
-    inner: crate::contained::Contained,
-    #[cfg(windows)]
-    inner: background::Contained,
+    inner: Contained,
     stopped: bool,
 }
 impl Running {
