@@ -25,7 +25,7 @@ pub struct ProviderInfo {
     pub multi_account: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 13] = [
+pub const PROVIDERS: [ProviderInfo; 14] = [
     ProviderInfo {
         id: names::CODEX,
         display: "ChatGPT · Codex",
@@ -176,6 +176,15 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         secret: None,
         default_method: AuthMethod::Automatic,
         setup_method: AuthMethod::Automatic,
+        multi_account: false,
+    },
+    ProviderInfo {
+        id: names::MUSE_CODE,
+        display: "Muse Code",
+        sign_in: "Reads this computer's existing Muse CLI subscription session with `muse usage --json`. Choose Command line. No sign-in or update is started. META_API_KEY is excluded; billing mode and model entitlement are unknown. Only one account can read this session.",
+        secret: None,
+        default_method: AuthMethod::CommandLine,
+        setup_method: AuthMethod::CommandLine,
         multi_account: false,
     },
 ];

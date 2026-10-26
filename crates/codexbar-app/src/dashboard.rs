@@ -392,6 +392,16 @@ impl Dashboard {
                     }
                     let now = this.now;
                     this.table.update(cx, |table, _| table.delegate_mut().set_now(now));
+                    for account in &this.accounts {
+                        if account.observation_stale(this.now)
+                            && matches!(this.states.get(account.id().as_str()), None | Some(AccountState::Fresh))
+                        {
+                            this.states.insert(
+                                account.id().as_str().to_owned(),
+                                AccountState::Failed("Muse allowance observation is over 7 minutes old".into()),
+                            );
+                        }
+                    }
                     // The tooltip's "last known" age advances too; it is only republished when its text changes.
                     this.publish_tooltip(cx);
                     #[cfg(windows)]
@@ -927,8 +937,12 @@ impl Dashboard {
                         match outcome {
                             AccountOutcome::Fresh(account) => {
                                 let account = crate::prefs_hub::PrefsHub::with_credit_start(cx, account);
-                                self.states
-                                    .insert(account.id().as_str().to_owned(), AccountState::Fresh);
+                                let state = if account.observation_stale(self.now) {
+                                    AccountState::Failed("Muse allowance observation is over 7 minutes old".into())
+                                } else {
+                                    AccountState::Fresh
+                                };
+                                self.states.insert(account.id().as_str().to_owned(), state);
                                 self.placeholders.remove(account.id().as_str());
                                 refreshed.push(account.clone());
                                 accounts.push(account);
@@ -1536,6 +1550,79 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// The production Muse adapter with a synthetic command runner. No live provider is constructed.
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_muse(&mut self, state: &str, cx: &mut Context<Self>) {
+        use codexbar_providers::UsageProvider as _;
+        assert!(crate::is_demo() && matches!(self.source, DataSource::Demo));
+        crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
+            builder.tiles = vec![
+                codexbar_store::widgets::WidgetTile {
+                    account: "muse-demo".into(),
+                    metric: "5-hour-window".into(),
+                    mode: codexbar_store::widgets::TileMode::Automatic,
+                },
+                codexbar_store::widgets::WidgetTile {
+                    account: "muse-demo".into(),
+                    metric: "weekly".into(),
+                    mode: codexbar_store::widgets::TileMode::Automatic,
+                },
+            ];
+        });
+        let now = crate::muse_fixture::now(state);
+        self.last_refresh = Some(now);
+        crate::sus::capture_time(now, cx);
+        let result = crate::muse_fixture::provider(state).fetch(now);
+        self.states.clear();
+        self.placeholders.clear();
+        let account = match result {
+            Ok(mut accounts) => {
+                let account = accounts.remove(0);
+                if account.observation_stale(now) {
+                    self.states.insert(
+                        "muse-demo".into(),
+                        AccountState::Failed("Muse source observation is stale".into()),
+                    );
+                }
+                account
+            }
+            Err(error) if state == "timeout" => {
+                self.states
+                    .insert("muse-demo".into(), AccountState::Failed(error.to_string()));
+                crate::muse_fixture::provider("measured")
+                    .fetch(crate::muse_fixture::now("measured"))
+                    .unwrap()
+                    .remove(0)
+            }
+            Err(error) => {
+                self.states
+                    .insert("muse-demo".into(), AccountState::Unavailable(error.to_string()));
+                self.placeholders.insert("muse-demo".into());
+                AccountSnapshot::new(
+                    codexbar_core::AccountId::new("muse-demo"),
+                    Provider::MuseCode,
+                    Vec::new(),
+                    now,
+                )
+                .with_label("Demo")
+            }
+        };
+        self.set_accounts(vec![account], cx);
+        let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, now)
+            .with_builder(crate::prefs_hub::PrefsHub::widget_builder(cx));
+        cx.set_global(crate::widget_builder::WidgetFeed(snapshot));
+
+        self.focus_account(
+            &crate::handoff::FocusRequest {
+                account: "muse-demo".into(),
+                metric: None,
+            },
+            cx,
+        );
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.ranked_with = alert_inputs(cx);
         self.now = crate::sus::now(cx);
@@ -1606,7 +1693,7 @@ impl Dashboard {
     #[cfg(windows)]
     fn save_widget_snapshot(&mut self, cx: &mut Context<Self>) {
         self.widget_builder = crate::prefs_hub::PrefsHub::widget_builder(cx);
-        let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, Utc::now())
+        let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, self.now)
             .with_builder(self.widget_builder.clone());
         self.widgets_written = Some(self.now);
         // The builder's preview reads it (#95), in the demo too; only live data goes to the widgets.
@@ -2060,6 +2147,23 @@ impl Dashboard {
                 .child(self.group_controls(account, cx))
                 .children(crate::alert_details::alert_details(&details, self.now, cx))
                 .children(crate::focus_cards::subscription_note(account, cx))
+                .children(
+                    (account.provider() == Provider::MuseCode)
+                        .then(|| self.states.get(account.id().as_str()))
+                        .flatten()
+                        .and_then(|state| match state {
+                            AccountState::Failed(error) => Some(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().warning)
+                                    .child(format!("Last known allowance. {error}")),
+                            ),
+                            AccountState::Unavailable(error) => {
+                                Some(div().text_sm().text_color(cx.theme().warning).child(error.clone()))
+                            }
+                            _ => None,
+                        }),
+                )
                 .children(crate::focus_cards::metric_list(account, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
                 .children(

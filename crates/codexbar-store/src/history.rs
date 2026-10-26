@@ -205,7 +205,7 @@ impl HistoryStore {
             for metric in account.metrics() {
                 let Some(value) = metric.history_value() else { continue };
                 let sample = Sample {
-                    t: now.timestamp(),
+                    t: account.observed_at().unwrap_or(now).timestamp(),
                     a: account.id().as_str().to_owned(),
                     m: metric.key(),
                     v: value,

@@ -20,6 +20,7 @@ pub enum Provider {
     Gemini,
     Grok,
     XSubscription,
+    MuseCode,
 }
 
 impl Provider {
@@ -38,10 +39,11 @@ impl Provider {
             Self::Gemini => "Gemini",
             Self::Grok => "Grok",
             Self::XSubscription => "X Subscription",
+            Self::MuseCode => "Muse Code",
         }
     }
 
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Codex,
         Self::Claude,
         Self::Copilot,
@@ -54,6 +56,7 @@ impl Provider {
         Self::Gemini,
         Self::Grok,
         Self::XSubscription,
+        Self::MuseCode,
     ];
 
     /// A stable key for storage; unlike the display name it never changes with wording.
@@ -71,6 +74,7 @@ impl Provider {
             Self::Gemini => "gemini",
             Self::Grok => "grok",
             Self::XSubscription => "x-subscription",
+            Self::MuseCode => "muse-code",
         }
     }
 
@@ -186,6 +190,14 @@ struct Subscription {
     price: Option<crate::sus::Price>,
 }
 
+/// Source observation metadata, separate from the time the adapter collected it.
+#[derive(Clone, Debug, PartialEq)]
+struct Observation {
+    at: DateTime<Utc>,
+    source: Option<String>,
+    fresh_for_seconds: i64,
+}
+
 /// The latest known state of one account.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccountSnapshot {
@@ -199,6 +211,7 @@ pub struct AccountSnapshot {
     fetched_at: DateTime<Utc>,
     /// What the provider said about the account besides numbers ("Usage is delayed by up to an hour").
     messages: Vec<String>,
+    observation: Option<Box<Observation>>,
 }
 
 impl AccountSnapshot {
@@ -214,6 +227,7 @@ impl AccountSnapshot {
             detail: AccountDetail::default(),
             fetched_at,
             messages: Vec::new(),
+            observation: None,
         }
     }
 
@@ -221,6 +235,36 @@ impl AccountSnapshot {
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.messages.push(message.into());
         self
+    }
+
+    pub fn with_observation(mut self, at: DateTime<Utc>, source: Option<String>, fresh_for_seconds: i64) -> Self {
+        self.observation = Some(Box::new(Observation {
+            at,
+            source,
+            fresh_for_seconds,
+        }));
+        self
+    }
+    pub fn observed_at(&self) -> Option<DateTime<Utc>> {
+        self.observation.as_ref().map(|o| o.at)
+    }
+    pub fn allowance_source(&self) -> Option<&str> {
+        self.observation.as_ref()?.source.as_deref()
+    }
+    pub fn fresh_for_seconds(&self) -> Option<i64> {
+        self.observation.as_ref().map(|o| o.fresh_for_seconds)
+    }
+    pub fn observation_stale(&self, now: DateTime<Utc>) -> bool {
+        self.observation.as_ref().is_some_and(|o| {
+            (now - o.at.min(self.fetched_at)).num_milliseconds() > o.fresh_for_seconds.saturating_mul(1000)
+        })
+    }
+    /// Forecasts of last-seen allowance stay anchored to the provider's observation.
+    pub fn projection_time(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        self.observed_at().unwrap_or(now)
+    }
+    pub fn supports_sus(&self) -> bool {
+        self.provider != Provider::MuseCode
     }
 
     pub fn messages(&self) -> &[String] {
@@ -337,8 +381,8 @@ impl AccountSnapshot {
 
     /// Information-only pools never color a status or raise risk, even when selected explicitly in a card.
     pub fn assess_metric(&self, metric: &Metric, now: DateTime<Utc>) -> Assessment {
-        if self.is_status_metric(metric) {
-            assess(metric, now)
+        if self.is_status_metric(metric) && !self.observation_stale(now) {
+            assess(metric, self.projection_time(now))
         } else {
             Assessment::default()
         }
@@ -364,9 +408,12 @@ impl AccountSnapshot {
     /// A fully used window doesn't block an account
     /// that can still spend credits (#150).
     pub fn assess(&self, now: DateTime<Utc>) -> Assessment {
+        if self.observation_stale(now) {
+            return Assessment::default();
+        }
         self.status_metrics()
             .filter(|metric| !self.credits_cover(metric))
-            .map(|metric| assess(metric, now))
+            .map(|metric| assess(metric, self.projection_time(now)))
             .max()
             .unwrap_or_default()
     }

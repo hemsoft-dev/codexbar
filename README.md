@@ -174,3 +174,6 @@ The `src/` folder holds the retired C# / WPF app.
 ## License
 
 MIT
+
+Muse Code subscription allowance is available through the existing CLI session.
+See [Muse Code setup, contract and limits](docs/MUSE_CODE.md).

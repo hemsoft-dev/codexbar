@@ -23,6 +23,10 @@ mod history_view;
 mod locale;
 mod managed;
 mod mark;
+#[cfg(any(test, feature = "capture"))]
+mod muse_fixture;
+#[cfg(test)]
+mod muse_roundtrip;
 mod notifications;
 mod opencode_sign_in;
 mod package;
@@ -47,11 +51,11 @@ mod usage_bar;
 mod version;
 #[cfg(test)]
 mod version_scheme;
-#[cfg(windows)]
+#[cfg(any(windows, feature = "capture"))]
 mod widget_builder;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, test, feature = "capture"))]
 mod widget_feed;
-#[cfg(any(windows, test))]
+#[cfg(any(windows, test, feature = "capture"))]
 #[cfg_attr(not(windows), allow(dead_code))]
 mod widgets;
 mod zoom;

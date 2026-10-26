@@ -1,5 +1,5 @@
 //! Credential-free native subprocess fixtures. No shell or installed provider CLI is used.
-use codexbar_providers::{CommandError, CommandRunner, SystemCommandRunner};
+use codexbar_providers::{CommandError, CommandOptions, CommandRunner, SystemCommandRunner};
 use std::fs::File;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,51 @@ fn fixture(args: &[String]) -> ! {
         "utf8" => {
             std::io::stdout().write_all(&vec![b'a'; 8191]).unwrap();
             std::io::stdout().write_all("€".as_bytes()).unwrap();
+        }
+        "scoped" => {
+            assert_eq!(
+                std::env::current_dir().unwrap().canonicalize().unwrap(),
+                PathBuf::from(&args[1]).canonicalize().unwrap()
+            );
+            assert!(std::env::var_os("CODEXBAR_SYNTHETIC_PARENT_ONLY").is_none());
+            assert!(std::env::var_os("META_API_KEY").is_none());
+            assert!(std::env::var_os("meta_api_key").is_none());
+            assert_eq!(std::env::var("MUSE_LOGIN").unwrap(), "0");
+            assert_eq!(std::env::var("MUSE_NO_AUTO_UPDATE").unwrap(), "1");
+            assert_eq!(std::io::stdin().read(&mut [0u8; 1]).unwrap(), 0);
+        }
+        "scoped-parent" => {
+            let options = CommandOptions {
+                cwd: PathBuf::from(&args[1]),
+                remove_env: vec![
+                    "CODEXBAR_SYNTHETIC_PARENT_ONLY",
+                    "META_API_KEY",
+                    "MUSE_LOGIN",
+                    "MUSE_NO_AUTO_UPDATE",
+                ],
+                env: vec![("MUSE_LOGIN", "0"), ("MUSE_NO_AUTO_UPDATE", "1")],
+                output_limit: 4 * MIB,
+            };
+            let executable = std::env::current_exe().unwrap();
+            let program = executable.to_str().unwrap();
+            assert_eq!(std::env::var("CODEXBAR_SYNTHETIC_PARENT_ONLY").unwrap(), "synthetic");
+            assert!(
+                SystemCommandRunner
+                    .run_with_options(program, &["scoped", &args[1]], Duration::from_secs(3), &options)
+                    .unwrap()
+                    .success
+            );
+            assert_eq!(std::env::var("CODEXBAR_SYNTHETIC_PARENT_ONLY").unwrap(), "synthetic");
+            assert_eq!(std::env::var("MUSE_LOGIN").unwrap(), "synthetic-parent");
+            assert_eq!(
+                SystemCommandRunner.run_with_options(
+                    program,
+                    &["emit", "stdout", &(4 * MIB + 1).to_string()],
+                    Duration::from_secs(3),
+                    &options
+                ),
+                Err(CommandError::Failed)
+            );
         }
         "failure" => {
             std::io::stderr().write_all(b"synthetic failure").unwrap();
@@ -249,6 +294,15 @@ fn main() {
         Err(CommandError::NotFound)
     );
     let scratch = Scratch::new();
+    let scoped = Command::new(program)
+        .args(["scoped-parent", scratch.0.to_str().unwrap()])
+        .env("CODEXBAR_SYNTHETIC_PARENT_ONLY", "synthetic")
+        .env("MUSE_LOGIN", "synthetic-parent")
+        .env("META_API_KEY", "synthetic-only")
+        .env("meta_api_key", "synthetic-only")
+        .output()
+        .unwrap();
+    assert!(scoped.status.success(), "{}", String::from_utf8_lossy(&scoped.stderr));
     #[cfg(not(windows))]
     let modes = ["hang", "descendant", "overflow", "detached-output"];
     #[cfg(windows)]

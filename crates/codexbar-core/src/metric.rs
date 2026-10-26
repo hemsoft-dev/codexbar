@@ -400,12 +400,16 @@ impl Metric {
             Self::Window { pace, .. } | Self::Quota { pace, .. } | Self::Spend { pace, .. } => (*pace)?,
             Self::Balance { .. } | Self::Activity { .. } | Self::Credits { .. } => return None,
         };
-        let used = self.used_fraction()?;
+        let used = match self {
+            Self::Window { used, .. } => *used,
+            _ => self.used_fraction()?,
+        };
         let left = self.resets_at()? - now;
         if left <= Duration::zero() || !pace.fraction_per_hour().is_finite() || pace.fraction_per_hour() < 0.0 {
             return None;
         }
-        Some(used + pace.fraction_per_hour() * left.num_seconds() as f64 / 3600.0)
+        let projected = used + pace.fraction_per_hour() * left.num_seconds() as f64 / 3600.0;
+        projected.is_finite().then_some(projected)
     }
 
     /// How the pace plays out by the reset (#206): the share it reaches, or how early the limit runs out. A limit

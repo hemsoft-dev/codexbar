@@ -20,10 +20,12 @@ pub fn logo_path(provider: Provider) -> &'static str {
         Provider::Gemini => "brand/gemini.svg",
         Provider::Grok => "brand/grok.svg",
         Provider::XSubscription => "brand/xai.svg",
+        Provider::MuseCode => "brand/muse-code.svg",
     }
 }
 
-const LOGOS: [(&str, &[u8]); 12] = [
+const LOGOS: [(&str, &[u8]); 13] = [
+    ("brand/muse-code.svg", include_bytes!("../assets/brand/muse-code.svg")),
     ("brand/openai.svg", include_bytes!("../assets/brand/openai.svg")),
     ("brand/claude.svg", include_bytes!("../assets/brand/claude.svg")),
     (

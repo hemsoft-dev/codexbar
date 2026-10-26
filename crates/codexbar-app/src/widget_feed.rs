@@ -31,9 +31,19 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
                 Some(AccountState::Restored | AccountState::Failed(_)) => WidgetHealth::Stale,
                 Some(AccountState::Loading | AccountState::Unavailable(_)) => WidgetHealth::Unavailable,
             };
+            let health = if account.provider() == codexbar_core::Provider::MuseCode && account.metrics().is_empty() {
+                WidgetHealth::Unavailable
+            } else if health == WidgetHealth::Fresh && account.observation_stale(now) {
+                WidgetHealth::Stale
+            } else {
+                health
+            };
             let has_usage = health != WidgetHealth::Unavailable;
             WidgetAccount {
                 id: id.to_owned(),
+                observed_at: account.observed_at(),
+                allowance_source: account.allowance_source().map(str::to_owned),
+                fresh_for_seconds: account.fresh_for_seconds(),
                 provider: account.provider().key().to_owned(),
                 provider_name: account.provider().display_name().to_owned(),
                 name: account.display_name(),
@@ -79,14 +89,16 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         resets_at: metric.resets_at(),
         status: account.assess_metric(metric, now).label().map(str::to_owned),
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
-        projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
+        projected_percent: metric
+            .projected_at_reset(account.projection_time(now))
+            .map(|share| (share * 100.0).max(0.0)),
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
         outlook: crate::usage_bar::outlook(metric, account, now),
         sus: codexbar_core::sus::weekly(metric, now)
-            .filter(|_| account.is_status_metric(metric))
+            .filter(|_| account.supports_sus() && account.is_status_metric(metric))
             .map(|s| s.value()),
         sus_eligible: codexbar_core::sus::text(metric, now)
-            .filter(|_| account.is_status_metric(metric))
+            .filter(|_| account.supports_sus() && account.is_status_metric(metric))
             .is_some(),
     }
 }

@@ -261,7 +261,10 @@ pub fn outlook(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: D
     if account.credits_cover(metric) {
         return Some(COVERED.to_owned());
     }
-    Forecast::of(metric, now)
+    if account.observation_stale(now) {
+        return None;
+    }
+    Forecast::of(metric, account.projection_time(now))
         .map(|forecast| forecast.text())
         .or_else(|| used_up(metric).then(|| REACHED.to_owned()))
 }
@@ -389,7 +392,15 @@ impl Projection {
         account: &codexbar_core::AccountSnapshot,
         now: DateTime<Utc>,
     ) -> Self {
-        let projection = status_projection(Self::of(metric, used, now), account, metric);
+        if account.observation_stale(now) {
+            let mut projection = Self::of(metric, used, account.projection_time(now));
+            projection.projected = None;
+            projection.runway = Runway::Ok;
+            projection.label = format!("{:.0}% used, last known", used * 100.0);
+            projection.tooltip = projection.label.clone();
+            return projection;
+        }
+        let projection = status_projection(Self::of(metric, used, account.projection_time(now)), account, metric);
         if account.credits_cover(metric) {
             projection.calm()
         } else {

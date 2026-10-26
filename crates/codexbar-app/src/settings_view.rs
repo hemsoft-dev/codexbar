@@ -73,7 +73,7 @@ pub fn render(start: Option<SelectIndex>, generation: u32, _: &mut Window, cx: &
                     crate::groups_page::groups_page(cx),
                     appearance_page(),
                     // Widgets exist only on the Windows 11 Widgets board (#94).
-                    #[cfg(windows)]
+                    #[cfg(any(windows, feature = "capture"))]
                     crate::widget_builder::widgets_page(cx),
                     about_page(),
                 ]),
@@ -346,14 +346,16 @@ fn account_item(record: AccountRecord) -> SettingItem {
                     )
                 })
             })
-            .child(
-                Button::new(SharedString::from(format!("sus-price-{}", current.id)))
-                    .small()
-                    .ghost()
-                    .label("SUS price…")
-                    .disabled(read_only)
-                    .on_click(move |_, window, cx| crate::sus_price::open(&price_id, window, cx)),
-            )
+            .when(current.provider != names::MUSE_CODE, |this| {
+                this.child(
+                    Button::new(SharedString::from(format!("sus-price-{}", current.id)))
+                        .small()
+                        .ghost()
+                        .label("SUS price…")
+                        .disabled(read_only)
+                        .on_click(move |_, window, cx| crate::sus_price::open(&price_id, window, cx)),
+                )
+            })
             .when(saved_apps, |this| {
                 this.child(
                     Button::new(SharedString::from(format!("forget-apps-{}", current.id)))
@@ -798,6 +800,17 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         },
     };
 
+    if info.id == names::MUSE_CODE
+        && (method != AuthMethod::CommandLine
+            || SettingsHub::global(cx).settings().accounts().iter().any(|other| {
+                other.provider == names::MUSE_CODE && existing.as_ref().is_none_or(|record| record.id != other.id)
+            }))
+    {
+        *form.error.borrow_mut() =
+            Some("Muse Code reads one existing CLI session. Choose Command line and keep one account.".into());
+        window.refresh();
+        return false;
+    }
     if info.id == names::X_SUBSCRIPTION
         && let Some(error) = x_subscription_refusal(
             method,
@@ -1122,7 +1135,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     });
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, feature = "capture"))]
 pub(crate) fn info_item(title: &'static str, body: &'static str) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         v_flex()

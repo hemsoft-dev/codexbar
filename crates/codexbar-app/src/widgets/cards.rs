@@ -255,27 +255,60 @@ impl TileView {
             None => account.metrics.first(),
         };
         let Some(found) = found else {
-            let note = if metric.is_some() {
+            let note = if account.provider == "muse-code" {
+                "n/a · allowance unavailable for this window"
+            } else if metric.is_some() {
                 "This limit isn't reported any more. Choose another in CodexBar's Settings › Widgets."
             } else {
                 "No limits to show"
             };
             return Self::message(Some(&account.id), account.name.clone(), mode, note);
         };
-        let freshness = match (account.health, account.updated_at) {
+        if account.provider == "muse-code" && found.resets_at.is_some_and(|at| at <= now) {
+            let mut view = Self::message(
+                Some(&account.id),
+                account.name.clone(),
+                mode,
+                "n/a · allowance window reset; refresh needed",
+            );
+            view.metric = Some(found.key.clone());
+            return view;
+        }
+        let old_observation = account
+            .observed_at
+            .zip(account.fresh_for_seconds)
+            .is_some_and(|(at, seconds)| {
+                seconds <= 0
+                    || now
+                        .signed_duration_since(account.updated_at.map_or(at, |fetched| at.min(fetched)))
+                        .num_milliseconds()
+                        > seconds.saturating_mul(1000)
+            });
+        let health = if old_observation {
+            WidgetHealth::Stale
+        } else {
+            account.health
+        };
+        let freshness = match (health, account.observed_at.or(account.updated_at)) {
             (WidgetHealth::Stale, Some(at)) => Some(format!("Last known, {}", age_label(at, now))),
             (WidgetHealth::Stale, None) => Some("Last known".to_owned()),
             _ => None,
         };
         // The tile's own metric decides its status, not the account's most urgent one.
-        let status = found.status.clone();
+        let current = account.provider != "muse-code" || health == WidgetHealth::Fresh;
+        let status = if current { found.status.clone() } else { None };
         // Adaptive Cards can't fade a bar, so the projection rides on the line in words (#197, #206). A snapshot
         // written before the wording travelled with it still carries the figure, so the widget keeps it.
-        let line = Some(match (&found.outlook, found.projected_percent) {
-            (Some(outlook), _) => format!("{}: {}, {outlook}", found.label, found.value),
-            (None, Some(projected)) => format!("{}: {}, {projected:.0}% at reset", found.label, found.value),
-            (None, None) => format!("{}: {}", found.label, found.value),
-        });
+        let line = Some(
+            match (
+                if current { &found.outlook } else { &None },
+                if current { found.projected_percent } else { None },
+            ) {
+                (Some(outlook), _) => format!("{}: {}, {outlook}", found.label, found.value),
+                (None, Some(projected)) => format!("{}: {}, {projected:.0}% at reset", found.label, found.value),
+                (None, None) => format!("{}: {}", found.label, found.value),
+            },
+        );
         let percent_text = found.used_percent.map(|p| format!("{p:.0}%"));
         let resets = found
             .resets_at
@@ -300,7 +333,11 @@ impl TileView {
             TileMode::Balance => (Some(found.label.clone()), Some(found.value.clone()), None, freshness),
             TileMode::Status => (
                 line,
-                Some(status.clone().unwrap_or_else(|| "OK".to_owned())),
+                Some(
+                    status
+                        .clone()
+                        .unwrap_or_else(|| if !current { "Stale" } else { "OK" }.to_owned()),
+                ),
                 None,
                 freshness,
             ),
@@ -603,6 +640,9 @@ mod tests {
     fn account(id: &str, provider: &str, group: Option<&str>, percent: f64) -> WidgetAccount {
         WidgetAccount {
             id: id.into(),
+            observed_at: None,
+            allowance_source: None,
+            fresh_for_seconds: None,
             provider: provider.into(),
             provider_name: provider.to_uppercase(),
             name: format!("{provider} {id}"),

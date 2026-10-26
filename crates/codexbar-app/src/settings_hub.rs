@@ -10,6 +10,7 @@ use crate::catalog;
 
 pub struct SettingsHub {
     settings: Settings,
+    pub(crate) muse_cache: Arc<codexbar_providers::muse::MuseCache>,
     /// The folder settings were loaded from; a failed save reloads from here, never from `~/.codexbar` directly.
     dir: std::path::PathBuf,
     /// A schema problem found at load: the screen stays read-only so the file is never overwritten.
@@ -64,6 +65,7 @@ impl SettingsHub {
             });
         cx.set_global(Self {
             settings,
+            muse_cache: Arc::default(),
             dir: dir.to_owned(),
             load_error,
             credentials,

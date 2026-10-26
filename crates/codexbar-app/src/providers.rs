@@ -37,6 +37,23 @@ fn enabled_accounts(hub: &SettingsHub, provider: &str) -> Vec<AccountRecord> {
 
 pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut providers: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    if let Some(home) = codexbar_core::home_dir() {
+        for account in enabled_accounts(hub, names::MUSE_CODE)
+            .into_iter()
+            .filter(|a| a.method == codexbar_store::settings::AuthMethod::CommandLine)
+            .take(1)
+        {
+            providers.push(Arc::new(
+                codexbar_providers::muse::MuseProvider::new(
+                    SystemCommandRunner,
+                    home.clone(),
+                    account.id,
+                    account.label,
+                )
+                .with_cache(hub.muse_cache.clone()),
+            ));
+        }
+    }
     providers.extend(codex_adapters(hub));
 
     if let Some(copilot) = copilot(hub) {
@@ -384,7 +401,8 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
                 | names::GITHUB_BILLING
                 | names::GEMINI
                 | names::GROK
-                | names::X_SUBSCRIPTION => record.id.clone(),
+                | names::X_SUBSCRIPTION
+                | names::MUSE_CODE => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,

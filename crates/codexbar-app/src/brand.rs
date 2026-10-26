@@ -35,6 +35,7 @@ pub fn brand(provider: Provider) -> Brand {
         Provider::Gemini => 0x3186FF,
         Provider::Grok => 0x2B2B2B,
         Provider::XSubscription => 0x0F1419,
+        Provider::MuseCode => 0x0866FF,
     };
     Brand {
         accent,
@@ -58,6 +59,7 @@ pub fn from_settings_name(name: &str) -> Option<Provider> {
         names::GEMINI => Provider::Gemini,
         names::GROK => Provider::Grok,
         names::X_SUBSCRIPTION => Provider::XSubscription,
+        names::MUSE_CODE => Provider::MuseCode,
         _ => return None,
     })
 }

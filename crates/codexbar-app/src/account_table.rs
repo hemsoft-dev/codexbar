@@ -701,7 +701,14 @@ impl AccountTable {
     /// screen readers.
     fn state_tag(&self, row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> Option<gpui_kit::AnyElement> {
         let id = row.id().as_str();
-        let (tag, label, detail) = match self.states.get(id)? {
+        let stale = AccountState::Failed("Muse allowance observation is over 7 minutes old".into());
+        let state =
+            if row.observation_stale(self.now) && matches!(self.states.get(id), None | Some(AccountState::Fresh)) {
+                &stale
+            } else {
+                self.states.get(id)?
+            };
+        let (tag, label, detail) = match state {
             AccountState::Fresh => return None,
             AccountState::Loading => (
                 Tag::secondary(),
@@ -866,7 +873,10 @@ fn at_reset_cell(
             muted,
         );
     }
-    let Some(forecast) = Forecast::of(metric, now) else {
+    if row.observation_stale(now) {
+        return plain("n/a", format!("{name}: forecast unavailable, stale observation"), muted);
+    }
+    let Some(forecast) = Forecast::of(metric, row.projection_time(now)) else {
         // Only a limit with a reset ahead can be forecast; one without (a money-only spend cap) is not applicable.
         let limited = (matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
             || matches!(metric, Metric::Spend { limit: Some(_), .. }))
@@ -956,13 +966,16 @@ fn bar_cell(
 }
 
 fn missing_used_label(row: &AccountSnapshot) -> String {
-    if row.provider() == Provider::Gemini {
+    if matches!(row.provider(), Provider::Gemini | Provider::MuseCode) {
         "n/a".into()
     } else {
         String::new()
     }
 }
 fn missing_limit_label(row: &AccountSnapshot) -> String {
+    if row.provider() == Provider::MuseCode {
+        return "Quota unavailable".into();
+    }
     if row.provider() == Provider::Gemini {
         "Gemini Models weekly".into()
     } else {
@@ -977,6 +990,9 @@ fn missing_window_bar(
     id: &str,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
+    if row.provider() == Provider::MuseCode {
+        return blank_cell(id, "n/a", cx.theme().muted_foreground);
+    }
     if row.provider() == Provider::Gemini && kind == WindowKind::Weekly {
         bar_cell_without_metric(id, assessment, severity, row, cx)
     } else {
@@ -992,6 +1008,9 @@ fn bar_cell_without_metric(
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
+    if row.provider() == Provider::MuseCode {
+        return blank_cell(id, "n/a", cx.theme().muted_foreground);
+    }
     if matches!(
         row.provider(),
         Provider::Gemini | Provider::Grok | Provider::XSubscription

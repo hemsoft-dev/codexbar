@@ -74,7 +74,7 @@ pub fn save_snapshots(dir: &Path, accounts: &[AccountSnapshot]) -> io::Result<()
 }
 
 fn account_to_json(account: &AccountSnapshot) -> Value {
-    json!({
+    let mut value = json!({
         "id": account.id().as_str(),
         "provider": account.provider().key(),
         "label": account.label(),
@@ -84,7 +84,13 @@ fn account_to_json(account: &AccountSnapshot) -> Value {
         "fetchedAt": account.fetched_at().to_rfc3339(),
         "metrics": account.metrics().iter().map(metric_to_json).collect::<Vec<_>>(),
         "messages": account.messages(),
-    })
+    });
+    if let Some(at) = account.observed_at() {
+        value["observedAt"] = json!(at.to_rfc3339());
+        value["allowanceSource"] = json!(account.allowance_source());
+        value["freshForSeconds"] = json!(account.fresh_for_seconds());
+    }
+    value
 }
 
 fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) -> Option<AccountSnapshot> {
@@ -98,6 +104,23 @@ fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) 
         .map(metric_from_json)
         .collect::<Option<Vec<_>>>()?;
     let mut account = AccountSnapshot::new(AccountId::new(id), provider, metrics, fetched_at);
+    if provider == Provider::MuseCode {
+        let observed = value.get("observedAt").and_then(time)?;
+        if observed > fetched_at + chrono::Duration::seconds(60) {
+            return None;
+        }
+        let source = value
+            .get("allowanceSource")
+            .and_then(Value::as_str)
+            .filter(|s| {
+                !s.is_empty()
+                    && s.len() <= 32
+                    && s.chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c))
+            })
+            .map(str::to_owned);
+        account = account.with_observation(observed, source, 420);
+    }
     let label = value.get("label").and_then(Value::as_str);
     let plan = value.get("plan").and_then(Value::as_str);
     let (label, plan) = if version < 3 && plan.is_none() {

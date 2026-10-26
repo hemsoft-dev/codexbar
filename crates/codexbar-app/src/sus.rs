@@ -46,7 +46,7 @@ pub fn metric(
     id: &str,
     cx: &App,
 ) -> Option<AnyElement> {
-    if !account.is_status_metric(metric) {
+    if !account.supports_sus() || !account.is_status_metric(metric) {
         return None;
     }
     metric_badge(metric, now, id, cx)

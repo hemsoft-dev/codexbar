@@ -247,6 +247,13 @@ pub struct WidgetAccount {
     /// When the shown usage was fetched.
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
+    /// Optional source observation. Older readers ignore these additive fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_for_seconds: Option<i64>,
     /// The status label ("Watch", "At risk", "Limit soon"); none for normal accounts.
     #[serde(default)]
     pub status: Option<String>,
@@ -382,6 +389,9 @@ mod tests {
             }],
             vec![WidgetAccount {
                 id: "claude-abc".into(),
+                observed_at: None,
+                allowance_source: None,
+                fresh_for_seconds: None,
                 provider: "claude".into(),
                 provider_name: "Claude".into(),
                 name: "Claude · Work".into(),

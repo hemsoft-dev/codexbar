@@ -153,6 +153,9 @@ pub fn evaluate(
 ) -> Evaluation {
     let mut out = Evaluation::default();
     for account in refreshed {
+        if account.observation_stale(now) {
+            continue;
+        }
         let id = account.id().as_str();
         out.recovered.extend(informational_alert_keys(account, active));
         for metric in account.status_metrics() {
@@ -304,7 +307,7 @@ pub fn account_alerts(
     account: &AccountSnapshot,
     now: DateTime<Utc>,
 ) -> Vec<AlertDetail> {
-    if !settings.enabled {
+    if !settings.enabled || account.observation_stale(now) {
         return Vec::new();
     }
     let id = account.id().as_str();
@@ -418,7 +421,7 @@ fn account_condition(
     if !account.is_status_metric(metric) {
         return Condition::Clear;
     }
-    credit_condition(settings, account, metric, kind, now)
+    credit_condition(settings, account, metric, kind, account.projection_time(now))
 }
 
 fn credit_condition(

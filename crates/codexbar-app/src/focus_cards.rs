@@ -236,6 +236,31 @@ fn area_fill(color: Hsla) -> Background {
 /// return more (model-scoped weekly limits, usage credits, a credit balance). Each says its value, reset and projection.
 pub fn subscription_note(account: &AccountSnapshot, cx: &App) -> Option<AnyElement> {
     use gpui_kit::{StatefulInteractiveElement as _, TestSupportExt as _};
+    if account.provider() == codexbar_core::Provider::MuseCode {
+        let mut text =
+            "Percent of allowance used. Billing mode and model scope unknown. SUS and price unavailable.".to_owned();
+        for (label, key) in [("5-hour", "5-hour-window"), ("Weekly", "weekly")] {
+            if !account.metrics().iter().any(|m| m.key() == key) {
+                text.push_str(&format!(" {label}: n/a."));
+            }
+        }
+        if let Some(at) = account.observed_at() {
+            text.push_str(&format!(" Observed {}.", at.to_rfc3339()));
+        }
+        if let Some(source) = account.allowance_source() {
+            text.push_str(&format!(" Source: {source}."));
+        }
+        return Some(
+            div()
+                .id("muse-quota-note")
+                .test_support()
+                .aria_label(text.clone())
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text)
+                .into_any_element(),
+        );
+    }
     if account.provider() != codexbar_core::Provider::Gemini || account.status_metrics().next().is_some() {
         return None;
     }
@@ -345,6 +370,11 @@ pub fn focus_cards(
                     _ => activity_card(account, activity_in_effect(account, choice.activity), cx),
                 },
             };
+            let card = if account.provider() == codexbar_core::Provider::MuseCode && account.observation_stale(now) {
+                card.takeaway("Last known allowance. Current capacity and forecast are unavailable.")
+            } else {
+                card
+            };
             card.menu(menu).render(cx).into_any_element()
         })
         .collect()
@@ -390,6 +420,7 @@ fn limit_graph<'a>(account: &'a AccountSnapshot, metric: &'a Metric, now: DateTi
         )
     };
     Graph {
+        projection_at: account.projection_time(now),
         metric: Some(metric),
         curve: comparable(curve),
         trend,
@@ -482,10 +513,13 @@ fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot
 /// The words in a ring's opening (#234): the forecast's share at the reset, short enough for the ring, or what the
 /// bars say when there is none ("covered by credits", "limit reached"). The whole forecast is in its label and hover.
 fn ring_pace(metric: &Metric, account: &AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
+    if account.observation_stale(now) {
+        return None;
+    }
     if account.credits_cover(metric) {
         return crate::usage_bar::outlook(metric, account, now);
     }
-    match crate::usage_bar::Forecast::of(metric, now) {
+    match crate::usage_bar::Forecast::of(metric, account.projection_time(now)) {
         Some(forecast) => Some(format!("{} at reset", forecast.share())),
         None => crate::usage_bar::outlook(metric, account, now),
     }
@@ -711,6 +745,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
     // The window curve unless the trend was chosen (#218); a chosen window curve the provider no longer sends falls
     // back to the trend.
     let graph = Graph {
+        projection_at: account.projection_time(now),
         metric: account.primary(),
         curve: comparable(account.detail().window_curve()).filter(|_| view != Some(UsageView::Trend)),
         trend: account.trend(),
@@ -724,6 +759,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
 
 /// What a graph card draws: a limit's window curve, or its daily trend when there is no curve, in the limit's unit.
 struct Graph<'a> {
+    projection_at: DateTime<Utc>,
     /// The limit the takeaway and caption describe.
     metric: Option<&'a Metric>,
     curve: Option<&'a codexbar_core::WindowCurve>,
@@ -861,7 +897,7 @@ fn graph_card(graph: &Graph, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
 
     let card = match primary {
         Some(metric) => card
-            .takeaway(pace_takeaway(metric, now))
+            .takeaway(pace_takeaway(metric, graph.projection_at))
             .caption(reset_caption(metric, now)),
         None => card,
     };
@@ -889,6 +925,10 @@ fn share_card(
         return rings_card(account, &chosen, now, control, cx);
     }
     let Some(metric) = chosen.first().copied().or_else(|| share_metric(account, now)) else {
+        if account.provider() == codexbar_core::Provider::MuseCode {
+            return Card::new("Allowance unavailable", "n/a", div().child("n/a"))
+                .takeaway("Muse Code did not report a valid allowance");
+        }
         return Card::new("No limits", "", div()).takeaway("This account reports no limits");
     };
 
