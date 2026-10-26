@@ -256,7 +256,9 @@ mod tests {
             assert_eq!(m.window_length(), Some(Duration::seconds(seconds)));
             assert_eq!(m.resets_at().unwrap().timestamp_millis(), reset);
         }
-        let projected = a.metrics()[0].projected_at_reset(a.projection_time(now())).unwrap();
+        let projected = a.metrics()[0]
+            .projected_at_reset(a.evaluation_time(&a.metrics()[0], now()).unwrap())
+            .unwrap();
         assert!((1.255..1.265).contains(&projected));
         assert_eq!(codexbar_core::sus::subscription_score(&a, now()), None);
         assert_eq!(a.subscription_price(), None);

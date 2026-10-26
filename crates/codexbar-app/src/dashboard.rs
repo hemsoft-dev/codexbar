@@ -1176,7 +1176,11 @@ impl Dashboard {
                         .metrics()
                         .iter()
                         .filter(|metric| !account.credits_cover(metric))
-                        .any(|metric| metric.exhausts_before_reset(self.now)),
+                        .any(|metric| {
+                            account
+                                .evaluation_time(metric, self.now)
+                                .is_some_and(|at| metric.exhausts_before_reset(at))
+                        }),
                     health,
                     pressure: assessment.pressure(),
                 };
@@ -1572,7 +1576,11 @@ impl Dashboard {
         let now = crate::muse_fixture::now(state);
         self.last_refresh = Some(now);
         crate::sus::capture_time(now, cx);
-        let result = crate::muse_fixture::provider(state).fetch(now);
+        let result = if state == "reset-after" {
+            crate::muse_fixture::provider("reset-before").fetch(crate::muse_fixture::now("reset-before"))
+        } else {
+            crate::muse_fixture::provider(state).fetch(now)
+        };
         self.states.clear();
         self.placeholders.clear();
         let account = match result {
@@ -1720,7 +1728,7 @@ impl Dashboard {
         accounts
             .iter()
             .filter_map(|account| {
-                let metric = crate::account_table::row_metric(account)?;
+                let metric = crate::account_table::row_metric_at(account, self.now)?;
                 let points = history.points(account.id().as_str(), &metric.key(), since, self.now);
                 let summary = summarize(&points, self.now, GAP_THRESHOLD)?;
                 Some((account.id().as_str().to_owned(), (summary, ValueKind::of(metric))))
@@ -2146,7 +2154,7 @@ impl Dashboard {
                 )
                 .child(self.group_controls(account, cx))
                 .children(crate::alert_details::alert_details(&details, self.now, cx))
-                .children(crate::focus_cards::subscription_note(account, cx))
+                .children(crate::focus_cards::subscription_note(account, self.now, cx))
                 .children(
                     (account.provider() == Provider::MuseCode)
                         .then(|| self.states.get(account.id().as_str()))

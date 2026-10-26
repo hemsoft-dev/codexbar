@@ -190,6 +190,10 @@ pub struct Forecast {
 }
 
 impl Forecast {
+    pub fn for_account(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Option<Self> {
+        Self::of(metric, account.evaluation_time(metric, now)?)
+    }
+
     /// The forecast for `metric` at `now`, when its pace allows one.
     pub fn of(metric: &Metric, now: DateTime<Utc>) -> Option<Self> {
         let projected = metric.projected_at_reset(now)?;
@@ -258,13 +262,11 @@ fn used_up(metric: &Metric) -> bool {
 /// bar, the widgets): the forecast ("112% at reset · runs out in 5d 4h"), "covered by credits" for a used-up window
 /// the account's credits carry (#150), "limit reached" for a used-up limit with no pace left, or nothing.
 pub fn outlook(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
+    account.evaluation_time(metric, now)?;
     if account.credits_cover(metric) {
         return Some(COVERED.to_owned());
     }
-    if account.observation_stale(now) {
-        return None;
-    }
-    Forecast::of(metric, account.projection_time(now))
+    Forecast::for_account(metric, account, now)
         .map(|forecast| forecast.text())
         .or_else(|| used_up(metric).then(|| REACHED.to_owned()))
 }
@@ -392,15 +394,15 @@ impl Projection {
         account: &codexbar_core::AccountSnapshot,
         now: DateTime<Utc>,
     ) -> Self {
-        if account.observation_stale(now) {
-            let mut projection = Self::of(metric, used, account.projection_time(now));
+        let Some(at) = account.evaluation_time(metric, now) else {
+            let mut projection = Self::of(metric, used, now);
             projection.projected = None;
             projection.runway = Runway::Ok;
             projection.label = format!("{:.0}% used, last known", used * 100.0);
             projection.tooltip = projection.label.clone();
             return projection;
-        }
-        let projection = status_projection(Self::of(metric, used, account.projection_time(now)), account, metric);
+        };
+        let projection = status_projection(Self::of(metric, used, at), account, metric);
         if account.credits_cover(metric) {
             projection.calm()
         } else {

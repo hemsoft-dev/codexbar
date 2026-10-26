@@ -9,7 +9,9 @@ pub(crate) fn base() -> DateTime<Utc> {
     DateTime::from_timestamp_millis(1793037245064).unwrap()
 }
 pub(crate) fn now(state: &str) -> DateTime<Utc> {
-    if state == "stale" {
+    if state == "reset-after" {
+        base() + Duration::minutes(3)
+    } else if state == "stale" {
         base() + Duration::minutes(8)
     } else {
         base() + Duration::minutes(1)
@@ -61,6 +63,15 @@ pub(crate) fn provider(state: &str) -> impl UsageProvider + use<> {
         }
         _ => include_str!("../../codexbar-providers/fixtures/muse/measured.json"),
     };
+    let text = if state == "reset-before" {
+        let mut payload: serde_json::Value = serde_json::from_str(text).unwrap();
+        payload["allowance"]["window"]["resetsAtMs"] =
+            serde_json::json!((base() + Duration::minutes(2)).timestamp_millis());
+        payload["allowance"]["window"]["usedPercent"] = serde_json::json!(95);
+        payload.to_string()
+    } else {
+        text.to_owned()
+    };
     let failure = match state {
         "timeout" => Some(CommandError::TimedOut),
         "transport" => Some(CommandError::Failed),
@@ -69,7 +80,7 @@ pub(crate) fn provider(state: &str) -> impl UsageProvider + use<> {
     };
     MuseProvider::new(
         Fixture {
-            text: text.into(),
+            text,
             failure,
             success: state != "rate-command-failure",
         },

@@ -259,9 +259,15 @@ impl AccountSnapshot {
             (now - o.at.min(self.fetched_at)).num_milliseconds() > o.fresh_for_seconds.saturating_mul(1000)
         })
     }
-    /// Forecasts of last-seen allowance stay anchored to the provider's observation.
-    pub fn projection_time(&self, now: DateTime<Utc>) -> DateTime<Utc> {
-        self.observed_at().unwrap_or(now)
+    /// Muse's last-seen window stops describing current allowance at its actual reset, even while
+    /// the account observation is still fresh. Other providers keep their existing reset semantics.
+    pub fn metric_ended(&self, metric: &Metric, now: DateTime<Utc>) -> bool {
+        self.provider == Provider::MuseCode && metric.resets_at().is_some_and(|reset| reset <= now)
+    }
+    /// Check wall-clock validity first; only then anchor decisions to the source observation.
+    /// Kept per metric so an ended short window does not hide a valid weekly sibling.
+    pub fn evaluation_time(&self, metric: &Metric, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        (!self.observation_stale(now) && !self.metric_ended(metric, now)).then(|| self.observed_at().unwrap_or(now))
     }
     pub fn supports_sus(&self) -> bool {
         self.provider != Provider::MuseCode
@@ -381,11 +387,9 @@ impl AccountSnapshot {
 
     /// Information-only pools never color a status or raise risk, even when selected explicitly in a card.
     pub fn assess_metric(&self, metric: &Metric, now: DateTime<Utc>) -> Assessment {
-        if self.is_status_metric(metric) && !self.observation_stale(now) {
-            assess(metric, self.projection_time(now))
-        } else {
-            Assessment::default()
-        }
+        self.evaluation_time(metric, now)
+            .filter(|_| self.is_status_metric(metric))
+            .map_or_else(Assessment::default, |at| assess(metric, at))
     }
 
     pub fn primary(&self) -> Option<&Metric> {
@@ -413,7 +417,7 @@ impl AccountSnapshot {
         }
         self.status_metrics()
             .filter(|metric| !self.credits_cover(metric))
-            .map(|metric| assess(metric, self.projection_time(now)))
+            .map(|metric| self.assess_metric(metric, now))
             .max()
             .unwrap_or_default()
     }

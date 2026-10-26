@@ -15,7 +15,16 @@ pub(super) async fn run(
     dir: &Path,
 ) -> Vec<String> {
     let mut saved = Vec::new();
-    for state in ["measured", "partial", "exhausted", "null", "timeout", "stale"] {
+    for state in [
+        "measured",
+        "partial",
+        "exhausted",
+        "null",
+        "timeout",
+        "stale",
+        "reset-before",
+        "reset-after",
+    ] {
         cx.update(|cx| {
             crate::prefs_hub::PrefsHub::set_appearance(cx, Appearance::Light);
             dashboard.update(cx, |d, cx| d.capture_muse(state, cx));
@@ -27,6 +36,12 @@ pub(super) async fn run(
                 assert!(w.try_find("muse-quota-note").is_some());
                 assert!(w.try_find("progress-cell-muse-demo-sus").is_none());
                 assert!(w.try_find("focus-metric-1-sus").is_none());
+                if state == "reset-after" {
+                    let note = w.find("muse-quota-note");
+                    assert!(note.label().unwrap().contains("5-hour: n/a"));
+                    assert!(!note.label().unwrap().contains("Weekly: n/a"));
+                    assert_eq!(w.find("used-muse-demo").label(), Some("Weekly: 5%"));
+                }
                 if state == "null" {
                     assert!(w.try_find("focus-card-allowance-unavailable").is_some());
                     assert!(w.try_find("focus-card-no-limits").is_none());

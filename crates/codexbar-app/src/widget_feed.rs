@@ -97,8 +97,9 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         resets_at: metric.resets_at(),
         status,
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
-        projected_percent: metric
-            .projected_at_reset(account.projection_time(now))
+        projected_percent: account
+            .evaluation_time(metric, now)
+            .and_then(|at| metric.projected_at_reset(at))
             .map(|share| (share * 100.0).max(0.0)),
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
         outlook: crate::usage_bar::outlook(metric, account, now),

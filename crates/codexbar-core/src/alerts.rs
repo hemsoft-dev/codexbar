@@ -421,7 +421,10 @@ fn account_condition(
     if !account.is_status_metric(metric) {
         return Condition::Clear;
     }
-    credit_condition(settings, account, metric, kind, account.projection_time(now))
+    let Some(at) = account.evaluation_time(metric, now) else {
+        return Condition::NotApplicable;
+    };
+    credit_condition(settings, account, metric, kind, at)
 }
 
 fn credit_condition(

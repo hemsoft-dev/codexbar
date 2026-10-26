@@ -181,6 +181,16 @@ pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
     primary_or_claude_weekly(account)
 }
 
+pub fn row_metric_at(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
+    row_metric(account)
+        .filter(|metric| !account.metric_ended(metric, now))
+        .or_else(|| {
+            account
+                .status_metrics()
+                .find(|metric| !account.metric_ended(metric, now))
+        })
+}
+
 fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
     let primary = account.status_metrics().next()?;
     if account.provider() == Provider::Claude
@@ -198,8 +208,8 @@ fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
 
 /// The daily trend of the metric an account's row shows (#246): the account's own trend for its primary metric, else
 /// that limit's stored series.
-fn row_trend(account: &AccountSnapshot) -> &[f64] {
-    row_metric(account).map_or(&[], |metric| trend_of_metric(account, metric))
+fn row_trend(account: &AccountSnapshot, now: DateTime<Utc>) -> &[f64] {
+    row_metric_at(account, now).map_or(&[], |metric| trend_of_metric(account, metric))
 }
 
 fn trend_of_metric<'a>(account: &'a AccountSnapshot, metric: &Metric) -> &'a [f64] {
@@ -549,7 +559,7 @@ impl TableDelegate for AccountTable {
         };
         let assessment = row.assess(self.now);
         let severity = assessment.severity();
-        let primary = row_metric(row);
+        let primary = row_metric_at(row, self.now);
         let muted = cx.theme().muted_foreground;
         // Wide, a standard window has its own columns; the primary pair then shows only what is neither (#195).
         let own_pair = if self.wide {
@@ -560,7 +570,9 @@ impl TableDelegate for AccountTable {
 
         match self.columns()[col_ix] {
             Col::Window(kind, cell) => {
-                let metric = kind.in_account(row);
+                let metric = kind
+                    .in_account(row)
+                    .filter(|metric| !row.metric_ended(metric, self.now));
                 let id = format!("window-{}-{}", kind.key(), row.id().as_str());
                 let name = metric.map_or(kind.title(), Metric::label);
                 match cell {
@@ -767,7 +779,7 @@ impl AccountTable {
                 .into_any_element();
         }
         let Some((summary, kind)) = self.compact.get(id) else {
-            return sparkline(row, cx);
+            return sparkline(row, self.now, cx);
         };
         let text: SharedString = format!("Last 14 days: {}", describe(summary, *kind)).into();
         h_flex()
@@ -782,7 +794,7 @@ impl AccountTable {
                 let text = text.clone();
                 move |window, cx| Tooltip::new(text.clone()).build(window, cx)
             })
-            .child(div().flex_1().min_w_0().child(sparkline(row, cx)))
+            .child(div().flex_1().min_w_0().child(sparkline(row, self.now, cx)))
             .child(
                 div()
                     .flex_shrink_0()
@@ -873,10 +885,14 @@ fn at_reset_cell(
             muted,
         );
     }
-    if row.observation_stale(now) {
-        return plain("n/a", format!("{name}: forecast unavailable, stale observation"), muted);
+    if row.evaluation_time(metric, now).is_none() {
+        return plain(
+            "n/a",
+            format!("{name}: forecast unavailable, observation stale or window ended"),
+            muted,
+        );
     }
-    let Some(forecast) = Forecast::of(metric, row.projection_time(now)) else {
+    let Some(forecast) = Forecast::for_account(metric, row, now) else {
         // Only a limit with a reset ahead can be forecast; one without (a money-only spend cap) is not applicable.
         let limited = (matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
             || matches!(metric, Metric::Spend { limit: Some(_), .. }))
@@ -1068,8 +1084,12 @@ fn limit_label(metric: &Metric) -> String {
 
 /// A 14-day pressure trend. A sparkline shows shape, not level (the progress column shows level),
 /// so each row fits its own range.
-fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> gpui_kit::AnyElement {
-    let trend = row_trend(row);
+fn sparkline(
+    row: &AccountSnapshot,
+    now: DateTime<Utc>,
+    cx: &Context<TableState<AccountTable>>,
+) -> gpui_kit::AnyElement {
+    let trend = row_trend(row, now);
     if trend.len() < 2 {
         // Real providers have no history until #85 stores it.
         return div()
@@ -1179,7 +1199,7 @@ mod tests {
         assert_eq!(row_metric(&row), Some(&models));
         assert_eq!(WindowKind::Weekly.in_account(&row), Some(&models));
         assert_eq!(WindowKind::FiveHour.in_account(&row), None);
-        assert_eq!(row_trend(&row), [0.01, 0.02, 0.03]);
+        assert_eq!(row_trend(&row, now()), [0.01, 0.02, 0.03]);
         assert_eq!(
             row.primary(),
             Some(&apps),
@@ -1274,7 +1294,7 @@ mod tests {
                     trend: vec![0.7, 0.76, 0.82],
                 },
             ));
-        assert_eq!(row_trend(&row), [0.7, 0.76, 0.82]);
+        assert_eq!(row_trend(&row, now()), [0.7, 0.76, 0.82]);
         let codex = account(vec![window(
             "5-hour window",
             0.2,
@@ -1282,14 +1302,14 @@ mod tests {
             Pace::per_hour(0.1),
         )])
         .with_trend(vec![0.1, 0.2]);
-        assert_eq!(row_trend(&codex), [0.1, 0.2]);
+        assert_eq!(row_trend(&codex, now()), [0.1, 0.2]);
         let no_series = claude(vec![
             window("5-hour window", 0.64, Duration::minutes(72), Pace::per_hour(0.12)),
             window("Weekly", 0.82, Duration::days(2), Pace::per_day(0.05)),
         ])
         .with_trend(vec![0.9, 0.5]);
         assert!(
-            row_trend(&no_series).is_empty(),
+            row_trend(&no_series, now()).is_empty(),
             "never the 5-hour window's trend under the weekly window"
         );
     }

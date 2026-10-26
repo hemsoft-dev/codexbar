@@ -35,6 +35,10 @@ finite and nonnegative. Numeric zero is real zero. Reset times must be after bot
 the observation and fetch, within the documented duration from each. Epoch
 milliseconds must be between 1e12 and 1e13. A bad sibling never removes a good one.
 An over-limit raw value survives for forecasts; the bar caps at 100%.
+Before anchoring any current decision to observation time, the shared per-metric
+policy checks reset expiry against the actual wall clock. A reset window becomes
+n/a immediately, even inside 420 seconds of observation age; a valid sibling
+remains available. Ended windows do not forecast, affect assessments, or alert.
 
 Tier text is restricted to `^[A-Za-z0-9 ._()+-]{1,64}$`; source text to
 `^[a-z0-9_-]{1,32}$`. Unknown window names are counted rather than echoed.
@@ -45,7 +49,11 @@ Observations more than 60 seconds ahead of collection are rejected. An observati
 older than 420 seconds is retained as last known, marked stale and excluded from
 alerts and current forecasts. Observation and fetch times survive persistence,
 cache hits and failed refreshes. History samples use the original observation,
-not the time of a later refresh. Last-good refresh failures keep the existing
+not the time of a later refresh. Late observations are stably ordered by timestamp
+in memory, with equal timestamps kept in arrival order. Deduplication uses the
+chronological predecessor of a delayed reading; future samples cannot suppress it.
+Disk append order may reflect arrival, while reload restores the same stable
+chronological series and latest-sample index. Last-good refresh failures keep the existing
 error badge and original timestamps. A widget reader independently ages the source
 observation and refuses a selected Muse window after its reset. Exhausted eligible,
 uncovered quotas carry `Limit reached` to the widget and render in its attention

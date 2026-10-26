@@ -386,3 +386,62 @@ fn exhausted_widget_status_respects_informational_pools_and_credit_coverage() {
     assert_eq!(styles, vec!["good", "good"]);
     assert!(!card.to_string().contains("Attention"));
 }
+
+#[test]
+fn ended_muse_window_cannot_forecast_or_alert_while_its_weekly_sibling_remains_current() {
+    use codexbar_core::{Severity, alerts};
+    let before = fixture::base() + chrono::Duration::minutes(1);
+    let after = fixture::base() + chrono::Duration::minutes(3);
+    let account = fixture::provider("reset-before").fetch(before).unwrap().remove(0);
+    let dir = Scratch::new();
+    snapshots::save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
+    let account = snapshots::load_snapshots(&dir.0).remove(0);
+    assert_eq!(account.observed_at(), Some(fixture::base()));
+    assert_eq!(account.fetched_at(), before);
+    let short = &account.metrics()[0];
+    let weekly = &account.metrics()[1];
+    assert!(!account.observation_stale(after));
+    assert_eq!(
+        crate::account_table::row_metric_at(&account, before).unwrap().key(),
+        "5-hour-window"
+    );
+    assert_eq!(
+        crate::account_table::row_metric_at(&account, after).unwrap().key(),
+        "weekly"
+    );
+    assert!(short.resets_at().unwrap() <= after);
+    assert!(account.evaluation_time(short, short.resets_at().unwrap()).is_none());
+    assert!(crate::usage_bar::Forecast::for_account(short, &account, after).is_none());
+    assert!(crate::usage_bar::outlook(short, &account, before).is_some());
+    assert!(
+        crate::usage_bar::outlook(short, &account, after).is_none(),
+        "ended short window must not retain its observation-anchored outlook"
+    );
+    assert!(crate::usage_bar::outlook(weekly, &account, after).is_some());
+    let projection = crate::usage_bar::Projection::of_account(short, short.used_fraction().unwrap(), &account, after);
+    assert_eq!(projection.projected, None);
+    assert_eq!(account.assess_metric(short, after).severity(), Severity::Normal);
+    assert_eq!(
+        account.assess(after).severity(),
+        account.assess_metric(weekly, after).severity()
+    );
+    let settings = alerts::AlertSettings {
+        enabled: true,
+        ..Default::default()
+    };
+    assert!(
+        !alerts::evaluate(&settings, &Default::default(), std::slice::from_ref(&account), before)
+            .notify
+            .is_empty()
+    );
+    assert!(
+        alerts::evaluate(&settings, &Default::default(), std::slice::from_ref(&account), after)
+            .notify
+            .is_empty()
+    );
+    assert!(alerts::account_alerts(&settings, &Default::default(), &account, after).is_empty());
+    let feed = widget_feed::build(&[account], &States::new(), &Layout::default(), after);
+    assert_eq!(feed.accounts[0].metrics[0].projected_percent, None);
+    assert_eq!(feed.accounts[0].metrics[0].outlook, None);
+    assert!(feed.accounts[0].metrics[1].projected_percent.is_some());
+}

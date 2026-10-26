@@ -234,13 +234,17 @@ fn area_fill(color: Hsla) -> Background {
 
 /// Every metric the account reports, compactly (#82): the cards chart two of them, and a provider like Claude can
 /// return more (model-scoped weekly limits, usage credits, a credit balance). Each says its value, reset and projection.
-pub fn subscription_note(account: &AccountSnapshot, cx: &App) -> Option<AnyElement> {
+pub fn subscription_note(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Option<AnyElement> {
     use gpui_kit::{StatefulInteractiveElement as _, TestSupportExt as _};
     if account.provider() == codexbar_core::Provider::MuseCode {
         let mut text =
             "Percent of allowance used. Billing mode and model scope unknown. SUS and price unavailable.".to_owned();
         for (label, key) in [("5-hour", "5-hour-window"), ("Weekly", "weekly")] {
-            if !account.metrics().iter().any(|m| m.key() == key) {
+            if !account
+                .metrics()
+                .iter()
+                .any(|m| m.key() == key && !account.metric_ended(m, now))
+            {
                 text.push_str(&format!(" {label}: n/a."));
             }
         }
@@ -283,7 +287,12 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
     }
     let muted = cx.theme().muted_foreground;
     let entries = account.metrics().iter().enumerate().map(|(ix, metric)| {
+        let ended = account.metric_ended(metric, now);
+        let value = if ended { "n/a".to_owned() } else { metric.used_display() };
         let mut detail = Vec::new();
+        if ended {
+            detail.push("window ended; refresh needed".to_owned());
+        }
         if let Some(at) = metric.resets_at().filter(|at| *at > now) {
             detail.push(format!("resets in {}", format::countdown(at - now)));
         }
@@ -300,9 +309,9 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         }
         let detail = detail.join(" · ");
         let spoken = if detail.is_empty() {
-            format!("{}: {}", metric.label(), metric.used_display())
+            format!("{}: {}", metric.label(), value.clone())
         } else {
-            format!("{}: {}, {detail}", metric.label(), metric.used_display())
+            format!("{}: {}, {detail}", metric.label(), value.clone())
         };
         let severity = account.assess_metric(metric, now).severity();
         v_flex()
@@ -324,7 +333,7 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
                     .when(severity >= Severity::Watch, |this| {
                         this.child(div().size_2().rounded_full().bg(severity_color(severity, cx)))
                     })
-                    .child(div().text_sm().font_semibold().child(metric.used_display()))
+                    .child(div().text_sm().font_semibold().child(value.clone()))
                     .children(crate::sus::metric(
                         account,
                         metric,
@@ -398,6 +407,10 @@ fn limit_card(
     ring: &crate::ring_size::RingControl,
     cx: &App,
 ) -> Card {
+    if account.metric_ended(metric, now) {
+        return Card::new(metric.label().to_owned(), "Window ended", div().child("n/a"))
+            .takeaway("Current allowance n/a; refresh needed");
+    }
     match view {
         LimitView::Gauge => share_card(account, now, &[metric.key()], ring, slot, cx),
         LimitView::Bar => bar_card(account, metric, now, slot, cx),
@@ -420,7 +433,7 @@ fn limit_graph<'a>(account: &'a AccountSnapshot, metric: &'a Metric, now: DateTi
         )
     };
     Graph {
-        projection_at: account.projection_time(now),
+        projection_at: account.evaluation_time(metric, now),
         metric: Some(metric),
         curve: comparable(curve),
         trend,
@@ -513,13 +526,11 @@ fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot
 /// The words in a ring's opening (#234): the forecast's share at the reset, short enough for the ring, or what the
 /// bars say when there is none ("covered by credits", "limit reached"). The whole forecast is in its label and hover.
 fn ring_pace(metric: &Metric, account: &AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
-    if account.observation_stale(now) {
-        return None;
-    }
+    account.evaluation_time(metric, now)?;
     if account.credits_cover(metric) {
         return crate::usage_bar::outlook(metric, account, now);
     }
-    match crate::usage_bar::Forecast::of(metric, account.projection_time(now)) {
+    match crate::usage_bar::Forecast::for_account(metric, account, now) {
         Some(forecast) => Some(format!("{} at reset", forecast.share())),
         None => crate::usage_bar::outlook(metric, account, now),
     }
@@ -745,7 +756,9 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
     // The window curve unless the trend was chosen (#218); a chosen window curve the provider no longer sends falls
     // back to the trend.
     let graph = Graph {
-        projection_at: account.projection_time(now),
+        projection_at: account
+            .primary()
+            .and_then(|metric| account.evaluation_time(metric, now)),
         metric: account.primary(),
         curve: comparable(account.detail().window_curve()).filter(|_| view != Some(UsageView::Trend)),
         trend: account.trend(),
@@ -759,7 +772,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
 
 /// What a graph card draws: a limit's window curve, or its daily trend when there is no curve, in the limit's unit.
 struct Graph<'a> {
-    projection_at: DateTime<Utc>,
+    projection_at: Option<DateTime<Utc>>,
     /// The limit the takeaway and caption describe.
     metric: Option<&'a Metric>,
     curve: Option<&'a codexbar_core::WindowCurve>,
@@ -897,7 +910,12 @@ fn graph_card(graph: &Graph, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
 
     let card = match primary {
         Some(metric) => card
-            .takeaway(pace_takeaway(metric, graph.projection_at))
+            .takeaway(
+                graph
+                    .projection_at
+                    .map(|at| pace_takeaway(metric, at))
+                    .unwrap_or_else(|| "Current forecast unavailable; refresh needed".into()),
+            )
             .caption(reset_caption(metric, now)),
         None => card,
     };
@@ -920,7 +938,10 @@ fn share_card(
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     // The chosen limits (#218), in the order chosen; any the account no longer reports are skipped, and with none
     // left the card is automatic again.
-    let chosen = chosen_rings(account, rings);
+    let chosen: Vec<_> = chosen_rings(account, rings)
+        .into_iter()
+        .filter(|metric| !account.metric_ended(metric, now))
+        .collect();
     if chosen.len() >= 2 {
         return rings_card(account, &chosen, now, control, cx);
     }
@@ -1161,6 +1182,13 @@ fn share_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric
         .or_else(|| most_severe_after_primary(account, now, has_share))
         .or(secondary)
         .or(Some(primary))
+        .filter(|metric| !account.metric_ended(metric, now))
+        .or_else(|| {
+            account
+                .metrics()
+                .iter()
+                .find(|metric| !account.metric_ended(metric, now))
+        })
 }
 
 /// The credits line for the ring's caption when the share took the card (#174): the credits after the headline,
