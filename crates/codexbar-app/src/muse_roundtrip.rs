@@ -83,7 +83,23 @@ fn muse_adapter_account_and_widget_roundtrip_covers_each_synthetic_state() {
         );
         widgets::save_widget_snapshot(&dir.0, &feed).unwrap();
         let loaded = widgets::load_widget_snapshot(&dir.0).unwrap();
-        assert_eq!(loaded, feed);
+        let mut expected = feed.clone();
+        for (actual, expected) in loaded
+            .accounts
+            .iter()
+            .flat_map(|a| &a.metrics)
+            .zip(expected.accounts.iter_mut().flat_map(|a| &mut a.metrics))
+        {
+            if let (Some(actual), Some(wanted)) = (actual.projected_percent, expected.projected_percent) {
+                assert!(
+                    (actual - wanted).abs() <= wanted.abs().max(1.0) * 1e-12,
+                    "projection must survive JSON round-trip"
+                );
+                // JSON's float parser may round the forecast by one ULP. Every other wire field remains exact.
+                expected.projected_percent = Some(actual);
+            }
+        }
+        assert_eq!(loaded, expected);
         let views = cards::tile_views(&loaded, &Config::default(), Size::Medium, now).unwrap();
         assert_eq!(views.len(), 1);
         let serialized =
@@ -140,7 +156,7 @@ fn failed_refresh_retains_times_and_widget_reader_ages_independently_of_writer()
     );
     let old = cards::tile_views(&fresh_feed, &Config::default(), Size::Medium, fixture::now("stale")).unwrap();
     assert!(old[0].note.as_ref().unwrap().contains("Last known"));
-    assert_eq!(old[0].status, None);
+    assert_eq!(old[0].status.as_deref(), Some("Stale"));
     let reset = account.metrics()[0].resets_at().unwrap() + chrono::Duration::seconds(1);
     let rolled = cards::tile_views(&fresh_feed, &Config::default(), Size::Medium, reset).unwrap();
     assert_eq!(rolled[0].percent, None);
@@ -242,4 +258,131 @@ fn history_does_not_retimestamp_cached_readings_or_merge_configured_accounts() {
     assert_eq!(history.record(&[other], fixture::now("measured")).unwrap(), 2);
     assert_eq!(history.series("muse-demo", "weekly").count(), 1);
     assert_eq!(history.series("other-account", "weekly").count(), 1);
+}
+
+/// Inspect the actual Adaptive Card output rather than a producer-only percentage assertion.
+fn bar_styles(value: &serde_json::Value, styles: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("type").and_then(serde_json::Value::as_str) == Some("Column")
+                && map.get("minHeight").and_then(serde_json::Value::as_str) == Some("6px")
+            {
+                styles.push(map["style"].as_str().unwrap().to_owned());
+            }
+            for child in map.values() {
+                bar_styles(child, styles);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                bar_styles(child, styles);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn exhausted_muse_reaches_actual_widget_reader_as_attention_while_unknown_usage_is_not_healthy() {
+    use codexbar_store::widgets::{TileMode, WidgetBuilder, WidgetTile};
+    for (state, expected, status) in [
+        ("measured", Some("good"), None),
+        ("exhausted", Some("attention"), Some("Limit reached")),
+        ("stale", Some("default"), Some("Stale")),
+        ("null", None, None),
+    ] {
+        let now = fixture::now(state);
+        let mut states = States::new();
+        let account = match fixture::provider(state).fetch(now) {
+            Ok(mut accounts) => accounts.remove(0),
+            Err(error) => {
+                states.insert("muse-demo".into(), AccountState::Unavailable(error.to_string()));
+                AccountSnapshot::new(AccountId::new("muse-demo"), Provider::MuseCode, Vec::new(), now)
+            }
+        };
+        let dir = Scratch::new();
+        snapshots::save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
+        let accounts = if state == "null" {
+            vec![account]
+        } else {
+            snapshots::load_snapshots(&dir.0)
+        };
+        let snapshot = widget_feed::build(&accounts, &states, &Layout::default(), now).with_builder(WidgetBuilder {
+            tiles: vec![WidgetTile {
+                account: "muse-demo".into(),
+                metric: "weekly".into(),
+                mode: TileMode::Status,
+            }],
+            ..Default::default()
+        });
+        widgets::save_widget_snapshot(&dir.0, &snapshot).unwrap();
+        let snapshot = widgets::load_widget_snapshot(&dir.0).unwrap();
+        let config = Config {
+            focus: cards::Focus::Custom,
+            ..Default::default()
+        };
+        let views = cards::tile_views(&snapshot, &config, Size::Medium, now).unwrap();
+        assert_eq!(views[0].status.as_deref(), status, "{state}");
+        if state != "measured" {
+            assert_ne!(views[0].big.as_deref(), Some("OK"));
+        }
+        // A bar-mode render checks the filled segment's semantic color, status mode checks the large label.
+        let mut bar_snapshot = snapshot.clone();
+        bar_snapshot.builder.tiles[0].mode = TileMode::Bar;
+        let mut styles = Vec::new();
+        bar_styles(
+            &cards::render(&Ok(bar_snapshot), &config, Size::Medium, now),
+            &mut styles,
+        );
+        assert_eq!(styles.first().map(String::as_str), expected, "{state}: {styles:?}");
+        let status_card = cards::render(&Ok(snapshot), &config, Size::Medium, now).to_string();
+        if state == "exhausted" {
+            assert!(status_card.contains("Attention"));
+            assert!(status_card.contains("Limit reached"));
+            assert!(!styles.iter().any(|style| style == "good"));
+        }
+        if matches!(state, "stale" | "null") {
+            assert!(!styles.iter().any(|style| style == "good"));
+            assert!(!status_card.contains("\"Good\""));
+        }
+    }
+}
+
+#[test]
+fn exhausted_widget_status_respects_informational_pools_and_credit_coverage() {
+    let window = |label: &str| Metric::Window {
+        label: label.into(),
+        used: 1.0,
+        resets_at: fixture::base() + chrono::Duration::days(2),
+        pace: None,
+        length: Some(chrono::Duration::days(7)),
+    };
+    let argon = AccountSnapshot::new(
+        AccountId::new("argon"),
+        Provider::Gemini,
+        vec![window("Argon weekly")],
+        fixture::base(),
+    );
+    let covered = AccountSnapshot::new(
+        AccountId::new("covered"),
+        Provider::Codex,
+        vec![
+            window("Weekly"),
+            Metric::Credits {
+                label: "Credits".into(),
+                balance: Some(12.0),
+                start: None,
+            },
+        ],
+        fixture::base(),
+    );
+    let feed = widget_feed::build(&[argon, covered], &States::new(), &Layout::default(), fixture::base());
+    for account in &feed.accounts {
+        assert_eq!(account.metrics[0].status, None);
+    }
+    let card = cards::render(&Ok(feed), &Config::default(), Size::Medium, fixture::base());
+    let mut styles = Vec::new();
+    bar_styles(&card, &mut styles);
+    assert_eq!(styles, vec!["good", "good"]);
+    assert!(!card.to_string().contains("Attention"));
 }

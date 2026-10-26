@@ -65,6 +65,14 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
 }
 
 fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
+    let assessment = account.assess_metric(metric, now);
+    // Exhaustion deliberately has no dashboard pill. Widgets still need an explicit status so their
+    // normal-color fallback cannot advertise an exhausted, uncovered quota as healthy.
+    let status = if account.is_status_metric(metric) && !account.credits_cover(metric) && assessment.is_exhausted() {
+        Some("Limit reached".to_owned())
+    } else {
+        assessment.label().map(str::to_owned)
+    };
     let value = match metric {
         Metric::Window { .. } => format!("{} used", metric.used_display()),
         Metric::Quota { limit, .. } => format!(
@@ -87,7 +95,7 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         value,
         used_percent: metric.used_fraction().map(|used| (used * 100.0).clamp(0.0, 100.0)),
         resets_at: metric.resets_at(),
-        status: account.assess_metric(metric, now).label().map(str::to_owned),
+        status,
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
         projected_percent: metric
             .projected_at_reset(account.projection_time(now))

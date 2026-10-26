@@ -180,7 +180,8 @@ fn refresh_item() -> SettingItem {
 
 fn status_color(status: Option<&str>, cx: &App) -> Hsla {
     match status {
-        Some("At risk" | "Limit soon") => cx.theme().danger,
+        Some("At risk" | "Limit soon" | "Limit reached") => cx.theme().danger,
+        Some("Stale") => cx.theme().muted_foreground,
         Some(_) => cx.theme().warning,
         None => cx.theme().success,
     }

@@ -296,7 +296,11 @@ impl TileView {
         };
         // The tile's own metric decides its status, not the account's most urgent one.
         let current = account.provider != "muse-code" || health == WidgetHealth::Fresh;
-        let status = if current { found.status.clone() } else { None };
+        let status = if current {
+            found.status.clone()
+        } else {
+            Some("Stale".to_owned())
+        };
         // Adaptive Cards can't fade a bar, so the projection rides on the line in words (#197, #206). A snapshot
         // written before the wording travelled with it still carries the figure, so the widget keeps it.
         let line = Some(
@@ -401,7 +405,8 @@ pub fn tile_views(snapshot: &WidgetSnapshot, config: &Config, size: Size, now: D
 /// A usage bar: two weighted columns, used and left. The color follows the account's status.
 fn bar(percent: f64, status: Option<&str>) -> Value {
     let style = match status {
-        Some("At risk" | "Limit soon") => "attention",
+        Some("At risk" | "Limit soon" | "Limit reached") => "attention",
+        Some("Stale") => "default",
         Some(_) => "warning",
         None => "good",
     };
@@ -421,7 +426,8 @@ fn bar(percent: f64, status: Option<&str>) -> Value {
 /// The Adaptive Cards color for a status.
 fn status_color(status: Option<&str>) -> &'static str {
     match status {
-        Some("At risk" | "Limit soon") => "Attention",
+        Some("At risk" | "Limit soon" | "Limit reached") => "Attention",
+        Some("Stale") => "Default",
         Some(_) => "Warning",
         None => "Good",
     }

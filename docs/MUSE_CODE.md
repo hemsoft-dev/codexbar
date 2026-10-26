@@ -47,7 +47,10 @@ alerts and current forecasts. Observation and fetch times survive persistence,
 cache hits and failed refreshes. History samples use the original observation,
 not the time of a later refresh. Last-good refresh failures keep the existing
 error badge and original timestamps. A widget reader independently ages the source
-observation and refuses a selected Muse window after its reset.
+observation and refuses a selected Muse window after its reset. Exhausted eligible,
+uncovered quotas carry `Limit reached` to the widget and render in its attention
+color. Stale Muse readings render neutrally with `Stale` and last-known text;
+informational pools and credit-covered windows keep their existing semantics.
 
 The contained command runner uses a child-only environment. It removes every
 case variant of `META_API_KEY`, `MUSE_LOGIN`, `MUSE_NO_AUTO_UPDATE`,
