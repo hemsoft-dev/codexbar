@@ -9,7 +9,9 @@ pub(crate) fn base() -> DateTime<Utc> {
     DateTime::from_timestamp_millis(1793037245064).unwrap()
 }
 pub(crate) fn now(state: &str) -> DateTime<Utc> {
-    if state == "reset-after" {
+    if state == "cached-alert" {
+        base() + Duration::minutes(5)
+    } else if state == "reset-after" {
         base() + Duration::minutes(3)
     } else if state == "stale" {
         base() + Duration::minutes(8)
@@ -88,4 +90,35 @@ pub(crate) fn provider(state: &str) -> impl UsageProvider + use<> {
         "muse-demo".into(),
         "Demo".into(),
     )
+}
+
+/// Five-minute-old source reading served from the production adapter's still-valid cache.
+/// The short window's observation-anchored projection is just past 100%, while recomputing at wall time is below it.
+pub(crate) fn cached_alert() -> codexbar_core::AccountSnapshot {
+    let text = serde_json::json!({
+        "schemaVersion": 1,
+        "allowance": {
+            "asOfMs": base().timestamp_millis(), "source": "mint", "tier": "Muse Code Power Usage",
+            "window": {"usedPercent": 60.5, "resetsAtMs": (base() + Duration::hours(2)).timestamp_millis()},
+            "weekly": {"usedPercent": 60, "resetsAtMs": (base() + Duration::days(3)).timestamp_millis()}
+        }
+    })
+    .to_string();
+    let provider = MuseProvider::new(
+        Fixture {
+            text,
+            failure: None,
+            success: true,
+        },
+        std::env::temp_dir(),
+        "muse-demo".into(),
+        "Demo".into(),
+    );
+    let first = provider.fetch(base() + Duration::minutes(1)).unwrap();
+    let mut cached = provider.fetch(base() + Duration::minutes(5)).unwrap();
+    assert_eq!(
+        first, cached,
+        "cache must preserve the original observation and fetch clocks"
+    );
+    cached.remove(0)
 }

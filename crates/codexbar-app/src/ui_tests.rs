@@ -8709,3 +8709,27 @@ fn muse_source_age_reaches_live_refresh_state_and_saved_observation(cx: &mut Tes
         assert_eq!(saved[0].allowance_source(), Some("mint"));
     }
 }
+
+#[gpui_kit::test]
+fn cached_muse_alert_context_matches_source_assessment_but_reset_countdown_uses_wall_time(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("muse-cached-alert-clock", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_muse("cached-alert", cx)));
+    cx.run_until_parked();
+    let alert = label(cx, handle, "alert-strongest").unwrap();
+    assert!(alert.starts_with("Limit soon (projected): 5-hour window."), "{alert}");
+    assert!(alert.contains("resets in 1h 55m"), "{alert}");
+    assert!(alert.contains("2m early"), "{alert}");
+    assert!(!alert.contains("99%"), "{alert}");
+    assert!(
+        label(cx, handle, "projected-status")
+            .unwrap()
+            .contains("observed usage alone is Normal")
+    );
+    let account = cx.update(|cx| dashboard.read(cx).account("muse-demo").unwrap().clone());
+    assert_eq!(account.observed_at(), Some(crate::muse_fixture::base()));
+    assert_eq!(
+        account.fetched_at(),
+        crate::muse_fixture::base() + chrono::Duration::minutes(1)
+    );
+}

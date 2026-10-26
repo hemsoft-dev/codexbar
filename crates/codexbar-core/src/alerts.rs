@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 
-use crate::{AccountSnapshot, Currency, Metric, Severity, assess};
+use crate::{AccountSnapshot, Assessment, Currency, Metric, Severity, assess};
 
 /// A usage alert recovers once usage falls this far below the threshold, so a value hovering at the line doesn't
 /// notify on every refresh.
@@ -309,7 +309,12 @@ pub fn account_alerts(
     }
     let id = account.id().as_str();
     let mut found: Vec<(usize, f64, AlertDetail)> = Vec::new();
-    for (ix, metric) in account.fresh_status_metrics(now).enumerate() {
+    for (ix, evaluated) in account
+        .fresh_status_metrics(now)
+        .filter_map(|metric| AlertMetric::current(account, metric, now))
+        .enumerate()
+    {
+        let metric = evaluated.metric;
         let current = metric_slot(metric);
         let mut kinds: Vec<AlertDetail> = Vec::new();
         for kind in [
@@ -341,15 +346,14 @@ pub fn account_alerts(
                 continue;
             }
             kinds.push(detail(
-                metric,
+                &evaluated,
                 kind,
                 alert_key(id, &current, kind),
                 settings,
                 notified,
-                now,
             ));
         }
-        let pressure = assess(metric, now).pressure();
+        let pressure = evaluated.assessment.pressure();
         found.extend(kinds.into_iter().map(|detail| (ix, pressure, detail)));
     }
     found.sort_by(|(ix_a, pressure_a, a), (ix_b, pressure_b, b)| {
@@ -363,15 +367,33 @@ pub fn account_alerts(
     found.into_iter().map(|(_, _, detail)| detail).collect()
 }
 
+/// An alert's explanation and ordering share the account's validated source clock and assessment.
+/// Construction checks actual-now freshness/reset validity before any source-anchored projection.
+struct AlertMetric<'a> {
+    metric: &'a Metric,
+    at: DateTime<Utc>,
+    assessment: Assessment,
+}
+
+impl<'a> AlertMetric<'a> {
+    fn current(account: &AccountSnapshot, metric: &'a Metric, now: DateTime<Utc>) -> Option<Self> {
+        Some(Self {
+            metric,
+            at: account.evaluation_time(metric, now)?,
+            assessment: account.assess_metric(metric, now),
+        })
+    }
+}
+
 fn detail(
-    metric: &Metric,
+    evaluated: &AlertMetric<'_>,
     kind: AlertKind,
     key: String,
     settings: &AlertSettings,
     notified: bool,
-    now: DateTime<Utc>,
 ) -> AlertDetail {
-    let severity = assess(metric, now).severity();
+    let metric = evaluated.metric;
+    let severity = evaluated.assessment.severity();
     let observed = crate::observed_severity(metric);
     // The reason follows what actually raised the severity: the pace, or usage already near the limit.
     let threshold = match kind {
@@ -390,7 +412,7 @@ fn detail(
         value: metric.used_display(),
         threshold,
         resets_at: metric.resets_at(),
-        outlook: metric.outlook(now),
+        outlook: metric.outlook(evaluated.at),
         severity,
         observed,
         notified,
@@ -1214,6 +1236,150 @@ mod detail_tests {
             .iter()
             .map(|detail| (detail.kind, detail.metric.as_str()))
             .collect()
+    }
+
+    fn cached_muse() -> AccountSnapshot {
+        let mut short = metric("5-hour window", 0.605, Duration::hours(2), Some(0.605 / 3.0));
+        if let Metric::Window { length, .. } = &mut short {
+            *length = Some(Duration::hours(5));
+        }
+        let mut weekly = metric("Weekly", 0.60, Duration::days(3), Some(0.60 / 96.0));
+        if let Metric::Window { length, .. } = &mut weekly {
+            *length = Some(Duration::days(7));
+        }
+        AccountSnapshot::new(
+            AccountId::new("muse-cached"),
+            Provider::MuseCode,
+            vec![short, weekly],
+            now(),
+        )
+        .with_observation(now(), Some("mint".into()), 420)
+    }
+
+    #[test]
+    fn cached_muse_alert_details_share_source_clock_with_condition_assessment_and_ranking() {
+        let snapshot = cached_muse();
+        let wall = now() + Duration::minutes(5);
+        let short = &snapshot.metrics()[0];
+        assert!(!snapshot.observation_stale(wall));
+        assert_eq!(
+            assess(short, wall).severity(),
+            Severity::Normal,
+            "the old detail clock loses the projection"
+        );
+        assert_eq!(snapshot.assess(wall).severity(), Severity::LimitSoon);
+        assert!(matches!(
+            account_condition(&all_on(), &snapshot, short, AlertKind::Critical, wall),
+            Condition::Triggered
+        ));
+        let expected_outlook = short.outlook(now());
+        assert!(matches!(expected_outlook, Some(crate::Outlook::Early(_))));
+        assert!(matches!(short.outlook(wall), Some(crate::Outlook::Share(share)) if share < 1.0));
+        for critical in [true, false] {
+            let settings = AlertSettings { critical, ..all_on() };
+            let first = evaluate(&settings, &BTreeSet::new(), std::slice::from_ref(&snapshot), wall);
+            assert!(first.notify.iter().any(|alert| alert.metric == "5-hour window"));
+            let active = first.notify.iter().flat_map(|alert| alert.keys().cloned()).collect();
+            assert!(
+                evaluate(&settings, &active, std::slice::from_ref(&snapshot), wall)
+                    .notify
+                    .is_empty()
+            );
+            let details = account_alerts(&settings, &active, &snapshot, wall);
+            assert_eq!(
+                details.len(),
+                2,
+                "both valid sibling windows retain their projected alert"
+            );
+            assert_eq!(
+                details[0].metric, "5-hour window",
+                "severity ranking must use the same source assessment"
+            );
+            let detail = &details[0];
+            assert_eq!(
+                detail.kind,
+                if critical {
+                    AlertKind::Critical
+                } else {
+                    AlertKind::Warning
+                }
+            );
+            assert_eq!(detail.severity, snapshot.assess_metric(short, wall).severity());
+            assert_eq!(detail.severity, Severity::LimitSoon);
+            assert_eq!(detail.observed, Severity::Normal);
+            assert!(detail.is_projected() && detail.notified);
+            assert_eq!(detail.outlook, expected_outlook);
+            let summary = detail.summary(wall);
+            assert!(summary.contains("resets in 1h 55m"), "wall-clock countdown: {summary}");
+            assert!(summary.contains("2m early"), "source-anchored outlook: {summary}");
+            assert!(
+                !summary.contains("99%"),
+                "the explanation cannot contradict the triggered condition: {summary}"
+            );
+            assert_eq!(
+                detail.severity,
+                account_alerts(&settings, &active, &snapshot, now())[0].severity
+            );
+            assert_eq!(details[1].metric, "Weekly");
+            assert_eq!(
+                details[1].severity,
+                snapshot.assess_metric(&snapshot.metrics()[1], wall).severity()
+            );
+        }
+    }
+
+    #[test]
+    fn muse_alert_clock_validity_keeps_expiry_staleness_recovery_and_legacy_semantics() {
+        let snapshot = cached_muse();
+        let wall = now() + Duration::minutes(5);
+        let short = &snapshot.metrics()[0];
+        let old_slot = metric_slot(&metric("5-hour window", 0.8, -Duration::hours(3), None));
+        let old_key = alert_key(snapshot.id().as_str(), &old_slot, AlertKind::Usage);
+        let active = [old_key.clone()].into_iter().collect();
+        let fresh = evaluate(&all_on(), &active, std::slice::from_ref(&snapshot), wall);
+        assert!(fresh.recovered.contains(&old_key));
+        let stale_at = now() + Duration::seconds(421);
+        assert!(account_alerts(&all_on(), &active, &snapshot, stale_at).is_empty());
+        let stale = evaluate(&all_on(), &active, std::slice::from_ref(&snapshot), stale_at);
+        assert!(stale.notify.is_empty() && stale.recovered.is_empty());
+        let mut ended = short.clone();
+        if let Metric::Window { resets_at, .. } = &mut ended {
+            *resets_at = now() + Duration::minutes(4);
+        }
+        let partial = AccountSnapshot::new(
+            snapshot.id().clone(),
+            Provider::MuseCode,
+            vec![ended, snapshot.metrics()[1].clone()],
+            now(),
+        )
+        .with_observation(now(), Some("mint".into()), 420);
+        assert!(!partial.observation_stale(wall));
+        assert!(matches!(
+            account_condition(&all_on(), &partial, &partial.metrics()[0], AlertKind::Critical, wall),
+            Condition::NotApplicable
+        ));
+        let details = account_alerts(&all_on(), &active, &partial, wall);
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0].metric, "Weekly");
+        let expired = evaluate(&all_on(), &active, &[partial], wall);
+        assert!(expired.recovered.contains(&old_key));
+        assert!(expired.notify.iter().all(|alert| alert.metric == "Weekly"));
+        let legacy = AccountSnapshot::new(
+            AccountId::new("legacy"),
+            Provider::Claude,
+            snapshot.metrics().to_vec(),
+            now(),
+        );
+        assert_eq!(legacy.assess_metric(short, wall).severity(), Severity::Normal);
+        assert!(matches!(
+            account_condition(&all_on(), &legacy, short, AlertKind::Critical, wall),
+            Condition::Clear
+        ));
+        assert!(
+            account_alerts(&all_on(), &BTreeSet::new(), &legacy, wall)
+                .iter()
+                .all(|detail| detail.metric == "Weekly")
+        );
     }
 
     #[test]

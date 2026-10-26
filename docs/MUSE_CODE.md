@@ -64,6 +64,9 @@ wall-clock validity checks. The shared portable `StatusTone` palette supplies bo
 Adaptive Cards and the native widget preview, including neutral stale readings.
 Alert-key reconciliation still retires keys from older windows, without allowing
 an ended window or stale source to trigger a current alert.
+Alert detail severity, projection explanations and ordering share the same validated
+source evaluation and account assessment as the trigger condition. Reset countdowns
+still use actual wall time, so cached readings cannot change the reason an alert holds.
 
 The contained command runner uses a child-only environment. It removes every
 case variant of `META_API_KEY`, `MUSE_LOGIN`, `MUSE_NO_AUTO_UPDATE`,

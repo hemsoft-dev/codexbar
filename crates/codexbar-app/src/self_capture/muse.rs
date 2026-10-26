@@ -24,6 +24,7 @@ pub(super) async fn run(
         "stale",
         "reset-before",
         "reset-after",
+        "cached-alert",
     ] {
         cx.update(|cx| {
             crate::prefs_hub::PrefsHub::set_appearance(cx, Appearance::Light);
@@ -36,6 +37,14 @@ pub(super) async fn run(
                 assert!(w.try_find("muse-quota-note").is_some());
                 assert!(w.try_find("progress-cell-muse-demo-sus").is_none());
                 assert!(w.try_find("focus-metric-1-sus").is_none());
+                if state == "cached-alert" {
+                    let alert = w.find("alert-strongest").label().unwrap().to_owned();
+                    assert!(alert.starts_with("Limit soon (projected): 5-hour window"), "{alert}");
+                    assert!(
+                        alert.contains("resets in 1h 55m") && alert.contains("2m early"),
+                        "{alert}"
+                    );
+                }
                 if state == "reset-after" {
                     let note = w.find("muse-quota-note");
                     assert!(note.label().unwrap().contains("5-hour: n/a"));

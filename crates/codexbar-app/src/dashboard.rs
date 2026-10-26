@@ -1570,10 +1570,15 @@ impl Dashboard {
                 },
             ];
         });
+        if state == "cached-alert" {
+            crate::prefs_hub::PrefsHub::update_alert_settings(cx, |settings| settings.enabled = true);
+        }
         let now = crate::muse_fixture::now(state);
         self.last_refresh = Some(now);
         crate::sus::capture_time(now, cx);
-        let result = if state == "reset-after" {
+        let result = if state == "cached-alert" {
+            Ok(vec![crate::muse_fixture::cached_alert()])
+        } else if state == "reset-after" {
             crate::muse_fixture::provider("reset-before").fetch(crate::muse_fixture::now("reset-before"))
         } else {
             crate::muse_fixture::provider(state).fetch(now)
