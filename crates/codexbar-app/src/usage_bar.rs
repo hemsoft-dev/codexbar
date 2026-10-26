@@ -191,7 +191,14 @@ pub struct Forecast {
 
 impl Forecast {
     pub fn for_account(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Option<Self> {
-        Self::of(metric, account.evaluation_time(metric, now)?)
+        let at = account.evaluation_time(metric, now)?;
+        Self::of(metric, at).map(|mut forecast| {
+            // The projection belongs to the source reading. Only its relative countdown advances with wall time.
+            forecast.runs_out_in = forecast
+                .runs_out_in
+                .map(|left| (left - (now - at)).max(Duration::zero()));
+            forecast
+        })
     }
 
     /// The forecast for `metric` at `now`, when its pace allows one.
@@ -346,6 +353,11 @@ impl Projection {
     /// What `metric` shows at `now`, with `used` as the bar's own share (a credits bar runs on the spend since the
     /// remembered start, not the metric's used fraction, so the caller says what the fill is).
     pub fn of(metric: &Metric, used: f64, now: DateTime<Utc>) -> Self {
+        Self::with_forecast(metric, used, now, Forecast::of(metric, now))
+    }
+
+    /// Render a validated forecast with wall-clock reset/countdown words. The quota share need not be resampled.
+    fn with_forecast(metric: &Metric, used: f64, now: DateTime<Utc>, forecast: Option<Forecast>) -> Self {
         let share = format!("{:.0}% used", used * 100.0);
         let resets = metric
             .resets_at()
@@ -356,7 +368,6 @@ impl Projection {
         };
         // The share at the reset and when the limit runs out (#234), with how early that is (#206) and the pace. The
         // bar draws the same share the words say, so a limit hit at the reset is a full bar, not an overrun.
-        let forecast = Forecast::of(metric, now);
         let projected = forecast.map(|forecast| forecast.at_reset);
         let outlook = match forecast {
             Some(forecast) => {
@@ -445,7 +456,7 @@ impl Projection {
         account: &codexbar_core::AccountSnapshot,
         now: DateTime<Utc>,
     ) -> Self {
-        let Some(at) = account.evaluation_time(metric, now) else {
+        let Some(_) = account.evaluation_time(metric, now) else {
             let mut projection = Self::of(metric, used, now);
             projection.projected = None;
             projection.runway = Runway::Ok;
@@ -453,7 +464,11 @@ impl Projection {
             projection.tooltip = projection.label.clone();
             return projection;
         };
-        let projection = status_projection(Self::of(metric, used, at), account, metric);
+        let projection = status_projection(
+            Self::with_forecast(metric, used, now, Forecast::for_account(metric, account, now)),
+            account,
+            metric,
+        );
         if account.credits_cover(metric) {
             projection.calm()
         } else {
@@ -672,6 +687,73 @@ mod tests {
     }
 
     /// The scale (#234): 0 to 125% of the limit, so the limit sits at 0.8 of the bar and 125% at its end.
+    #[test]
+    fn cached_forecast_countdowns_advance_without_changing_source_projection_or_early_gap() {
+        use codexbar_core::{AccountId, AccountSnapshot, Provider, layout::Layout};
+        let account = crate::muse_fixture::cached_alert();
+        let at = crate::muse_fixture::base();
+        let wall = at + Duration::minutes(5);
+        let short = &account.metrics()[0];
+        let original = Forecast::for_account(short, &account, at).unwrap();
+        let current = Forecast::for_account(short, &account, wall).unwrap();
+        assert_eq!(original.at_reset, current.at_reset);
+        assert_eq!(original.early, current.early, "an early-before-reset gap does not age");
+        assert_eq!(at + original.runs_out_in.unwrap(), wall + current.runs_out_in.unwrap());
+        assert!(current.text().contains("runs out in 1h 53m"));
+        let projection = Projection::of_account(short, short.used_fraction().unwrap(), &account, wall);
+        assert_eq!(projection.projected, Some(original.at_reset));
+        assert!(projection.label.contains("runs out in 1h 53m"));
+        assert!(projection.tooltip.contains("resets in 1h 55m"));
+        assert!(projection.tooltip.contains("2m early"));
+        assert!(!projection.tooltip.contains("1h 58m"));
+        let feed = crate::widget_feed::build(
+            std::slice::from_ref(&account),
+            &Default::default(),
+            &Layout::default(),
+            wall,
+        );
+        let rendered = crate::widgets::cards::render(
+            &Ok(feed),
+            &Default::default(),
+            crate::widgets::cards::Size::Medium,
+            wall,
+        )
+        .to_string();
+        assert!(rendered.contains("runs out in 1h 53m"));
+        assert!(!rendered.contains("runs out in 1h 58m"));
+        let mut near = short.clone();
+        if let Metric::Window { used, pace, .. } = &mut near {
+            *used = 0.999;
+            *pace = Some(Pace::per_hour(0.1));
+        }
+        let near_account = AccountSnapshot::new(AccountId::new("near"), Provider::MuseCode, vec![near.clone()], at)
+            .with_observation(at, Some("mint".into()), 420);
+        let crossed = Forecast::for_account(&near, &near_account, wall).unwrap();
+        assert_eq!(crossed.runs_out_in, Some(Duration::zero()));
+        assert!(crossed.text().contains("at the limit now"));
+        let legacy = AccountSnapshot::new(
+            AccountId::new("legacy"),
+            Provider::Claude,
+            account.metrics().to_vec(),
+            at,
+        );
+        assert_eq!(Forecast::for_account(short, &legacy, wall), Forecast::of(short, wall));
+        assert!(Forecast::for_account(short, &account, at + Duration::seconds(421)).is_none());
+        let mut ended = short.clone();
+        if let Metric::Window { resets_at, .. } = &mut ended {
+            *resets_at = at + Duration::minutes(4);
+        }
+        let partial = AccountSnapshot::new(
+            AccountId::new("partial"),
+            Provider::MuseCode,
+            vec![ended.clone(), account.metrics()[1].clone()],
+            at,
+        )
+        .with_observation(at, Some("mint".into()), 420);
+        assert!(Forecast::for_account(&ended, &partial, wall).is_none());
+        assert!(Forecast::for_account(&partial.metrics()[1], &partial, wall).is_some());
+    }
+
     #[test]
     fn every_bar_shares_one_scale_with_the_limit_at_four_fifths() {
         assert!(close(position(0.0), 0.0));

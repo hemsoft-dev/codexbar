@@ -44,6 +44,12 @@ pub(super) async fn run(
                         alert.contains("resets in 1h 55m") && alert.contains("2m early"),
                         "{alert}"
                     );
+                    assert!(
+                        w.find("at-reset-muse-demo")
+                            .label()
+                            .unwrap()
+                            .contains("runs out in 1h 53m")
+                    );
                 }
                 if state == "reset-after" {
                     let note = w.find("muse-quota-note");

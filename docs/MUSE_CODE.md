@@ -67,6 +67,10 @@ an ended window or stale source to trigger a current alert.
 Alert detail severity, projection explanations and ordering share the same validated
 source evaluation and account assessment as the trigger condition. Reset countdowns
 still use actual wall time, so cached readings cannot change the reason an alert holds.
+Relative exhaustion countdowns on the table, cards, takeaways and widget feed
+advance from the source anchor to actual wall time and clamp at zero. The source
+quota, at-reset projection and early-before-reset gap stay unchanged; no newer
+usage is inferred. Legacy readings without a source clock keep a zero adjustment.
 
 The contained command runner uses a child-only environment. It removes every
 case variant of `META_API_KEY`, `MUSE_LOGIN`, `MUSE_NO_AUTO_UPDATE`,

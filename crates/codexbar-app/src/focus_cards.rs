@@ -917,7 +917,7 @@ fn graph_card(graph: &Graph, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
             .takeaway(
                 graph
                     .projection_at
-                    .map(|at| pace_takeaway(metric, at))
+                    .map(|at| pace_takeaway(metric, at, now))
                     .unwrap_or_else(|| "Current forecast unavailable; refresh needed".into()),
             )
             .caption(reset_caption(metric, now)),
@@ -1522,13 +1522,16 @@ fn most_severe_after_primary(
         .map(|(_, metric)| metric)
 }
 
-fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
+fn pace_takeaway(metric: &Metric, at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     if let Some(days) = metric.days_of_credit() {
         return format!("About {days:.0} days of credit left");
     }
     // The outlook picks the wording (#206), so the card and its tile agree even at the minute where a limit hit
     // just before the reset counts as a full share.
-    match (metric.outlook(now), metric.time_to_limit()) {
+    let to_limit = metric
+        .time_to_limit()
+        .map(|left| (left - (now - at)).max(chrono::Duration::zero()));
+    match (metric.outlook(at), to_limit) {
         (Some(outlook @ codexbar_core::Outlook::Early(_)), Some(to_limit)) => format!(
             "Hits the {} limit in ~{} at this pace, {}",
             metric.label().to_lowercase(),
@@ -2107,18 +2110,21 @@ mod tests {
 
     #[test]
     fn pace_takeaway_shows_the_projection_or_when_the_limit_is_hit() {
+        let cached = crate::muse_fixture::cached_alert();
+        let at = crate::muse_fixture::base();
+        assert!(pace_takeaway(&cached.metrics()[0], at, at + Duration::minutes(5)).contains("~1h 53m"));
         assert_eq!(
-            pace_takeaway(&window(0.4, 0.03), now()),
+            pace_takeaway(&window(0.4, 0.03), now(), now()),
             "On pace for about 70% by the reset"
         );
         // 60% left at 10%/h: the limit in 6h, four hours before the 10h reset (#206).
         assert_eq!(
-            pace_takeaway(&window(0.4, 0.1), now()),
+            pace_takeaway(&window(0.4, 0.1), now(), now()),
             "Hits the included usage limit in ~6h at this pace, 4h early"
         );
         // 60% left at 6%/h lands on the 10h reset: a full share, as the tile says, not "hits the limit".
         assert_eq!(
-            pace_takeaway(&window(0.4, 0.06), now()),
+            pace_takeaway(&window(0.4, 0.06), now(), now()),
             "On pace for about 100% by the reset"
         );
     }

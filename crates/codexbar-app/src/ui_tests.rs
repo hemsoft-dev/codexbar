@@ -8726,6 +8726,12 @@ fn cached_muse_alert_context_matches_source_assessment_but_reset_countdown_uses_
             .unwrap()
             .contains("observed usage alone is Normal")
     );
+    let reset = label(cx, handle, "at-reset-muse-demo").unwrap();
+    assert!(
+        reset.contains("runs out in 1h 53m"),
+        "relative forecast must count from wall time: {reset}"
+    );
+    assert!(exists(cx, handle, "focus-history-card-takeaway"));
     let account = cx.update(|cx| dashboard.read(cx).account("muse-demo").unwrap().clone());
     assert_eq!(account.observed_at(), Some(crate::muse_fixture::base()));
     assert_eq!(
