@@ -258,17 +258,68 @@ fn used_up(metric: &Metric) -> bool {
     ) && metric.used_fraction().is_some_and(|used| used >= 1.0)
 }
 
-/// What `account`'s `metric` says about its reset (#234), in the words every surface uses (the focus card's tiles and
-/// bar, the widgets): the forecast ("112% at reset · runs out in 5d 4h"), "covered by credits" for a used-up window
-/// the account's credits carry (#150), "limit reached" for a used-up limit with no pace left, or nothing.
-pub fn outlook(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
-    account.evaluation_time(metric, now)?;
-    if account.credits_cover(metric) {
-        return Some(COVERED.to_owned());
+/// One reset presentation policy for the table, ring, bar and widget feed. Current validity is checked
+/// before credit coverage or forecast wording; last-good values never acquire a current forecast.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResetDisplay {
+    Unavailable,
+    Covered,
+    Forecast(Forecast),
+    Reached,
+    NoForecast,
+    NotApplicable,
+}
+
+impl ResetDisplay {
+    pub fn of(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Self {
+        let Some(_) = account.evaluation_time(metric, now) else {
+            return Self::Unavailable;
+        };
+        if account.credits_cover(metric) {
+            return Self::Covered;
+        }
+        if let Some(forecast) = Forecast::for_account(metric, account, now) {
+            return Self::Forecast(forecast);
+        }
+        if used_up(metric) {
+            return Self::Reached;
+        }
+        let limited = matches!(
+            metric,
+            Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { limit: Some(_), .. }
+        ) && metric.resets_at().is_some();
+        if limited { Self::NoForecast } else { Self::NotApplicable }
     }
-    Forecast::for_account(metric, account, now)
-        .map(|forecast| forecast.text())
-        .or_else(|| used_up(metric).then(|| REACHED.to_owned()))
+
+    pub fn outlook(self) -> Option<String> {
+        match self {
+            Self::Covered => Some(COVERED.to_owned()),
+            Self::Forecast(forecast) => Some(forecast.text()),
+            Self::Reached => Some(REACHED.to_owned()),
+            _ => None,
+        }
+    }
+
+    pub fn ring_text(self) -> Option<String> {
+        match self {
+            Self::Forecast(forecast) => Some(format!("{} at reset", forecast.share())),
+            other => other.outlook(),
+        }
+    }
+
+    pub fn plain_text(self) -> &'static str {
+        match self {
+            Self::Unavailable => "n/a",
+            Self::Covered => COVERED,
+            Self::Reached => REACHED,
+            Self::NoForecast => "no forecast",
+            Self::NotApplicable | Self::Forecast(_) => "—",
+        }
+    }
+}
+
+pub fn outlook(metric: &Metric, account: &codexbar_core::AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
+    ResetDisplay::of(metric, account, now).outlook()
 }
 
 /// What a bar says about its metric: the share used, the share projected by the reset when the pace allows one, and

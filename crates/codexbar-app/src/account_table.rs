@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::usage_bar::{Forecast, Projection, usage_bar};
+use crate::usage_bar::{Projection, usage_bar};
 use chrono::{DateTime, Utc};
 use codexbar_core::{AccountSnapshot, Metric, Provider, format};
 use codexbar_store::summary::HistorySummary;
@@ -306,6 +306,25 @@ pub enum AccountState {
     Failed(String),
     /// The first fetch failed: there is no usage to show yet. Holds the error.
     Unavailable(String),
+}
+
+impl AccountState {
+    /// A successful transport can still carry an old source observation.
+    pub fn fresh(account: &AccountSnapshot, now: DateTime<Utc>) -> Self {
+        if account.observation_stale(now) {
+            Self::Failed("Muse allowance observation is over 7 minutes old".into())
+        } else {
+            Self::Fresh
+        }
+    }
+
+    /// Source age can downgrade fresh usage, while explicit loading/failure/restoration states survive.
+    pub fn at(state: Option<&Self>, account: &AccountSnapshot, now: DateTime<Utc>) -> Self {
+        match state {
+            None | Some(Self::Fresh) => Self::fresh(account, now),
+            Some(other) => other.clone(),
+        }
+    }
 }
 
 /// Refresh state by account id; accounts not listed are fresh.
@@ -713,14 +732,8 @@ impl AccountTable {
     /// screen readers.
     fn state_tag(&self, row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> Option<gpui_kit::AnyElement> {
         let id = row.id().as_str();
-        let stale = AccountState::Failed("Muse allowance observation is over 7 minutes old".into());
-        let state =
-            if row.observation_stale(self.now) && matches!(self.states.get(id), None | Some(AccountState::Fresh)) {
-                &stale
-            } else {
-                self.states.get(id)?
-            };
-        let (tag, label, detail) = match state {
+        let state = AccountState::at(self.states.get(id), row, self.now);
+        let (tag, label, detail) = match &state {
             AccountState::Fresh => return None,
             AccountState::Loading => (
                 Tag::secondary(),
@@ -877,36 +890,22 @@ fn at_reset_cell(
             .child(text.to_owned())
             .into_any_element()
     };
-    // A used-up window the account's credits carry (#150) neither runs out nor is reached: the credits pay for it.
-    if row.credits_cover(metric) {
-        return plain(
-            crate::usage_bar::COVERED,
-            format!("{name} at reset: {}", crate::usage_bar::COVERED),
-            muted,
-        );
-    }
-    if row.evaluation_time(metric, now).is_none() {
-        return plain(
-            "n/a",
-            format!("{name}: forecast unavailable, observation stale or window ended"),
-            muted,
-        );
-    }
-    let Some(forecast) = Forecast::for_account(metric, row, now) else {
-        // Only a limit with a reset ahead can be forecast; one without (a money-only spend cap) is not applicable.
-        let limited = (matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
-            || matches!(metric, Metric::Spend { limit: Some(_), .. }))
-            && metric.resets_at().is_some();
-        // A used-up limit with no pace left to project still says so, as the Pi dashboard does.
-        let used_up = metric.used_fraction().is_some_and(|used| used >= 1.0);
-        let (text, spoken) = if used_up {
-            ("limit reached", format!("{name} at reset: limit reached"))
-        } else if limited {
-            ("no forecast", format!("{name} at reset: no forecast"))
-        } else {
-            ("—", format!("{name} at reset: not applicable"))
+    let display = crate::usage_bar::ResetDisplay::of(metric, row, now);
+    let crate::usage_bar::ResetDisplay::Forecast(forecast) = display else {
+        let text = display.plain_text();
+        let spoken = match display {
+            crate::usage_bar::ResetDisplay::Unavailable => {
+                format!("{name}: forecast unavailable, observation stale or window ended")
+            }
+            crate::usage_bar::ResetDisplay::NotApplicable => format!("{name} at reset: not applicable"),
+            _ => format!("{name} at reset: {text}"),
         };
-        return plain(text, spoken, if used_up { cx.theme().danger } else { muted });
+        let color = if display == crate::usage_bar::ResetDisplay::Reached {
+            cx.theme().danger
+        } else {
+            muted
+        };
+        return plain(text, spoken, color);
     };
     let runway = forecast.runway();
     let tint = match runway {
@@ -989,15 +988,22 @@ fn missing_used_label(row: &AccountSnapshot) -> String {
     }
 }
 fn missing_limit_label(row: &AccountSnapshot) -> String {
+    [
+        (Provider::MuseCode, "Quota unavailable"),
+        (Provider::Gemini, "Gemini Models weekly"),
+    ]
+    .into_iter()
+    .find(|(provider, _)| *provider == row.provider())
+    .map_or(String::new(), |(_, label)| label.to_owned())
+}
+fn missing_window_label(row: &AccountSnapshot, kind: WindowKind) -> &'static str {
     if row.provider() == Provider::MuseCode {
-        return "Quota unavailable".into();
-    }
-    if row.provider() == Provider::Gemini {
-        "Gemini Models weekly".into()
+        "n/a"
     } else {
-        String::new()
+        kind.title()
     }
 }
+
 fn missing_window_bar(
     kind: WindowKind,
     row: &AccountSnapshot,
@@ -1006,13 +1012,10 @@ fn missing_window_bar(
     id: &str,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
-    if row.provider() == Provider::MuseCode {
-        return blank_cell(id, "n/a", cx.theme().muted_foreground);
-    }
     if row.provider() == Provider::Gemini && kind == WindowKind::Weekly {
         bar_cell_without_metric(id, assessment, severity, row, cx)
     } else {
-        blank_cell(id, kind.title(), cx.theme().muted_foreground)
+        blank_cell(id, missing_window_label(row, kind), cx.theme().muted_foreground)
     }
 }
 
@@ -1024,21 +1027,32 @@ fn bar_cell_without_metric(
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
+    if let Some(unavailable) = unavailable_bar(id, row, cx) {
+        return unavailable;
+    }
+    bar(id, &Projection::bare(assessment.pressure()).graded(severity), row, cx)
+}
+
+/// Missing quotas keep their provider's established presentation: Muse n/a, subscriptions SUS n/a,
+/// and legacy accounts retain the pressure bar.
+fn unavailable_bar(id: &str, row: &AccountSnapshot, cx: &gpui_kit::App) -> Option<gpui_kit::AnyElement> {
     if row.provider() == Provider::MuseCode {
-        return blank_cell(id, "n/a", cx.theme().muted_foreground);
+        return Some(blank_cell(id, "n/a", cx.theme().muted_foreground));
     }
     if matches!(
         row.provider(),
         Provider::Gemini | Provider::Grok | Provider::XSubscription
     ) {
-        return h_flex()
-            .gap_2()
-            .items_center()
-            .child(no_bar(id, cx.theme().muted_foreground))
-            .child(crate::sus::badge(None, &format!("{id}-sus"), "Quota unavailable", cx))
-            .into_any_element();
+        return Some(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(no_bar(id, cx.theme().muted_foreground))
+                .child(crate::sus::badge(None, &format!("{id}-sus"), "Quota unavailable", cx))
+                .into_any_element(),
+        );
     }
-    bar(id, &Projection::bare(assessment.pressure()).graded(severity), row, cx)
+    None
 }
 
 fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {

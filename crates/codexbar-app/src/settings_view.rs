@@ -741,6 +741,28 @@ fn x_subscription_refusal(
     }
 }
 
+/// Provider-specific restrictions apply before changing any account or secret.
+fn account_refusal(
+    provider: codexbar_core::Provider,
+    method: AuthMethod,
+    editing: Option<&str>,
+    accounts: &[AccountRecord],
+) -> Option<&'static str> {
+    match provider {
+        codexbar_core::Provider::MuseCode => muse_refusal(method, editing, accounts),
+        codexbar_core::Provider::XSubscription => x_subscription_refusal(method, editing, accounts),
+        _ => None,
+    }
+}
+
+fn muse_refusal(method: AuthMethod, editing: Option<&str>, accounts: &[AccountRecord]) -> Option<&'static str> {
+    let duplicate = accounts
+        .iter()
+        .any(|other| other.provider == names::MUSE_CODE && Some(other.id.as_str()) != editing);
+    (method != AuthMethod::CommandLine || duplicate)
+        .then_some("Muse Code reads one existing CLI session. Choose Command line and keep one account.")
+}
+
 /// Under the secret field: where a saved secret goes, and what the environment variable does. When the variable is set
 /// right now, the user is told that it is in use until a secret is saved here (#186). Never the value.
 fn secret_hint(spec: &SecretSpec, source: &SecretSource) -> String {
@@ -800,24 +822,12 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         },
     };
 
-    if info.id == names::MUSE_CODE
-        && (method != AuthMethod::CommandLine
-            || SettingsHub::global(cx).settings().accounts().iter().any(|other| {
-                other.provider == names::MUSE_CODE && existing.as_ref().is_none_or(|record| record.id != other.id)
-            }))
-    {
-        *form.error.borrow_mut() =
-            Some("Muse Code reads one existing CLI session. Choose Command line and keep one account.".into());
-        window.refresh();
-        return false;
-    }
-    if info.id == names::X_SUBSCRIPTION
-        && let Some(error) = x_subscription_refusal(
-            method,
-            existing.as_ref().map(|record| record.id.as_str()),
-            SettingsHub::global(cx).settings().accounts(),
-        )
-    {
+    if let Some(error) = account_refusal(
+        info.provider,
+        method,
+        existing.as_ref().map(|record| record.id.as_str()),
+        SettingsHub::global(cx).settings().accounts(),
+    ) {
         *form.error.borrow_mut() = Some(error.into());
         window.refresh();
         return false;
@@ -1477,6 +1487,33 @@ fn about_page() -> SettingPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muse_account_validation_is_cli_only_single_session_and_allows_its_own_edit() {
+        use codexbar_core::Provider;
+        let first = AccountRecord::new(names::MUSE_CODE, "Demo", AuthMethod::CommandLine);
+        let other = AccountRecord::new(names::CODEX, "Demo", AuthMethod::Automatic);
+        assert_eq!(
+            account_refusal(
+                Provider::MuseCode,
+                AuthMethod::CommandLine,
+                None,
+                std::slice::from_ref(&other)
+            ),
+            None
+        );
+        for method in AuthMethod::ALL {
+            assert_eq!(
+                account_refusal(Provider::MuseCode, method, None, &[]).is_none(),
+                method == AuthMethod::CommandLine
+            );
+        }
+        let accounts = [other, first.clone()];
+        assert!(account_refusal(Provider::MuseCode, AuthMethod::CommandLine, None, &accounts).is_some());
+        assert!(account_refusal(Provider::MuseCode, AuthMethod::CommandLine, Some(&first.id), &accounts).is_none());
+        assert!(account_refusal(Provider::Codex, AuthMethod::OAuth, None, &accounts).is_none());
+        assert!(account_refusal(Provider::XSubscription, AuthMethod::CommandLine, None, &accounts).is_some());
+    }
 
     #[test]
     fn an_x_subscription_account_is_automatic_and_only_one() {

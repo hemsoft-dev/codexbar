@@ -153,12 +153,9 @@ pub fn evaluate(
 ) -> Evaluation {
     let mut out = Evaluation::default();
     for account in refreshed {
-        if account.observation_stale(now) {
-            continue;
-        }
         let id = account.id().as_str();
         out.recovered.extend(informational_alert_keys(account, active));
-        for metric in account.status_metrics() {
+        for metric in account.fresh_status_metrics(now) {
             let first_new = out.notify.len();
             let current = metric_slot(metric);
             // An alert already held for this window keeps its slot, so a reset estimate that drifts by a few seconds
@@ -307,12 +304,12 @@ pub fn account_alerts(
     account: &AccountSnapshot,
     now: DateTime<Utc>,
 ) -> Vec<AlertDetail> {
-    if !settings.enabled || account.observation_stale(now) {
+    if !settings.enabled {
         return Vec::new();
     }
     let id = account.id().as_str();
     let mut found: Vec<(usize, f64, AlertDetail)> = Vec::new();
-    for (ix, metric) in account.metrics().iter().enumerate() {
+    for (ix, metric) in account.fresh_status_metrics(now).enumerate() {
         let current = metric_slot(metric);
         let mut kinds: Vec<AlertDetail> = Vec::new();
         for kind in [

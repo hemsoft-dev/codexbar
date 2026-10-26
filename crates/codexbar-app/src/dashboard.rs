@@ -937,11 +937,7 @@ impl Dashboard {
                         match outcome {
                             AccountOutcome::Fresh(account) => {
                                 let account = crate::prefs_hub::PrefsHub::with_credit_start(cx, account);
-                                let state = if account.observation_stale(self.now) {
-                                    AccountState::Failed("Muse allowance observation is over 7 minutes old".into())
-                                } else {
-                                    AccountState::Fresh
-                                };
+                                let state = AccountState::fresh(&account, self.now);
                                 self.states.insert(account.id().as_str().to_owned(), state);
                                 self.placeholders.remove(account.id().as_str());
                                 refreshed.push(account.clone());
@@ -1555,10 +1551,11 @@ impl Dashboard {
     }
 
     /// The production Muse adapter with a synthetic command runner. No live provider is constructed.
-    #[cfg(feature = "capture")]
+    #[cfg(any(test, feature = "capture"))]
     pub(crate) fn capture_muse(&mut self, state: &str, cx: &mut Context<Self>) {
         use codexbar_providers::UsageProvider as _;
-        assert!(crate::is_demo() && matches!(self.source, DataSource::Demo));
+        assert!(matches!(self.source, DataSource::Demo));
+        #[cfg(any(windows, feature = "capture"))]
         crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
             builder.tiles = vec![
                 codexbar_store::widgets::WidgetTile {
@@ -1616,9 +1613,12 @@ impl Dashboard {
             }
         };
         self.set_accounts(vec![account], cx);
-        let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, now)
-            .with_builder(crate::prefs_hub::PrefsHub::widget_builder(cx));
-        cx.set_global(crate::widget_builder::WidgetFeed(snapshot));
+        #[cfg(any(windows, feature = "capture"))]
+        {
+            let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, now)
+                .with_builder(crate::prefs_hub::PrefsHub::widget_builder(cx));
+            cx.set_global(crate::widget_builder::WidgetFeed(snapshot));
+        }
 
         self.focus_account(
             &crate::handoff::FocusRequest {

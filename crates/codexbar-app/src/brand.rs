@@ -21,47 +21,111 @@ pub struct Brand {
     pub logo: &'static str,
 }
 
+// The complete visual identity for each provider, shared by badges and the asset loader.
+const BRANDS: [(Provider, Brand); 13] = [
+    (
+        Provider::Codex,
+        Brand {
+            accent: 0x10A37F,
+            logo: "brand/openai.svg",
+        },
+    ),
+    (
+        Provider::Claude,
+        Brand {
+            accent: 0xD97757,
+            logo: "brand/claude.svg",
+        },
+    ),
+    (
+        Provider::Copilot,
+        Brand {
+            accent: 0x8957E5,
+            logo: "brand/githubcopilot.svg",
+        },
+    ),
+    (
+        Provider::Cursor,
+        Brand {
+            accent: 0x262626,
+            logo: "brand/cursor.svg",
+        },
+    ),
+    (
+        Provider::OpenRouter,
+        Brand {
+            accent: 0x4F52D9,
+            logo: "brand/openrouter.svg",
+        },
+    ),
+    (
+        Provider::OpenCode,
+        Brand {
+            accent: 0xB45309,
+            logo: "brand/opencode.svg",
+        },
+    ),
+    (
+        Provider::Moonshot,
+        Brand {
+            accent: 0x1D4ED8,
+            logo: "brand/kimi.svg",
+        },
+    ),
+    (
+        Provider::Greptile,
+        Brand {
+            accent: 0x44A775,
+            logo: "brand/greptile.svg",
+        },
+    ),
+    (
+        Provider::GitHubBilling,
+        Brand {
+            accent: 0x1F2328,
+            logo: "brand/github.svg",
+        },
+    ),
+    (
+        Provider::Gemini,
+        Brand {
+            accent: 0x3186FF,
+            logo: "brand/gemini.svg",
+        },
+    ),
+    (
+        Provider::Grok,
+        Brand {
+            accent: 0x2B2B2B,
+            logo: "brand/grok.svg",
+        },
+    ),
+    (
+        Provider::XSubscription,
+        Brand {
+            accent: 0x0F1419,
+            logo: "brand/xai.svg",
+        },
+    ),
+    (
+        Provider::MuseCode,
+        Brand {
+            accent: 0x0866FF,
+            logo: "brand/muse-code.svg",
+        },
+    ),
+];
+
 pub fn brand(provider: Provider) -> Brand {
-    let accent = match provider {
-        Provider::Codex => 0x10A37F,
-        Provider::Claude => 0xD97757,
-        Provider::Copilot => 0x8957E5,
-        Provider::Cursor => 0x262626,
-        Provider::OpenRouter => 0x4F52D9,
-        Provider::OpenCode => 0xB45309,
-        Provider::Moonshot => 0x1D4ED8,
-        Provider::Greptile => 0x44A775,
-        Provider::GitHubBilling => 0x1F2328,
-        Provider::Gemini => 0x3186FF,
-        Provider::Grok => 0x2B2B2B,
-        Provider::XSubscription => 0x0F1419,
-        Provider::MuseCode => 0x0866FF,
-    };
-    Brand {
-        accent,
-        logo: crate::assets::logo_path(provider),
-    }
+    BRANDS.iter().find(|(id, _)| *id == provider).expect("provider brand").1
 }
 
 /// The provider for a settings record's provider name (`OpenCodeGo` and `OpenCodeZen` are both OpenCode).
 pub fn from_settings_name(name: &str) -> Option<Provider> {
-    use codexbar_store::settings::names;
-    Some(match name {
-        names::CODEX => Provider::Codex,
-        names::CLAUDE => Provider::Claude,
-        names::COPILOT => Provider::Copilot,
-        names::CURSOR => Provider::Cursor,
-        names::OPENROUTER => Provider::OpenRouter,
-        names::OPENCODE_GO | names::OPENCODE_ZEN => Provider::OpenCode,
-        names::MOONSHOT => Provider::Moonshot,
-        names::GREPTILE => Provider::Greptile,
-        names::GITHUB_BILLING => Provider::GitHubBilling,
-        names::GEMINI => Provider::Gemini,
-        names::GROK => Provider::Grok,
-        names::X_SUBSCRIPTION => Provider::XSubscription,
-        names::MUSE_CODE => Provider::MuseCode,
-        _ => return None,
-    })
+    crate::catalog::PROVIDERS
+        .iter()
+        .find(|info| info.id == name)
+        .map(|info| info.provider)
 }
 
 /// White or near-black, whichever reads better on `accent`.
@@ -144,5 +208,6 @@ mod tests {
             assert!(from_settings_name(name).is_some(), "{name}");
         }
         assert_eq!(from_settings_name(names::OPENCODE_ZEN), Some(Provider::OpenCode));
+        assert_eq!(from_settings_name("unknown"), None);
     }
 }

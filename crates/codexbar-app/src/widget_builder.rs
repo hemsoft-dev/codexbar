@@ -179,12 +179,13 @@ fn refresh_item() -> SettingItem {
 }
 
 fn status_color(status: Option<&str>, cx: &App) -> Hsla {
-    match status {
-        Some("At risk" | "Limit soon" | "Limit reached") => cx.theme().danger,
-        Some("Stale") => cx.theme().muted_foreground,
-        Some(_) => cx.theme().warning,
-        None => cx.theme().success,
-    }
+    let palette = [
+        cx.theme().success,
+        cx.theme().warning,
+        cx.theme().danger,
+        cx.theme().muted_foreground,
+    ];
+    palette[cards::StatusTone::of(status) as usize]
 }
 
 fn preview_tile(ix: usize, view: &TileView, compact: bool, cx: &App) -> impl IntoElement + use<> {

@@ -73,6 +73,45 @@ pub fn save_snapshots(dir: &Path, accounts: &[AccountSnapshot]) -> io::Result<()
     std::fs::rename(&tmp, &path)
 }
 
+/// The optional source clock is an additive wire extension. Its parser owns Muse's trust boundary,
+/// independently of legacy account/plan migration and metric decoding.
+struct StoredObservation;
+
+impl StoredObservation {
+    fn write(account: &AccountSnapshot, value: &mut Value) {
+        if let Some(at) = account.observed_at() {
+            value["observedAt"] = json!(at.to_rfc3339());
+            value["allowanceSource"] = json!(account.allowance_source());
+            value["freshForSeconds"] = json!(account.fresh_for_seconds());
+        }
+    }
+
+    fn restore(account: AccountSnapshot, value: &Value) -> Option<AccountSnapshot> {
+        if account.provider() != Provider::MuseCode {
+            return Some(account);
+        }
+        let observed = value.get("observedAt").and_then(time)?;
+        if observed > account.fetched_at() + chrono::Duration::seconds(60) {
+            return None;
+        }
+        let source = value
+            .get("allowanceSource")
+            .and_then(Value::as_str)
+            .filter(|source| Self::valid_source(source))
+            .map(str::to_owned);
+        // Persisted TTL cannot extend the verified source's freshness contract.
+        Some(account.with_observation(observed, source, 420))
+    }
+
+    fn valid_source(source: &str) -> bool {
+        !source.is_empty()
+            && source.len() <= 32
+            && source
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_-".contains(&c))
+    }
+}
+
 fn account_to_json(account: &AccountSnapshot) -> Value {
     let mut value = json!({
         "id": account.id().as_str(),
@@ -85,11 +124,7 @@ fn account_to_json(account: &AccountSnapshot) -> Value {
         "metrics": account.metrics().iter().map(metric_to_json).collect::<Vec<_>>(),
         "messages": account.messages(),
     });
-    if let Some(at) = account.observed_at() {
-        value["observedAt"] = json!(at.to_rfc3339());
-        value["allowanceSource"] = json!(account.allowance_source());
-        value["freshForSeconds"] = json!(account.fresh_for_seconds());
-    }
+    StoredObservation::write(account, &mut value);
     value
 }
 
@@ -104,27 +139,29 @@ fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) 
         .map(metric_from_json)
         .collect::<Option<Vec<_>>>()?;
     let mut account = AccountSnapshot::new(AccountId::new(id), provider, metrics, fetched_at);
-    if provider == Provider::MuseCode {
-        let observed = value.get("observedAt").and_then(time)?;
-        if observed > fetched_at + chrono::Duration::seconds(60) {
-            return None;
+    account = StoredObservation::restore(account, value)?;
+    account = subscription_from_json(account, value, version, configured);
+    for message in value.get("messages").and_then(Value::as_array).into_iter().flatten() {
+        if let Some(message) = message.as_str() {
+            account = account.with_message(message);
         }
-        let source = value
-            .get("allowanceSource")
-            .and_then(Value::as_str)
-            .filter(|s| {
-                !s.is_empty()
-                    && s.len() <= 32
-                    && s.chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_-".contains(c))
-            })
-            .map(str::to_owned);
-        account = account.with_observation(observed, source, 420);
     }
+    Some(account)
+}
+
+/// Account naming, legacy plan migration and configured subscription metadata share one wire boundary.
+fn subscription_from_json(
+    mut account: AccountSnapshot,
+    value: &Value,
+    version: u64,
+    configured: &[AccountRecord],
+) -> AccountSnapshot {
+    let provider = account.provider();
+    let id = account.id().as_str().to_owned();
     let label = value.get("label").and_then(Value::as_str);
     let plan = value.get("plan").and_then(Value::as_str);
     let (label, plan) = if version < 3 && plan.is_none() {
-        legacy_plan_label(provider, id, label, configured)
+        legacy_plan_label(provider, &id, label, configured)
     } else {
         (label, plan)
     };
@@ -143,12 +180,7 @@ fn account_from_json(value: &Value, version: u64, configured: &[AccountRecord]) 
     if let Some(record) = value.get("subscriptionRecord").and_then(Value::as_str) {
         account = account.with_subscription_record(record.to_owned());
     }
-    for message in value.get("messages").and_then(Value::as_array).into_iter().flatten() {
-        if let Some(message) = message.as_str() {
-            account = account.with_message(message);
-        }
-    }
-    Some(account)
+    account
 }
 
 /// Before version 3, Codex and Claude appended the reported plan to the configured label.
@@ -379,6 +411,41 @@ mod tests {
     use super::*;
     use chrono::{Local, TimeZone};
     use codexbar_core::demo::demo_accounts;
+
+    #[test]
+    fn stored_muse_observation_owns_clock_source_validation_and_cannot_extend_ttl() {
+        for (source, valid) in [
+            ("mint", true),
+            ("a09_-", true),
+            ("", false),
+            ("User@example.com", false),
+            ("MINT", false),
+            ("has space", false),
+        ] {
+            assert_eq!(StoredObservation::valid_source(source), valid, "{source}");
+        }
+        assert!(StoredObservation::valid_source(&"a".repeat(32)));
+        assert!(!StoredObservation::valid_source(&"a".repeat(33)));
+        let make = || AccountSnapshot::new(AccountId::new("muse"), Provider::MuseCode, vec![], now());
+        assert!(StoredObservation::restore(make(), &json!({})).is_none());
+        assert!(StoredObservation::restore(make(), &json!({"observedAt":"invalid"})).is_none());
+        let future = now() + chrono::Duration::seconds(61);
+        assert!(StoredObservation::restore(make(), &json!({"observedAt": future.to_rfc3339()})).is_none());
+        let at = now() + chrono::Duration::seconds(60);
+        let restored = StoredObservation::restore(
+            make(),
+            &json!({"observedAt":at.to_rfc3339(),"allowanceSource":"identity@example.com","freshForSeconds":999999}),
+        )
+        .unwrap();
+        assert_eq!(restored.observed_at(), Some(at));
+        assert_eq!(restored.allowance_source(), None);
+        assert_eq!(restored.fresh_for_seconds(), Some(420));
+        let legacy = AccountSnapshot::new(AccountId::new("legacy"), Provider::Claude, vec![], now());
+        assert_eq!(
+            StoredObservation::restore(legacy.clone(), &json!({"observedAt":future.to_rfc3339()})),
+            Some(legacy)
+        );
+    }
 
     struct Dir(std::path::PathBuf);
 

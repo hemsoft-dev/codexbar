@@ -235,24 +235,22 @@ impl HistoryStore {
         Ok(written)
     }
 
+    /// The latest chronological reading not after the incoming observation. The index is a fast path for
+    /// ordinary forward samples; delayed samples search the stable, oldest-first series.
+    fn previous_sample(&self, sample: &Sample) -> Option<&Sample> {
+        let latest = &self.samples[*self.last.get(&(sample.a.clone(), sample.m.clone()))?];
+        if latest.t <= sample.t {
+            return Some(latest);
+        }
+        self.samples
+            .iter()
+            .rev()
+            .find(|previous| previous.a == sample.a && previous.m == sample.m && previous.t <= sample.t)
+    }
+
     fn is_duplicate(&self, sample: &Sample) -> bool {
-        let Some(&ix) = self.last.get(&(sample.a.clone(), sample.m.clone())) else {
+        let Some(last) = self.previous_sample(sample) else {
             return false;
-        };
-        let latest = &self.samples[ix];
-        let last = if latest.t <= sample.t {
-            latest
-        } else {
-            // A future reading must neither suppress a valid delayed sample nor reset its heartbeat.
-            let Some(previous) = self
-                .samples
-                .iter()
-                .rev()
-                .find(|previous| previous.a == sample.a && previous.m == sample.m && previous.t <= sample.t)
-            else {
-                return false;
-            };
-            previous
         };
         (last.v - sample.v).abs() < DEDUP_EPSILON
             && last.r == sample.r

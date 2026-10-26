@@ -64,15 +64,19 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
     WidgetSnapshot::new(now, groups, accounts)
 }
 
-fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
+/// The feed's status vocabulary differs from dashboard pills for exhausted quotas, which have no pill.
+fn metric_status(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Option<String> {
     let assessment = account.assess_metric(metric, now);
     // Exhaustion deliberately has no dashboard pill. Widgets still need an explicit status so their
     // normal-color fallback cannot advertise an exhausted, uncovered quota as healthy.
-    let status = if account.is_status_metric(metric) && !account.credits_cover(metric) && assessment.is_exhausted() {
+    if account.is_status_metric(metric) && !account.credits_cover(metric) && assessment.is_exhausted() {
         Some("Limit reached".to_owned())
     } else {
         assessment.label().map(str::to_owned)
-    };
+    }
+}
+
+fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
     let value = match metric {
         Metric::Window { .. } => format!("{} used", metric.used_display()),
         Metric::Quota { limit, .. } => format!(
@@ -95,7 +99,7 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         value,
         used_percent: metric.used_fraction().map(|used| (used * 100.0).clamp(0.0, 100.0)),
         resets_at: metric.resets_at(),
-        status,
+        status: metric_status(account, metric, now),
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
         projected_percent: account
             .evaluation_time(metric, now)
@@ -104,10 +108,10 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
         outlook: crate::usage_bar::outlook(metric, account, now),
         sus: codexbar_core::sus::weekly(metric, now)
-            .filter(|_| account.supports_sus() && account.is_status_metric(metric))
+            .filter(|_| account.sus_eligible(metric, now))
             .map(|s| s.value()),
         sus_eligible: codexbar_core::sus::text(metric, now)
-            .filter(|_| account.supports_sus() && account.is_status_metric(metric))
+            .filter(|_| account.sus_eligible(metric, now))
             .is_some(),
     }
 }

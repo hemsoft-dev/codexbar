@@ -203,6 +203,67 @@ fn focused<'a>(focus: &Focus, snapshot: &'a WidgetSnapshot) -> Vec<&'a WidgetAcc
         .collect()
 }
 
+/// Resolve a tile's selection before choosing its visual mode. An expired Muse window is a missing
+/// current allowance, while valid siblings and all legacy provider reset semantics remain independent.
+fn tile_reading<'a>(
+    account: &'a WidgetAccount,
+    metric: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<&'a codexbar_store::widgets::WidgetMetric, (&'static str, Option<String>)> {
+    if account.health == WidgetHealth::Unavailable {
+        return Err(("Unavailable", metric.map(str::to_owned)));
+    }
+    let found = match metric {
+        Some(key) => account.metrics.iter().find(|m| m.key == key),
+        None => account.metrics.first(),
+    };
+    let Some(found) = found else {
+        let note = if account.provider == "muse-code" {
+            "n/a · allowance unavailable for this window"
+        } else if metric.is_some() {
+            "This limit isn't reported any more. Choose another in CodexBar's Settings › Widgets."
+        } else {
+            "No limits to show"
+        };
+        return Err((note, None));
+    };
+    if account.provider == "muse-code" && found.resets_at.is_some_and(|at| at <= now) {
+        return Err(("n/a · allowance window reset; refresh needed", Some(found.key.clone())));
+    }
+    Ok(found)
+}
+
+/// Apply source age even when a file's transport health still says Fresh.
+fn health_at(account: &WidgetAccount, now: DateTime<Utc>) -> WidgetHealth {
+    let old_observation = account
+        .observed_at
+        .zip(account.fresh_for_seconds)
+        .is_some_and(|(at, seconds)| {
+            seconds <= 0
+                || now
+                    .signed_duration_since(account.updated_at.map_or(at, |fetched| at.min(fetched)))
+                    .num_milliseconds()
+                    > seconds.saturating_mul(1000)
+        });
+    if old_observation {
+        WidgetHealth::Stale
+    } else {
+        account.health
+    }
+}
+
+/// Forecast words are current-only; last-good usage keeps its actual numeric reading.
+fn metric_line(found: &codexbar_store::widgets::WidgetMetric, current: bool) -> String {
+    match (
+        if current { &found.outlook } else { &None },
+        if current { found.projected_percent } else { None },
+    ) {
+        (Some(outlook), _) => format!("{}: {}, {outlook}", found.label, found.value),
+        (None, Some(projected)) => format!("{}: {}, {projected:.0}% at reset", found.label, found.value),
+        (None, None) => format!("{}: {}", found.label, found.value),
+    }
+}
+
 /// What one tile shows, worked out once for the widget card and the in-app preview (#95).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TileView {
@@ -244,51 +305,15 @@ impl TileView {
 
     /// The tile for `account`'s `metric` (its primary one when `None`), shown as `mode`.
     fn of(account: &WidgetAccount, metric: Option<&str>, mode: TileMode, now: DateTime<Utc>) -> Self {
-        if account.health == WidgetHealth::Unavailable {
-            // The tap still opens the tile's metric, for when the account recovers.
-            let mut view = Self::message(Some(&account.id), account.name.clone(), mode, "Unavailable");
-            view.metric = metric.map(str::to_owned);
-            return view;
-        }
-        let found = match metric {
-            Some(key) => account.metrics.iter().find(|m| m.key == key),
-            None => account.metrics.first(),
+        let found = match tile_reading(account, metric, now) {
+            Ok(found) => found,
+            Err((note, key)) => {
+                let mut view = Self::message(Some(&account.id), account.name.clone(), mode, note);
+                view.metric = key;
+                return view;
+            }
         };
-        let Some(found) = found else {
-            let note = if account.provider == "muse-code" {
-                "n/a · allowance unavailable for this window"
-            } else if metric.is_some() {
-                "This limit isn't reported any more. Choose another in CodexBar's Settings › Widgets."
-            } else {
-                "No limits to show"
-            };
-            return Self::message(Some(&account.id), account.name.clone(), mode, note);
-        };
-        if account.provider == "muse-code" && found.resets_at.is_some_and(|at| at <= now) {
-            let mut view = Self::message(
-                Some(&account.id),
-                account.name.clone(),
-                mode,
-                "n/a · allowance window reset; refresh needed",
-            );
-            view.metric = Some(found.key.clone());
-            return view;
-        }
-        let old_observation = account
-            .observed_at
-            .zip(account.fresh_for_seconds)
-            .is_some_and(|(at, seconds)| {
-                seconds <= 0
-                    || now
-                        .signed_duration_since(account.updated_at.map_or(at, |fetched| at.min(fetched)))
-                        .num_milliseconds()
-                        > seconds.saturating_mul(1000)
-            });
-        let health = if old_observation {
-            WidgetHealth::Stale
-        } else {
-            account.health
-        };
+        let health = health_at(account, now);
         let freshness = match (health, account.observed_at.or(account.updated_at)) {
             (WidgetHealth::Stale, Some(at)) => Some(format!("Last known, {}", age_label(at, now))),
             (WidgetHealth::Stale, None) => Some("Last known".to_owned()),
@@ -303,16 +328,7 @@ impl TileView {
         };
         // Adaptive Cards can't fade a bar, so the projection rides on the line in words (#197, #206). A snapshot
         // written before the wording travelled with it still carries the figure, so the widget keeps it.
-        let line = Some(
-            match (
-                if current { &found.outlook } else { &None },
-                if current { found.projected_percent } else { None },
-            ) {
-                (Some(outlook), _) => format!("{}: {}, {outlook}", found.label, found.value),
-                (None, Some(projected)) => format!("{}: {}, {projected:.0}% at reset", found.label, found.value),
-                (None, None) => format!("{}: {}", found.label, found.value),
-            },
-        );
+        let line = Some(metric_line(found, current));
         let percent_text = found.used_percent.map(|p| format!("{p:.0}%"));
         let resets = found
             .resets_at
@@ -337,11 +353,7 @@ impl TileView {
             TileMode::Balance => (Some(found.label.clone()), Some(found.value.clone()), None, freshness),
             TileMode::Status => (
                 line,
-                Some(
-                    status
-                        .clone()
-                        .unwrap_or_else(|| if !current { "Stale" } else { "OK" }.to_owned()),
-                ),
+                Some(status.clone().unwrap_or_else(|| "OK".to_owned())),
                 None,
                 freshness,
             ),
@@ -402,14 +414,36 @@ pub fn tile_views(snapshot: &WidgetSnapshot, config: &Config, size: Size, now: D
     Some(views)
 }
 
+/// One portable status palette for the real Adaptive Card and the native preview.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusTone {
+    Good,
+    Warning,
+    Attention,
+    Neutral,
+}
+
+impl StatusTone {
+    pub fn of(status: Option<&str>) -> Self {
+        match status {
+            Some("At risk" | "Limit soon" | "Limit reached") => Self::Attention,
+            Some("Stale") => Self::Neutral,
+            Some(_) => Self::Warning,
+            None => Self::Good,
+        }
+    }
+
+    fn card_color(self) -> &'static str {
+        ["Good", "Warning", "Attention", "Default"][self as usize]
+    }
+    fn bar_style(self) -> &'static str {
+        ["good", "warning", "attention", "default"][self as usize]
+    }
+}
+
 /// A usage bar: two weighted columns, used and left. The color follows the account's status.
 fn bar(percent: f64, status: Option<&str>) -> Value {
-    let style = match status {
-        Some("At risk" | "Limit soon" | "Limit reached") => "attention",
-        Some("Stale") => "default",
-        Some(_) => "warning",
-        None => "good",
-    };
+    let style = StatusTone::of(status).bar_style();
     let used = percent.round().clamp(0.0, 100.0) as u32;
     let mut columns = Vec::new();
     if used > 0 {
@@ -425,12 +459,7 @@ fn bar(percent: f64, status: Option<&str>) -> Value {
 
 /// The Adaptive Cards color for a status.
 fn status_color(status: Option<&str>) -> &'static str {
-    match status {
-        Some("At risk" | "Limit soon" | "Limit reached") => "Attention",
-        Some("Stale") => "Default",
-        Some(_) => "Warning",
-        None => "Good",
-    }
+    StatusTone::of(status).card_color()
 }
 
 /// One tile as a card container. Tapping it opens CodexBar on its account and metric.

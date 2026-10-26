@@ -440,6 +440,23 @@ fn ended_muse_window_cannot_forecast_or_alert_while_its_weekly_sibling_remains_c
             .is_empty()
     );
     assert!(alerts::account_alerts(&settings, &Default::default(), &account, after).is_empty());
+    // Reconciling old-window keys remains independent of whether the ended current window may alert.
+    let previous_slot = format!(
+        "{}@{}",
+        short.key(),
+        (short.resets_at().unwrap() - chrono::Duration::hours(5)).timestamp() / 3600
+    );
+    let old_key = alerts::alert_key(account.id().as_str(), &previous_slot, alerts::AlertKind::Usage);
+    let active = [old_key.clone()].into_iter().collect();
+    let reconciled = alerts::evaluate(&settings, &active, std::slice::from_ref(&account), after);
+    assert!(reconciled.recovered.contains(&old_key));
+    assert!(reconciled.notify.is_empty());
+    let stale =
+        account
+            .clone()
+            .with_observation(fixture::base() - chrono::Duration::hours(1), Some("mint".into()), 420);
+    let held = alerts::evaluate(&settings, &active, &[stale], after);
+    assert!(held.notify.is_empty() && held.recovered.is_empty());
     let feed = widget_feed::build(&[account], &States::new(), &Layout::default(), after);
     assert_eq!(feed.accounts[0].metrics[0].projected_percent, None);
     assert_eq!(feed.accounts[0].metrics[0].outlook, None);

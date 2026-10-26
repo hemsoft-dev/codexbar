@@ -2,27 +2,9 @@
 
 use std::borrow::Cow;
 
+#[cfg(test)]
 use codexbar_core::Provider;
 use gpui_kit::{AssetSource, Result, SharedString};
-
-/// Where a provider's logo is served from.
-pub fn logo_path(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Codex => "brand/openai.svg",
-        Provider::Claude => "brand/claude.svg",
-        Provider::Copilot => "brand/githubcopilot.svg",
-        Provider::Cursor => "brand/cursor.svg",
-        Provider::OpenRouter => "brand/openrouter.svg",
-        Provider::OpenCode => "brand/opencode.svg",
-        Provider::Moonshot => "brand/kimi.svg",
-        Provider::Greptile => "brand/greptile.svg",
-        Provider::GitHubBilling => "brand/github.svg",
-        Provider::Gemini => "brand/gemini.svg",
-        Provider::Grok => "brand/grok.svg",
-        Provider::XSubscription => "brand/xai.svg",
-        Provider::MuseCode => "brand/muse-code.svg",
-    }
-}
 
 const LOGOS: [(&str, &[u8]); 13] = [
     ("brand/muse-code.svg", include_bytes!("../assets/brand/muse-code.svg")),
@@ -72,7 +54,7 @@ mod tests {
     #[test]
     fn every_provider_has_an_embedded_svg_logo() {
         for provider in Provider::ALL {
-            let bytes = Assets.load(logo_path(provider)).unwrap().expect("logo");
+            let bytes = Assets.load(crate::brand::brand(provider).logo).unwrap().expect("logo");
             let text = std::str::from_utf8(&bytes).unwrap();
             assert!(
                 text.starts_with("<svg") && text.contains(r#"viewBox="0 0 24 24""#),

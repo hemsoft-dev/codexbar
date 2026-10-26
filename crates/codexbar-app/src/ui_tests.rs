@@ -8583,3 +8583,129 @@ fn saved_home_quota_shape_uses_models_for_status_and_widgets_only() {
     assert_eq!(models.sus, Some(25));
     assert!(models.sus_eligible);
 }
+
+/// The same producer and fixed clocks used for native capture exercise the real table and detail renderers.
+#[gpui_kit::test]
+fn muse_allowance_states_render_in_both_table_layouts_without_invented_capacity(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("muse-allowance-presentation", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    for wide in [false, true] {
+        gpui_kit::VisualTestContext::from_window(handle, cx)
+            .simulate_resize(size(px(if wide { 2600. } else { 1440. }), px(1000.)));
+        for state in [
+            "measured",
+            "partial",
+            "exhausted",
+            "null",
+            "stale",
+            "timeout",
+            "reset-before",
+            "reset-after",
+        ] {
+            cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_muse(state, cx)));
+            cx.run_until_parked();
+            let note = label(cx, handle, "muse-quota-note").unwrap();
+            assert!(note.contains("Billing mode and model scope unknown"));
+            assert!(!exists(cx, handle, "fleet-sus-100"));
+            let unavailable = matches!(state, "null");
+            let last_known = matches!(state, "stale" | "timeout");
+            let row_state = label(cx, handle, "state-muse-demo");
+            assert_eq!(
+                row_state.as_ref().is_some_and(|s| s.contains("Stale")),
+                last_known,
+                "{state}: {row_state:?}"
+            );
+            if !wide {
+                let used = label(cx, handle, "used-muse-demo").unwrap();
+                assert!(
+                    if unavailable {
+                        used.contains("n/a")
+                    } else {
+                        used.contains('%')
+                    },
+                    "{state}: {used}"
+                );
+                let forecast = label(cx, handle, "at-reset-muse-demo");
+                if state == "stale" {
+                    assert!(forecast.unwrap().contains("forecast unavailable"));
+                }
+                if state == "reset-after" {
+                    assert!(used.starts_with("Weekly: 5%"), "{used}");
+                }
+            }
+            if state == "partial" || unavailable || state == "reset-after" {
+                assert!(note.contains("5-hour: n/a"));
+            }
+            if unavailable {
+                assert!(note.contains("Weekly: n/a"));
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn muse_settings_add_edit_and_single_cli_adapter_need_no_credentials(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("muse-settings-cli", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-1-13", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, "add-MuseCode");
+    type_text(cx, handle, "Synthetic Demo");
+    click(cx, handle, "account-save");
+    let saved = saved_settings(&settings);
+    let record = saved.accounts().iter().find(|a| a.provider == "MuseCode").unwrap();
+    assert_eq!(record.method, codexbar_store::settings::AuthMethod::CommandLine);
+    assert_eq!(secret_of(cx, &record.id), None);
+    click(cx, handle, format!("edit-{}", record.id));
+    type_text(cx, handle, "Renamed Demo");
+    click(cx, handle, "account-save");
+    assert_eq!(saved_settings(&settings).accounts()[0].label, "Renamed Demo");
+    assert!(!exists(cx, handle, "account-save"));
+}
+
+struct MuseParsedFixture {
+    stale: bool,
+}
+impl UsageProvider for MuseParsedFixture {
+    fn name(&self) -> &'static str {
+        "Muse Code"
+    }
+    fn account_id(&self) -> Option<&str> {
+        Some("muse-demo")
+    }
+    fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        let age = chrono::Duration::seconds(if self.stale { 480 } else { 60 });
+        let observed = now - age;
+        let mut value: serde_json::Value =
+            serde_json::from_str(include_str!("../../codexbar-providers/fixtures/muse/measured.json")).unwrap();
+        value["allowance"]["asOfMs"] = serde_json::json!(observed.timestamp_millis());
+        value["allowance"]["window"]["resetsAtMs"] =
+            serde_json::json!((observed + chrono::Duration::hours(4)).timestamp_millis());
+        value["allowance"]["weekly"]["resetsAtMs"] =
+            serde_json::json!((observed + chrono::Duration::days(6)).timestamp_millis());
+        codexbar_providers::muse::parse(&value.to_string(), now, "muse-demo", "Synthetic Demo").map(|a| vec![a])
+    }
+}
+
+#[gpui_kit::test]
+fn muse_source_age_reaches_live_refresh_state_and_saved_observation(cx: &mut TestAppContext) {
+    for stale in [false, true] {
+        let settings = TempSettings::new(if stale { "muse-live-old" } else { "muse-live-fresh" }, "{}");
+        let dashboard = open_live_fixed(cx, &settings, vec![Arc::new(MuseParsedFixture { stale })]);
+        cx.run_until_parked();
+        assert_eq!(
+            matches!(state(cx, &dashboard, "muse-demo"), AccountState::Failed(_)),
+            stale
+        );
+        let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(
+            (saved[0].fetched_at() - saved[0].observed_at().unwrap()).num_seconds(),
+            if stale { 480 } else { 60 }
+        );
+        assert_eq!(saved[0].allowance_source(), Some("mint"));
+    }
+}

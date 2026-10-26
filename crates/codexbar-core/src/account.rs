@@ -23,24 +23,92 @@ pub enum Provider {
     MuseCode,
 }
 
+struct ProviderMetadata {
+    provider: Provider,
+    key: &'static str,
+    display: &'static str,
+}
+
+// Identity and wording are data. Adding a provider does not grow several dispatch functions.
+const PROVIDERS: [ProviderMetadata; 13] = [
+    ProviderMetadata {
+        provider: Provider::Codex,
+        key: "codex",
+        display: "ChatGPT · Codex",
+    },
+    ProviderMetadata {
+        provider: Provider::Claude,
+        key: "claude",
+        display: "Claude",
+    },
+    ProviderMetadata {
+        provider: Provider::Copilot,
+        key: "copilot",
+        display: "Copilot",
+    },
+    ProviderMetadata {
+        provider: Provider::Cursor,
+        key: "cursor",
+        display: "Cursor",
+    },
+    ProviderMetadata {
+        provider: Provider::OpenRouter,
+        key: "openrouter",
+        display: "OpenRouter",
+    },
+    ProviderMetadata {
+        provider: Provider::OpenCode,
+        key: "opencode",
+        display: "OpenCode Go + Zen",
+    },
+    ProviderMetadata {
+        provider: Provider::Moonshot,
+        key: "moonshot",
+        display: "Moonshot (Kimi)",
+    },
+    ProviderMetadata {
+        provider: Provider::Greptile,
+        key: "greptile",
+        display: "Greptile",
+    },
+    ProviderMetadata {
+        provider: Provider::GitHubBilling,
+        key: "github-billing",
+        display: "GitHub Billing",
+    },
+    ProviderMetadata {
+        provider: Provider::Gemini,
+        key: "gemini",
+        display: "Gemini",
+    },
+    ProviderMetadata {
+        provider: Provider::Grok,
+        key: "grok",
+        display: "Grok",
+    },
+    ProviderMetadata {
+        provider: Provider::XSubscription,
+        key: "x-subscription",
+        display: "X Subscription",
+    },
+    ProviderMetadata {
+        provider: Provider::MuseCode,
+        key: "muse-code",
+        display: "Muse Code",
+    },
+];
+
 impl Provider {
     /// The product name shown before the account label.
     pub fn display_name(self) -> &'static str {
-        match self {
-            Self::Codex => "ChatGPT · Codex",
-            Self::Claude => "Claude",
-            Self::Copilot => "Copilot",
-            Self::Cursor => "Cursor",
-            Self::OpenRouter => "OpenRouter",
-            Self::OpenCode => "OpenCode Go + Zen",
-            Self::Moonshot => "Moonshot (Kimi)",
-            Self::Greptile => "Greptile",
-            Self::GitHubBilling => "GitHub Billing",
-            Self::Gemini => "Gemini",
-            Self::Grok => "Grok",
-            Self::XSubscription => "X Subscription",
-            Self::MuseCode => "Muse Code",
-        }
+        self.metadata().display
+    }
+
+    fn metadata(self) -> &'static ProviderMetadata {
+        PROVIDERS
+            .iter()
+            .find(|entry| entry.provider == self)
+            .expect("provider metadata")
     }
 
     pub const ALL: [Self; 13] = [
@@ -61,21 +129,7 @@ impl Provider {
 
     /// A stable key for storage; unlike the display name it never changes with wording.
     pub fn key(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-            Self::Copilot => "copilot",
-            Self::Cursor => "cursor",
-            Self::OpenRouter => "openrouter",
-            Self::OpenCode => "opencode",
-            Self::Moonshot => "moonshot",
-            Self::Greptile => "greptile",
-            Self::GitHubBilling => "github-billing",
-            Self::Gemini => "gemini",
-            Self::Grok => "grok",
-            Self::XSubscription => "x-subscription",
-            Self::MuseCode => "muse-code",
-        }
+        self.metadata().key
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
@@ -385,6 +439,17 @@ impl AccountSnapshot {
         self.metrics.iter().filter(|metric| self.is_status_metric(metric))
     }
 
+    /// Fresh observations whose alert keys may be reconciled. Ended windows remain here so old-window
+    /// keys can recover; `evaluation_time` independently prevents them from triggering current alerts.
+    pub fn fresh_status_metrics(&self, now: DateTime<Utc>) -> impl Iterator<Item = &Metric> {
+        self.status_metrics().filter(move |_| !self.observation_stale(now))
+    }
+
+    /// SUS requires a supported quota and a current source observation.
+    pub fn sus_eligible(&self, metric: &Metric, now: DateTime<Utc>) -> bool {
+        self.supports_sus() && self.is_status_metric(metric) && self.evaluation_time(metric, now).is_some()
+    }
+
     /// Information-only pools never color a status or raise risk, even when selected explicitly in a card.
     pub fn assess_metric(&self, metric: &Metric, now: DateTime<Utc>) -> Assessment {
         self.evaluation_time(metric, now)
@@ -412,9 +477,6 @@ impl AccountSnapshot {
     /// A fully used window doesn't block an account
     /// that can still spend credits (#150).
     pub fn assess(&self, now: DateTime<Utc>) -> Assessment {
-        if self.observation_stale(now) {
-            return Assessment::default();
-        }
         self.status_metrics()
             .filter(|metric| !self.credits_cover(metric))
             .map(|metric| self.assess_metric(metric, now))

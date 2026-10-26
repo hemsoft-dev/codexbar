@@ -59,6 +59,11 @@ observation and refuses a selected Muse window after its reset. Exhausted eligib
 uncovered quotas carry `Limit reached` to the widget and render in its attention
 color. Stale Muse readings render neutrally with `Stale` and last-known text;
 informational pools and credit-covered windows keep their existing semantics.
+The shared `ResetDisplay` policy supplies table, ring and widget wording after
+wall-clock validity checks. The shared portable `StatusTone` palette supplies both
+Adaptive Cards and the native widget preview, including neutral stale readings.
+Alert-key reconciliation still retires keys from older windows, without allowing
+an ended window or stale source to trigger a current alert.
 
 The contained command runner uses a child-only environment. It removes every
 case variant of `META_API_KEY`, `MUSE_LOGIN`, `MUSE_NO_AUTO_UPDATE`,

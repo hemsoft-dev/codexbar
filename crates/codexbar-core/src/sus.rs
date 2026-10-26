@@ -122,11 +122,9 @@ impl Price {
 
 /// Average one account's eligible pools. Missing scores are excluded.
 pub fn subscription_score(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<Score> {
-    if !account.supports_sus() || account.observation_stale(now) {
-        return None;
-    }
     let scores: Vec<_> = account
         .status_metrics()
+        .filter(|metric| account.sus_eligible(metric, now))
         .filter_map(|metric| weekly(metric, now))
         .collect();
     (!scores.is_empty())
