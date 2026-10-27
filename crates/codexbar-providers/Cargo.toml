@@ -23,6 +23,10 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
 
+# The command runner's console fixtures (chief#43) detach from and inspect their console.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { workspace = true, features = ["Win32_System_Console"] }
+
 [lints]
 workspace = true
 

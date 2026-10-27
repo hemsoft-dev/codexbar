@@ -71,7 +71,7 @@ impl<R: CommandRunner> UsageProvider for MuseProvider<R> {
             return cached.result.clone();
         }
         let options = CommandOptions {
-            cwd: self.home.clone(),
+            cwd: Some(self.home.clone()),
             remove_env: vec![
                 "META_API_KEY",
                 "MUSE_LOGIN",
@@ -383,7 +383,7 @@ mod tests {
             assert_eq!(args, ["usage", "--json"]);
             assert_eq!(timeout, Timeout::from_secs(15));
             assert_eq!(options.output_limit, OUTPUT_LIMIT);
-            assert_eq!(options.cwd, PathBuf::from("/synthetic-home"));
+            assert_eq!(options.cwd, Some(PathBuf::from("/synthetic-home")));
             assert!(options.remove_env.contains(&"META_API_KEY"));
             assert_eq!(options.env, [("MUSE_LOGIN", "0"), ("MUSE_NO_AUTO_UPDATE", "1")]);
             self.calls.fetch_add(1, Ordering::Relaxed);

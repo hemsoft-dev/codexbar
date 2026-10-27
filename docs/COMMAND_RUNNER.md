@@ -4,6 +4,23 @@
 program lookup. It does not invoke a shell, opens no console window, and closes
 stdin. Interactive sign-in flows use their separate login adapters.
 
+## Console windows
+
+On Windows every background CLI starts with `CREATE_NO_WINDOW`, so it gets a
+console with no window. Descendants that inherit that console have no window
+either. A descendant started without a console, such as one detached from it,
+gets a new, visible console that no flag on CodexBar's child can reach. The
+Antigravity CLI's self-updater is one: it runs detached and starts
+`agy --version`. `gemini_coding::CliRunner` therefore runs agy with Antigravity's
+own `AGY_CLI_DISABLE_AUTO_UPDATE=true`
+([troubleshooting](https://antigravity.google/docs/cli/troubleshooting/)). Only
+`true` works ([antigravity-cli#1046](https://github.com/google-antigravity/antigravity-cli/issues/1046)).
+`CommandOptions` without `cwd` keeps this process's working folder.
+
+The `command_runner` fixture starts its child from a process with no console,
+as the release app does. The child and an ordinary grandchild must both report
+no console window.
+
 ## Output and deadline policy
 
 - Read stdout and stderr while the child runs. Each loop drains at most one

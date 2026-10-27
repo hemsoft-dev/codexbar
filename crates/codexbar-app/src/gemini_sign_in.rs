@@ -67,7 +67,7 @@ pub trait SignInService: Send + Sync {
 struct Antigravity;
 impl SignInService for Antigravity {
     fn check(&self) -> Result<(), String> {
-        codexbar_providers::gemini_coding::fetch(&codexbar_providers::SystemCommandRunner, chrono::Utc::now())
+        codexbar_providers::gemini_coding::fetch(&codexbar_providers::gemini_coding::CliRunner, chrono::Utc::now())
             .map(|_| ())
             .map_err(|error| error.to_string())
     }

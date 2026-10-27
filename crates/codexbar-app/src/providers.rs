@@ -101,7 +101,7 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         }
         // Coding quotas (#107) come from the Antigravity CLI's own sign-in.
         if account.gemini_coding {
-            provider = provider.with_coding(Arc::new(SystemCommandRunner));
+            provider = provider.with_coding(Arc::new(codexbar_providers::gemini_coding::CliRunner));
         }
         providers.push(Arc::new(provider));
     }

@@ -21,7 +21,8 @@ pub enum CommandError {
 /// Options honored only for this child process, without changing the parent's environment.
 #[derive(Clone, Debug)]
 pub struct CommandOptions {
-    pub cwd: std::path::PathBuf,
+    /// The child's working folder; `None` keeps this process's.
+    pub cwd: Option<std::path::PathBuf>,
     pub remove_env: Vec<&'static str>,
     pub env: Vec<(&'static str, &'static str)>,
     pub output_limit: usize,
@@ -74,21 +75,7 @@ impl SystemCommandRunner {
     ) -> Result<CommandOutput, CommandError> {
         let mut command = crate::platform::command(program);
         if let Some(options) = options {
-            command.current_dir(&options.cwd);
-            // Remove every case variant too, matching the shipped Muse subscription-only contract.
-            for (name, _) in std::env::vars_os() {
-                if options
-                    .remove_env
-                    .iter()
-                    .any(|removed| name.to_string_lossy().eq_ignore_ascii_case(removed))
-                {
-                    command.env_remove(name);
-                }
-            }
-            for name in &options.remove_env {
-                command.env_remove(name);
-            }
-            command.envs(options.env.iter().copied());
+            configure(&mut command, options);
         }
         command
             .args(args)
@@ -115,6 +102,27 @@ impl SystemCommandRunner {
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
         })
     }
+}
+
+/// Applies the options that hold only for this child: its working folder and its environment.
+fn configure(command: &mut std::process::Command, options: &CommandOptions) {
+    if let Some(cwd) = &options.cwd {
+        command.current_dir(cwd);
+    }
+    // Remove every case variant too, matching the shipped Muse subscription-only contract.
+    for (name, _) in std::env::vars_os() {
+        if options
+            .remove_env
+            .iter()
+            .any(|removed| name.to_string_lossy().eq_ignore_ascii_case(removed))
+        {
+            command.env_remove(name);
+        }
+    }
+    for name in &options.remove_env {
+        command.env_remove(name);
+    }
+    command.envs(options.env.iter().copied());
 }
 
 fn spawn_error(error: std::io::Error) -> CommandError {

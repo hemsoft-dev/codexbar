@@ -14,7 +14,7 @@ use codexbar_core::Metric;
 use serde_json::Value;
 
 use crate::pace::elapsed_pace;
-use crate::{CommandError, CommandRunner};
+use crate::{CommandError, CommandOptions, CommandOutput, CommandRunner, SystemCommandRunner};
 
 /// The CLI's usage command can take a moment to start; it never runs a model turn.
 const TIMEOUT: StdDuration = StdDuration::from_secs(30);
@@ -27,6 +27,32 @@ const BUCKETS: [(&str, &str, &str, i64); 5] = [
     ("3p-5h", "5h", "Other models five-hour", 5),
     ("3p-weekly", "weekly", "Other models weekly", 7 * 24),
 ];
+
+/// Antigravity's own switch for its background self-updater; only `true` turns it off (chief#43). The updater starts
+/// without a console once its 15-minute check is due, and its `agy --version` child then gets a new, visible console
+/// that no creation flag on the agy CodexBar starts can reach. Agy run in a terminal still updates itself.
+pub const NO_AUTO_UPDATE: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+
+/// Runs the Antigravity CLI without its self-updater: `SystemCommandRunner` with `NO_AUTO_UPDATE` set, and any
+/// value inherited from this process replaced. Its working folder stays this process's.
+pub struct CliRunner;
+
+impl CliRunner {
+    fn options() -> CommandOptions {
+        CommandOptions {
+            cwd: None,
+            remove_env: vec![NO_AUTO_UPDATE.0],
+            env: vec![NO_AUTO_UPDATE],
+            output_limit: 8 * 1024 * 1024,
+        }
+    }
+}
+
+impl CommandRunner for CliRunner {
+    fn run(&self, program: &str, args: &[&str], timeout: StdDuration) -> Result<CommandOutput, CommandError> {
+        SystemCommandRunner.run_with_options(program, args, timeout, &Self::options())
+    }
+}
 
 /// The Antigravity CLI to run: on PATH, or where its installer puts it.
 pub fn cli() -> String {
@@ -390,6 +416,23 @@ mod tests {
                 now()
             ),
             Err(CodingError::Unknown)
+        );
+    }
+
+    #[test]
+    fn codexbar_runs_the_cli_with_its_self_updater_off() {
+        let options = CliRunner::options();
+        assert_eq!(options.env, [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]);
+        assert_eq!(options.remove_env, ["AGY_CLI_DISABLE_AUTO_UPDATE"]);
+        assert_eq!(options.cwd, None);
+        assert_eq!(options.output_limit, 8 * 1024 * 1024);
+        assert_eq!(
+            CliRunner.run(
+                "codexbar-missing-agy-fixture",
+                &["--version"],
+                StdDuration::from_secs(3)
+            ),
+            Err(CommandError::NotFound)
         );
     }
 

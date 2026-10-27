@@ -14,6 +14,11 @@ pub struct LoginWindow {
 fn command(dir: &Path) -> Command {
     let mut command = crate::platform::command(crate::gemini_coding::cli());
     command.current_dir(dir);
+    // The sign-in window's own agy must not start the self-updater's console either.
+    command.env(
+        crate::gemini_coding::NO_AUTO_UPDATE.0,
+        crate::gemini_coding::NO_AUTO_UPDATE.1,
+    );
     // A desktop app launched by an SSH qualification harness must still use the vendor's local browser flow.
     for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
         command.env_remove(name);
