@@ -11,15 +11,18 @@ const MIN_ELAPSED_FRACTION: f64 = 0.1;
 
 /// Usage so far divided by time elapsed in the period `[start, resets_at)`, or `None` while the period is too young.
 pub fn elapsed_pace(used: f64, start: DateTime<Utc>, resets_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<Pace> {
-    let length = resets_at - start;
-    let minimum = if is_week_length(length) {
+    elapsed_pace_after(used, start, resets_at, now, maturity(resets_at - start))
+}
+
+/// How long a period of `length` runs before it projects.
+fn maturity(length: Duration) -> Duration {
+    if is_week_length(length) {
         WEEKLY_MATURITY
     } else {
         Duration::minutes(MIN_ELAPSED_MINUTES).max(Duration::seconds(
             (length.num_seconds() as f64 * MIN_ELAPSED_FRACTION) as i64,
         ))
-    };
-    elapsed_pace_after(used, start, resets_at, now, minimum)
+    }
 }
 
 fn elapsed_pace_after(

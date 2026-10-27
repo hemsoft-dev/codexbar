@@ -468,6 +468,21 @@ fn status_color(status: Option<&str>) -> &'static str {
     StatusTone::of(status).card_color()
 }
 
+/// The tile's SUS: a firm score in its band's color, an early one subtle and uncolored.
+fn sus_line(view: &TileView) -> Option<Value> {
+    let mut score = text(view.sus.clone()?);
+    score["color"] = json!(match view.sus_score {
+        Some(90..=100) => "Good",
+        Some(75..=89) => "Warning",
+        Some(_) => "Attention",
+        None => "Default",
+    });
+    if view.sus_score.is_none() && view.sus_early.is_some() {
+        score["isSubtle"] = json!(true);
+    }
+    Some(score)
+}
+
 /// One tile as a card container. Tapping it opens CodexBar on its account and metric.
 fn tile(view: &TileView, compact: bool) -> Value {
     let mut items = Vec::new();
@@ -476,19 +491,7 @@ fn tile(view: &TileView, compact: bool) -> Value {
     name["size"] = json!("Small");
     name["wrap"] = json!(false);
     items.push(name);
-    if let Some(sus) = &view.sus {
-        let mut score = text(sus.clone());
-        score["color"] = json!(match view.sus_score {
-            Some(90..=100) => "Good",
-            Some(75..=89) => "Warning",
-            Some(_) => "Attention",
-            None => "Default",
-        });
-        if view.sus_score.is_none() && view.sus_early.is_some() {
-            score["isSubtle"] = json!(true);
-        }
-        items.push(score);
-    }
+    items.extend(sus_line(view));
     if let Some(big) = &view.big {
         let mut figure = text(big.clone());
         figure["size"] = json!(if compact { "Medium" } else { "Large" });

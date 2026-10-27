@@ -7,15 +7,31 @@ use codexbar_core::{
 };
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, tooltip::Tooltip};
 use gpui_kit::{
-    AnyElement, App, ElementId, InteractiveElement as _, IntoElement as _, ParentElement as _,
+    AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div, prelude::FluentBuilder as _,
 };
 use std::collections::{BTreeMap, HashMap};
 
 pub fn badge(reading: Option<Reading>, id: &str, label: &str, cx: &App) -> AnyElement {
     let text = reading.map_or_else(|| "SUS n/a".into(), Reading::text);
-    // An early score is provisional: it takes no band color, and the label says so instead.
-    let (color, band) = match reading {
+    let (color, band) = tone(reading, cx);
+    let early = reading.is_some_and(Reading::is_early);
+    let spoken = format!("{label}: {text}, {band}");
+    div()
+        .id(ElementId::Name(id.to_owned().into()))
+        .test_support()
+        .aria_label(spoken)
+        .flex_none()
+        .text_xs()
+        .when(!early, |this| this.font_semibold())
+        .text_color(color)
+        .child(text)
+        .tooltip(move |window, cx| Tooltip::new(tooltip(early)).build(window, cx))
+        .into_any_element()
+}
+/// The color and spoken band. An early score is provisional: it takes no band color, and the label says so instead.
+fn tone(reading: Option<Reading>, cx: &App) -> (Hsla, &'static str) {
+    match reading {
         Some(Reading::Firm(score)) => match score.band() {
             Band::Green => (cx.theme().success, "green"),
             Band::Yellow => (
@@ -26,9 +42,10 @@ pub fn badge(reading: Option<Reading>, id: &str, label: &str, cx: &App) -> AnyEl
         },
         Some(Reading::Early(_)) => (cx.theme().muted_foreground.opacity(0.75), "early estimate"),
         None => (cx.theme().muted_foreground, "unavailable"),
-    };
-    let spoken = format!("{label}: {text}, {band}");
-    let tooltip: gpui_kit::SharedString = if reading.is_some_and(Reading::is_early) {
+    }
+}
+fn tooltip(early: bool) -> SharedString {
+    if early {
         "Early Weekly Sub Utilization Score: an estimate from usage in this week's first hours. It firms up 12 hours \
          into the window. Until then it has no color and never raises risk or an alert."
             .into()
@@ -37,18 +54,7 @@ pub fn badge(reading: Option<Reading>, id: &str, label: &str, cx: &App) -> AnyEl
          <75. Early values from 1 hour are gray and marked early until 12 hours. n/a means too little data, a window \
          younger than 1 hour, or no quota forecast."
             .into()
-    };
-    div()
-        .id(ElementId::Name(id.to_owned().into()))
-        .test_support()
-        .aria_label(spoken)
-        .flex_none()
-        .text_xs()
-        .when(!reading.is_some_and(Reading::is_early), |this| this.font_semibold())
-        .text_color(color)
-        .child(text)
-        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .into_any_element()
+    }
 }
 pub fn metric(
     account: &AccountSnapshot,

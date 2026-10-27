@@ -136,6 +136,15 @@ fn safe_text(value: Option<&Value>, max: usize, valid: impl Fn(char) -> bool) ->
         .map(str::to_owned)
 }
 
+/// The week forecasts from the shared weekly maturity; the five-hour window keeps its two minutes.
+fn maturity(length: Duration) -> Duration {
+    if is_week_length(length) {
+        WEEKLY_MATURITY
+    } else {
+        Duration::minutes(2)
+    }
+}
+
 /// Parse only the documented quota fields. Public for sanitized producer-to-consumer qualification.
 pub fn parse(text: &str, fetched: DateTime<Utc>, id: &str, label: &str) -> Result<AccountSnapshot, ProviderError> {
     if text.len() > OUTPUT_LIMIT {
@@ -180,14 +189,8 @@ pub fn parse(text: &str, fetched: DateTime<Utc>, id: &str, label: &str) -> Resul
         };
         let elapsed = length - (resets_at - observed);
         let used = percent / 100.0;
-        // The week forecasts from the shared weekly maturity; the five-hour window keeps its two minutes.
-        let maturity = if is_week_length(length) {
-            WEEKLY_MATURITY
-        } else {
-            Duration::minutes(2)
-        };
-        let pace =
-            (elapsed >= maturity).then(|| Pace::per_hour(used * 3600.0 / elapsed.num_milliseconds() as f64 * 1000.0));
+        let pace = (elapsed >= maturity(length))
+            .then(|| Pace::per_hour(used * 3600.0 / elapsed.num_milliseconds() as f64 * 1000.0));
         metrics.push(Metric::Window {
             label: label.into(),
             used,
