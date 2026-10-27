@@ -37,7 +37,8 @@ if ($bytes.Length -lt 64 -or [BitConverter]::ToUInt16($bytes, 0) -ne 0x5a4d) { t
 $pe = [BitConverter]::ToInt32($bytes, 0x3c)
 if ($pe -lt 0 -or $pe -gt $bytes.Length - 94 -or [BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550 -or
     [BitConverter]::ToUInt16($bytes, $pe + 24 + 68) -ne 2) { throw 'Task host must use the Windows GUI subsystem.' }
-$action.Node.Command = $launcher
+# Windows PowerShell's XML adapter only accepts a bare string; Join-Path returns one wrapped in a PSObject.
+$action.Node.Command = [string]$launcher
 $action.Node.Arguments = ''
 # Principal, task security, triggers, working directory and settings are not
 # reconstructed. The input XML remains untouched and the output stays disabled.

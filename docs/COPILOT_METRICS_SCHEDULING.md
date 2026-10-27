@@ -75,14 +75,16 @@ executing them. Synthetic HTTP and credential fixtures verify precedence,
 monthly writes and read-only saved-input behavior. No real `gh` is reachable
 during collector replay.
 
-Native runtime probes are **opt-in**. After separate coordinator authorization,
-`CODEXBAR_RUN_NATIVE_METRICS_FIXTURES=1` enables the Windows suite. It compiles a
+Native runtime probes are **opt-in**. CI's Windows job sets
+`CODEXBAR_RUN_NATIVE_METRICS_FIXTURES=1` on its disposable hosted runner, which
+enables the Windows suite there. Anywhere else it needs separate coordinator
+authorization. It compiles a
 synthetic native `gh` fixture, inspects the prepared binary's GUI subsystem and
 creation flags, and exercises the host to PowerShell to `gh` chain. It checks
 console handles, closed stdin, concurrent pipe draining, exact account argv,
 failed-auth data preservation and exit propagation. It uses no provider requests
-or credentials. The dedicated suite also requires `-RunNativeFixtures`; default
-CI does not execute the candidate host.
+or credentials. The dedicated suite also requires `-RunNativeFixtures`, which the
+process suite passes when the variable is set.
 
 On Home, runtime probes remain held pending coordinator review of the exact
 candidate and human out-of-game observation. A session-0 guard alone does not

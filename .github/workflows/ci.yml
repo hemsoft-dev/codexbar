@@ -243,6 +243,16 @@ jobs:
         shell: pwsh
         run: ./scripts/tests/CopilotMetrics.Core.Tests.ps1
 
+      # The process/task contract and collector replay suites (#269). On this disposable hosted runner they also start
+      # the native fixtures under Windows PowerShell 5.1, which compile and run the real GUI-subsystem task host.
+      - name: Copilot Metrics Windows Launch Tests
+        shell: pwsh
+        env:
+          CODEXBAR_RUN_NATIVE_METRICS_FIXTURES: '1'
+        run: |
+          ./scripts/tests/CopilotMetrics.Process.Tests.ps1
+          ./scripts/tests/CopilotMetrics.Collector.Tests.ps1
+
       - name: Restore
         id: restore
         if: steps.inputs.outputs.retired == 'true'
