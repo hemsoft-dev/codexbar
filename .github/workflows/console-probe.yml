@@ -21,6 +21,8 @@ permissions:
 env:
   BASE_REF: ${{ inputs.base_ref || 'bd1bab8916a812323f8cfe078365538b020c6cc1' }}
   FIX_REF: ${{ inputs.fix_ref || '' }}
+  # PR #270 rebased on bd1bab8.
+  METRICS_REF: c79f0c3c3cf5aaf7778038325385c69cfcfc0c9e
 
 jobs:
   probe:
@@ -56,10 +58,32 @@ jobs:
         working-directory: base
         run: cargo build --release -p codexbar-app --locked
 
+      # The same source without CREATE_NO_WINDOW for background CLIs: what a CodexBar-started gh flash looks like.
+      - name: Build a regressed control
+        shell: bash
+        working-directory: base
+        run: |
+          cp target/release/codexbar.exe ../codexbar-base.exe
+          sed -i 's/let window = if console { CREATE_NEW_CONSOLE } else { CREATE_NO_WINDOW };/let window = if console { CREATE_NEW_CONSOLE } else { 0 };/' crates/codexbar-providers/src/contained.rs
+          git diff --exit-code --quiet && { echo "control patch did not apply"; exit 1; }
+          git diff
+          cargo build --release -p codexbar-app --locked
+          cp target/release/codexbar.exe ../codexbar-regressed.exe
+          git checkout -- crates/codexbar-providers/src/contained.rs
+
       - name: Build candidate
         if: env.FIX_REF != ''
         working-directory: fix
         run: cargo build --release -p codexbar-app --locked
+
+      # The Antigravity CLI CodexBar reads Gemini coding quotas with; not signed in on the runner.
+      - name: Install the Antigravity CLI
+        continue-on-error: true
+        shell: powershell
+        run: |
+          irm https://antigravity.google/cli/install.ps1 | iex
+          $agy = Get-ChildItem $env:LOCALAPPDATA -Recurse -Filter agy.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($agy) { $agy.DirectoryName | Add-Content $env:GITHUB_PATH; & $agy.FullName --version } else { Write-Host 'agy.exe not found' }
 
       - name: Record the desktop and enable process auditing
         shell: powershell
@@ -75,15 +99,22 @@ jobs:
             delegation = (Get-ItemProperty 'HKCU:\Console\%%Startup' -ErrorAction SilentlyContinue | Select-Object DelegationConsole, DelegationTerminal)
             gh = (Get-Command gh).Source
             ghVersion = ((& gh --version) -join ' ')
+            agy = (Get-Command agy -ErrorAction SilentlyContinue).Source
             started = [DateTime]::UtcNow.ToString('o')
           } | ConvertTo-Json -Depth 4 | Tee-Object probe-out/environment.json
           [DateTime]::UtcNow.ToString('o') | Set-Content probe-out/since.txt
+
+      - name: Probe the regressed control
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe codexbar-regressed.exe -Label regressed -OutDir probe-out -AppSeconds 150
 
       - name: Probe base
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe base/target/release/codexbar.exe -Label base -OutDir probe-out -Matrix
+        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe codexbar-base.exe -Label base -OutDir probe-out -Matrix
 
       - name: Probe candidate
         if: env.FIX_REF != ''
@@ -97,10 +128,45 @@ jobs:
         shell: powershell
         run: ./probe/.github/console-probe/Get-ProcessAudit.ps1 -Since ([datetime](Get-Content probe-out/since.txt)) -OutFile probe-out/processes.json
 
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: python -I probe/.github/console-probe/summarize.py probe-out | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: console-probe-${{ github.run_id }}
+          path: probe-out/
+          retention-days: 30
+
+  metrics-task:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: probe
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.METRICS_REF }}
+          path: metrics
+
+      - name: Probe the original and prepared metrics tasks
+        shell: powershell
+        run: ./probe/.github/console-probe/Invoke-MetricsTaskProbe.ps1 -Root metrics -OutDir probe-out
+
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: python -I probe/.github/console-probe/summarize.py probe-out | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-task-probe-${{ github.run_id }}
           path: probe-out/
           retention-days: 30
