@@ -14,6 +14,12 @@ pub(super) async fn run(
     dashboard: &Entity<Dashboard>,
     dir: &Path,
 ) -> Vec<String> {
+    // Wide, the 5-hour window's forecast sits in its own column (#204) and the primary one stays blank (#279).
+    let at_reset = if std::env::var_os("CODEXBAR_CAPTURE_WIDE").is_some() {
+        "window-5h-muse-demo-at-reset"
+    } else {
+        "at-reset-muse-demo"
+    };
     let mut saved = Vec::new();
     for state in [
         "measured",
@@ -44,12 +50,8 @@ pub(super) async fn run(
                         alert.contains("resets in 1h 55m") && alert.contains("2m early"),
                         "{alert}"
                     );
-                    assert!(
-                        w.find("at-reset-muse-demo")
-                            .label()
-                            .unwrap()
-                            .contains("runs out in 1h 53m")
-                    );
+                    let reset = w.find(at_reset).label().unwrap().to_owned();
+                    assert!(reset.contains("runs out in 1h 53m"), "{reset}");
                 }
                 if state == "reset-after" {
                     let note = w.find("muse-quota-note");
