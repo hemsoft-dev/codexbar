@@ -67,4 +67,4 @@ try {
 
 $result | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutDir 'result.json') -Encoding utf8
 foreach ($run in $result.runs) { Write-Host ("{0}: state {1}, last result {2}" -f $run.task, $run.state, $run.lastResult) }
-Write-Host "native fixtures: $($result.nativeFixtures)"
+Write-Host "native fixtures: $($result['nativeFixtures'])"

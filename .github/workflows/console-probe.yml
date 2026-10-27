@@ -22,7 +22,7 @@ env:
   BASE_REF: ${{ inputs.base_ref || 'bd1bab8916a812323f8cfe078365538b020c6cc1' }}
   FIX_REF: ${{ inputs.fix_ref || '' }}
   # PR #270 rebased on bd1bab8.
-  METRICS_REF: c79f0c3c3cf5aaf7778038325385c69cfcfc0c9e
+  METRICS_REF: 1c8bbe3386a7c95c169f0befba6a674ca85c1028
 
 jobs:
   probe:
