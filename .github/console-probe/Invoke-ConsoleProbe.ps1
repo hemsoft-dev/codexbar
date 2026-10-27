@@ -88,7 +88,10 @@ try {
         foreach ($case in $cases) {
             if ($case.cmd[0] -eq '') { continue }
             [ConsoleWatch]::Mark("matrix-$($case.name)")
-            $p = Start-Process -FilePath $launch -ArgumentList (@($case.mode, $matrixFile) + $case.cmd) -PassThru -Wait
+            # The launcher itself waits up to 60 s. Start-Process -Wait would also wait for every descendant, such as
+            # the browser agy opens for sign-in.
+            $p = Start-Process -FilePath $launch -ArgumentList (@($case.mode, $matrixFile) + $case.cmd) -PassThru
+            [void]$p.WaitForExit(90000)
             Start-Sleep -Seconds 2
         }
         [ConsoleWatch]::Mark('matrix-done')
