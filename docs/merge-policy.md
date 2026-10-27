@@ -50,7 +50,7 @@ merge box alone does not satisfy this repository policy.
    `codex-review-state:v1` JSON with `code_review.commit_sha` equal to the full SHA,
    `status: completed`, `has_any_findings: false`, and
    `has_unresolved_findings: false`. Confirm the summary's author and last editor
-   are the connector bot when edited, using GraphQL `author`, `lastEditor`, and
+   are the connector bot when edited, using GraphQL `author`, `editor`, and
    `lastEditedAt`. A collaborator-edited or deleted summary requires fresh
    authenticated review evidence.
 3. A clean bot receipt with `Reviewed commit` can also qualify if its SHA prefix
