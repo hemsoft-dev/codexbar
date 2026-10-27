@@ -8444,7 +8444,7 @@ fn live_gemini_status_from_saved_provider_data() {
             args: &[&str],
             timeout: Duration,
         ) -> Result<codexbar_providers::CommandOutput, codexbar_providers::CommandError> {
-            let result = codexbar_providers::SystemCommandRunner.run(program, args, timeout)?;
+            let result = codexbar_providers::gemini_coding::CliRunner.run(program, args, timeout)?;
             if args.first() == Some(&"-p")
                 && let Ok(value) = serde_json::from_str::<serde_json::Value>(&result.stdout)
             {

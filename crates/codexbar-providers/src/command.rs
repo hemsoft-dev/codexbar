@@ -21,7 +21,8 @@ pub enum CommandError {
 /// Options honored only for this child process, without changing the parent's environment.
 #[derive(Clone, Debug)]
 pub struct CommandOptions {
-    pub cwd: std::path::PathBuf,
+    /// The child's working folder; `None` keeps this process's.
+    pub cwd: Option<std::path::PathBuf>,
     pub remove_env: Vec<&'static str>,
     pub env: Vec<(&'static str, &'static str)>,
     pub output_limit: usize,
@@ -74,7 +75,9 @@ impl SystemCommandRunner {
     ) -> Result<CommandOutput, CommandError> {
         let mut command = crate::platform::command(program);
         if let Some(options) = options {
-            command.current_dir(&options.cwd);
+            if let Some(cwd) = &options.cwd {
+                command.current_dir(cwd);
+            }
             // Remove every case variant too, matching the shipped Muse subscription-only contract.
             for (name, _) in std::env::vars_os() {
                 if options

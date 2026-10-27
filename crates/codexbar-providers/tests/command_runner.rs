@@ -72,9 +72,14 @@ fn fixture(args: &[String]) -> ! {
             assert_eq!(std::env::var("MUSE_NO_AUTO_UPDATE").unwrap(), "1");
             assert_eq!(std::io::stdin().read(&mut [0u8; 1]).unwrap(), 0);
         }
+        // Without a working folder the child keeps the parent's, and still gets its variables (agy, chief#43).
+        "unscoped" => {
+            assert_eq!(std::env::current_dir().unwrap(), PathBuf::from(&args[1]));
+            assert_eq!(std::env::var("AGY_CLI_DISABLE_AUTO_UPDATE").unwrap(), "true");
+        }
         "scoped-parent" => {
             let options = CommandOptions {
-                cwd: PathBuf::from(&args[1]),
+                cwd: Some(PathBuf::from(&args[1])),
                 remove_env: vec![
                     "CODEXBAR_SYNTHETIC_PARENT_ONLY",
                     "META_API_KEY",
@@ -378,6 +383,17 @@ fn main() {
         .output()
         .unwrap();
     assert!(scoped.status.success(), "{}", String::from_utf8_lossy(&scoped.stderr));
+    let here = std::env::current_dir().unwrap();
+    let unscoped = CommandOptions {
+        cwd: None,
+        remove_env: vec!["AGY_CLI_DISABLE_AUTO_UPDATE"],
+        env: vec![("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
+        output_limit: MIB,
+    };
+    let kept = SystemCommandRunner
+        .run_with_options(program, &["unscoped", here.to_str().unwrap()], timeout, &unscoped)
+        .unwrap();
+    assert!(kept.success, "{}", kept.stderr);
     #[cfg(windows)]
     {
         let console = Command::new(program).arg("console-parent").output().unwrap();

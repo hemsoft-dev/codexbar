@@ -261,7 +261,7 @@ pub(super) fn qualify(program: &str, scratch: &Path) {
         let dir = scratch.join(format!("profile-{order}"));
         std::fs::create_dir(&dir).unwrap();
         let options = CommandOptions {
-            cwd: dir.clone(),
+            cwd: Some(dir.clone()),
             remove_env: Vec::new(),
             env: Vec::new(),
             output_limit: CAP,
