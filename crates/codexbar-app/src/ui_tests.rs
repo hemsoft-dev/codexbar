@@ -8783,6 +8783,15 @@ fn cached_muse_alert_context_matches_source_assessment_but_reset_countdown_uses_
         "relative forecast must count from wall time: {reset}"
     );
     assert!(exists(cx, handle, "focus-history-card-takeaway"));
+    // #279: wide, the 5-hour forecast moves to the window's own column and the primary one is blank.
+    gpui_kit::VisualTestContext::from_window(handle, cx).simulate_resize(size(px(2600.), px(1000.)));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let wide = label(cx, handle, "window-5h-muse-demo-at-reset").unwrap();
+    assert!(wide.contains("runs out in 1h 53m"), "{wide}");
+    let primary = label(cx, handle, "at-reset-muse-demo").unwrap();
+    assert!(!primary.contains("runs out"), "{primary}");
     let account = cx.update(|cx| dashboard.read(cx).account("muse-demo").unwrap().clone());
     assert_eq!(account.observed_at(), Some(crate::muse_fixture::base()));
     assert_eq!(
