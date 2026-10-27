@@ -234,21 +234,49 @@ fn area_fill(color: Hsla) -> Background {
 
 /// Every metric the account reports, compactly (#82): the cards chart two of them, and a provider like Claude can
 /// return more (model-scoped weekly limits, usage credits, a credit balance). Each says its value, reset and projection.
-pub fn subscription_note(account: &AccountSnapshot, cx: &App) -> Option<AnyElement> {
+pub fn subscription_note(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Option<AnyElement> {
     use gpui_kit::{StatefulInteractiveElement as _, TestSupportExt as _};
+    let (id, text) = subscription_note_content(account, now)?;
+    Some(
+        div()
+            .id(id)
+            .test_support()
+            .aria_label(text.clone())
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(text)
+            .into_any_element(),
+    )
+}
+
+fn subscription_note_content(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<(&'static str, String)> {
+    if account.provider() == codexbar_core::Provider::MuseCode {
+        let mut text =
+            "Percent of allowance used. Billing mode and model scope unknown. SUS and price unavailable.".to_owned();
+        for (label, key) in [("5-hour", "5-hour-window"), ("Weekly", "weekly")] {
+            if !account
+                .metrics()
+                .iter()
+                .any(|m| m.key() == key && !account.metric_ended(m, now))
+            {
+                text.push_str(&format!(" {label}: n/a."));
+            }
+        }
+        if let Some(at) = account.observed_at() {
+            text.push_str(&format!(" Observed {}.", at.to_rfc3339()));
+        }
+        if let Some(source) = account.allowance_source() {
+            text.push_str(&format!(" Source: {source}."));
+        }
+        return Some(("muse-quota-note", text));
+    }
     if account.provider() != codexbar_core::Provider::Gemini || account.status_metrics().next().is_some() {
         return None;
     }
-    Some(
-        div()
-            .id("gemini-models-weekly-unavailable")
-            .test_support()
-            .aria_label("Gemini Models weekly: n/a. Other pools are informational.")
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child("Gemini Models weekly: n/a. Other pools are informational.")
-            .into_any_element(),
-    )
+    Some((
+        "gemini-models-weekly-unavailable",
+        "Gemini Models weekly: n/a. Other pools are informational.".into(),
+    ))
 }
 
 pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Option<AnyElement> {
@@ -258,7 +286,12 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
     }
     let muted = cx.theme().muted_foreground;
     let entries = account.metrics().iter().enumerate().map(|(ix, metric)| {
+        let ended = account.metric_ended(metric, now);
+        let value = if ended { "n/a".to_owned() } else { metric.used_display() };
         let mut detail = Vec::new();
+        if ended {
+            detail.push("window ended; refresh needed".to_owned());
+        }
         if let Some(at) = metric.resets_at().filter(|at| *at > now) {
             detail.push(format!("resets in {}", format::countdown(at - now)));
         }
@@ -275,9 +308,9 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         }
         let detail = detail.join(" · ");
         let spoken = if detail.is_empty() {
-            format!("{}: {}", metric.label(), metric.used_display())
+            format!("{}: {}", metric.label(), value.clone())
         } else {
-            format!("{}: {}, {detail}", metric.label(), metric.used_display())
+            format!("{}: {}, {detail}", metric.label(), value.clone())
         };
         let severity = account.assess_metric(metric, now).severity();
         v_flex()
@@ -299,7 +332,7 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
                     .when(severity >= Severity::Watch, |this| {
                         this.child(div().size_2().rounded_full().bg(severity_color(severity, cx)))
                     })
-                    .child(div().text_sm().font_semibold().child(metric.used_display()))
+                    .child(div().text_sm().font_semibold().child(value.clone()))
                     .children(crate::sus::metric(
                         account,
                         metric,
@@ -345,6 +378,11 @@ pub fn focus_cards(
                     _ => activity_card(account, activity_in_effect(account, choice.activity), cx),
                 },
             };
+            let card = if account.provider() == codexbar_core::Provider::MuseCode && account.observation_stale(now) {
+                card.takeaway("Last known allowance. Current capacity and forecast are unavailable.")
+            } else {
+                card
+            };
             card.menu(menu).render(cx).into_any_element()
         })
         .collect()
@@ -360,6 +398,22 @@ fn limit_in_effect<'a>(account: &'a AccountSnapshot, chosen: &Option<LimitChoice
 
 /// A card showing one chosen limit (#230): over time, as a progress bar, or as a gauge.
 fn limit_card(
+    account: &AccountSnapshot,
+    metric: &Metric,
+    view: LimitView,
+    now: DateTime<Utc>,
+    slot: usize,
+    ring: &crate::ring_size::RingControl,
+    cx: &App,
+) -> Card {
+    if account.metric_ended(metric, now) {
+        return Card::new(metric.label().to_owned(), "Window ended", div().child("n/a"))
+            .takeaway("Current allowance n/a; refresh needed");
+    }
+    render_limit(account, metric, view, now, slot, ring, cx)
+}
+
+fn render_limit(
     account: &AccountSnapshot,
     metric: &Metric,
     view: LimitView,
@@ -390,6 +444,7 @@ fn limit_graph<'a>(account: &'a AccountSnapshot, metric: &'a Metric, now: DateTi
         )
     };
     Graph {
+        projection_at: account.evaluation_time(metric, now),
         metric: Some(metric),
         curve: comparable(curve),
         trend,
@@ -482,13 +537,7 @@ fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot
 /// The words in a ring's opening (#234): the forecast's share at the reset, short enough for the ring, or what the
 /// bars say when there is none ("covered by credits", "limit reached"). The whole forecast is in its label and hover.
 fn ring_pace(metric: &Metric, account: &AccountSnapshot, now: DateTime<Utc>) -> Option<String> {
-    if account.credits_cover(metric) {
-        return crate::usage_bar::outlook(metric, account, now);
-    }
-    match crate::usage_bar::Forecast::of(metric, now) {
-        Some(forecast) => Some(format!("{} at reset", forecast.share())),
-        None => crate::usage_bar::outlook(metric, account, now),
-    }
+    crate::usage_bar::ResetDisplay::of(metric, account, now).ring_text()
 }
 
 /// One entry in a card's menu: what it shows and what choosing it does.
@@ -711,6 +760,9 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
     // The window curve unless the trend was chosen (#218); a chosen window curve the provider no longer sends falls
     // back to the trend.
     let graph = Graph {
+        projection_at: account
+            .primary()
+            .and_then(|metric| account.evaluation_time(metric, now)),
         metric: account.primary(),
         curve: comparable(account.detail().window_curve()).filter(|_| view != Some(UsageView::Trend)),
         trend: account.trend(),
@@ -724,6 +776,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, view: Option<UsageV
 
 /// What a graph card draws: a limit's window curve, or its daily trend when there is no curve, in the limit's unit.
 struct Graph<'a> {
+    projection_at: Option<DateTime<Utc>>,
     /// The limit the takeaway and caption describe.
     metric: Option<&'a Metric>,
     curve: Option<&'a codexbar_core::WindowCurve>,
@@ -861,7 +914,12 @@ fn graph_card(graph: &Graph, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
 
     let card = match primary {
         Some(metric) => card
-            .takeaway(pace_takeaway(metric, now))
+            .takeaway(
+                graph
+                    .projection_at
+                    .map(|at| pace_takeaway(metric, at, now))
+                    .unwrap_or_else(|| "Current forecast unavailable; refresh needed".into()),
+            )
             .caption(reset_caption(metric, now)),
         None => card,
     };
@@ -873,6 +931,15 @@ fn graph_card(graph: &Graph, now: DateTime<Utc>, slot: usize, cx: &App) -> Card 
 }
 
 /// The share of a pool as a ring gauge (#174), or the credits, balance or spend when no metric has a share.
+fn missing_share_card(account: &AccountSnapshot) -> Card {
+    if account.provider() == codexbar_core::Provider::MuseCode {
+        Card::new("Allowance unavailable", "n/a", div().child("n/a"))
+            .takeaway("Muse Code did not report a valid allowance")
+    } else {
+        Card::new("No limits", "", div()).takeaway("This account reports no limits")
+    }
+}
+
 fn share_card(
     account: &AccountSnapshot,
     now: DateTime<Utc>,
@@ -884,12 +951,15 @@ fn share_card(
     use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
     // The chosen limits (#218), in the order chosen; any the account no longer reports are skipped, and with none
     // left the card is automatic again.
-    let chosen = chosen_rings(account, rings);
+    let chosen: Vec<_> = chosen_rings(account, rings)
+        .into_iter()
+        .filter(|metric| !account.metric_ended(metric, now))
+        .collect();
     if chosen.len() >= 2 {
         return rings_card(account, &chosen, now, control, cx);
     }
     let Some(metric) = chosen.first().copied().or_else(|| share_metric(account, now)) else {
-        return Card::new("No limits", "", div()).takeaway("This account reports no limits");
+        return missing_share_card(account);
     };
 
     if let Metric::Credits { balance, .. } = metric {
@@ -1121,6 +1191,13 @@ fn share_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric
         .or_else(|| most_severe_after_primary(account, now, has_share))
         .or(secondary)
         .or(Some(primary))
+        .filter(|metric| !account.metric_ended(metric, now))
+        .or_else(|| {
+            account
+                .metrics()
+                .iter()
+                .find(|metric| !account.metric_ended(metric, now))
+        })
 }
 
 /// The credits line for the ring's caption when the share took the card (#174): the credits after the headline,
@@ -1445,13 +1522,16 @@ fn most_severe_after_primary(
         .map(|(_, metric)| metric)
 }
 
-fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
+fn pace_takeaway(metric: &Metric, at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     if let Some(days) = metric.days_of_credit() {
         return format!("About {days:.0} days of credit left");
     }
     // The outlook picks the wording (#206), so the card and its tile agree even at the minute where a limit hit
     // just before the reset counts as a full share.
-    match (metric.outlook(now), metric.time_to_limit()) {
+    let to_limit = metric
+        .time_to_limit()
+        .map(|left| (left - (now - at)).max(chrono::Duration::zero()));
+    match (metric.outlook(at), to_limit) {
         (Some(outlook @ codexbar_core::Outlook::Early(_)), Some(to_limit)) => format!(
             "Hits the {} limit in ~{} at this pace, {}",
             metric.label().to_lowercase(),
@@ -1528,6 +1608,68 @@ mod tests {
     use super::*;
     use chrono::Duration;
     use codexbar_core::Pace;
+
+    #[test]
+    fn muse_notes_describe_only_reported_current_windows_and_keep_source_time() {
+        use codexbar_providers::UsageProvider as _;
+        for state in ["measured", "partial", "stale", "reset-before"] {
+            let account = crate::muse_fixture::provider(state)
+                .fetch(crate::muse_fixture::now(state))
+                .unwrap()
+                .remove(0);
+            let (id, note) = subscription_note_content(&account, crate::muse_fixture::now(state)).unwrap();
+            assert_eq!(id, "muse-quota-note");
+            assert!(note.contains("Billing mode and model scope unknown") && note.contains("Source: mint"));
+            assert!(note.contains(&account.observed_at().unwrap().to_rfc3339()));
+            assert_eq!(note.contains("5-hour: n/a"), state == "partial");
+            assert!(!note.contains("Weekly: n/a"));
+        }
+        let unavailable = AccountSnapshot::new(
+            codexbar_core::AccountId::new("m"),
+            codexbar_core::Provider::MuseCode,
+            vec![],
+            now(),
+        );
+        let note = subscription_note_content(&unavailable, now()).unwrap().1;
+        assert!(note.contains("5-hour: n/a") && note.contains("Weekly: n/a"));
+        assert!(!note.contains("Observed") && !note.contains("Source:"));
+        assert!(share_metric(&unavailable, now()).is_none());
+        let expired = window(0.5, 0.01);
+        let account = AccountSnapshot::new(
+            codexbar_core::AccountId::new("m"),
+            codexbar_core::Provider::MuseCode,
+            vec![expired.clone()],
+            now(),
+        );
+        assert!(share_metric(&account, now() + Duration::hours(11)).is_none());
+        let mut weekly = expired;
+        if let Metric::Window { label, resets_at, .. } = &mut weekly {
+            *label = "Weekly".into();
+            *resets_at = now() + Duration::days(5);
+        }
+        let sibling = AccountSnapshot::new(
+            codexbar_core::AccountId::new("m"),
+            codexbar_core::Provider::MuseCode,
+            vec![window(0.95, 0.01), weekly],
+            now(),
+        );
+        assert_eq!(
+            share_metric(&sibling, now() + Duration::hours(11)).unwrap().label(),
+            "Weekly"
+        );
+        assert!(
+            subscription_note_content(
+                &AccountSnapshot::new(
+                    codexbar_core::AccountId::new("c"),
+                    codexbar_core::Provider::Codex,
+                    vec![],
+                    now()
+                ),
+                now()
+            )
+            .is_none()
+        );
+    }
 
     fn window(used: f64, per_hour: f64) -> Metric {
         Metric::Window {
@@ -1968,18 +2110,21 @@ mod tests {
 
     #[test]
     fn pace_takeaway_shows_the_projection_or_when_the_limit_is_hit() {
+        let cached = crate::muse_fixture::cached_alert();
+        let at = crate::muse_fixture::base();
+        assert!(pace_takeaway(&cached.metrics()[0], at, at + Duration::minutes(5)).contains("~1h 53m"));
         assert_eq!(
-            pace_takeaway(&window(0.4, 0.03), now()),
+            pace_takeaway(&window(0.4, 0.03), now(), now()),
             "On pace for about 70% by the reset"
         );
         // 60% left at 10%/h: the limit in 6h, four hours before the 10h reset (#206).
         assert_eq!(
-            pace_takeaway(&window(0.4, 0.1), now()),
+            pace_takeaway(&window(0.4, 0.1), now(), now()),
             "Hits the included usage limit in ~6h at this pace, 4h early"
         );
         // 60% left at 6%/h lands on the 10h reset: a full share, as the tile says, not "hits the limit".
         assert_eq!(
-            pace_takeaway(&window(0.4, 0.06), now()),
+            pace_takeaway(&window(0.4, 0.06), now(), now()),
             "On pace for about 100% by the reset"
         );
     }

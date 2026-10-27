@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::usage_bar::{Forecast, Projection, usage_bar};
+use crate::usage_bar::{Projection, usage_bar};
 use chrono::{DateTime, Utc};
 use codexbar_core::{AccountSnapshot, Metric, Provider, format};
 use codexbar_store::summary::HistorySummary;
@@ -181,6 +181,16 @@ pub fn row_metric(account: &AccountSnapshot) -> Option<&Metric> {
     primary_or_claude_weekly(account)
 }
 
+pub fn row_metric_at(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
+    row_metric(account)
+        .filter(|metric| !account.metric_ended(metric, now))
+        .or_else(|| {
+            account
+                .status_metrics()
+                .find(|metric| !account.metric_ended(metric, now))
+        })
+}
+
 fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
     let primary = account.status_metrics().next()?;
     if account.provider() == Provider::Claude
@@ -198,8 +208,8 @@ fn primary_or_claude_weekly(account: &AccountSnapshot) -> Option<&Metric> {
 
 /// The daily trend of the metric an account's row shows (#246): the account's own trend for its primary metric, else
 /// that limit's stored series.
-fn row_trend(account: &AccountSnapshot) -> &[f64] {
-    row_metric(account).map_or(&[], |metric| trend_of_metric(account, metric))
+fn row_trend(account: &AccountSnapshot, now: DateTime<Utc>) -> &[f64] {
+    row_metric_at(account, now).map_or(&[], |metric| trend_of_metric(account, metric))
 }
 
 fn trend_of_metric<'a>(account: &'a AccountSnapshot, metric: &Metric) -> &'a [f64] {
@@ -296,6 +306,25 @@ pub enum AccountState {
     Failed(String),
     /// The first fetch failed: there is no usage to show yet. Holds the error.
     Unavailable(String),
+}
+
+impl AccountState {
+    /// A successful transport can still carry an old source observation.
+    pub fn fresh(account: &AccountSnapshot, now: DateTime<Utc>) -> Self {
+        if account.observation_stale(now) {
+            Self::Failed("Muse allowance observation is over 7 minutes old".into())
+        } else {
+            Self::Fresh
+        }
+    }
+
+    /// Source age can downgrade fresh usage, while explicit loading/failure/restoration states survive.
+    pub fn at(state: Option<&Self>, account: &AccountSnapshot, now: DateTime<Utc>) -> Self {
+        match state {
+            None | Some(Self::Fresh) => Self::fresh(account, now),
+            Some(other) => other.clone(),
+        }
+    }
 }
 
 /// Refresh state by account id; accounts not listed are fresh.
@@ -549,7 +578,7 @@ impl TableDelegate for AccountTable {
         };
         let assessment = row.assess(self.now);
         let severity = assessment.severity();
-        let primary = row_metric(row);
+        let primary = row_metric_at(row, self.now);
         let muted = cx.theme().muted_foreground;
         // Wide, a standard window has its own columns; the primary pair then shows only what is neither (#195).
         let own_pair = if self.wide {
@@ -560,7 +589,9 @@ impl TableDelegate for AccountTable {
 
         match self.columns()[col_ix] {
             Col::Window(kind, cell) => {
-                let metric = kind.in_account(row);
+                let metric = kind
+                    .in_account(row)
+                    .filter(|metric| !row.metric_ended(metric, self.now));
                 let id = format!("window-{}-{}", kind.key(), row.id().as_str());
                 let name = metric.map_or(kind.title(), Metric::label);
                 match cell {
@@ -701,7 +732,8 @@ impl AccountTable {
     /// screen readers.
     fn state_tag(&self, row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> Option<gpui_kit::AnyElement> {
         let id = row.id().as_str();
-        let (tag, label, detail) = match self.states.get(id)? {
+        let state = AccountState::at(self.states.get(id), row, self.now);
+        let (tag, label, detail) = match &state {
             AccountState::Fresh => return None,
             AccountState::Loading => (
                 Tag::secondary(),
@@ -760,7 +792,7 @@ impl AccountTable {
                 .into_any_element();
         }
         let Some((summary, kind)) = self.compact.get(id) else {
-            return sparkline(row, cx);
+            return sparkline(row, self.now, cx);
         };
         let text: SharedString = format!("Last 14 days: {}", describe(summary, *kind)).into();
         h_flex()
@@ -775,7 +807,7 @@ impl AccountTable {
                 let text = text.clone();
                 move |window, cx| Tooltip::new(text.clone()).build(window, cx)
             })
-            .child(div().flex_1().min_w_0().child(sparkline(row, cx)))
+            .child(div().flex_1().min_w_0().child(sparkline(row, self.now, cx)))
             .child(
                 div()
                     .flex_shrink_0()
@@ -858,29 +890,22 @@ fn at_reset_cell(
             .child(text.to_owned())
             .into_any_element()
     };
-    // A used-up window the account's credits carry (#150) neither runs out nor is reached: the credits pay for it.
-    if row.credits_cover(metric) {
-        return plain(
-            crate::usage_bar::COVERED,
-            format!("{name} at reset: {}", crate::usage_bar::COVERED),
-            muted,
-        );
-    }
-    let Some(forecast) = Forecast::of(metric, now) else {
-        // Only a limit with a reset ahead can be forecast; one without (a money-only spend cap) is not applicable.
-        let limited = (matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
-            || matches!(metric, Metric::Spend { limit: Some(_), .. }))
-            && metric.resets_at().is_some();
-        // A used-up limit with no pace left to project still says so, as the Pi dashboard does.
-        let used_up = metric.used_fraction().is_some_and(|used| used >= 1.0);
-        let (text, spoken) = if used_up {
-            ("limit reached", format!("{name} at reset: limit reached"))
-        } else if limited {
-            ("no forecast", format!("{name} at reset: no forecast"))
-        } else {
-            ("—", format!("{name} at reset: not applicable"))
+    let display = crate::usage_bar::ResetDisplay::of(metric, row, now);
+    let crate::usage_bar::ResetDisplay::Forecast(forecast) = display else {
+        let text = display.plain_text();
+        let spoken = match display {
+            crate::usage_bar::ResetDisplay::Unavailable => {
+                format!("{name}: forecast unavailable, observation stale or window ended")
+            }
+            crate::usage_bar::ResetDisplay::NotApplicable => format!("{name} at reset: not applicable"),
+            _ => format!("{name} at reset: {text}"),
         };
-        return plain(text, spoken, if used_up { cx.theme().danger } else { muted });
+        let color = if display == crate::usage_bar::ResetDisplay::Reached {
+            cx.theme().danger
+        } else {
+            muted
+        };
+        return plain(text, spoken, color);
     };
     let runway = forecast.runway();
     let tint = match runway {
@@ -956,19 +981,29 @@ fn bar_cell(
 }
 
 fn missing_used_label(row: &AccountSnapshot) -> String {
-    if row.provider() == Provider::Gemini {
+    if matches!(row.provider(), Provider::Gemini | Provider::MuseCode) {
         "n/a".into()
     } else {
         String::new()
     }
 }
 fn missing_limit_label(row: &AccountSnapshot) -> String {
-    if row.provider() == Provider::Gemini {
-        "Gemini Models weekly".into()
+    [
+        (Provider::MuseCode, "Quota unavailable"),
+        (Provider::Gemini, "Gemini Models weekly"),
+    ]
+    .into_iter()
+    .find(|(provider, _)| *provider == row.provider())
+    .map_or(String::new(), |(_, label)| label.to_owned())
+}
+fn missing_window_label(row: &AccountSnapshot, kind: WindowKind) -> &'static str {
+    if row.provider() == Provider::MuseCode {
+        "n/a"
     } else {
-        String::new()
+        kind.title()
     }
 }
+
 fn missing_window_bar(
     kind: WindowKind,
     row: &AccountSnapshot,
@@ -980,7 +1015,7 @@ fn missing_window_bar(
     if row.provider() == Provider::Gemini && kind == WindowKind::Weekly {
         bar_cell_without_metric(id, assessment, severity, row, cx)
     } else {
-        blank_cell(id, kind.title(), cx.theme().muted_foreground)
+        blank_cell(id, missing_window_label(row, kind), cx.theme().muted_foreground)
     }
 }
 
@@ -992,18 +1027,32 @@ fn bar_cell_without_metric(
     row: &AccountSnapshot,
     cx: &gpui_kit::App,
 ) -> gpui_kit::AnyElement {
+    if let Some(unavailable) = unavailable_bar(id, row, cx) {
+        return unavailable;
+    }
+    bar(id, &Projection::bare(assessment.pressure()).graded(severity), row, cx)
+}
+
+/// Missing quotas keep their provider's established presentation: Muse n/a, subscriptions SUS n/a,
+/// and legacy accounts retain the pressure bar.
+fn unavailable_bar(id: &str, row: &AccountSnapshot, cx: &gpui_kit::App) -> Option<gpui_kit::AnyElement> {
+    if row.provider() == Provider::MuseCode {
+        return Some(blank_cell(id, "n/a", cx.theme().muted_foreground));
+    }
     if matches!(
         row.provider(),
         Provider::Gemini | Provider::Grok | Provider::XSubscription
     ) {
-        return h_flex()
-            .gap_2()
-            .items_center()
-            .child(no_bar(id, cx.theme().muted_foreground))
-            .child(crate::sus::badge(None, &format!("{id}-sus"), "Quota unavailable", cx))
-            .into_any_element();
+        return Some(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(no_bar(id, cx.theme().muted_foreground))
+                .child(crate::sus::badge(None, &format!("{id}-sus"), "Quota unavailable", cx))
+                .into_any_element(),
+        );
     }
-    bar(id, &Projection::bare(assessment.pressure()).graded(severity), row, cx)
+    None
 }
 
 fn no_bar(id: &str, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
@@ -1049,8 +1098,12 @@ fn limit_label(metric: &Metric) -> String {
 
 /// A 14-day pressure trend. A sparkline shows shape, not level (the progress column shows level),
 /// so each row fits its own range.
-fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> gpui_kit::AnyElement {
-    let trend = row_trend(row);
+fn sparkline(
+    row: &AccountSnapshot,
+    now: DateTime<Utc>,
+    cx: &Context<TableState<AccountTable>>,
+) -> gpui_kit::AnyElement {
+    let trend = row_trend(row, now);
     if trend.len() < 2 {
         // Real providers have no history until #85 stores it.
         return div()
@@ -1160,7 +1213,7 @@ mod tests {
         assert_eq!(row_metric(&row), Some(&models));
         assert_eq!(WindowKind::Weekly.in_account(&row), Some(&models));
         assert_eq!(WindowKind::FiveHour.in_account(&row), None);
-        assert_eq!(row_trend(&row), [0.01, 0.02, 0.03]);
+        assert_eq!(row_trend(&row, now()), [0.01, 0.02, 0.03]);
         assert_eq!(
             row.primary(),
             Some(&apps),
@@ -1255,7 +1308,7 @@ mod tests {
                     trend: vec![0.7, 0.76, 0.82],
                 },
             ));
-        assert_eq!(row_trend(&row), [0.7, 0.76, 0.82]);
+        assert_eq!(row_trend(&row, now()), [0.7, 0.76, 0.82]);
         let codex = account(vec![window(
             "5-hour window",
             0.2,
@@ -1263,14 +1316,14 @@ mod tests {
             Pace::per_hour(0.1),
         )])
         .with_trend(vec![0.1, 0.2]);
-        assert_eq!(row_trend(&codex), [0.1, 0.2]);
+        assert_eq!(row_trend(&codex, now()), [0.1, 0.2]);
         let no_series = claude(vec![
             window("5-hour window", 0.64, Duration::minutes(72), Pace::per_hour(0.12)),
             window("Weekly", 0.82, Duration::days(2), Pace::per_day(0.05)),
         ])
         .with_trend(vec![0.9, 0.5]);
         assert!(
-            row_trend(&no_series).is_empty(),
+            row_trend(&no_series, now()).is_empty(),
             "never the 5-hour window's trend under the weekly window"
         );
     }

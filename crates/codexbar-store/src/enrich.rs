@@ -368,4 +368,23 @@ mod tests {
         assert!(account.detail().window_curve().is_none());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
+    #[test]
+    fn delayed_source_reading_cannot_overwrite_newer_values_in_forward_curve_cursor() {
+        let old = now() - Duration::hours(2);
+        let new = now() - Duration::hours(1);
+        let reset = now() + Duration::hours(1);
+        let reading = |used, at| codex(used, reset, now()).with_observation(at, None, 420);
+        let older = reading(0.2, old);
+        let newer = reading(0.8, new);
+        let mut delayed = HistoryStore::in_memory(Duration::days(30));
+        delayed.record(std::slice::from_ref(&newer), now()).unwrap();
+        delayed.record(std::slice::from_ref(&older), now()).unwrap();
+        let mut chronological = HistoryStore::in_memory(Duration::days(30));
+        chronological.record(&[older], now()).unwrap();
+        chronological.record(std::slice::from_ref(&newer), now()).unwrap();
+        let delayed = enrich(&delayed, newer.clone(), &Utc, &English, now());
+        let expected = enrich(&chronological, newer, &Utc, &English, now());
+        assert_eq!(delayed.detail().window_curve(), expected.detail().window_curve());
+        assert_eq!(delayed.detail().window_curve().unwrap().current().last(), Some(&0.8));
+    }
 }

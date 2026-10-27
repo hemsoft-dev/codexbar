@@ -46,7 +46,7 @@ pub fn metric(
     id: &str,
     cx: &App,
 ) -> Option<AnyElement> {
-    if !account.is_status_metric(metric) {
+    if !account.sus_eligible(metric, now) {
         return None;
     }
     metric_badge(metric, now, id, cx)

@@ -20,28 +20,98 @@ pub enum Provider {
     Gemini,
     Grok,
     XSubscription,
+    MuseCode,
 }
+
+struct ProviderMetadata {
+    provider: Provider,
+    key: &'static str,
+    display: &'static str,
+}
+
+// Identity and wording are data. Adding a provider does not grow several dispatch functions.
+const PROVIDERS: [ProviderMetadata; 13] = [
+    ProviderMetadata {
+        provider: Provider::Codex,
+        key: "codex",
+        display: "ChatGPT · Codex",
+    },
+    ProviderMetadata {
+        provider: Provider::Claude,
+        key: "claude",
+        display: "Claude",
+    },
+    ProviderMetadata {
+        provider: Provider::Copilot,
+        key: "copilot",
+        display: "Copilot",
+    },
+    ProviderMetadata {
+        provider: Provider::Cursor,
+        key: "cursor",
+        display: "Cursor",
+    },
+    ProviderMetadata {
+        provider: Provider::OpenRouter,
+        key: "openrouter",
+        display: "OpenRouter",
+    },
+    ProviderMetadata {
+        provider: Provider::OpenCode,
+        key: "opencode",
+        display: "OpenCode Go + Zen",
+    },
+    ProviderMetadata {
+        provider: Provider::Moonshot,
+        key: "moonshot",
+        display: "Moonshot (Kimi)",
+    },
+    ProviderMetadata {
+        provider: Provider::Greptile,
+        key: "greptile",
+        display: "Greptile",
+    },
+    ProviderMetadata {
+        provider: Provider::GitHubBilling,
+        key: "github-billing",
+        display: "GitHub Billing",
+    },
+    ProviderMetadata {
+        provider: Provider::Gemini,
+        key: "gemini",
+        display: "Gemini",
+    },
+    ProviderMetadata {
+        provider: Provider::Grok,
+        key: "grok",
+        display: "Grok",
+    },
+    ProviderMetadata {
+        provider: Provider::XSubscription,
+        key: "x-subscription",
+        display: "X Subscription",
+    },
+    ProviderMetadata {
+        provider: Provider::MuseCode,
+        key: "muse-code",
+        display: "Muse Code",
+    },
+];
 
 impl Provider {
     /// The product name shown before the account label.
     pub fn display_name(self) -> &'static str {
-        match self {
-            Self::Codex => "ChatGPT · Codex",
-            Self::Claude => "Claude",
-            Self::Copilot => "Copilot",
-            Self::Cursor => "Cursor",
-            Self::OpenRouter => "OpenRouter",
-            Self::OpenCode => "OpenCode Go + Zen",
-            Self::Moonshot => "Moonshot (Kimi)",
-            Self::Greptile => "Greptile",
-            Self::GitHubBilling => "GitHub Billing",
-            Self::Gemini => "Gemini",
-            Self::Grok => "Grok",
-            Self::XSubscription => "X Subscription",
-        }
+        self.metadata().display
     }
 
-    pub const ALL: [Self; 12] = [
+    fn metadata(self) -> &'static ProviderMetadata {
+        PROVIDERS
+            .iter()
+            .find(|entry| entry.provider == self)
+            .expect("provider metadata")
+    }
+
+    pub const ALL: [Self; 13] = [
         Self::Codex,
         Self::Claude,
         Self::Copilot,
@@ -54,24 +124,12 @@ impl Provider {
         Self::Gemini,
         Self::Grok,
         Self::XSubscription,
+        Self::MuseCode,
     ];
 
     /// A stable key for storage; unlike the display name it never changes with wording.
     pub fn key(self) -> &'static str {
-        match self {
-            Self::Codex => "codex",
-            Self::Claude => "claude",
-            Self::Copilot => "copilot",
-            Self::Cursor => "cursor",
-            Self::OpenRouter => "openrouter",
-            Self::OpenCode => "opencode",
-            Self::Moonshot => "moonshot",
-            Self::Greptile => "greptile",
-            Self::GitHubBilling => "github-billing",
-            Self::Gemini => "gemini",
-            Self::Grok => "grok",
-            Self::XSubscription => "x-subscription",
-        }
+        self.metadata().key
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
@@ -186,6 +244,14 @@ struct Subscription {
     price: Option<crate::sus::Price>,
 }
 
+/// Source observation metadata, separate from the time the adapter collected it.
+#[derive(Clone, Debug, PartialEq)]
+struct Observation {
+    at: DateTime<Utc>,
+    source: Option<String>,
+    fresh_for_seconds: i64,
+}
+
 /// The latest known state of one account.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AccountSnapshot {
@@ -199,6 +265,7 @@ pub struct AccountSnapshot {
     fetched_at: DateTime<Utc>,
     /// What the provider said about the account besides numbers ("Usage is delayed by up to an hour").
     messages: Vec<String>,
+    observation: Option<Box<Observation>>,
 }
 
 impl AccountSnapshot {
@@ -214,6 +281,7 @@ impl AccountSnapshot {
             detail: AccountDetail::default(),
             fetched_at,
             messages: Vec::new(),
+            observation: None,
         }
     }
 
@@ -221,6 +289,42 @@ impl AccountSnapshot {
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
         self.messages.push(message.into());
         self
+    }
+
+    pub fn with_observation(mut self, at: DateTime<Utc>, source: Option<String>, fresh_for_seconds: i64) -> Self {
+        self.observation = Some(Box::new(Observation {
+            at,
+            source,
+            fresh_for_seconds,
+        }));
+        self
+    }
+    pub fn observed_at(&self) -> Option<DateTime<Utc>> {
+        self.observation.as_ref().map(|o| o.at)
+    }
+    pub fn allowance_source(&self) -> Option<&str> {
+        self.observation.as_ref()?.source.as_deref()
+    }
+    pub fn fresh_for_seconds(&self) -> Option<i64> {
+        self.observation.as_ref().map(|o| o.fresh_for_seconds)
+    }
+    pub fn observation_stale(&self, now: DateTime<Utc>) -> bool {
+        self.observation.as_ref().is_some_and(|o| {
+            (now - o.at.min(self.fetched_at)).num_milliseconds() > o.fresh_for_seconds.saturating_mul(1000)
+        })
+    }
+    /// Muse's last-seen window stops describing current allowance at its actual reset, even while
+    /// the account observation is still fresh. Other providers keep their existing reset semantics.
+    pub fn metric_ended(&self, metric: &Metric, now: DateTime<Utc>) -> bool {
+        self.provider == Provider::MuseCode && metric.resets_at().is_some_and(|reset| reset <= now)
+    }
+    /// Check wall-clock validity first; only then anchor decisions to the source observation.
+    /// Kept per metric so an ended short window does not hide a valid weekly sibling.
+    pub fn evaluation_time(&self, metric: &Metric, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        (!self.observation_stale(now) && !self.metric_ended(metric, now)).then(|| self.observed_at().unwrap_or(now))
+    }
+    pub fn supports_sus(&self) -> bool {
+        self.provider != Provider::MuseCode
     }
 
     pub fn messages(&self) -> &[String] {
@@ -335,13 +439,22 @@ impl AccountSnapshot {
         self.metrics.iter().filter(|metric| self.is_status_metric(metric))
     }
 
+    /// Fresh observations whose alert keys may be reconciled. Ended windows remain here so old-window
+    /// keys can recover; `evaluation_time` independently prevents them from triggering current alerts.
+    pub fn fresh_status_metrics(&self, now: DateTime<Utc>) -> impl Iterator<Item = &Metric> {
+        self.status_metrics().filter(move |_| !self.observation_stale(now))
+    }
+
+    /// SUS requires a supported quota and a current source observation.
+    pub fn sus_eligible(&self, metric: &Metric, now: DateTime<Utc>) -> bool {
+        self.supports_sus() && self.is_status_metric(metric) && self.evaluation_time(metric, now).is_some()
+    }
+
     /// Information-only pools never color a status or raise risk, even when selected explicitly in a card.
     pub fn assess_metric(&self, metric: &Metric, now: DateTime<Utc>) -> Assessment {
-        if self.is_status_metric(metric) {
-            assess(metric, now)
-        } else {
-            Assessment::default()
-        }
+        self.evaluation_time(metric, now)
+            .filter(|_| self.is_status_metric(metric))
+            .map_or_else(Assessment::default, |at| assess(metric, at))
     }
 
     pub fn primary(&self) -> Option<&Metric> {
@@ -366,7 +479,7 @@ impl AccountSnapshot {
     pub fn assess(&self, now: DateTime<Utc>) -> Assessment {
         self.status_metrics()
             .filter(|metric| !self.credits_cover(metric))
-            .map(|metric| assess(metric, now))
+            .map(|metric| self.assess_metric(metric, now))
             .max()
             .unwrap_or_default()
     }

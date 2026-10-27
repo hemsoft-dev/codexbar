@@ -124,6 +124,7 @@ impl Price {
 pub fn subscription_score(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<Score> {
     let scores: Vec<_> = account
         .status_metrics()
+        .filter(|metric| account.sus_eligible(metric, now))
         .filter_map(|metric| weekly(metric, now))
         .collect();
     (!scores.is_empty())

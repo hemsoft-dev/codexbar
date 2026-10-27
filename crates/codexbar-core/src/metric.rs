@@ -396,16 +396,22 @@ impl Metric {
     /// The fraction of the limit used by the reset if the current pace holds (#83): above 1 when it runs out first.
     /// `None` without a pace, a limit or a reset still ahead, so nothing is projected from too little information.
     pub fn projected_at_reset(&self, now: DateTime<Utc>) -> Option<f64> {
-        let pace = match self {
-            Self::Window { pace, .. } | Self::Quota { pace, .. } | Self::Spend { pace, .. } => (*pace)?,
-            Self::Balance { .. } | Self::Activity { .. } | Self::Credits { .. } => return None,
+        // Windows retain the source's raw share above 100%; counted quotas keep their existing capped share.
+        let (used, pace) = match self {
+            Self::Window {
+                used, pace: Some(pace), ..
+            } => (*used, *pace),
+            Self::Quota { pace: Some(pace), .. } | Self::Spend { pace: Some(pace), .. } => {
+                (self.used_fraction()?, *pace)
+            }
+            _ => return None,
         };
-        let used = self.used_fraction()?;
         let left = self.resets_at()? - now;
         if left <= Duration::zero() || !pace.fraction_per_hour().is_finite() || pace.fraction_per_hour() < 0.0 {
             return None;
         }
-        Some(used + pace.fraction_per_hour() * left.num_seconds() as f64 / 3600.0)
+        let projected = used + pace.fraction_per_hour() * left.num_seconds() as f64 / 3600.0;
+        projected.is_finite().then_some(projected)
     }
 
     /// How the pace plays out by the reset (#206): the share it reaches, or how early the limit runs out. A limit

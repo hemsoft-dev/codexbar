@@ -145,8 +145,7 @@ impl HistoryStore {
             .filter(|sample| (since..=until).contains(&sample.t))
             .map(|sample| Point::new(sample.at(), sample.v))
             .collect();
-        // Recording appends, so after the clock is set back samples can be out of time order; summaries and charts
-        // need them oldest first. The sort is stable, so equal times keep their recorded order.
+        // Keep the public points contract explicit; equal times retain their recorded order.
         points.sort_by_key(|point| point.at);
         points
     }
@@ -205,7 +204,7 @@ impl HistoryStore {
             for metric in account.metrics() {
                 let Some(value) = metric.history_value() else { continue };
                 let sample = Sample {
-                    t: now.timestamp(),
+                    t: account.observed_at().unwrap_or(now).timestamp(),
                     a: account.id().as_str().to_owned(),
                     m: metric.key(),
                     v: value,
@@ -219,9 +218,12 @@ impl HistoryStore {
         }
 
         let cutoff = (now - self.retention).timestamp();
-        let expired = self.samples.first().is_some_and(|sample| sample.t < cutoff);
         let written = fresh.len();
         self.samples.extend(fresh.iter().cloned());
+        // Source observations may arrive late. Keep every series and its latest-sample index chronological.
+        // Stable sorting preserves arrival order for equal timestamps, as load() and insert_points() do.
+        self.samples.sort_by_key(|sample| sample.t);
+        let expired = self.samples.first().is_some_and(|sample| sample.t < cutoff);
         if expired {
             self.samples.retain(|sample| sample.t >= cutoff);
             self.reindex();
@@ -233,11 +235,23 @@ impl HistoryStore {
         Ok(written)
     }
 
+    /// The latest chronological reading not after the incoming observation. The index is a fast path for
+    /// ordinary forward samples; delayed samples search the stable, oldest-first series.
+    fn previous_sample(&self, sample: &Sample) -> Option<&Sample> {
+        let latest = &self.samples[*self.last.get(&(sample.a.clone(), sample.m.clone()))?];
+        if latest.t <= sample.t {
+            return Some(latest);
+        }
+        self.samples
+            .iter()
+            .rev()
+            .find(|previous| previous.a == sample.a && previous.m == sample.m && previous.t <= sample.t)
+    }
+
     fn is_duplicate(&self, sample: &Sample) -> bool {
-        let Some(&ix) = self.last.get(&(sample.a.clone(), sample.m.clone())) else {
+        let Some(last) = self.previous_sample(sample) else {
             return false;
         };
-        let last = &self.samples[ix];
         (last.v - sample.v).abs() < DEDUP_EPSILON
             && last.r == sample.r
             && last.c == sample.c
@@ -1004,5 +1018,54 @@ mod tests {
                 "{keys:?}"
             );
         }
+    }
+    #[test]
+    fn delayed_observations_keep_stable_series_latest_dedup_and_reload_parity() {
+        let dir = TempDir::new();
+        let wall = now() + Duration::minutes(5);
+        let mut store = HistoryStore::open(dir.file(), retention(), wall);
+        let reading = |used, at| account("muse", used, 3).with_observation(at, None, 420);
+        let newer = now();
+        let older = now() - Duration::minutes(2);
+        store.record(&[reading(0.8, newer)], wall).unwrap();
+        store.record(&[reading(0.2, older)], wall).unwrap();
+        let values = |store: &HistoryStore| {
+            store
+                .series("muse", "5-hour-window")
+                .map(Sample::value)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            values(&store),
+            vec![0.2, 0.8],
+            "series must be chronological before reload"
+        );
+        assert_eq!(
+            store.record(&[reading(0.8, newer)], wall).unwrap(),
+            0,
+            "late data cannot replace the chronological latest dedup index"
+        );
+        store.record(&[reading(0.9, newer)], wall).unwrap();
+        assert_eq!(
+            values(&store),
+            vec![0.2, 0.8, 0.9],
+            "equal timestamps keep arrival order"
+        );
+        assert_eq!(
+            store.record(&[reading(0.2, older)], wall).unwrap(),
+            0,
+            "repeat delayed observation dedups against its chronological predecessor"
+        );
+        let earliest = older - Duration::minutes(2);
+        store.record(&[reading(0.9, earliest)], wall).unwrap();
+        assert_eq!(
+            values(&store),
+            vec![0.9, 0.2, 0.8, 0.9],
+            "a future sample cannot suppress a valid earlier observation"
+        );
+        let reopened = HistoryStore::open(dir.file(), retention(), wall);
+        assert_eq!(store.samples, reopened.samples);
+        assert_eq!(store.last, reopened.last);
+        assert_eq!(store.record(&[reading(0.9, newer)], wall).unwrap(), 0);
     }
 }

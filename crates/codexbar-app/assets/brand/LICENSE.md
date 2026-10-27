@@ -1,5 +1,7 @@
 # Provider logos
 
+`muse-code.svg` is a CodexBar-drawn M monogram, not a vendor logo.
+
 The SVG marks in this folder come from [Lobe Icons](https://github.com/lobehub/lobe-icons)
 (`@lobehub/icons-static-svg` 1.95.1, mono variants), under the MIT License below. The logos
 themselves are trademarks of their owners (OpenAI, Anthropic, GitHub, Anysphere, OpenRouter, OpenCode,

@@ -18,9 +18,27 @@ pub enum CommandError {
     Failed,
 }
 
+/// Options honored only for this child process, without changing the parent's environment.
+#[derive(Clone, Debug)]
+pub struct CommandOptions {
+    pub cwd: std::path::PathBuf,
+    pub remove_env: Vec<&'static str>,
+    pub env: Vec<(&'static str, &'static str)>,
+    pub output_limit: usize,
+}
+
 /// Runs local CLIs (`gh`, …). A seam so provider logic is tested without touching the user's real tools.
 pub trait CommandRunner: Send + Sync {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError>;
+    fn run_with_options(
+        &self,
+        _program: &str,
+        _args: &[&str],
+        _timeout: Duration,
+        _options: &CommandOptions,
+    ) -> Result<CommandOutput, CommandError> {
+        Err(CommandError::Failed)
+    }
 }
 
 /// Runs commands with no console window, bounded output and a deadline covering collection and process exit.
@@ -34,7 +52,44 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(25);
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError> {
+        self.run_scoped(program, args, timeout, None)
+    }
+    fn run_with_options(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: Duration,
+        options: &CommandOptions,
+    ) -> Result<CommandOutput, CommandError> {
+        self.run_scoped(program, args, timeout, Some(options))
+    }
+}
+impl SystemCommandRunner {
+    fn run_scoped(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: Duration,
+        options: Option<&CommandOptions>,
+    ) -> Result<CommandOutput, CommandError> {
         let mut command = crate::platform::command(program);
+        if let Some(options) = options {
+            command.current_dir(&options.cwd);
+            // Remove every case variant too, matching the shipped Muse subscription-only contract.
+            for (name, _) in std::env::vars_os() {
+                if options
+                    .remove_env
+                    .iter()
+                    .any(|removed| name.to_string_lossy().eq_ignore_ascii_case(removed))
+                {
+                    command.env_remove(name);
+                }
+            }
+            for name in &options.remove_env {
+                command.env_remove(name);
+            }
+            command.envs(options.env.iter().copied());
+        }
         command
             .args(args)
             .stdin(Stdio::null())
@@ -47,7 +102,11 @@ impl CommandRunner for SystemCommandRunner {
         }
         let inner = crate::contained::spawn(&mut command).map_err(spawn_error)?;
         let mut process = Running { inner, stopped: false };
-        let output = collect(&mut process.inner.child, timeout);
+        let output = collect(
+            &mut process.inner.child,
+            timeout,
+            options.map_or(OUTPUT_LIMIT, |o| o.output_limit.min(OUTPUT_LIMIT)),
+        );
         let status = process.stop().map_err(|_| CommandError::Failed)?;
         let (stdout, stderr) = output?;
         Ok(CommandOutput {
@@ -95,14 +154,16 @@ struct Capture<P> {
     pipe: P,
     bytes: Vec<u8>,
     closed: bool,
+    limit: usize,
 }
 impl<P: pipe::Pipe> Capture<P> {
-    fn new(pipe: P) -> Result<Self, CommandError> {
+    fn new(pipe: P, limit: usize) -> Result<Self, CommandError> {
         pipe::prepare(&pipe).map_err(|_| CommandError::Failed)?;
         Ok(Self {
             pipe,
             bytes: Vec::new(),
             closed: false,
+            limit,
         })
     }
 
@@ -119,7 +180,7 @@ impl<P: pipe::Pipe> Capture<P> {
                 Ok(true)
             }
             Some(count) => {
-                if count > OUTPUT_LIMIT - self.bytes.len() {
+                if count > self.limit - self.bytes.len() {
                     return Err(CommandError::Failed);
                 }
                 self.bytes.extend_from_slice(&bytes[..count]);
@@ -129,10 +190,14 @@ impl<P: pipe::Pipe> Capture<P> {
     }
 }
 
-fn collect(child: &mut std::process::Child, timeout: Duration) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
+fn collect(
+    child: &mut std::process::Child,
+    timeout: Duration,
+    limit: usize,
+) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
     let start = Instant::now();
-    let mut stdout = Capture::new(child.stdout.take().ok_or(CommandError::Failed)?)?;
-    let mut stderr = Capture::new(child.stderr.take().ok_or(CommandError::Failed)?)?;
+    let mut stdout = Capture::new(child.stdout.take().ok_or(CommandError::Failed)?, limit)?;
+    let mut stderr = Capture::new(child.stderr.take().ok_or(CommandError::Failed)?, limit)?;
     loop {
         if start.elapsed() >= timeout {
             return Err(CommandError::TimedOut);

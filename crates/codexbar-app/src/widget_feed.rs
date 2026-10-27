@@ -31,9 +31,19 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
                 Some(AccountState::Restored | AccountState::Failed(_)) => WidgetHealth::Stale,
                 Some(AccountState::Loading | AccountState::Unavailable(_)) => WidgetHealth::Unavailable,
             };
+            let health = if account.provider() == codexbar_core::Provider::MuseCode && account.metrics().is_empty() {
+                WidgetHealth::Unavailable
+            } else if health == WidgetHealth::Fresh && account.observation_stale(now) {
+                WidgetHealth::Stale
+            } else {
+                health
+            };
             let has_usage = health != WidgetHealth::Unavailable;
             WidgetAccount {
                 id: id.to_owned(),
+                observed_at: account.observed_at(),
+                allowance_source: account.allowance_source().map(str::to_owned),
+                fresh_for_seconds: account.fresh_for_seconds(),
                 provider: account.provider().key().to_owned(),
                 provider_name: account.provider().display_name().to_owned(),
                 name: account.display_name(),
@@ -52,6 +62,18 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
         })
         .collect();
     WidgetSnapshot::new(now, groups, accounts)
+}
+
+/// The feed's status vocabulary differs from dashboard pills for exhausted quotas, which have no pill.
+fn metric_status(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Option<String> {
+    let assessment = account.assess_metric(metric, now);
+    // Exhaustion deliberately has no dashboard pill. Widgets still need an explicit status so their
+    // normal-color fallback cannot advertise an exhausted, uncovered quota as healthy.
+    if account.is_status_metric(metric) && !account.credits_cover(metric) && assessment.is_exhausted() {
+        Some("Limit reached".to_owned())
+    } else {
+        assessment.label().map(str::to_owned)
+    }
 }
 
 fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
@@ -77,16 +99,19 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         value,
         used_percent: metric.used_fraction().map(|used| (used * 100.0).clamp(0.0, 100.0)),
         resets_at: metric.resets_at(),
-        status: account.assess_metric(metric, now).label().map(str::to_owned),
+        status: metric_status(account, metric, now),
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
-        projected_percent: metric.projected_at_reset(now).map(|share| (share * 100.0).max(0.0)),
+        projected_percent: account
+            .evaluation_time(metric, now)
+            .and_then(|at| metric.projected_at_reset(at))
+            .map(|share| (share * 100.0).max(0.0)),
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
         outlook: crate::usage_bar::outlook(metric, account, now),
         sus: codexbar_core::sus::weekly(metric, now)
-            .filter(|_| account.is_status_metric(metric))
+            .filter(|_| account.sus_eligible(metric, now))
             .map(|s| s.value()),
         sus_eligible: codexbar_core::sus::text(metric, now)
-            .filter(|_| account.is_status_metric(metric))
+            .filter(|_| account.sus_eligible(metric, now))
             .is_some(),
     }
 }

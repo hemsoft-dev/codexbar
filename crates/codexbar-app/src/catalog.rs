@@ -12,6 +12,7 @@ pub struct SecretSpec {
 }
 
 pub struct ProviderInfo {
+    pub provider: codexbar_core::Provider,
     /// The WPF `ProviderId` name used in settings.
     pub id: &'static str,
     pub display: &'static str,
@@ -25,9 +26,10 @@ pub struct ProviderInfo {
     pub multi_account: bool,
 }
 
-pub const PROVIDERS: [ProviderInfo; 13] = [
+pub const PROVIDERS: [ProviderInfo; 14] = [
     ProviderInfo {
         id: names::CODEX,
+        provider: codexbar_core::Provider::Codex,
         display: "ChatGPT · Codex",
         sign_in: "Automatic uses the Codex CLI's own ChatGPT sign-in (`codex`). OAuth signs an account in with your browser \
                   through the Codex CLI and keeps it separate, so several ChatGPT accounts can be added.",
@@ -38,6 +40,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::CLAUDE,
+        provider: codexbar_core::Provider::Claude,
         display: "Claude",
         sign_in: "OAuth and Automatic use Claude Code's own sign-in (`claude`). Browser session signs an account in \
                   through a Claude Code window and keeps it separate, so several Claude accounts can be added.",
@@ -48,6 +51,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::COPILOT,
+        provider: codexbar_core::Provider::Copilot,
         display: "Copilot",
         sign_in: "Automatic and Command line use the GitHub CLI's accounts (`gh auth login`); set a username to fetch \
                   one. OAuth signs an account in with your browser through the GitHub CLI, kept apart from its own \
@@ -60,6 +64,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::CURSOR,
+        provider: codexbar_core::Provider::Cursor,
         display: "Cursor",
         sign_in: "Automatic uses the Cursor app's sign-in. OAuth signs an account in with your browser through the \
                   Cursor CLI (cursor-agent) and keeps it separate, so several Cursor accounts can be added.",
@@ -70,6 +75,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::OPENROUTER,
+        provider: codexbar_core::Provider::OpenRouter,
         display: "OpenRouter",
         sign_in: "Needs an API key from openrouter.ai/keys.",
         secret: Some(SecretSpec {
@@ -82,6 +88,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::OPENCODE_GO,
+        provider: codexbar_core::Provider::OpenCode,
         display: "OpenCode Go",
         sign_in: "OAuth signs an account in with your browser through OpenCode's own approval page, where you pick the \
                   workspace; it shows that workspace's Go limits and Zen balance. Add an account per workspace. Browser \
@@ -96,6 +103,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::OPENCODE_ZEN,
+        provider: codexbar_core::Provider::OpenCode,
         display: "OpenCode Zen",
         sign_in: "Reads a copied opencode.ai dashboard auth cookie (OpenCode Go's when unset). An OpenCode Go account \
                   signed in with OAuth already shows its workspace's Zen balance.",
@@ -109,6 +117,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::MOONSHOT,
+        provider: codexbar_core::Provider::Moonshot,
         display: "Moonshot (Kimi)",
         sign_in: "Needs an API key from platform.kimi.ai.",
         secret: Some(SecretSpec {
@@ -121,6 +130,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::GREPTILE,
+        provider: codexbar_core::Provider::Greptile,
         display: "Greptile",
         sign_in: "Needs a Greptile organization API key (app.greptile.com > Settings > API). Shows the organization's \
                   completed code reviews, read with Greptile's read-only review listing; not remaining credits.",
@@ -134,6 +144,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::GITHUB_BILLING,
+        provider: codexbar_core::Provider::GitHubBilling,
         display: "GitHub Billing",
         sign_in: "Signs in with your browser through the GitHub CLI, apart from Copilot and the GitHub CLI's own \
                   accounts, and shows this month's spend across GitHub products for you or an organization you can \
@@ -145,6 +156,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::GEMINI,
+        provider: codexbar_core::Provider::Gemini,
         display: "Gemini",
         sign_in: "Experimental. Connect Antigravity reuses the local agy sign-in or opens the CLI's normal sign-in \
                   in your default browser, then verifies coding usage. Saved Gemini Apps sessions stay separate; \
@@ -156,6 +168,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::GROK,
+        provider: codexbar_core::Provider::Grok,
         display: "Grok",
         sign_in: "Experimental. Automatic uses the Grok CLI's own sign-in (`grok`). OAuth signs an account in through \
                   the Grok CLI in a folder of its own, so several xAI accounts can be added. Shows a paid plan's \
@@ -168,6 +181,7 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
     },
     ProviderInfo {
         id: names::X_SUBSCRIPTION,
+        provider: codexbar_core::Provider::XSubscription,
         display: "X Subscription",
         sign_in: "Experimental. Grok, Grok Bot and Cursor as one plan. Shows what Grok's Settings > Usage shows: the \
                   weekly SuperGrok limit and Extra Usage Credits through the Grok CLI's own sign-in (`grok login`), and \
@@ -176,6 +190,16 @@ pub const PROVIDERS: [ProviderInfo; 13] = [
         secret: None,
         default_method: AuthMethod::Automatic,
         setup_method: AuthMethod::Automatic,
+        multi_account: false,
+    },
+    ProviderInfo {
+        id: names::MUSE_CODE,
+        provider: codexbar_core::Provider::MuseCode,
+        display: "Muse Code",
+        sign_in: "Reads this computer's existing Muse CLI subscription session with `muse usage --json`. Choose Command line. No sign-in or update is started. META_API_KEY is excluded; billing mode and model entitlement are unknown. Only one account can read this session.",
+        secret: None,
+        default_method: AuthMethod::CommandLine,
+        setup_method: AuthMethod::CommandLine,
         multi_account: false,
     },
 ];

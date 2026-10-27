@@ -18,7 +18,7 @@ pub fn projected_from(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<S
     let effective = account.assess(now).severity();
     let observed = account
         .status_metrics()
-        .filter(|metric| !account.credits_cover(metric))
+        .filter(|metric| !account.credits_cover(metric) && account.evaluation_time(metric, now).is_some())
         .map(observed_severity)
         .max()
         .unwrap_or_default();

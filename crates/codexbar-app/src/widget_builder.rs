@@ -2,7 +2,6 @@
 //! mode, the widgets' refresh choice, a preview of the automatic, one-, two- and four-tile layouts, and a reset.
 //! Widgets on the Widgets board show these tiles when their Customize widget is set to My tiles.
 
-use chrono::Utc;
 use codexbar_store::widgets::{MAX_TILES, TileMode, WidgetBuilder, WidgetRefresh, WidgetSnapshot, WidgetTile};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogButtonProps;
@@ -180,11 +179,13 @@ fn refresh_item() -> SettingItem {
 }
 
 fn status_color(status: Option<&str>, cx: &App) -> Hsla {
-    match status {
-        Some("At risk" | "Limit soon") => cx.theme().danger,
-        Some(_) => cx.theme().warning,
-        None => cx.theme().success,
-    }
+    let palette = [
+        cx.theme().success,
+        cx.theme().warning,
+        cx.theme().danger,
+        cx.theme().muted_foreground,
+    ];
+    palette[cards::StatusTone::of(status) as usize]
 }
 
 fn preview_tile(ix: usize, view: &TileView, compact: bool, cx: &App) -> impl IntoElement + use<> {
@@ -253,7 +254,7 @@ fn preview_widget(size: Size, tiles: Tiles, snapshot: &WidgetSnapshot, cx: &App)
         focus: Focus::Custom,
         tiles,
     };
-    let views = cards::tile_views(snapshot, &config, size, Utc::now()).unwrap_or_default();
+    let views = cards::tile_views(snapshot, &config, size, crate::sus::now(cx)).unwrap_or_default();
     let (width, name, ix) = match size {
         Size::Small => (px(170.), "Small", 0usize),
         Size::Medium => (px(340.), "Medium", 1),
@@ -390,13 +391,15 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     });
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, feature = "capture"))]
 pub fn widgets_page(cx: &App) -> SettingPage {
     let builder = PrefsHub::widget_builder(cx);
     let snapshot = cx.try_global::<WidgetFeed>().map(|feed| &feed.0);
     // Windows widgets come only from packaged apps (#94), on Windows 11, and for a self-signed package only with
     // Developer Mode on. The builder itself works everywhere.
+    #[cfg(windows)]
     use crate::widgets::BoardSupport;
+    #[cfg(windows)]
     let (title, body): (&'static str, &'static str) = if crate::package::installed().is_none() {
         (
             "Install the package to use widgets",
@@ -422,6 +425,11 @@ pub fn widgets_page(cx: &App) -> SettingPage {
             ),
         }
     };
+    #[cfg(not(windows))]
+    let (title, body) = (
+        "Widget consumer preview",
+        "Sanitized macOS GPUI capture of the shared widget reader. Native Windows Widgets board rendering is deferred.",
+    );
     let info = crate::settings_view::info_item(title, body);
     let mut tiles = SettingGroup::new()
         .title("My tiles")

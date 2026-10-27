@@ -37,6 +37,7 @@ fn enabled_accounts(hub: &SettingsHub, provider: &str) -> Vec<AccountRecord> {
 
 pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut providers: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    providers.extend(muse_adapters(hub, codexbar_core::home_dir()));
     providers.extend(codex_adapters(hub));
 
     if let Some(copilot) = copilot(hub) {
@@ -190,6 +191,29 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
             account.id.clone(),
             account.label.clone(),
         )));
+    }
+    providers
+}
+
+/// Muse has one machine-owned CLI session. Construction never launches it or reads its credentials.
+fn muse_adapters(hub: &SettingsHub, home: Option<std::path::PathBuf>) -> Vec<Arc<dyn UsageProvider>> {
+    let mut providers: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    if let Some(home) = home {
+        for account in enabled_accounts(hub, names::MUSE_CODE)
+            .into_iter()
+            .filter(|a| a.method == codexbar_store::settings::AuthMethod::CommandLine)
+            .take(1)
+        {
+            providers.push(Arc::new(
+                codexbar_providers::muse::MuseProvider::new(
+                    SystemCommandRunner,
+                    home.clone(),
+                    account.id,
+                    account.label,
+                )
+                .with_cache(hub.muse_cache.clone()),
+            ));
+        }
     }
     providers
 }
@@ -384,7 +408,8 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
                 | names::GITHUB_BILLING
                 | names::GEMINI
                 | names::GROK
-                | names::X_SUBSCRIPTION => record.id.clone(),
+                | names::X_SUBSCRIPTION
+                | names::MUSE_CODE => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,
@@ -548,4 +573,54 @@ fn opencode(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         zen_cookie,
     )));
     adapters
+}
+
+#[cfg(test)]
+mod muse_tests {
+    use super::*;
+    use codexbar_store::credentials::MemoryCredentialStore;
+    use gpui_kit::TestAppContext;
+
+    #[gpui_kit::test]
+    fn muse_adapter_construction_filters_disabled_wrong_method_and_duplicate_records(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("codexbar-muse-adapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (records, expected) in [
+            (serde_json::json!([]), Vec::<&str>::new()),
+            (
+                serde_json::json!([
+                    {"id":"disabled","displayLabel":"Demo","providerId":"MuseCode","enabled":false,"authenticationMethod":"CommandLine"},
+                    {"id":"wrong","displayLabel":"Demo","providerId":"MuseCode","enabled":true,"authenticationMethod":"ApiKey"},
+                    {"id":"one","providerId":"MuseCode","displayLabel":"Demo","enabled":true,"authenticationMethod":"CommandLine"},
+                    {"id":"duplicate","displayLabel":"Demo","providerId":"MuseCode","enabled":true,"authenticationMethod":"CommandLine"}
+                ]),
+                vec!["one"],
+            ),
+        ] {
+            std::fs::write(
+                dir.join("settings.json"),
+                serde_json::json!({"accountConfigurationVersion":1,"accounts":records}).to_string(),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                SettingsHub::init_with(cx, &dir, Arc::new(MemoryCredentialStore::default()));
+                let hub = SettingsHub::global(cx);
+                assert!(muse_adapters(hub, None).is_empty());
+                let adapters = muse_adapters(hub, Some(dir.clone()));
+                assert_eq!(
+                    adapters.iter().map(|p| p.account_id().unwrap()).collect::<Vec<_>>(),
+                    expected
+                );
+                assert!(adapters.iter().all(|p| p.name() == "Muse Code"));
+                if let Some(provider) = adapters.first() {
+                    assert_eq!(provider.account_label(), Some("Demo"));
+                }
+                let owned = owned_account_ids(hub);
+                for id in &expected {
+                    assert_eq!(owned.get(*id).map(String::as_str), Some(*id));
+                }
+            });
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

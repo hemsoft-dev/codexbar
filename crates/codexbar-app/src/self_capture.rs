@@ -20,6 +20,7 @@ use crate::theme::Appearance;
 mod antigravity;
 mod gemini_status;
 mod gemini_weekly;
+mod muse;
 mod sus;
 
 /// Starts the capture if `CODEXBAR_CAPTURE_DIR` is set and this is the demo.
@@ -35,6 +36,7 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
     let _ = std::fs::create_dir_all(&dir);
     if std::env::var_os("CODEXBAR_CAPTURE_ANTIGRAVITY").is_some()
         || std::env::var_os("CODEXBAR_CAPTURE_SUS").is_some()
+        || std::env::var_os("CODEXBAR_CAPTURE_MUSE").is_some()
         || std::env::var_os("CODEXBAR_CAPTURE_GEMINI_WEEKLY").is_some()
         || std::env::var_os("CODEXBAR_CAPTURE_GEMINI_STATUS").is_some()
     {
@@ -187,7 +189,7 @@ async fn run(
     let _ = cx.update(|cx| {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            let last = if cfg!(windows) { 6 } else { 5 };
+            let last = if cfg!(any(windows, feature = "capture")) { 6 } else { 5 };
             window.within("settings-sidebar").click(format!("0-{last}"), cx);
         })
     });
@@ -206,6 +208,9 @@ async fn run(
     }
     if std::env::var_os("CODEXBAR_CAPTURE_GEMINI_STATUS").is_some() {
         saved.extend(gemini_status::run(cx, handle, dashboard, dir).await);
+    }
+    if std::env::var_os("CODEXBAR_CAPTURE_MUSE").is_some() {
+        saved.extend(muse::run(cx, handle, dashboard, dir).await);
     }
     // Optional synthetic plan states. The normal live adapters never read these fixture values.
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {

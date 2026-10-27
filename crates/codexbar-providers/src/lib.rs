@@ -24,6 +24,7 @@ pub mod greptile;
 pub mod grok;
 mod http;
 mod jwt;
+pub mod muse;
 pub mod oauth;
 pub mod opencode;
 pub mod opencode_console;
@@ -31,7 +32,7 @@ mod pace;
 pub mod platform;
 pub mod x_subscription;
 
-pub use command::{CommandError, CommandOutput, CommandRunner, SystemCommandRunner};
+pub use command::{CommandError, CommandOptions, CommandOutput, CommandRunner, SystemCommandRunner};
 pub use error::ProviderError;
 pub use http::{HttpClient, HttpResponse, UreqClient};
 
