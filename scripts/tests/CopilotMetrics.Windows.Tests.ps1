@@ -134,7 +134,8 @@ public static class MetricsGhFixture {
     $bytes = [IO.File]::ReadAllBytes($bundle.Launcher)
     $pe = [BitConverter]::ToInt32($bytes, 0x3c)
     Assert-Contract ([BitConverter]::ToUInt16($bytes, $pe + 24 + 68) -eq 2) 'Task entry point must be PE Windows GUI subsystem, never a console parent.'
-    $assembly = [Reflection.Assembly]::LoadFile($bundle.Launcher)
+    # From bytes: a file-loaded assembly stays locked, so the staged host could not be cleaned up.
+    $assembly = [Reflection.Assembly]::Load([IO.File]::ReadAllBytes($bundle.Launcher))
     $start = $assembly.GetType('CopilotMetricsTaskHost').GetMethod('CreateStartInfo').Invoke($null, @())
     Assert-Contract ($start.CreateNoWindow -and -not $start.UseShellExecute) 'Actual compiled host must use no-console process creation.'
     Assert-Contract ($start.RedirectStandardInput -and $start.RedirectStandardOutput -and $start.RedirectStandardError) 'Task host must own all streams.'
