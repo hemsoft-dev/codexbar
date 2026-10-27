@@ -48,6 +48,9 @@ if ($env:OS -eq 'Windows_NT' -and $env:CODEXBAR_RUN_NATIVE_METRICS_FIXTURES -eq 
     $start.RedirectStandardInput = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
+    # PowerShell 7 adds its own module folders to PSModulePath; Windows PowerShell must use its defaults to load
+    # its built-in modules (Get-FileHash).
+    [void]$start.EnvironmentVariables.Remove('PSModulePath')
     $process = [Diagnostics.Process]::new()
     try {
         $process.StartInfo = $start
