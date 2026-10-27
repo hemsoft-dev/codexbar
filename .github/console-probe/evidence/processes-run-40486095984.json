@@ -1,0 +1,418 @@
+﻿[
+    {
+        "time":  "2026-10-27T10:19:05.9239691Z",
+        "pid":  3132,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Program Files\\GitHub CLI\\gh.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T10:19:06.3575416Z",
+        "pid":  5200,
+        "image":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"base/target/release/codexbar.exe\""
+    },
+    {
+        "time":  "2026-10-27T10:19:06.5395830Z",
+        "pid":  8136,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:19:06.5762723Z",
+        "pid":  5540,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8136,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:19:07.3326695Z",
+        "pid":  6192,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:19:07.3465134Z",
+        "pid":  1796,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  6192,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:20:08.3163503Z",
+        "pid":  8392,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:20:08.3585955Z",
+        "pid":  5600,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8392,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:20:08.9311735Z",
+        "pid":  4604,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:20:08.9443207Z",
+        "pid":  3600,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  4604,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:21:09.0879846Z",
+        "pid":  8944,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:21:09.1314730Z",
+        "pid":  1404,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8944,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:21:09.5638642Z",
+        "pid":  5832,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:21:09.5756972Z",
+        "pid":  8484,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  5832,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:21:28.3927861Z",
+        "pid":  6140,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7368,
+        "parent":  "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\BfeToolWin8.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:09.8676267Z",
+        "pid":  7584,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:22:09.9090271Z",
+        "pid":  8876,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7584,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:10.3975116Z",
+        "pid":  8144,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5200,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\base\\target\\release\\codexbar.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:22:10.4104591Z",
+        "pid":  3876,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8144,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:29.1753869Z",
+        "pid":  5456,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" plain D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T10:22:29.2031601Z",
+        "pid":  4172,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  5456,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:22:29.2061957Z",
+        "pid":  5156,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  4172,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:29.2293407Z",
+        "pid":  8556,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  496,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T10:22:32.1980599Z",
+        "pid":  7376,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" nowindow D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T10:22:32.2220166Z",
+        "pid":  1264,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  7376,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:22:32.2251118Z",
+        "pid":  3600,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1264,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:35.2069229Z",
+        "pid":  8468,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" contained D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T10:22:35.2308975Z",
+        "pid":  8992,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  8468,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:22:35.2343429Z",
+        "pid":  2916,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8992,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:38.2183835Z",
+        "pid":  4396,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" hidden D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T10:22:38.2420595Z",
+        "pid":  1516,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  4396,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:22:38.2449961Z",
+        "pid":  7604,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1516,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:41.2262425Z",
+        "pid":  1444,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" detached D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T10:22:41.2500267Z",
+        "pid":  5928,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  1444,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T10:22:44.2500623Z",
+        "pid":  6744,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" contained D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com "
+    },
+    {
+        "time":  "2026-10-27T10:22:44.2730751Z",
+        "pid":  8200,
+        "image":  "C:\\Windows\\System32\\cmd.exe",
+        "parentPid":  6744,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:22:44.2769845Z",
+        "pid":  4380,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8200,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:44.2928571Z",
+        "pid":  7716,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  8200,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  --version "
+    },
+    {
+        "time":  "2026-10-27T10:22:44.3514431Z",
+        "pid":  7580,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  8200,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:22:47.2592094Z",
+        "pid":  8472,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" hidden D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com "
+    },
+    {
+        "time":  "2026-10-27T10:22:47.2821116Z",
+        "pid":  2072,
+        "image":  "C:\\Windows\\System32\\cmd.exe",
+        "parentPid":  8472,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:22:47.2850637Z",
+        "pid":  4220,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  2072,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:47.3133474Z",
+        "pid":  3636,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  2072,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  --version "
+    },
+    {
+        "time":  "2026-10-27T10:22:47.3720307Z",
+        "pid":  4964,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  2072,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T10:22:50.2670203Z",
+        "pid":  7780,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  760,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" newconsole D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt cmd.exe /d /c gh --version \u0026 ping -n 3 127.0.0.1 "
+    },
+    {
+        "time":  "2026-10-27T10:22:50.2896807Z",
+        "pid":  7484,
+        "image":  "C:\\Windows\\System32\\cmd.exe",
+        "parentPid":  7780,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "cmd.exe /d /c gh --version \u0026 ping -n 3 127.0.0.1"
+    },
+    {
+        "time":  "2026-10-27T10:22:50.2926003Z",
+        "pid":  5948,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7484,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:22:50.3138776Z",
+        "pid":  4084,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  496,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T10:22:50.4629274Z",
+        "pid":  6228,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  7484,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  --version "
+    },
+    {
+        "time":  "2026-10-27T10:22:50.5483535Z",
+        "pid":  5372,
+        "image":  "C:\\Windows\\System32\\PING.EXE",
+        "parentPid":  7484,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "ping  -n 3 127.0.0.1"
+    },
+    {
+        "time":  "2026-10-27T10:36:29.3602277Z",
+        "pid":  4660,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  2676,
+        "parent":  "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\BfeToolWin8.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T10:51:30.2520686Z",
+        "pid":  2708,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  3808,
+        "parent":  "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\BfeToolWin8.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    }
+]

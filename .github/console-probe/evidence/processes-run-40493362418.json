@@ -1,0 +1,778 @@
+﻿[
+    {
+        "time":  "2026-10-27T11:17:03.0379541Z",
+        "pid":  5332,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  8692,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Program Files\\GitHub CLI\\gh.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T11:17:03.6624035Z",
+        "pid":  7192,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:17:03.6974253Z",
+        "pid":  7764,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7192,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:17:03.7293933Z",
+        "pid":  2360,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:17:04.6266731Z",
+        "pid":  7988,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:17:04.6913876Z",
+        "pid":  8328,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7988,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:17:04.7251991Z",
+        "pid":  5596,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:17:05.0767460Z",
+        "pid":  4192,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T11:17:05.1115331Z",
+        "pid":  5776,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  4192,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:17:05.1679570Z",
+        "pid":  1320,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:17:05.5849314Z",
+        "pid":  7716,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" -p /usage --output-format json --print-timeout 25s"
+    },
+    {
+        "time":  "2026-10-27T11:17:05.6319340Z",
+        "pid":  1560,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7716,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:17:05.6648346Z",
+        "pid":  4584,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:17:06.3606907Z",
+        "pid":  3220,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  7716,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe --bg-updater --app_data_dir=antigravity-cli --gemini_dir=.gemini"
+    },
+    {
+        "time":  "2026-10-27T11:17:06.3863731Z",
+        "pid":  2744,
+        "image":  "C:\\Windows\\System32\\rundll32.exe",
+        "parentPid":  7716,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "rundll32 url.dll,FileProtocolHandler https://accounts.google.com/o/oauth2/auth?access_type=offline\u0026client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com\u0026code_challenge=BsP6Jv67xhAgmI2XWr3-PUk5BUk2awyuHRyBcFv3CaY\u0026code_challenge_method=S256\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback\u0026response_type=code\u0026scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Faicode+openid\u0026state=TDuwjzrv-Zgr5qjjVrv9sg"
+    },
+    {
+        "time":  "2026-10-27T11:17:06.5625758Z",
+        "pid":  1592,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  3220,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe --version"
+    },
+    {
+        "time":  "2026-10-27T11:17:06.5668402Z",
+        "pid":  1288,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1592,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:17:06.5945116Z",
+        "pid":  7328,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:18:36.7210968Z",
+        "pid":  8140,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:18:36.7692366Z",
+        "pid":  1260,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8140,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:18:36.8016134Z",
+        "pid":  9116,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:18:37.4764858Z",
+        "pid":  5316,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:18:37.5240678Z",
+        "pid":  3260,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  5316,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:18:37.5503341Z",
+        "pid":  7280,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:18:37.8893506Z",
+        "pid":  1396,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T11:18:37.9174115Z",
+        "pid":  7204,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1396,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:18:37.9994743Z",
+        "pid":  7852,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:18:38.4368391Z",
+        "pid":  1916,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  828,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-regressed.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" -p /usage --output-format json --print-timeout 25s"
+    },
+    {
+        "time":  "2026-10-27T11:18:38.4838759Z",
+        "pid":  5540,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1916,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:18:38.5097242Z",
+        "pid":  7580,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:18:39.1046442Z",
+        "pid":  3968,
+        "image":  "C:\\Windows\\System32\\rundll32.exe",
+        "parentPid":  1916,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "rundll32 url.dll,FileProtocolHandler https://accounts.google.com/o/oauth2/auth?access_type=offline\u0026client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com\u0026code_challenge=qnaM4wZKOT5RTA3-b6J0h-AN_AeL_jOW-I1kJMaDgJQ\u0026code_challenge_method=S256\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback\u0026response_type=code\u0026scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Faicode+openid\u0026state=97-2_T-7QdNwqQBi8LzAXQ"
+    },
+    {
+        "time":  "2026-10-27T11:19:46.9822392Z",
+        "pid":  6592,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Program Files\\GitHub CLI\\gh.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T11:19:47.5441805Z",
+        "pid":  1520,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:19:47.5799833Z",
+        "pid":  7780,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1520,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:19:48.0619093Z",
+        "pid":  8756,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:19:48.0752242Z",
+        "pid":  3480,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8756,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:19:48.1505849Z",
+        "pid":  7712,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T11:19:48.1639223Z",
+        "pid":  7100,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7712,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:19:48.3664046Z",
+        "pid":  7544,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" -p /usage --output-format json --print-timeout 25s"
+    },
+    {
+        "time":  "2026-10-27T11:19:48.3796567Z",
+        "pid":  4796,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7544,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:19:48.8738653Z",
+        "pid":  5528,
+        "image":  "C:\\Windows\\System32\\rundll32.exe",
+        "parentPid":  7544,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "rundll32 url.dll,FileProtocolHandler https://accounts.google.com/o/oauth2/auth?access_type=offline\u0026client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com\u0026code_challenge=VkHgE048DCYG8O8e7SjjV6_TvGEjzo9NicuqNJtyrLA\u0026code_challenge_method=S256\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback\u0026response_type=code\u0026scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Faicode+openid\u0026state=mM9iKcruzKqPObEn-fdKCg"
+    },
+    {
+        "time":  "2026-10-27T11:21:18.5943674Z",
+        "pid":  6664,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:21:18.6372812Z",
+        "pid":  7864,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  6664,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:21:19.1302992Z",
+        "pid":  7028,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:21:19.1422482Z",
+        "pid":  8596,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7028,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:21:19.2175777Z",
+        "pid":  3364,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T11:21:19.2300483Z",
+        "pid":  9040,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  3364,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:21:19.4334120Z",
+        "pid":  8344,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" -p /usage --output-format json --print-timeout 25s"
+    },
+    {
+        "time":  "2026-10-27T11:21:19.4455753Z",
+        "pid":  7176,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8344,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:21:19.8554355Z",
+        "pid":  3200,
+        "image":  "C:\\Windows\\System32\\rundll32.exe",
+        "parentPid":  8344,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "rundll32 url.dll,FileProtocolHandler https://accounts.google.com/o/oauth2/auth?access_type=offline\u0026client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com\u0026code_challenge=hSgU8uwOrCQt2_8uymdRHSUVxkrs0fLEh05K-VowbSY\u0026code_challenge_method=S256\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback\u0026response_type=code\u0026scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Faicode+openid\u0026state=iA2BuHuQ-dbnOxPXvHoJWQ"
+    },
+    {
+        "time":  "2026-10-27T11:22:50.5842373Z",
+        "pid":  3768,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"gh\" auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:22:50.6257916Z",
+        "pid":  4128,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  3768,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:22:51.0696355Z",
+        "pid":  5244,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"gh\" auth token --user github-actions[bot] --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:22:51.0817394Z",
+        "pid":  1040,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  5244,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:22:51.1575396Z",
+        "pid":  4652,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" --version"
+    },
+    {
+        "time":  "2026-10-27T11:22:51.1700380Z",
+        "pid":  5040,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  4652,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:22:51.3743287Z",
+        "pid":  4364,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  888,
+        "parent":  "\\Device\\HarddiskVolume4\\a\\codexbar\\codexbar\\codexbar-base.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe\" -p /usage --output-format json --print-timeout 25s"
+    },
+    {
+        "time":  "2026-10-27T11:22:51.3863517Z",
+        "pid":  3096,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  4364,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:22:51.8319069Z",
+        "pid":  8388,
+        "image":  "C:\\Windows\\System32\\rundll32.exe",
+        "parentPid":  4364,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "rundll32 url.dll,FileProtocolHandler https://accounts.google.com/o/oauth2/auth?access_type=offline\u0026client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com\u0026code_challenge=vWdZhwqM5RsuzeFeZfRp4GQlKKijRJ_8oauuAexikwA\u0026code_challenge_method=S256\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback\u0026response_type=code\u0026scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Faicode+openid\u0026state=A3_k5CFAO6nZuonvtREdwA"
+    },
+    {
+        "time":  "2026-10-27T11:23:50.1378718Z",
+        "pid":  3436,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" plain D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T11:23:50.1656541Z",
+        "pid":  6032,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  3436,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:23:50.1686388Z",
+        "pid":  3352,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  6032,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:23:50.1914342Z",
+        "pid":  9156,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:23:53.1588342Z",
+        "pid":  3420,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" nowindow D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T11:23:53.1816937Z",
+        "pid":  6368,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  3420,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:23:53.1846759Z",
+        "pid":  3236,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  6368,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:23:56.1687550Z",
+        "pid":  8872,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" contained D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T11:23:56.1917642Z",
+        "pid":  8440,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  8872,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:23:56.1953530Z",
+        "pid":  8248,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8440,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:23:59.1875314Z",
+        "pid":  4256,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" hidden D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T11:23:59.2103447Z",
+        "pid":  1820,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  4256,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:23:59.2132230Z",
+        "pid":  8236,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1820,
+        "parent":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:24:02.2059139Z",
+        "pid":  4196,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" detached D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt gh auth status --hostname github.com --json hosts "
+    },
+    {
+        "time":  "2026-10-27T11:24:02.2291752Z",
+        "pid":  5168,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  4196,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "gh auth status --hostname github.com --json hosts"
+    },
+    {
+        "time":  "2026-10-27T11:24:05.2348943Z",
+        "pid":  4268,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" contained D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com "
+    },
+    {
+        "time":  "2026-10-27T11:24:05.2565795Z",
+        "pid":  8788,
+        "image":  "C:\\Windows\\System32\\cmd.exe",
+        "parentPid":  4268,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:24:05.2605066Z",
+        "pid":  7704,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  8788,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:24:05.2763105Z",
+        "pid":  5464,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  8788,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  --version "
+    },
+    {
+        "time":  "2026-10-27T11:24:05.3330900Z",
+        "pid":  5484,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  8788,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:24:08.2533342Z",
+        "pid":  3768,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" hidden D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com "
+    },
+    {
+        "time":  "2026-10-27T11:24:08.2752269Z",
+        "pid":  1116,
+        "image":  "C:\\Windows\\System32\\cmd.exe",
+        "parentPid":  3768,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "cmd.exe /d /c gh --version \u0026 gh auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:24:08.2780291Z",
+        "pid":  1580,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  1116,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:24:08.3051756Z",
+        "pid":  6256,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  1116,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  --version "
+    },
+    {
+        "time":  "2026-10-27T11:24:08.3638149Z",
+        "pid":  3380,
+        "image":  "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "parentPid":  1116,
+        "parent":  "C:\\Windows\\System32\\cmd.exe",
+        "commandLine":  "gh  auth status --hostname github.com"
+    },
+    {
+        "time":  "2026-10-27T11:24:11.2711139Z",
+        "pid":  7656,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" plain D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe --version "
+    },
+    {
+        "time":  "2026-10-27T11:24:11.2940696Z",
+        "pid":  5824,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  7656,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe --version"
+    },
+    {
+        "time":  "2026-10-27T11:24:11.2975124Z",
+        "pid":  3136,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  5824,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:24:11.3187987Z",
+        "pid":  2032,
+        "image":  "C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe",
+        "parentPid":  808,
+        "parent":  "C:\\Windows\\System32\\svchost.exe",
+        "commandLine":  "\"C:\\Program Files\\WindowsApps\\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\\OpenConsole.exe\" -Embedding"
+    },
+    {
+        "time":  "2026-10-27T11:24:14.2793433Z",
+        "pid":  8944,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" contained D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe --version "
+    },
+    {
+        "time":  "2026-10-27T11:24:14.3018343Z",
+        "pid":  4324,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  8944,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe --version"
+    },
+    {
+        "time":  "2026-10-27T11:24:14.3053532Z",
+        "pid":  8784,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  4324,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:24:17.2897430Z",
+        "pid":  8796,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "parentPid":  2088,
+        "parent":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "commandLine":  "\"C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe\" contained D:\\a\\codexbar\\codexbar\\probe-out\\base\\matrix.txt C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe -p /usage --output-format json --print-timeout 25s "
+    },
+    {
+        "time":  "2026-10-27T11:24:17.3119417Z",
+        "pid":  7432,
+        "image":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "parentPid":  8796,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\console-probe-launch.exe",
+        "commandLine":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe -p /usage --output-format json --print-timeout 25s"
+    },
+    {
+        "time":  "2026-10-27T11:24:17.3157947Z",
+        "pid":  2428,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  7432,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:24:17.6858547Z",
+        "pid":  7616,
+        "image":  "C:\\Windows\\System32\\rundll32.exe",
+        "parentPid":  7432,
+        "parent":  "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "commandLine":  "rundll32 url.dll,FileProtocolHandler https://accounts.google.com/o/oauth2/auth?access_type=offline\u0026client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com\u0026code_challenge=ZcnuRmobCAAw5qp2tP2sldY1xqBreH12Xadp3YklJ1g\u0026code_challenge_method=S256\u0026prompt=consent\u0026redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback\u0026response_type=code\u0026scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Faicode+openid\u0026state=fj7EnYSsTO7eqfBNPt3xAQ"
+    },
+    {
+        "time":  "2026-10-27T11:30:49.8690051Z",
+        "pid":  2536,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  3076,
+        "parent":  "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\BfeToolWin8.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    },
+    {
+        "time":  "2026-10-27T11:45:51.0252137Z",
+        "pid":  9192,
+        "image":  "C:\\Windows\\System32\\conhost.exe",
+        "parentPid":  4564,
+        "parent":  "C:\\WindowsAzure\\GuestAgent_2.7.41491.1243_2026-10-21_155005\\BfeToolWin8.exe",
+        "commandLine":  "\\??\\C:\\Windows\\system32\\conhost.exe 0xffffffff -ForceV1"
+    }
+]

@@ -1,0 +1,725 @@
+{
+  "labels": {
+    "base": {
+      "hookInstalled": true,
+      "result": {},
+      "phases": {
+        "app-base": {
+          "consoleWindows": [],
+          "visibleConsoleWindows": []
+        },
+        "app-base-stopping": {
+          "consoleWindows": [
+            {
+              "hwnd": 131400,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "C:\\ProgramData\\GitHub\\HostedComputeAgent\\hosted-compute-agent",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-foreground",
+              "t": 241010,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            }
+          ],
+          "visibleConsoleWindows": []
+        },
+        "matrix-plain": {
+          "consoleWindows": [
+            {
+              "hwnd": 458850,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 243176,
+              "rect": [
+                148,
+                156,
+                1192,
+                791
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 262516,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 9156,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 243209,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 131400,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "C:\\ProgramData\\GitHub\\HostedComputeAgent\\hosted-compute-agent",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-foreground",
+              "t": 243805,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            }
+          ],
+          "visibleConsoleWindows": [
+            {
+              "hwnd": 458850,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 243199,
+              "rect": [
+                148,
+                156,
+                1192,
+                791
+              ],
+              "visible": true
+            }
+          ]
+        },
+        "matrix-nowindow": {
+          "consoleWindows": [],
+          "visibleConsoleWindows": []
+        },
+        "matrix-contained": {
+          "consoleWindows": [],
+          "visibleConsoleWindows": []
+        },
+        "matrix-hidden": {
+          "consoleWindows": [
+            {
+              "hwnd": 524386,
+              "class": "ConsoleWindowClass",
+              "title": "C:\\Program Files\\GitHub CLI\\gh.exe",
+              "pid": 8236,
+              "process": "conhost",
+              "source": "hook-create",
+              "t": 252176,
+              "rect": [
+                26,
+                26,
+                1019,
+                545
+              ],
+              "visible": false
+            }
+          ],
+          "visibleConsoleWindows": []
+        },
+        "matrix-detached": {
+          "consoleWindows": [],
+          "visibleConsoleWindows": []
+        },
+        "matrix-grandchild-contained": {
+          "consoleWindows": [],
+          "visibleConsoleWindows": []
+        },
+        "matrix-grandchild-hidden": {
+          "consoleWindows": [
+            {
+              "hwnd": 786454,
+              "class": "ConsoleWindowClass",
+              "title": "C:\\Windows\\SYSTEM32\\cmd.exe",
+              "pid": 1580,
+              "process": "conhost",
+              "source": "hook-create",
+              "t": 261232,
+              "rect": [
+                26,
+                26,
+                1019,
+                545
+              ],
+              "visible": false
+            }
+          ],
+          "visibleConsoleWindows": []
+        },
+        "matrix-agy-plain": {
+          "consoleWindows": [
+            {
+              "hwnd": 851990,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "poll-console-window",
+              "t": 264302,
+              "rect": [
+                52,
+                52,
+                820,
+                571
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 328052,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 2032,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 264337,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 131400,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "C:\\ProgramData\\GitHub\\HostedComputeAgent\\hosted-compute-agent",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-foreground",
+              "t": 264596,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            }
+          ],
+          "visibleConsoleWindows": [
+            {
+              "hwnd": 851990,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 264326,
+              "rect": [
+                44,
+                52,
+                1088,
+                687
+              ],
+              "visible": true
+            }
+          ]
+        },
+        "matrix-agy-contained-version": {
+          "consoleWindows": [],
+          "visibleConsoleWindows": []
+        },
+        "matrix-agy-contained-usage": {
+          "consoleWindows": [],
+          "visibleConsoleWindows": []
+        }
+      }
+    },
+    "regressed": {
+      "hookInstalled": true,
+      "result": {
+        "label": "regressed",
+        "exe": "codexbar-regressed.exe",
+        "exeSha256": "1b901dac40d4517e1a8c06cf1e83146c002b6055684f1812594195e6e2d80dc6",
+        "exeSubsystem": "windows-gui",
+        "startedUtc": "2026-10-27T11:17:03.0201045Z",
+        "gh": "C:\\Program Files\\GitHub CLI\\gh.exe",
+        "ghVersion": "gh version 2.103.0 (2026-10-21) https://github.com/cli/cli/releases/tag/v2.103.0",
+        "agy": "C:\\Users\\runneradmin\\AppData\\Local\\agy\\bin\\agy.exe",
+        "appPid": 828,
+        "historyNewLines": 0,
+        "historySample": null,
+        "finishedUtc": "2026-10-27T11:19:46.0929643Z"
+      },
+      "phases": {
+        "app-regressed": {
+          "consoleWindows": [
+            {
+              "hwnd": 196952,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 644,
+              "rect": [
+                122,
+                130,
+                1166,
+                765
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 197076,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 2360,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 678,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 262488,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 1666,
+              "rect": [
+                148,
+                156,
+                1192,
+                791
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 262612,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 5596,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 1696,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 328024,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 2073,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 328148,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 1320,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 2104,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 393560,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 2569,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 393684,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 4584,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 2616,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 196982,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 3507,
+              "rect": [
+                70,
+                78,
+                1114,
+                713
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 66052,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 7328,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 3547,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 196726,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 93707,
+              "rect": [
+                148,
+                156,
+                1192,
+                791
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 328262,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 9116,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 93742,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 262262,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 94456,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 393798,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 5316,
+              "process": "gh",
+              "source": "hook-create",
+              "t": 94486,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 327798,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 94908,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 459334,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 7852,
+              "process": "OpenConsole",
+              "source": "hook-create",
+              "t": 94937,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 393334,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-create",
+              "t": 95414,
+              "rect": [
+                44,
+                52,
+                1088,
+                687
+              ],
+              "visible": false
+            },
+            {
+              "hwnd": 524870,
+              "class": "PseudoConsoleWindow",
+              "title": "",
+              "pid": 1916,
+              "process": "agy",
+              "source": "hook-create",
+              "t": 95443,
+              "rect": [
+                0,
+                0,
+                0,
+                0
+              ],
+              "visible": false
+            }
+          ],
+          "visibleConsoleWindows": [
+            {
+              "hwnd": 196952,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 669,
+              "rect": [
+                122,
+                130,
+                1166,
+                765
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 262488,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 1686,
+              "rect": [
+                148,
+                156,
+                1192,
+                791
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 328024,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 2093,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 393560,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 2607,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 196982,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 3536,
+              "rect": [
+                70,
+                78,
+                1114,
+                713
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 196726,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 93731,
+              "rect": [
+                148,
+                156,
+                1192,
+                791
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 262262,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 94477,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 327798,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 94928,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            },
+            {
+              "hwnd": 393334,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "Windows Terminal",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-show",
+              "t": 95434,
+              "rect": [
+                44,
+                52,
+                1088,
+                687
+              ],
+              "visible": true
+            }
+          ]
+        },
+        "app-regressed-stopping": {
+          "consoleWindows": [
+            {
+              "hwnd": 131400,
+              "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+              "title": "C:\\ProgramData\\GitHub\\HostedComputeAgent\\hosted-compute-agent",
+              "pid": 7112,
+              "process": "WindowsTerminal",
+              "source": "hook-foreground",
+              "t": 160888,
+              "rect": [
+                18,
+                26,
+                1062,
+                661
+              ],
+              "visible": true
+            }
+          ],
+          "visibleConsoleWindows": []
+        }
+      }
+    }
+  },
+  "processStarts": {
+    "gh": 21,
+    "agy": 15,
+    "conhost": 32,
+    "openConsoleHandoffs": 11
+  }
+}
