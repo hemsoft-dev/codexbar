@@ -1,0 +1,106 @@
+name: Console window probe
+
+# Throwaway Windows-native evidence for chief#43 / codexbar#271 (never merged): runs the real CodexBar build of
+# BASE_REF (and FIX_REF when set) through background Copilot refreshes that start `gh`, and records every console
+# and window that appears. Lives only on the probe branch.
+on:
+  push:
+    branches: [probe/console-windows-native]
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Base commit (current main)
+        default: bd1bab8916a812323f8cfe078365538b020c6cc1
+      fix_ref:
+        description: Candidate commit (empty for base only)
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  BASE_REF: ${{ inputs.base_ref || 'bd1bab8916a812323f8cfe078365538b020c6cc1' }}
+  FIX_REF: ${{ inputs.fix_ref || '' }}
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: probe
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_REF }}
+          path: base
+
+      - uses: actions/checkout@v4
+        if: env.FIX_REF != ''
+        with:
+          ref: ${{ env.FIX_REF }}
+          path: fix
+
+      - name: Install Rust toolchain
+        shell: bash
+        working-directory: base
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: base -> target
+
+      - name: Build base
+        working-directory: base
+        run: cargo build --release -p codexbar-app --locked
+
+      - name: Build candidate
+        if: env.FIX_REF != ''
+        working-directory: fix
+        run: cargo build --release -p codexbar-app --locked
+
+      - name: Record the desktop and enable process auditing
+        shell: powershell
+        run: |
+          auditpol /set /subcategory:"Process Creation" /success:enable
+          reg add HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit /v ProcessCreationIncludeCmdLine_Enabled /t REG_DWORD /d 1 /f
+          New-Item -ItemType Directory -Force probe-out | Out-Null
+          [ordered]@{
+            os = (Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber)
+            session = (Get-Process -Id $PID).SessionId
+            user = "$env:USERDOMAIN\$env:USERNAME"
+            windowsTerminal = @(Get-AppxPackage -Name Microsoft.WindowsTerminal* -ErrorAction SilentlyContinue | ForEach-Object { $_.PackageFullName })
+            delegation = (Get-ItemProperty 'HKCU:\Console\%%Startup' -ErrorAction SilentlyContinue | Select-Object DelegationConsole, DelegationTerminal)
+            gh = (Get-Command gh).Source
+            ghVersion = ((& gh --version) -join ' ')
+            started = [DateTime]::UtcNow.ToString('o')
+          } | ConvertTo-Json -Depth 4 | Tee-Object probe-out/environment.json
+          [DateTime]::UtcNow.ToString('o') | Set-Content probe-out/since.txt
+
+      - name: Probe base
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe base/target/release/codexbar.exe -Label base -OutDir probe-out -Matrix
+
+      - name: Probe candidate
+        if: env.FIX_REF != ''
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe fix/target/release/codexbar.exe -Label fix -OutDir probe-out
+
+      - name: Process creations
+        if: always()
+        shell: powershell
+        run: ./probe/.github/console-probe/Get-ProcessAudit.ps1 -Since ([datetime](Get-Content probe-out/since.txt)) -OutFile probe-out/processes.json
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: console-probe-${{ github.run_id }}
+          path: probe-out/
+          retention-days: 30
