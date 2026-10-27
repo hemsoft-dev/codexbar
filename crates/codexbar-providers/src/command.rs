@@ -179,6 +179,10 @@ impl<P: pipe::Pipe> Capture<P> {
         })
     }
 
+    fn open_pipe(&self) -> Option<&P> {
+        (!self.closed).then_some(&self.pipe)
+    }
+
     /// At most one chunk per stream per turn, so a noisy stream cannot starve the other stream or the deadline.
     fn drain(&mut self) -> Result<bool, CommandError> {
         if self.closed {
@@ -255,7 +259,11 @@ fn collect(
             return Ok((stdout.bytes, stderr.bytes));
         }
         if !progress {
-            std::thread::sleep(CHECK_INTERVAL.min(timeout.saturating_sub(start.elapsed())));
+            pipe::wait(
+                stdout.open_pipe(),
+                stderr.open_pipe(),
+                CHECK_INTERVAL.min(timeout.saturating_sub(start.elapsed())),
+            );
         }
     }
 }
@@ -270,6 +278,59 @@ mod tests {
             spawn_error(std::io::ErrorKind::PermissionDenied.into()),
             CommandError::Failed
         );
+    }
+
+    /// Every drain outcome on a real pipe, independent of how a command's writes and EOFs happen to interleave.
+    #[cfg(unix)]
+    #[test]
+    fn a_drain_reports_pending_output_eof_a_closed_stream_and_overflow() {
+        use std::io::Write as _;
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let mut capture = Capture::new(reader, 4).unwrap();
+        assert_eq!(capture.drain(), Ok(false), "nothing written yet");
+        writer.write_all(b"abc").unwrap();
+        assert_eq!(capture.drain(), Ok(true));
+        assert_eq!(capture.bytes, b"abc");
+        writer.write_all(b"de").unwrap();
+        assert_eq!(capture.drain(), Err(CommandError::Failed), "past the 4-byte limit");
+        let (reader, writer) = std::io::pipe().unwrap();
+        let mut capture = Capture::new(reader, 4).unwrap();
+        drop(writer);
+        assert_eq!(capture.drain(), Ok(true), "EOF is progress");
+        assert!(capture.closed);
+        assert_eq!(capture.drain(), Ok(false), "a closed stream is never read again");
+    }
+
+    /// Every way a collection turn ends or goes on, independent of which pipe a real command closes first.
+    #[cfg(unix)]
+    #[test]
+    fn collection_ends_at_the_stop_marker_or_once_both_streams_closed_and_the_command_exited() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let mut stderr = Capture {
+            pipe: reader,
+            bytes: b"Error: authentication required.".to_vec(),
+            closed: false,
+            limit: OUTPUT_LIMIT,
+        };
+        let stop = |marker| StopMarker { marker, searched: 0 };
+        assert_eq!(
+            complete(&mut child, false, &stderr, &mut stop(b"authentication required")),
+            Ok(true)
+        );
+        assert_eq!(complete(&mut child, false, &stderr, &mut stop(b"")), Ok(false));
+        assert_eq!(
+            complete(&mut child, true, &stderr, &mut stop(b"")),
+            Ok(false),
+            "stderr still open"
+        );
+        stderr.closed = true;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while complete(&mut child, true, &stderr, &mut stop(b"")) != Ok(true) {
+            assert!(Instant::now() < deadline, "the exited command ends collection");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        child.wait().unwrap();
     }
 
     #[test]

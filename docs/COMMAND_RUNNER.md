@@ -49,7 +49,11 @@ uses agy's local browser flow.
   the previous replacement behavior for invalid UTF-8. Nonzero exit codes return
   `CommandOutput { success: false, .. }` with the collected output.
 - The supplied timeout starts after successful process creation and covers both
-  pipe EOF and process exit. Idle checks sleep at most 25 ms. A timeout returns
+  pipe EOF and process exit. An idle check waits at most 25 ms: on Unix it
+  `poll`s the open pipes and returns as soon as one has output or closes, so a
+  writer that refills a small pipe (16 KiB on macOS) isn't read one fixed nap at
+  a time (#281); on Windows, whose anonymous pipes can't be polled, and once
+  both pipes have closed, it sleeps. A timeout returns
   `TimedOut` after cleanup; cleanup failure returns `Failed` instead of claiming
   that termination completed. Process creation itself is a native system call.
 - Verify owned tree termination for up to one additional second. Stop and reap

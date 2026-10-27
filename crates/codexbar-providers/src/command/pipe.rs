@@ -57,6 +57,42 @@ pub(super) fn read(pipe: &mut impl Pipe, bytes: &mut [u8]) -> io::Result<Option<
     read_result(pipe.read(&mut bytes[..count]))
 }
 
+/// Waits up to `timeout` for either open pipe to have output or close (#281). Unix wakes as soon as one does, so a
+/// writer that refills its pipe faster than a fixed nap is read at its own pace; macOS's small pipe buffers otherwise
+/// turned a 4 MiB stream into hundreds of naps. With both pipes closed, or on Windows, whose anonymous pipes can't be
+/// polled, it naps for `timeout`. A signal or poll error only ends the wait early; the caller checks again.
+#[cfg(unix)]
+pub(super) fn wait(first: Option<&impl Pipe>, second: Option<&impl Pipe>, timeout: std::time::Duration) {
+    poll_or_nap([first.map(|p| p.as_raw_fd()), second.map(|p| p.as_raw_fd())], timeout);
+}
+
+/// `wait` for raw descriptors: one implementation however many pipe types call it.
+#[cfg(unix)]
+fn poll_or_nap(fds: [Option<std::os::fd::RawFd>; 2], timeout: std::time::Duration) {
+    let mut fds: Vec<libc::pollfd> = fds
+        .into_iter()
+        .flatten()
+        .map(|fd| libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        })
+        .collect();
+    if fds.is_empty() {
+        std::thread::sleep(timeout);
+        return;
+    }
+    // Rounded up, so a sub-millisecond remainder still waits instead of spinning.
+    let ms = timeout.as_micros().div_ceil(1000).min(libc::c_int::MAX as u128) as libc::c_int;
+    // SAFETY: `fds` is valid writable storage for its length, and each descriptor is an open pipe this thread owns.
+    let _ = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, ms) };
+}
+
+#[cfg(windows)]
+pub(super) fn wait(_: Option<&impl Pipe>, _: Option<&impl Pipe>, timeout: std::time::Duration) {
+    std::thread::sleep(timeout);
+}
+
 fn read_result(result: io::Result<usize>) -> io::Result<Option<usize>> {
     match result {
         Ok(count) => Ok(Some(count)),
@@ -161,6 +197,39 @@ fn group_has_live_members(id: u32, _: std::time::Instant) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_idle_wait_ends_when_output_arrives_not_after_its_timeout() {
+        use std::io::Write as _;
+        use std::time::{Duration, Instant};
+        let (reader, mut writer) = io::pipe().unwrap();
+        let none: Option<&io::PipeReader> = None;
+        let start = Instant::now();
+        wait(Some(&reader), none, Duration::from_millis(30));
+        assert!(
+            start.elapsed() >= Duration::from_millis(25),
+            "no output: the whole wait"
+        );
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            writer.write_all(b"x").unwrap();
+            writer
+        });
+        let start = Instant::now();
+        wait(Some(&reader), none, Duration::from_secs(10));
+        assert!(start.elapsed() < Duration::from_secs(5), "output ends the wait");
+        drop(late.join().unwrap());
+        let start = Instant::now();
+        wait(Some(&reader), none, Duration::from_secs(10));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "readable data or a closed pipe ends it at once"
+        );
+        let start = Instant::now();
+        wait(none, none, Duration::from_millis(30));
+        assert!(start.elapsed() >= Duration::from_millis(25), "no open pipe: a nap");
+    }
 
     #[test]
     fn nonblocking_reads_distinguish_pending_eof_data_and_failure() {
