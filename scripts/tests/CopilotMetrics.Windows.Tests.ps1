@@ -117,9 +117,10 @@ public static class MetricsGhFixture {
  <Actions Context="Author"><Exec><Command/><Arguments/><WorkingDirectory/></Exec></Actions>
 </Task>
 '@
-    $xml.Task.Actions.Exec.Command = $powerShell
+    # Windows PowerShell's XML adapter takes only bare strings; Join-Path results are wrapped.
+    $xml.Task.Actions.Exec.Command = [string]$powerShell
     $xml.Task.Actions.Exec.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (ConvertTo-CopilotProcessArgument $collector) + ' -Refresh -GitHubUser missing -DataDir ' + (ConvertTo-CopilotProcessArgument $data)
-    $xml.Task.Actions.Exec.WorkingDirectory = $stage
+    $xml.Task.Actions.Exec.WorkingDirectory = [string]$stage
     $inputXml = Join-Path $stage 'original.xml'
     $xml.Save($inputXml)
     $prepare = Join-Path $root 'Prepare-CopilotMetricsTask.ps1'
@@ -150,7 +151,7 @@ public static class MetricsGhFixture {
         $xml.Save($inputXml)
         Assert-Rejected { & $prepare -TaskXmlPath $inputXml -CollectorPath $collector -OutputDirectory (Join-Path $stage 'rejected') } "Reject interactive shell/browser action: $unsafe"
     }
-    $xml.Task.Actions.Exec.Command = $powerShell
+    $xml.Task.Actions.Exec.Command = [string]$powerShell
     foreach ($unsafe in @('-NoExit -File ignored.ps1', '-Command "Start-Process msedge.exe"', '-File other.ps1', '-NoProfile -File "' + $collector + '" -Token literal')) {
         $xml.Task.Actions.Exec.Arguments = $unsafe
         $xml.Save($inputXml)
