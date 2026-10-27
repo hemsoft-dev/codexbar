@@ -63,7 +63,13 @@ pub(super) fn read(pipe: &mut impl Pipe, bytes: &mut [u8]) -> io::Result<Option<
 /// polled, it naps for `timeout`. A signal or poll error only ends the wait early; the caller checks again.
 #[cfg(unix)]
 pub(super) fn wait(first: Option<&impl Pipe>, second: Option<&impl Pipe>, timeout: std::time::Duration) {
-    let mut fds: Vec<libc::pollfd> = [first.map(|p| p.as_raw_fd()), second.map(|p| p.as_raw_fd())]
+    poll_or_nap([first.map(|p| p.as_raw_fd()), second.map(|p| p.as_raw_fd())], timeout);
+}
+
+/// `wait` for raw descriptors: one implementation however many pipe types call it.
+#[cfg(unix)]
+fn poll_or_nap(fds: [Option<std::os::fd::RawFd>; 2], timeout: std::time::Duration) {
+    let mut fds: Vec<libc::pollfd> = fds
         .into_iter()
         .flatten()
         .map(|fd| libc::pollfd {
