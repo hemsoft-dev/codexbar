@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 const MIB: usize = 1024 * 1024;
 const LIMIT: usize = 8 * MIB;
 
+#[cfg(all(coverage, any(target_os = "linux", target_os = "macos")))]
+#[path = "command_runner/profile.rs"]
+mod profile;
+
 fn emit(stream: &str, size: usize) {
     std::thread::scope(|scope| {
         if stream != "stderr" {
@@ -18,6 +22,19 @@ fn emit(stream: &str, size: usize) {
             scope.spawn(move || std::io::stderr().write_all(&vec![b'Y'; size]).unwrap());
         }
     });
+}
+
+/// Never exits, so the runner's group kill cannot land inside an instrumented build's exit-time profile write.
+fn idle() -> ! {
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+/// Overflow, then wait for the runner's kill instead of exiting into the profile writer (#275).
+fn held(stream: &str, size: usize) -> ! {
+    emit(stream, size);
+    idle()
 }
 
 fn hold(path: &Path) -> File {
@@ -35,6 +52,9 @@ fn hold(path: &Path) -> File {
 fn fixture(args: &[String]) -> ! {
     match args[0].as_str() {
         "emit" => emit(&args[1], args[2].parse().unwrap()),
+        "held" => held(&args[1], args[2].parse().unwrap()),
+        #[cfg(all(coverage, any(target_os = "linux", target_os = "macos")))]
+        "profile" => profile::helper(Path::new(&args[1]), &args[2]),
         "invalid" => std::io::stdout().write_all(&[0xff, b'a']).unwrap(),
         "utf8" => {
             std::io::stdout().write_all(&vec![b'a'; 8191]).unwrap();
@@ -78,7 +98,7 @@ fn fixture(args: &[String]) -> ! {
             assert_eq!(
                 SystemCommandRunner.run_with_options(
                     program,
-                    &["emit", "stdout", &(4 * MIB + 1).to_string()],
+                    &["held", "stdout", &(4 * MIB + 1).to_string()],
                     Duration::from_secs(3),
                     &options
                 ),
@@ -95,9 +115,7 @@ fn fixture(args: &[String]) -> ! {
             if args[0] == "overflow" {
                 emit("both", LIMIT + 1);
             }
-            loop {
-                std::thread::sleep(Duration::from_secs(60));
-            }
+            idle()
         }
         "descendant" | "detached-output" | "redirected-inherited" => {
             let mut command = Command::new(std::env::current_exe().unwrap());
@@ -303,6 +321,8 @@ fn main() {
         .output()
         .unwrap();
     assert!(scoped.status.success(), "{}", String::from_utf8_lossy(&scoped.stderr));
+    #[cfg(all(coverage, any(target_os = "linux", target_os = "macos")))]
+    profile::qualify(program, &scratch.0);
     #[cfg(not(windows))]
     let modes = ["hang", "descendant", "overflow", "detached-output"];
     #[cfg(windows)]
