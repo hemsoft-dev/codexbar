@@ -957,10 +957,18 @@ mod tests {
         let score = &tile(&view, false)["items"][1];
         assert_eq!(score["color"], "Warning");
         assert!(score.get("isSubtle").is_none());
+        for (firm, color) in [(90, "Good"), (74, "Attention")] {
+            snapshot.accounts[0].metrics[0].sus = Some(firm);
+            let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
+            assert_eq!(tile(&view, false)["items"][1]["color"], color, "{firm}");
+        }
         snapshot.accounts[0].metrics[0].sus = None;
         snapshot.accounts[0].metrics[0].sus_early = Some(101);
         let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
         assert_eq!(view.sus.as_deref(), Some("SUS n/a"));
+        let score = &tile(&view, false)["items"][1];
+        assert_eq!(score["color"], "Default");
+        assert!(score.get("isSubtle").is_none(), "n/a is not an early score");
     }
 
     #[test]

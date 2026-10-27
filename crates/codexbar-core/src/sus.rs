@@ -132,11 +132,9 @@ pub fn early(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
     if !(EARLY_SUS..WEEKLY_MATURITY).contains(&age) {
         return None;
     }
-    let mut provisional = metric.clone();
-    // Only windows and quotas carry the length a week needs.
-    if let Metric::Window { pace, .. } | Metric::Quota { pace, .. } = &mut provisional {
-        *pace = Some(Pace::per_hour(metric.used_fraction()? / hours(age)));
-    }
+    let provisional = metric
+        .clone()
+        .with_pace(Pace::per_hour(metric.used_fraction()? / hours(age)));
     score(&provisional, now, length, reset)
 }
 /// The score to show: firm once mature, early before that, `None` for `SUS n/a`.

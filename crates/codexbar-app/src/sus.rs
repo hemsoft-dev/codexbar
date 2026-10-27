@@ -17,6 +17,7 @@ pub fn badge(reading: Option<Reading>, id: &str, label: &str, cx: &App) -> AnyEl
     let (color, band) = tone(reading, cx);
     let early = reading.is_some_and(Reading::is_early);
     let spoken = format!("{label}: {text}, {band}");
+    let tooltip = tooltip(early);
     div()
         .id(ElementId::Name(id.to_owned().into()))
         .test_support()
@@ -26,7 +27,7 @@ pub fn badge(reading: Option<Reading>, id: &str, label: &str, cx: &App) -> AnyEl
         .when(!early, |this| this.font_semibold())
         .text_color(color)
         .child(text)
-        .tooltip(move |window, cx| Tooltip::new(tooltip(early)).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .into_any_element()
 }
 /// The color and spoken band. An early score is provisional: it takes no band color, and the label says so instead.
