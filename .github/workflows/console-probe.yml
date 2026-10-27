@@ -21,7 +21,7 @@ permissions:
 env:
   BASE_REF: ${{ inputs.base_ref || 'bd1bab8916a812323f8cfe078365538b020c6cc1' }}
   # PR #280: agy runs with AGY_CLI_DISABLE_AUTO_UPDATE=true.
-  FIX_REF: ${{ inputs.fix_ref || '86329f8d5db5f01bebdc10a59720bff618b62d6e' }}
+  FIX_REF: ${{ inputs.fix_ref || '68de2e01215a32d5c25e0d449c1817ee63ec47e7' }}
   # PR #270 rebased on bd1bab8.
   METRICS_REF: ec93345ececae45c72f6309bf1c04b3529bfff3d
 
@@ -72,8 +72,12 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
+          # The shared target folder took the candidate's sources for fresh once; rebuild the workspace crates.
+          cargo clean --release --locked -p codexbar-app -p codexbar-providers -p codexbar-core -p codexbar-store
           cargo build --release -p codexbar-app --locked
           cp ../target/release/codexbar.exe ../codexbar-fix.exe
+          if cmp -s ../codexbar-base.exe ../codexbar-fix.exe; then echo "candidate build is identical to base"; exit 1; fi
+          sha256sum ../codexbar-base.exe ../codexbar-fix.exe
 
       # The Antigravity CLI CodexBar reads Gemini coding quotas with; not signed in on the runner.
       - name: Install the Antigravity CLI

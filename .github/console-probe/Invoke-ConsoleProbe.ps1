@@ -47,10 +47,11 @@ $settings = New-Item -ItemType Directory -Force (Join-Path ([IO.Path]::GetTempPa
 $history = Join-Path $env:USERPROFILE '.codexbar\history.jsonl'
 $historyBefore = if (Test-Path $history) { @(Get-Content $history).Count } else { 0 }
 
-# Make agy's self-updater due again (its 15-minute marker), so each build meets it.
+# Make agy's self-updater due again, so each build meets it: its whole state folder (15-minute marker, lock and
+# status) goes, as on a machine whose last check is long past. Disposable hosted runner only.
 $updater = Join-Path $env:USERPROFILE '.gemini\antigravity-cli\updater'
-foreach ($marker in 'last_check.timestamp', 'update.lock') { Remove-Item -LiteralPath (Join-Path $updater $marker) -Force -ErrorAction SilentlyContinue }
-$result.updaterMarkers = if (Test-Path $updater) { [string[]]@(Get-ChildItem $updater -Name) } else { [string[]]@() }
+$result.updaterStateBefore = if (Test-Path $updater) { [string[]]@(Get-ChildItem $updater -Name) } else { [string[]]@() }
+if (Test-Path $updater) { Remove-Item -LiteralPath $updater -Recurse -Force }
 [ConsoleWatch]::Start((Join-Path $OutDir 'shots'))
 $app = $null
 try {
