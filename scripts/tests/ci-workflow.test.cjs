@@ -42,7 +42,7 @@ test('shared checks remain ordinary required steps', () => {
   for (const name of ['Setup Node', 'Install markdownlint-cli',
     'Audit all npm dependencies, including development tools',
     'Prove npm advisory policy rejects vulnerable locks', 'Markdown Lint',
-    'Copilot Metrics PowerShell Tests', 'Test CI workflow bindings']) {
+    'Copilot Metrics PowerShell Tests', 'Copilot Metrics Windows Launch Tests', 'Test CI workflow bindings']) {
     const step = build.steps.find(candidate => candidate.name === name);
     assert.ok(step, name);
     assert.equal(step.if, undefined, name);
