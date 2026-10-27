@@ -1,3 +1,3 @@
-## Intentional lint failure
+# Merge protection probe
 
-Disposable negative qualification for issue #237.
+Disposable validation for issue #237. Close without merging.
