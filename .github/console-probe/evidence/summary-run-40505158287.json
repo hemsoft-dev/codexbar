@@ -1,0 +1,258 @@
+{
+ "processStarts": {
+  "gh": 34,
+  "agy": 20,
+  "conhost": 49,
+  "openConsoleHandoffs": 7
+ },
+ "labels": {
+  "base": {
+   "exeSha256": "dba1d28971665fcf447522df417b2abdf7017620c07154c65e03d6b049237f0c",
+   "hookInstalled": true,
+   "updaterStateBefore": null,
+   "phases": {
+    "app-base": {
+     "consoleClassWindows": 2,
+     "visibleConsoleWindows": [
+      {
+       "hwnd": 1048600,
+       "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+       "title": "Windows Terminal",
+       "pid": 9020,
+       "process": "WindowsTerminal",
+       "source": "hook-show",
+       "t": 2873,
+       "rect": [
+        122,
+        130,
+        1166,
+        765
+       ],
+       "visible": true
+      }
+     ]
+    },
+    "app-base-stopping": {
+     "consoleClassWindows": 1,
+     "visibleConsoleWindows": []
+    },
+    "matrix-plain": {
+     "consoleClassWindows": 3,
+     "visibleConsoleWindows": [
+      {
+       "hwnd": 393286,
+       "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+       "title": "Windows Terminal",
+       "pid": 9020,
+       "process": "WindowsTerminal",
+       "source": "hook-show",
+       "t": 243205,
+       "rect": [
+        122,
+        130,
+        1166,
+        765
+       ],
+       "visible": true
+      }
+     ]
+    },
+    "matrix-nowindow": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-contained": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-hidden": {
+     "consoleClassWindows": 1,
+     "visibleConsoleWindows": []
+    },
+    "matrix-detached": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-grandchild-contained": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-grandchild-hidden": {
+     "consoleClassWindows": 1,
+     "visibleConsoleWindows": []
+    },
+    "matrix-agy-plain": {
+     "consoleClassWindows": 3,
+     "visibleConsoleWindows": [
+      {
+       "hwnd": 524314,
+       "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+       "title": "Windows Terminal",
+       "pid": 9020,
+       "process": "WindowsTerminal",
+       "source": "hook-show",
+       "t": 262438,
+       "rect": [
+        18,
+        26,
+        1062,
+        661
+       ],
+       "visible": true
+      }
+     ]
+    },
+    "matrix-agy-contained-version": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-agy-contained-usage": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-control-newconsole": {
+     "consoleClassWindows": 2,
+     "visibleConsoleWindows": [
+      {
+       "hwnd": 393742,
+       "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+       "title": "Terminal",
+       "pid": 9020,
+       "process": "WindowsTerminal",
+       "source": "hook-show",
+       "t": 329155,
+       "rect": [
+        96,
+        104,
+        1140,
+        739
+       ],
+       "visible": true
+      }
+     ]
+    },
+    "matrix-done": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    }
+   }
+  },
+  "fix": {
+   "exeSha256": "cc65140b77cf127e6c4cc00aec153e84149d503e16ff18900cf4782202d915a2",
+   "hookInstalled": true,
+   "updaterStateBefore": [
+    "update.lock",
+    "update_status.json"
+   ],
+   "phases": {
+    "app-fix": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "app-fix-stopping": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-plain": {
+     "consoleClassWindows": 2,
+     "visibleConsoleWindows": [
+      {
+       "hwnd": 524440,
+       "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+       "title": "Terminal",
+       "pid": 9020,
+       "process": "WindowsTerminal",
+       "source": "hook-show",
+       "t": 243232,
+       "rect": [
+        96,
+        104,
+        1140,
+        739
+       ],
+       "visible": true
+      }
+     ]
+    },
+    "matrix-nowindow": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-contained": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-hidden": {
+     "consoleClassWindows": 1,
+     "visibleConsoleWindows": []
+    },
+    "matrix-detached": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-grandchild-contained": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-grandchild-hidden": {
+     "consoleClassWindows": 1,
+     "visibleConsoleWindows": []
+    },
+    "matrix-agy-plain": {
+     "consoleClassWindows": 2,
+     "visibleConsoleWindows": [
+      {
+       "hwnd": 328192,
+       "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+       "title": "Windows Terminal",
+       "pid": 9020,
+       "process": "WindowsTerminal",
+       "source": "hook-show",
+       "t": 262160,
+       "rect": [
+        18,
+        26,
+        1062,
+        661
+       ],
+       "visible": true
+      }
+     ]
+    },
+    "matrix-agy-contained-version": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-agy-contained-usage": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    },
+    "matrix-control-newconsole": {
+     "consoleClassWindows": 2,
+     "visibleConsoleWindows": [
+      {
+       "hwnd": 131426,
+       "class": "CASCADIA_HOSTING_WINDOW_CLASS",
+       "title": "Terminal",
+       "pid": 9020,
+       "process": "WindowsTerminal",
+       "source": "hook-show",
+       "t": 328885,
+       "rect": [
+        70,
+        78,
+        1114,
+        713
+       ],
+       "visible": true
+      }
+     ]
+    },
+    "matrix-done": {
+     "consoleClassWindows": 0,
+     "visibleConsoleWindows": []
+    }
+   }
+  }
+ }
+}
