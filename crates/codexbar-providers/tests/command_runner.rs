@@ -105,6 +105,12 @@ fn fixture(args: &[String]) -> ! {
                 Err(CommandError::Failed)
             );
         }
+        #[cfg(windows)]
+        "console-parent" => console_parent(),
+        #[cfg(windows)]
+        "console-child" => console_child(),
+        #[cfg(windows)]
+        "console-grandchild" => print!("{}", console_window()),
         "failure" => {
             std::io::stderr().write_all(b"synthetic failure").unwrap();
             std::process::exit(7);
@@ -144,6 +150,57 @@ fn fixture(args: &[String]) -> ! {
         _ => panic!("unknown fixture"),
     }
     std::process::exit(0);
+}
+
+/// Starts the runner's child the way the release app does (chief#43): from a process with no console, like the
+/// GUI-subsystem CodexBar, where a console child that isn't started without a window gets a new, visible console.
+#[cfg(windows)]
+fn console_parent() {
+    // SAFETY: detaches this fixture process from the test's console, if it has one; its standard streams stay the
+    // captured pipes. The assertion below checks the outcome either way.
+    let _ = unsafe { windows::Win32::System::Console::FreeConsole() };
+    assert_eq!(
+        console_window(),
+        "none",
+        "the fixture parent has no console, like the release app"
+    );
+    let program = std::env::current_exe().unwrap();
+    let output = SystemCommandRunner
+        .run(program.to_str().unwrap(), &["console-child"], Duration::from_secs(10))
+        .unwrap();
+    assert!(output.success, "{}", output.stderr);
+    print!("{}", output.stdout);
+}
+
+/// A background CLI and an ordinary descendant it starts with no creation flags (#271), both of which must have no
+/// console window at all, visible or not.
+#[cfg(windows)]
+fn console_child() {
+    let grandchild = Command::new(std::env::current_exe().unwrap())
+        .arg("console-grandchild")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(grandchild.status.success());
+    print!(
+        "child={} grandchild={}",
+        console_window(),
+        String::from_utf8_lossy(&grandchild.stdout)
+    );
+}
+
+/// This process's console window: `none` without one, else whether Windows shows it.
+#[cfg(windows)]
+fn console_window() -> &'static str {
+    // SAFETY: plain queries of this process's console window handle and its visibility.
+    let window = unsafe { windows::Win32::System::Console::GetConsoleWindow() };
+    if window.is_invalid() {
+        "none"
+    } else if unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(window) }.as_bool() {
+        "visible"
+    } else {
+        "hidden"
+    }
 }
 
 #[cfg(windows)]
@@ -321,6 +378,16 @@ fn main() {
         .output()
         .unwrap();
     assert!(scoped.status.success(), "{}", String::from_utf8_lossy(&scoped.stderr));
+    #[cfg(windows)]
+    {
+        let console = Command::new(program).arg("console-parent").output().unwrap();
+        assert!(console.status.success(), "{}", String::from_utf8_lossy(&console.stderr));
+        assert_eq!(
+            String::from_utf8_lossy(&console.stdout),
+            "child=none grandchild=none",
+            "background CLIs and their descendants must get no console window (chief#43)"
+        );
+    }
     #[cfg(all(coverage, any(target_os = "linux", target_os = "macos")))]
     profile::qualify(program, &scratch.0);
     #[cfg(not(windows))]
