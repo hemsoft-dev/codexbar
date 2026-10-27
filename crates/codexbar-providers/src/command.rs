@@ -280,6 +280,38 @@ mod tests {
         );
     }
 
+    /// Every way a collection turn ends or goes on, independent of which pipe a real command closes first.
+    #[cfg(unix)]
+    #[test]
+    fn collection_ends_at_the_stop_marker_or_once_both_streams_closed_and_the_command_exited() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let (reader, _writer) = std::io::pipe().unwrap();
+        let mut stderr = Capture {
+            pipe: reader,
+            bytes: b"Error: authentication required.".to_vec(),
+            closed: false,
+            limit: OUTPUT_LIMIT,
+        };
+        let stop = |marker| StopMarker { marker, searched: 0 };
+        assert_eq!(
+            complete(&mut child, false, &stderr, &mut stop(b"authentication required")),
+            Ok(true)
+        );
+        assert_eq!(complete(&mut child, false, &stderr, &mut stop(b"")), Ok(false));
+        assert_eq!(
+            complete(&mut child, true, &stderr, &mut stop(b"")),
+            Ok(false),
+            "stderr still open"
+        );
+        stderr.closed = true;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while complete(&mut child, true, &stderr, &mut stop(b"")) != Ok(true) {
+            assert!(Instant::now() < deadline, "the exited command ends collection");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        child.wait().unwrap();
+    }
+
     #[test]
     fn a_stop_marker_is_found_across_reads_and_case() {
         let text = b"Authentication required. Please visit the URL";
