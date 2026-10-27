@@ -117,9 +117,9 @@ public static class MetricsGhFixture {
  <Actions Context="Author"><Exec><Command/><Arguments/><WorkingDirectory/></Exec></Actions>
 </Task>
 '@
-    # Windows PowerShell's XML adapter takes only bare strings; Join-Path results are wrapped.
+    # Windows PowerShell's XML adapter takes only bare strings; Join-Path and foreach values can arrive wrapped.
     $xml.Task.Actions.Exec.Command = [string]$powerShell
-    $xml.Task.Actions.Exec.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ' + (ConvertTo-CopilotProcessArgument $collector) + ' -Refresh -GitHubUser missing -DataDir ' + (ConvertTo-CopilotProcessArgument $data)
+    $xml.Task.Actions.Exec.Arguments = [string]('-NoProfile -ExecutionPolicy Bypass -File ' + (ConvertTo-CopilotProcessArgument $collector) + ' -Refresh -GitHubUser missing -DataDir ' + (ConvertTo-CopilotProcessArgument $data))
     $xml.Task.Actions.Exec.WorkingDirectory = [string]$stage
     $inputXml = Join-Path $stage 'original.xml'
     $xml.Save($inputXml)
@@ -148,13 +148,13 @@ public static class MetricsGhFixture {
     Assert-Rejected { & $prepare -TaskXmlPath $inputXml -CollectorPath $collector -OutputDirectory (Join-Path $stage 'prepared') } 'Artifacts cannot be overwritten.'
 
     foreach ($unsafe in @('cmd.exe', 'pwsh.exe', 'wscript.exe', 'msedge.exe')) {
-        $xml.Task.Actions.Exec.Command = $unsafe
+        $xml.Task.Actions.Exec.Command = [string]$unsafe
         $xml.Save($inputXml)
         Assert-Rejected { & $prepare -TaskXmlPath $inputXml -CollectorPath $collector -OutputDirectory (Join-Path $stage 'rejected') } "Reject interactive shell/browser action: $unsafe"
     }
     $xml.Task.Actions.Exec.Command = [string]$powerShell
     foreach ($unsafe in @('-NoExit -File ignored.ps1', '-Command "Start-Process msedge.exe"', '-File other.ps1', '-NoProfile -File "' + $collector + '" -Token literal')) {
-        $xml.Task.Actions.Exec.Arguments = $unsafe
+        $xml.Task.Actions.Exec.Arguments = [string]$unsafe
         $xml.Save($inputXml)
         Assert-Rejected { & $prepare -TaskXmlPath $inputXml -CollectorPath $collector -OutputDirectory (Join-Path $stage 'rejected') } 'Reject unbounded or credential-bearing PowerShell actions.'
     }
