@@ -1,5 +1,5 @@
 //! Weekly Sub Utilization Score. The projection and exhaustion time are the metric's existing forecast.
-use crate::{AccountSnapshot, Metric, Provider};
+use crate::{AccountSnapshot, Metric, Pace, Provider};
 use chrono::{DateTime, Duration, Utc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +50,34 @@ pub fn calculate(projected_percent: f64, out_hours: Option<f64>, reset_hours: f6
     };
     Some(Score::rounded(value))
 }
+/// A week shows an early, provisional SUS from this age. Early values are display-only: no forecast, risk or color.
+pub const EARLY_SUS: Duration = Duration::hours(1);
+/// Weekly forecasts and SUS firm up together at 12 hours, the fresh-window guard of usage.py and the Pi dashboard.
+pub const WEEKLY_MATURITY: Duration = Duration::hours(12);
+
+/// A weekly score as shown: early from [`EARLY_SUS`], firm from [`WEEKLY_MATURITY`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reading {
+    Early(Score),
+    Firm(Score),
+}
+impl Reading {
+    pub fn is_early(self) -> bool {
+        matches!(self, Self::Early(_))
+    }
+    /// "SUS 84", or "SUS 84 early".
+    pub fn text(self) -> String {
+        match self {
+            Self::Early(score) => format!("SUS {} early", score.value()),
+            Self::Firm(score) => format!("SUS {}", score.value()),
+        }
+    }
+}
+
+/// A provider week: seven days, or a calendar week that crosses an offset change.
+pub fn is_week_length(length: Duration) -> bool {
+    (Duration::days(6)..=Duration::days(8)).contains(&length)
+}
 pub fn is_weekly(metric: &Metric) -> bool {
     let declared_weekly = matches!(metric, Metric::Window { .. } | Metric::Quota { .. })
         && metric
@@ -61,20 +89,27 @@ pub fn is_weekly(metric: &Metric) -> bool {
         Some(length) if length == Duration::days(7) => true,
         // Provider calendar weeks can cross offset changes. Keep their actual length for age and lockout math;
         // the weekly label is required outside exactly seven days, and short/monthly periods stay excluded.
-        Some(length) => declared_weekly && (Duration::days(6)..=Duration::days(8)).contains(&length),
+        Some(length) => declared_weekly && is_week_length(length),
         None => declared_weekly,
     }
 }
-pub fn weekly(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
+fn hours(d: Duration) -> f64 {
+    d.num_milliseconds() as f64 / 3_600_000.
+}
+/// A weekly metric's length, reset and age, or `None` when it isn't weekly or they are unknown.
+fn week(metric: &Metric, now: DateTime<Utc>) -> Option<(Duration, DateTime<Utc>, Duration)> {
     if !is_weekly(metric) {
         return None;
     }
     let length = metric.window_length()?;
     let reset = metric.resets_at()?;
-    if now.signed_duration_since(reset.checked_sub_signed(length)?) < Duration::hours(12) {
-        return None;
-    }
-    let hours = |d: Duration| d.num_milliseconds() as f64 / 3_600_000.;
+    Some((
+        length,
+        reset,
+        now.signed_duration_since(reset.checked_sub_signed(length)?),
+    ))
+}
+fn score(metric: &Metric, now: DateTime<Utc>, length: Duration, reset: DateTime<Utc>) -> Option<Score> {
     calculate(
         metric.projected_at_reset(now)? * 100.,
         metric.time_to_limit().map(hours),
@@ -82,14 +117,38 @@ pub fn weekly(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
         hours(length),
     )
 }
+/// The firm score: the metric's own forecast, from [`WEEKLY_MATURITY`]. Only firm scores may color or rank.
+pub fn weekly(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
+    let (length, reset, age) = week(metric, now)?;
+    if age < WEEKLY_MATURITY {
+        return None;
+    }
+    score(metric, now, length, reset)
+}
+/// The early score from [`EARLY_SUS`] until [`WEEKLY_MATURITY`]: usage so far over the time elapsed, projected to
+/// the reset. The pace stays local to the score, so the metric still forecasts nothing and raises no risk.
+pub fn early(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
+    let (length, reset, age) = week(metric, now)?;
+    if !(EARLY_SUS..WEEKLY_MATURITY).contains(&age) {
+        return None;
+    }
+    let mut provisional = metric.clone();
+    // Only windows and quotas carry the length a week needs.
+    if let Metric::Window { pace, .. } | Metric::Quota { pace, .. } = &mut provisional {
+        *pace = Some(Pace::per_hour(metric.used_fraction()? / hours(age)));
+    }
+    score(&provisional, now, length, reset)
+}
+/// The score to show: firm once mature, early before that, `None` for `SUS n/a`.
+pub fn reading(metric: &Metric, now: DateTime<Utc>) -> Option<Reading> {
+    weekly(metric, now)
+        .map(Reading::Firm)
+        .or_else(|| early(metric, now).map(Reading::Early))
+}
 
 pub fn text(metric: &Metric, now: DateTime<Utc>) -> Option<String> {
     if is_weekly(metric) {
-        Some(
-            weekly(metric, now)
-                .map(|s| format!("SUS {}", s.value()))
-                .unwrap_or_else(|| "SUS n/a".into()),
-        )
+        Some(reading(metric, now).map_or_else(|| "SUS n/a".into(), Reading::text))
     } else if matches!(metric,Metric::Activity{label,..} if label=="Turns/7d") {
         Some("SUS n/a".into())
     } else {
@@ -305,6 +364,65 @@ mod tests {
         }
         assert_eq!(weekly(&m, now()), None);
         assert_eq!(calculate(f64::NAN, None, 5., 168.), None);
+    }
+    /// `used` of a seven-day week `age` old, with the provider pace that only exists from the 12-hour maturity.
+    fn young(used: f64, age: Duration) -> Metric {
+        Metric::Window {
+            label: "Weekly".into(),
+            used,
+            resets_at: now() + Duration::days(7) - age,
+            pace: (age >= WEEKLY_MATURITY).then(|| Pace::per_hour(used / (age.num_seconds() as f64 / 3600.))),
+            length: Some(Duration::days(7)),
+        }
+    }
+    #[test]
+    fn early_from_one_hour_and_firm_from_twelve() {
+        let second = Duration::seconds(1);
+        for (age, expected) in [
+            (EARLY_SUS - second, None),
+            (EARLY_SUS, Some(Reading::Early(Score(7)))),
+            (Duration::hours(6), Some(Reading::Early(Score(45)))),
+            (WEEKLY_MATURITY - second, Some(Reading::Early(Score(89)))),
+            (WEEKLY_MATURITY, Some(Reading::Firm(Score(89)))),
+        ] {
+            let metric = young(0.08, age);
+            assert_eq!(reading(&metric, now()), expected, "{age}");
+            assert_eq!(weekly(&metric, now()).is_some(), age >= WEEKLY_MATURITY, "{age}");
+            let shown = expected.map_or_else(|| "SUS n/a".into(), Reading::text);
+            assert_eq!(text(&metric, now()), Some(shown), "{age}");
+        }
+        assert_eq!(Reading::Early(Score(55)).text(), "SUS 55 early");
+        assert!(Reading::Early(Score(55)).is_early() && !Reading::Firm(Score(55)).is_early());
+        // Five-hour windows still have no SUS at any age.
+        let mut session = young(0.3, Duration::hours(2));
+        if let Metric::Window { length, resets_at, .. } = &mut session {
+            *length = Some(Duration::hours(5));
+            *resets_at = now() + Duration::hours(3);
+        }
+        assert_eq!(reading(&session, now()), None);
+        assert_eq!(text(&session, now()), None);
+    }
+    #[test]
+    fn an_early_score_never_forecasts_raises_risk_alerts_or_fleet() {
+        // 30% two hours into a week projects a lockout: a red-range early score, and nothing else may act on it.
+        let at = now();
+        let metric = young(0.3, Duration::hours(2));
+        assert_eq!(reading(&metric, at), Some(Reading::Early(Score(4))));
+        assert_eq!(metric.projected_at_reset(at), None);
+        assert_eq!(metric.time_to_limit(), None);
+        let account = AccountSnapshot::new(AccountId::new("early"), Provider::Claude, vec![metric], at);
+        assert_eq!(account.assess(at).severity(), crate::Severity::Normal);
+        assert_eq!(subscription_score(&account, at), None, "fleet SUS stays firm-only");
+        let alerts = crate::alerts::evaluate(
+            &crate::alerts::AlertSettings {
+                enabled: true,
+                ..Default::default()
+            },
+            &Default::default(),
+            &[account],
+            at,
+        );
+        assert!(alerts.notify.is_empty());
     }
     #[test]
     fn score_inputs_reject_each_invalid_dimension_and_accept_zero_usage() {

@@ -283,7 +283,10 @@ pub struct TileView {
     /// Freshness or what's wrong: "Last known, 5m ago", "Unavailable", "Resets in 2d".
     pub note: Option<String>,
     pub sus: Option<String>,
+    /// The firm score, the only one that colors the tile.
     pub sus_score: Option<u8>,
+    /// The early score while no firm one exists; shown marked early and subtle.
+    pub sus_early: Option<u8>,
 }
 
 impl TileView {
@@ -300,6 +303,7 @@ impl TileView {
             note: Some(note.to_owned()),
             sus: None,
             sus_score: None,
+            sus_early: None,
         }
     }
 
@@ -358,6 +362,9 @@ impl TileView {
                 freshness,
             ),
         };
+        // A firm score wins; an early one shows only without it.
+        let sus_score = found.sus.filter(|s| *s <= 100);
+        let sus_early = found.sus_early.filter(|s| *s <= 100 && sus_score.is_none());
         Self {
             account: Some(account.id.clone()),
             metric: Some(found.key.clone()),
@@ -368,14 +375,13 @@ impl TileView {
             percent,
             status,
             note,
-            sus: found.sus_eligible.then(|| {
-                found
-                    .sus
-                    .filter(|s| *s <= 100)
-                    .map(|s| format!("SUS {s}"))
-                    .unwrap_or_else(|| "SUS n/a".into())
+            sus: found.sus_eligible.then(|| match (sus_score, sus_early) {
+                (Some(s), _) => format!("SUS {s}"),
+                (None, Some(s)) => format!("SUS {s} early"),
+                (None, None) => "SUS n/a".into(),
             }),
-            sus_score: found.sus.filter(|s| *s <= 100),
+            sus_score,
+            sus_early,
         }
     }
 }
@@ -478,6 +484,9 @@ fn tile(view: &TileView, compact: bool) -> Value {
             Some(_) => "Attention",
             None => "Default",
         });
+        if view.sus_score.is_none() && view.sus_early.is_some() {
+            score["isSubtle"] = json!(true);
+        }
         items.push(score);
     }
     if let Some(big) = &view.big {
@@ -695,6 +704,7 @@ mod tests {
                 projected_percent: None,
                 outlook: None,
                 sus: None,
+                sus_early: None,
                 sus_eligible: false,
             }],
         }
@@ -896,6 +906,7 @@ mod tests {
             projected_percent: None,
             outlook: None,
             sus: None,
+            sus_early: None,
             sus_eligible: false,
         });
         snapshot.accounts[0].metrics[0].resets_at = Some(now() + chrono::Duration::hours(50));
@@ -921,6 +932,32 @@ mod tests {
             tiles,
         };
         tile_views(snapshot.as_ref().unwrap(), &config, size, now()).unwrap()
+    }
+
+    #[test]
+    fn an_early_score_is_marked_and_subtle_and_a_firm_one_wins() {
+        let mut snapshot = snapshot().unwrap();
+        let metric = &mut snapshot.accounts[0].metrics[0];
+        metric.sus_eligible = true;
+        metric.sus_early = Some(45);
+        let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
+        assert_eq!(view.sus.as_deref(), Some("SUS 45 early"));
+        assert_eq!((view.sus_score, view.sus_early), (None, Some(45)));
+        let score = &tile(&view, false)["items"][1];
+        assert_eq!(score["text"], "SUS 45 early");
+        assert_eq!(score["color"], "Default", "an early score never takes a band color");
+        assert_eq!(score["isSubtle"], true);
+        snapshot.accounts[0].metrics[0].sus = Some(89);
+        let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
+        assert_eq!(view.sus.as_deref(), Some("SUS 89"));
+        assert_eq!((view.sus_score, view.sus_early), (Some(89), None));
+        let score = &tile(&view, false)["items"][1];
+        assert_eq!(score["color"], "Warning");
+        assert!(score.get("isSubtle").is_none());
+        snapshot.accounts[0].metrics[0].sus = None;
+        snapshot.accounts[0].metrics[0].sus_early = Some(101);
+        let view = TileView::of(&snapshot.accounts[0], Some("weekly"), TileMode::Automatic, now());
+        assert_eq!(view.sus.as_deref(), Some("SUS n/a"));
     }
 
     #[test]

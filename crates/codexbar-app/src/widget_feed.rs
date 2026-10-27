@@ -110,6 +110,9 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         sus: codexbar_core::sus::weekly(metric, now)
             .filter(|_| account.sus_eligible(metric, now))
             .map(|s| s.value()),
+        sus_early: codexbar_core::sus::early(metric, now)
+            .filter(|_| account.sus_eligible(metric, now))
+            .map(|s| s.value()),
         sus_eligible: codexbar_core::sus::text(metric, now)
             .filter(|_| account.sus_eligible(metric, now))
             .is_some(),
@@ -195,6 +198,29 @@ mod tests {
         assert_eq!(x.metrics[0].used_percent, None);
         assert!(x.metrics[0].sus_eligible);
         assert_eq!(x.metrics[0].sus, None);
+    }
+
+    #[test]
+    fn an_early_week_carries_its_early_score_apart_from_the_firm_one() {
+        let early = AccountSnapshot::new(
+            AccountId::new("claude-early"),
+            Provider::Claude,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used: 0.08,
+                resets_at: now() + chrono::Duration::hours(162),
+                pace: None,
+                length: Some(chrono::Duration::days(7)),
+            }],
+            now(),
+        );
+        let snapshot = build(&[early], &States::new(), &Layout::default(), now());
+        let metric = &snapshot.accounts[0].metrics[0];
+        assert_eq!(
+            (metric.sus, metric.sus_early, metric.sus_eligible),
+            (None, Some(45), true)
+        );
+        assert_eq!(metric.projected_percent, None);
     }
 
     #[test]

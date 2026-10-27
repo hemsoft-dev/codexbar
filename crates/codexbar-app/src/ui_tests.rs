@@ -8346,7 +8346,8 @@ fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut Tes
                 Some(if mature {
                     "Gemini Models weekly: SUS 42, red"
                 } else {
-                    "Gemini Models weekly: SUS n/a, unavailable"
+                    // Early before 12 hours: shown, but without a band, a forecast or a projected marker.
+                    "Gemini Models weekly: SUS 42 early, early estimate"
                 })
             );
             assert_eq!(
@@ -8375,6 +8376,56 @@ fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut Tes
                 assert!(window.try_find("window-5h-gemini-bar-sus").is_none());
             })
             .unwrap();
+        }
+    }
+}
+
+/// A Claude week through the real parser: n/a before 1 hour, an uncolored early SUS until 12 hours, then the firm,
+/// banded score with its forecast, in both layouts.
+#[gpui_kit::test]
+fn claude_weekly_sus_is_early_from_one_hour_and_firm_from_twelve(cx: &mut TestAppContext) {
+    use chrono::Duration as Age;
+    let settings = TempSettings::new("claude-weekly-early", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    for wide in [false, true] {
+        gpui_kit::VisualTestContext::from_window(handle, cx)
+            .simulate_resize(size(px(if wide { 2600. } else { 1440. }), px(1000.)));
+        for (age, sus, forecast) in [
+            (Age::minutes(59), "Weekly: SUS n/a, unavailable", None),
+            (Age::hours(1), "Weekly: SUS 7 early, early estimate", None),
+            (
+                Age::hours(12) - Age::minutes(1),
+                "Weekly: SUS 89 early, early estimate",
+                None,
+            ),
+            (
+                Age::hours(12),
+                "Weekly: SUS 89, yellow",
+                Some("Weekly: 112% at reset · runs out in 5d 18h"),
+            ),
+            (
+                Age::hours(15) + Age::minutes(55),
+                "Weekly: SUS 84, yellow",
+                Some("Weekly: 84% at reset"),
+            ),
+        ] {
+            cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_claude_weekly(age, cx)));
+            cx.run_until_parked();
+            cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            let (badge, at_reset) = if wide {
+                ("window-weekly-claude-bar-sus", "window-weekly-claude-at-reset")
+            } else {
+                ("focus-metric-1-sus", "focus-metric-1-at-reset")
+            };
+            assert_eq!(label(cx, handle, badge).as_deref(), Some(sus), "{age} wide={wide}");
+            if wide {
+                assert_eq!(
+                    label(cx, handle, at_reset).as_deref(),
+                    Some(forecast.unwrap_or("Weekly at reset: no forecast")),
+                    "{age}"
+                );
+            }
         }
     }
 }
