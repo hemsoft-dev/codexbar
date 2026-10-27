@@ -1289,6 +1289,47 @@ mod tests {
     }
 
     #[test]
+    fn weekly_sus_is_early_from_one_hour_and_firm_with_its_forecast_from_twelve() {
+        // A week that reset Mon 05:00 ET at 8% used was SUS n/a at 20:55 ET: pace waited for 10% of it, 16h 48m.
+        let start: DateTime<Utc> = "2026-10-26T09:00:00Z".parse().unwrap();
+        let body = r#"{"seven_day":{"utilization":8,"resets_at":"2026-11-02T09:00:00Z"}}"#;
+        for (age, sus, firm) in [
+            (Duration::minutes(59), "SUS n/a", false),
+            (Duration::hours(1), "SUS 7 early", false),
+            (Duration::hours(12) - Duration::minutes(1), "SUS 89 early", false),
+            (Duration::hours(12), "SUS 89", true),
+            (Duration::hours(15) + Duration::minutes(55), "SUS 84", true),
+        ] {
+            let at = start + age;
+            let account = parse_usage(body, None, at).unwrap();
+            let weekly = &account.metrics()[0];
+            assert_eq!(weekly.projected_at_reset(at).is_some(), firm, "{age}");
+            assert_eq!(codexbar_core::sus::text(weekly, at).as_deref(), Some(sus), "{age}");
+            assert_eq!(
+                codexbar_core::sus::subscription_score(&account, at).map(|s| format!("SUS {}", s.value())),
+                firm.then(|| sus.to_owned()),
+                "{age}: only a firm score reaches the subscription"
+            );
+        }
+        // The session still projects only after 10% of its five hours.
+        let at = start + Duration::hours(12);
+        for (elapsed, projects) in [(Duration::minutes(29), false), (Duration::minutes(30), true)] {
+            let reset = (at + Duration::hours(5) - elapsed).to_rfc3339();
+            let account = parse_usage(
+                &format!(r#"{{"five_hour":{{"utilization":10,"resets_at":"{reset}"}}}}"#),
+                None,
+                at,
+            )
+            .unwrap();
+            assert_eq!(
+                account.metrics()[0].projected_at_reset(at).is_some(),
+                projects,
+                "{elapsed}"
+            );
+        }
+    }
+
+    #[test]
     fn flat_fields_fill_in_without_promoting_codenames() {
         let account = with(&format!(
             r#"{SESSION_FLAT},

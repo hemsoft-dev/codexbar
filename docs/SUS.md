@@ -12,6 +12,23 @@ The score uses the metric's existing projection and time-to-limit, so its inputs
 agree with the forecast beside the bar. A window must be at least 12 hours old,
 have a known weekly length/reset, and have a forecast. Otherwise it says `SUS n/a`.
 
+Every weekly window forecasts from the same 12-hour maturity, the fresh-window
+guard of usage.py and the Pi dashboard. That covers Claude, Codex, Grok/X,
+OpenCode, Gemini Apps, Antigravity and Muse Code. Five-hour, monthly and other
+periods keep their existing rule: 10% of the period, at least 10 minutes (Muse
+Code's five-hour window: two minutes). Before this, every week except
+Antigravity's waited for 10% of the week, 16h 48m. That left SUS `n/a` until then.
+
+From 1 hour until 12 hours a weekly window shows an **early** SUS, such as
+`SUS 45 early`. It applies the same formula to usage so far divided by the time
+elapsed. It is gray, has no band color, and its tooltip says it firms up at 12
+hours. The bar still shows `no forecast`. An early value never sets a forecast,
+status, risk badge, ordering, alert or fleet SUS. Widget feeds carry it as
+`susEarly`, apart from the firm `sus`, so an older widget reader can't color it.
+At 12 hours the firm score and its band take over. Before 1 hour it says
+`SUS n/a`. Both thresholds are shared constants in `codexbar_core::sus`:
+`EARLY_SUS` and `WEEKLY_MATURITY`.
+
 - Projected usage at reset at or below 100%: SUS is the projected percentage.
 - Above 100%: `lockout = max(hours_to_reset - hours_to_limit, 0)` and
   `SUS = clamp(100 - 100 * lockout / window_hours, 0, 100)`.
@@ -34,7 +51,7 @@ third-party models and Gemini Apps remain informational and never supply its
 row, subscription/fleet SUS, risk, severity ordering or alerts. Missing Models
 weekly stays `n/a`; another pool never replaces it. Its existing alert keys clear
 on a successful partial refresh. Other providers keep their existing policies.
-Exclude `n/a` pools and unavailable/restored/failed accounts. Weight each scored
+Exclude `n/a` and early pools and unavailable/restored/failed accounts. Weight each scored
 subscription once by its monthly USD price. Separate paid accounts at the same
 vendor remain separate subscriptions; multiple pools within one account never
 multiply its price. If any scored subscription's price is unknown, all scored
@@ -137,3 +154,6 @@ binary with `--demo`, `CODEXBAR_CAPTURE_SUS=1`, a fresh `CODEXBAR_CAPTURE_DIR`, 
 The harness asserts rendered fixture values before capturing light/dark states,
 including dated price changes, unknown prices, young Argon, and verified X
 quota versus activity. These synthetic UI fixtures never read live providers.
+`CODEXBAR_CAPTURE_CLAUDE_WEEKLY=1` instead renders an 8%-used Claude week
+through the production parser at 59 minutes (`n/a`), 1 hour, 6 hours and
+11h 59m (early), 12 hours and 15h 55m (firm). It asserts each state's label.

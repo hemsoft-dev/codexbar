@@ -18,6 +18,7 @@ use crate::dashboard::{Dashboard, DashboardView};
 use crate::theme::Appearance;
 
 mod antigravity;
+mod claude_weekly;
 mod gemini_status;
 mod gemini_weekly;
 mod muse;
@@ -39,6 +40,7 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
         || std::env::var_os("CODEXBAR_CAPTURE_MUSE").is_some()
         || std::env::var_os("CODEXBAR_CAPTURE_GEMINI_WEEKLY").is_some()
         || std::env::var_os("CODEXBAR_CAPTURE_GEMINI_STATUS").is_some()
+        || std::env::var_os("CODEXBAR_CAPTURE_CLAUDE_WEEKLY").is_some()
     {
         let hub = crate::settings_hub::SettingsHub::global(cx);
         assert!(
@@ -205,6 +207,9 @@ async fn run(
     }
     if std::env::var_os("CODEXBAR_CAPTURE_GEMINI_WEEKLY").is_some() {
         saved.extend(gemini_weekly::run(cx, handle, dashboard, dir).await);
+    }
+    if std::env::var_os("CODEXBAR_CAPTURE_CLAUDE_WEEKLY").is_some() {
+        saved.extend(claude_weekly::run(cx, handle, dashboard, dir).await);
     }
     if std::env::var_os("CODEXBAR_CAPTURE_GEMINI_STATUS").is_some() {
         saved.extend(gemini_status::run(cx, handle, dashboard, dir).await);

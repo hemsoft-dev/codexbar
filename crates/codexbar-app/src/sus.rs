@@ -3,41 +3,59 @@ use crate::{account_table::AccountState, settings_hub::SettingsHub};
 use chrono::{DateTime, Utc};
 use codexbar_core::{
     AccountSnapshot, Metric,
-    sus::{self, Band, Score},
+    sus::{self, Band, Reading},
 };
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, tooltip::Tooltip};
 use gpui_kit::{
-    AnyElement, App, ElementId, InteractiveElement as _, IntoElement as _, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div,
+    AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement as _, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div, prelude::FluentBuilder as _,
 };
 use std::collections::{BTreeMap, HashMap};
 
-pub fn badge(score: Option<Score>, id: &str, label: &str, cx: &App) -> AnyElement {
-    let text = score
-        .map(|s| format!("SUS {}", s.value()))
-        .unwrap_or_else(|| "SUS n/a".into());
-    let (color, band) = match score.map(Score::band) {
-        Some(Band::Green) => (cx.theme().success, "green"),
-        Some(Band::Yellow) => (
-            gpui_kit::rgb(if cx.theme().is_dark() { 0xe3b341 } else { 0x9a6700 }).into(),
-            "yellow",
-        ),
-        Some(Band::Red) => (cx.theme().danger, "red"),
-        None => (cx.theme().muted_foreground, "unavailable"),
-    };
+pub fn badge(reading: Option<Reading>, id: &str, label: &str, cx: &App) -> AnyElement {
+    let text = reading.map_or_else(|| "SUS n/a".into(), Reading::text);
+    let (color, band) = tone(reading, cx);
+    let early = reading.is_some_and(Reading::is_early);
     let spoken = format!("{label}: {text}, {band}");
-    let tooltip:gpui_kit::SharedString="Weekly Sub Utilization Score, 0–100. 100 means using the full allowance at reset. Green ≥90, yellow ≥75, red <75. n/a means too little data, a window younger than 12 hours, or no quota forecast.".into();
+    let tooltip = tooltip(early);
     div()
         .id(ElementId::Name(id.to_owned().into()))
         .test_support()
         .aria_label(spoken)
         .flex_none()
         .text_xs()
-        .font_semibold()
+        .when(!early, |this| this.font_semibold())
         .text_color(color)
         .child(text)
         .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .into_any_element()
+}
+/// The color and spoken band. An early score is provisional: it takes no band color, and the label says so instead.
+fn tone(reading: Option<Reading>, cx: &App) -> (Hsla, &'static str) {
+    match reading {
+        Some(Reading::Firm(score)) => match score.band() {
+            Band::Green => (cx.theme().success, "green"),
+            Band::Yellow => (
+                gpui_kit::rgb(if cx.theme().is_dark() { 0xe3b341 } else { 0x9a6700 }).into(),
+                "yellow",
+            ),
+            Band::Red => (cx.theme().danger, "red"),
+        },
+        Some(Reading::Early(_)) => (cx.theme().muted_foreground.opacity(0.75), "early estimate"),
+        None => (cx.theme().muted_foreground, "unavailable"),
+    }
+}
+fn tooltip(early: bool) -> SharedString {
+    if early {
+        "Early Weekly Sub Utilization Score: an estimate from usage in this week's first hours. It firms up 12 hours \
+         into the window. Until then it has no color and never raises risk or an alert."
+            .into()
+    } else {
+        "Weekly Sub Utilization Score, 0–100. 100 means using the full allowance at reset. Green ≥90, yellow ≥75, red \
+         <75. Early values from 1 hour are gray and marked early until 12 hours. n/a means too little data, a window \
+         younger than 1 hour, or no quota forecast."
+            .into()
+    }
 }
 pub fn metric(
     account: &AccountSnapshot,
@@ -53,7 +71,7 @@ pub fn metric(
 }
 fn metric_badge(metric: &Metric, now: DateTime<Utc>, id: &str, cx: &App) -> Option<AnyElement> {
     if sus::is_weekly(metric) {
-        Some(badge(sus::weekly(metric, now), id, metric.label(), cx))
+        Some(badge(sus::reading(metric, now), id, metric.label(), cx))
     } else if matches!(metric,Metric::Activity{label,..} if label=="Turns/7d") {
         Some(badge(None, id, "Tracked activity has no quota", cx))
     } else {

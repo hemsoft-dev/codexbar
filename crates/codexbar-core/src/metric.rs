@@ -393,6 +393,15 @@ impl Metric {
         Some(Duration::seconds((hours * 3600.0).round() as i64))
     }
 
+    /// This metric with `pace`, for a projection that must not change the metric itself, such as an early SUS.
+    /// Metrics without a pace are returned unchanged.
+    pub fn with_pace(mut self, new: Pace) -> Self {
+        if let Self::Window { pace, .. } | Self::Quota { pace, .. } | Self::Spend { pace, .. } = &mut self {
+            *pace = Some(new);
+        }
+        self
+    }
+
     /// The fraction of the limit used by the reset if the current pace holds (#83): above 1 when it runs out first.
     /// `None` without a pace, a limit or a reset still ahead, so nothing is projected from too little information.
     pub fn projected_at_reset(&self, now: DateTime<Utc>) -> Option<f64> {
@@ -619,6 +628,44 @@ mod tests {
         let to_limit = metric.time_to_limit().unwrap();
         assert_eq!(to_limit.num_minutes(), 25);
         assert!(metric.exhausts_before_reset(now()));
+    }
+
+    #[test]
+    fn with_pace_sets_only_metrics_that_have_a_pace() {
+        let pace = Pace::per_hour(0.02);
+        let window = Metric::Window {
+            label: "Weekly".into(),
+            used: 0.1,
+            resets_at: now() + Duration::hours(10),
+            pace: None,
+            length: Some(Duration::days(7)),
+        };
+        let quota = Metric::Quota {
+            label: "Requests".into(),
+            used: 10,
+            limit: 100,
+            resets_at: now() + Duration::hours(10),
+            pace: None,
+            length: None,
+        };
+        let spend = Metric::Spend {
+            label: "Spend".into(),
+            spent: Money::from_cents(500),
+            limit: Some(Money::from_cents(1000)),
+            resets_at: Some(now() + Duration::hours(10)),
+            pace: None,
+        };
+        for metric in [window, quota, spend] {
+            let paced = metric.clone().with_pace(pace);
+            assert!(paced.projected_at_reset(now()).is_some(), "{}", metric.label());
+            assert_eq!(metric.projected_at_reset(now()), None, "the original is unchanged");
+        }
+        let balance = Metric::Balance {
+            label: "Credits".into(),
+            remaining: Money::from_cents(1842),
+            burn_per_day: None,
+        };
+        assert_eq!(balance.clone().with_pace(pace), balance);
     }
 
     #[test]

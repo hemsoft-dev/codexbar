@@ -227,7 +227,13 @@ fn preview_tile(ix: usize, view: &TileView, compact: bool, cx: &App) -> impl Int
         )
         .when_some(view.sus.as_ref(), |this, _| {
             this.child(crate::sus::badge(
-                view.sus_score.and_then(codexbar_core::sus::Score::from_value),
+                {
+                    use codexbar_core::sus::{Reading, Score};
+                    view.sus_score
+                        .and_then(Score::from_value)
+                        .map(Reading::Firm)
+                        .or_else(|| view.sus_early.and_then(Score::from_value).map(Reading::Early))
+                },
                 &format!("widget-{ix}-sus"),
                 "Widget weekly score",
                 cx,

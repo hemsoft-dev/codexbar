@@ -7,7 +7,10 @@ use std::{
 };
 
 use chrono::{DateTime, Duration, Utc};
-use codexbar_core::{AccountId, AccountSnapshot, Metric, Pace, Provider};
+use codexbar_core::{
+    AccountId, AccountSnapshot, Metric, Pace, Provider,
+    sus::{WEEKLY_MATURITY, is_week_length},
+};
 use serde_json::Value;
 
 use crate::{CommandError, CommandOptions, CommandRunner, ProviderError, UsageProvider};
@@ -133,6 +136,15 @@ fn safe_text(value: Option<&Value>, max: usize, valid: impl Fn(char) -> bool) ->
         .map(str::to_owned)
 }
 
+/// The week forecasts from the shared weekly maturity; the five-hour window keeps its two minutes.
+fn maturity(length: Duration) -> Duration {
+    if is_week_length(length) {
+        WEEKLY_MATURITY
+    } else {
+        Duration::minutes(2)
+    }
+}
+
 /// Parse only the documented quota fields. Public for sanitized producer-to-consumer qualification.
 pub fn parse(text: &str, fetched: DateTime<Utc>, id: &str, label: &str) -> Result<AccountSnapshot, ProviderError> {
     if text.len() > OUTPUT_LIMIT {
@@ -177,7 +189,7 @@ pub fn parse(text: &str, fetched: DateTime<Utc>, id: &str, label: &str) -> Resul
         };
         let elapsed = length - (resets_at - observed);
         let used = percent / 100.0;
-        let pace = (elapsed >= Duration::minutes(2))
+        let pace = (elapsed >= maturity(length))
             .then(|| Pace::per_hour(used * 3600.0 / elapsed.num_milliseconds() as f64 * 1000.0));
         metrics.push(Metric::Window {
             label: label.into(),
@@ -262,6 +274,25 @@ mod tests {
         assert!((1.255..1.265).contains(&projected));
         assert_eq!(codexbar_core::sus::subscription_score(&a, now()), None);
         assert_eq!(a.subscription_price(), None);
+    }
+    #[test]
+    fn the_week_forecasts_from_twelve_hours_and_the_window_from_two_minutes() {
+        let observed = now().timestamp_millis();
+        for (elapsed, projects) in [
+            (Duration::hours(12) - Duration::minutes(1), false),
+            (Duration::hours(12), true),
+        ] {
+            let reset = observed + (Duration::days(7) - elapsed).num_milliseconds();
+            let payload = MEASURED.replace("1793577600000", &reset.to_string());
+            let weekly = reading(&payload, now()).unwrap().metrics()[1].clone();
+            assert_eq!(weekly.projected_at_reset(now()).is_some(), projects, "{elapsed}");
+        }
+        for (elapsed, projects) in [(Duration::seconds(119), false), (Duration::minutes(2), true)] {
+            let reset = observed + (Duration::hours(5) - elapsed).num_milliseconds();
+            let payload = MEASURED.replace("1793053104000", &reset.to_string());
+            let window = reading(&payload, now()).unwrap().metrics()[0].clone();
+            assert_eq!(window.projected_at_reset(now()).is_some(), projects, "{elapsed}");
+        }
     }
     #[test]
     fn zero_exhausted_partial_and_bad_siblings_keep_truthful_values() {

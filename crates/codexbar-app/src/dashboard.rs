@@ -1439,6 +1439,46 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// A synthetic Claude usage payload through the real parser, `age` into a week that is 8% used, for the early
+    /// and firm SUS states without live accounts.
+    #[cfg(any(test, feature = "capture"))]
+    pub(crate) fn capture_claude_weekly(&mut self, age: Duration, cx: &mut Context<Self>) {
+        use codexbar_core::{AccountId, Provider};
+        assert!(matches!(self.source, DataSource::Demo));
+        let start: DateTime<Utc> = "2026-10-26T09:00:00Z".parse().unwrap();
+        let now = start + age;
+        crate::sus::capture_time(now, cx);
+        let session = (now + Duration::hours(3)).to_rfc3339();
+        let week = (start + Duration::days(7)).to_rfc3339();
+        let payload = format!(
+            r#"{{"five_hour":{{"utilization":12,"resets_at":"{session}"}},"seven_day":{{"utilization":8,"resets_at":"{week}"}}}}"#
+        );
+        let parsed = codexbar_providers::claude::parse_usage(&payload, None, now).unwrap();
+        let account = AccountSnapshot::new(
+            AccountId::new("claude"),
+            Provider::Claude,
+            parsed.metrics().to_vec(),
+            now,
+        )
+        .with_plan("Max 20x")
+        .with_trend(vec![0.02, 0.05, 0.08]);
+        self.states.clear();
+        self.placeholders.clear();
+        self.set_accounts(vec![account], cx);
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude", |choice| {
+            choice.rings = vec!["weekly".into()];
+        });
+        self.focus_account(
+            &crate::handoff::FocusRequest {
+                account: "claude".into(),
+                metric: Some("weekly".into()),
+            },
+            cx,
+        );
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     /// Synthetic CLI payload through the real parser, for age-boundary rendering without live accounts.
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn capture_gemini_weekly(&mut self, mature: bool, cx: &mut Context<Self>) {
@@ -1911,7 +1951,12 @@ impl Dashboard {
                         gpui_kit::component::h_flex()
                             .gap_1()
                             .child(div().text_xs().child("Fleet"))
-                            .child(crate::sus::badge(fleet.score, "fleet-sus", "Fleet SUS", cx))
+                            .child(crate::sus::badge(
+                                fleet.score.map(codexbar_core::sus::Reading::Firm),
+                                "fleet-sus",
+                                "Fleet SUS",
+                                cx,
+                            ))
                             .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
                                 if fleet.subscriptions == 0 {
                                     "no eligible subscriptions".to_owned()

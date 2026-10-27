@@ -286,8 +286,13 @@ pub struct WidgetMetric {
     /// before the reset; none with nothing to project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outlook: Option<String>,
+    /// The firm score, from the week's 12-hour maturity; the only one a tile may color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sus: Option<u8>,
+    /// The early, provisional score from 1 hour while `sus` is absent: shown marked early, never colored. A separate
+    /// field so an older provider, which knows only `sus`, can never color it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sus_early: Option<u8>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sus_eligible: bool,
 }
@@ -409,6 +414,7 @@ mod tests {
                     projected_percent: Some(130.0),
                     outlook: Some("2d 12h early".into()),
                     sus: None,
+                    sus_early: None,
                     sus_eligible: false,
                 }],
             }],
@@ -454,6 +460,19 @@ mod tests {
             "builder": {"tiles": [], "refresh": "withCodexBar"}
         });
         assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn an_early_score_has_its_own_field() {
+        let mut snapshot = sample();
+        let metric = &mut snapshot.accounts[0].metrics[0];
+        metric.sus_early = Some(45);
+        metric.sus_eligible = true;
+        let text = serde_json::to_value(&snapshot).unwrap();
+        let written = &text["accounts"][0]["metrics"][0];
+        assert_eq!(written["susEarly"], 45);
+        assert!(written.get("sus").is_none(), "an older reader sees no score to color");
+        assert_eq!(serde_json::from_value::<WidgetSnapshot>(text).unwrap(), snapshot);
     }
 
     #[test]

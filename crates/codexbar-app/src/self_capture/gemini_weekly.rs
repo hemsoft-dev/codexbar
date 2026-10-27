@@ -33,7 +33,8 @@ pub(super) async fn run(
                         Some(if mature {
                             "Gemini Models weekly: SUS 42, red"
                         } else {
-                            "Gemini Models weekly: SUS n/a, unavailable"
+                            // 11h 59m 59s: an early score, without a forecast until 12 hours.
+                            "Gemini Models weekly: SUS 42 early, early estimate"
                         })
                     );
                     let ring = window.find("focus-share");

@@ -689,6 +689,40 @@ mod tests {
     }
 
     #[test]
+    fn weekly_sus_is_early_from_one_hour_and_firm_with_its_forecast_from_twelve() {
+        let window = |key: &str, used: u32, length: i64, elapsed: Duration| {
+            let reset = (now() + Duration::seconds(length) - elapsed).timestamp();
+            let payload = format!(
+                r#"{{"rate_limit":{{"{key}":{{"used_percent":{used},"reset_at":{reset},"limit_window_seconds":{length}}}}}}}"#
+            );
+            parse_usage(&payload, now()).unwrap()
+        };
+        for (elapsed, sus, firm) in [
+            (Duration::minutes(59), "SUS n/a", false),
+            (Duration::hours(1), "SUS 7 early", false),
+            (Duration::hours(12) - Duration::minutes(1), "SUS 89 early", false),
+            (Duration::hours(12), "SUS 89", true),
+        ] {
+            let account = window("secondary_window", 8, 604_800, elapsed);
+            let weekly = account.primary().unwrap();
+            assert_eq!(weekly.projected_at_reset(now()).is_some(), firm, "{elapsed}");
+            assert_eq!(
+                codexbar_core::sus::text(weekly, now()).as_deref(),
+                Some(sus),
+                "{elapsed}"
+            );
+        }
+        for (elapsed, projects) in [(Duration::minutes(29), false), (Duration::minutes(30), true)] {
+            let account = window("primary_window", 10, 18_000, elapsed);
+            assert_eq!(
+                account.primary().unwrap().projected_at_reset(now()).is_some(),
+                projects,
+                "{elapsed}"
+            );
+        }
+    }
+
+    #[test]
     fn a_codex_plan_transition_refreshes_without_changing_identity_or_the_account_name() {
         struct Plans(Mutex<Vec<String>>);
         impl HttpClient for Plans {
