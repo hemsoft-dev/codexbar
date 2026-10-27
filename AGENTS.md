@@ -15,6 +15,13 @@ Keep the normal CI workflow and the required Codex review integration; Copilot d
 Do not install autonomous issue processing, scheduled audit, or PR promotion
 workflows without an explicit maintainer request.
 
+Main requires the CI checks in [the versioned ruleset](.github/rulesets/main.json).
+Approving reviews are not required. The merge owner must verify a clean Codex
+review of the exact current head and resolve every review conversation through
+[the merge policy](docs/merge-policy.md), including conditional Package checks,
+before a guarded merge. Codex review is enforced by this process, not a GitHub
+approval or status requirement. Never bypass the ruleset or admin enforcement.
+
 ## Quality Gates
 
 The Rust app (`crates/`) is the product; the C# / WPF app under `src/` is retired (2026-10-09). All changes must pass
