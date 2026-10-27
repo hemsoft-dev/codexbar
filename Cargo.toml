@@ -30,6 +30,8 @@ windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Cr
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# cargo-llvm-cov sets cfg(coverage) for instrumented builds (#275).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
