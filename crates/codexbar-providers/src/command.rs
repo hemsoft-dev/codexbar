@@ -26,6 +26,9 @@ pub struct CommandOptions {
     pub remove_env: Vec<&'static str>,
     pub env: Vec<(&'static str, &'static str)>,
     pub output_limit: usize,
+    /// Stderr text that means the command now waits for a person (agy's sign-in prompt). Once it appears the command
+    /// is stopped and returns what it wrote so far, instead of waiting out its deadline. ASCII case is ignored.
+    pub stop_on_stderr: Option<&'static str>,
 }
 
 /// Runs local CLIs (`gh`, …). A seam so provider logic is tested without touching the user's real tools.
@@ -93,6 +96,9 @@ impl SystemCommandRunner {
             &mut process.inner.child,
             timeout,
             options.map_or(OUTPUT_LIMIT, |o| o.output_limit.min(OUTPUT_LIMIT)),
+            options
+                .and_then(|o| o.stop_on_stderr)
+                .filter(|marker| !marker.is_empty()),
         );
         let status = process.stop().map_err(|_| CommandError::Failed)?;
         let (stdout, stderr) = output?;
@@ -198,19 +204,35 @@ impl<P: pipe::Pipe> Capture<P> {
     }
 }
 
+/// Whether `marker` (ignoring ASCII case) ends somewhere past `searched`, the length already searched.
+fn contains_from(bytes: &[u8], searched: usize, marker: &[u8]) -> bool {
+    let start = searched.saturating_sub(marker.len() - 1);
+    bytes[start..]
+        .windows(marker.len())
+        .any(|window| window.eq_ignore_ascii_case(marker))
+}
+
 fn collect(
     child: &mut std::process::Child,
     timeout: Duration,
     limit: usize,
+    stop_on_stderr: Option<&str>,
 ) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
     let start = Instant::now();
     let mut stdout = Capture::new(child.stdout.take().ok_or(CommandError::Failed)?, limit)?;
     let mut stderr = Capture::new(child.stderr.take().ok_or(CommandError::Failed)?, limit)?;
+    let mut searched = 0;
     loop {
         if start.elapsed() >= timeout {
             return Err(CommandError::TimedOut);
         }
         let progress = stdout.drain()? | stderr.drain()?;
+        if let Some(marker) = stop_on_stderr {
+            if contains_from(&stderr.bytes, searched, marker.as_bytes()) {
+                return Ok((stdout.bytes, stderr.bytes));
+            }
+            searched = stderr.bytes.len();
+        }
         if stdout.closed && stderr.closed && pipe::finished(child).map_err(|_| CommandError::Failed)? {
             return Ok((stdout.bytes, stderr.bytes));
         }
@@ -230,5 +252,19 @@ mod tests {
             spawn_error(std::io::ErrorKind::PermissionDenied.into()),
             CommandError::Failed
         );
+    }
+
+    #[test]
+    fn a_stop_marker_is_found_across_reads_and_case() {
+        let text = b"Authentication required. Please visit the URL";
+        assert!(contains_from(text, 0, b"authentication required"));
+        // Split after "Authenti": the second read still finds the marker that straddles both.
+        assert!(contains_from(text, 8, b"authentication required"));
+        assert!(!contains_from(text, text.len(), b"authentication required"));
+        assert!(!contains_from(
+            b"Authentication succeeded",
+            0,
+            b"authentication required"
+        ));
     }
 }

@@ -81,6 +81,7 @@ impl<R: CommandRunner> UsageProvider for MuseProvider<R> {
             ],
             env: vec![("MUSE_LOGIN", "0"), ("MUSE_NO_AUTO_UPDATE", "1")],
             output_limit: OUTPUT_LIMIT,
+            stop_on_stderr: None,
         };
         let result = self
             .runner

@@ -265,6 +265,7 @@ pub(super) fn qualify(program: &str, scratch: &Path) {
             remove_env: Vec::new(),
             env: Vec::new(),
             output_limit: CAP,
+            stop_on_stderr: None,
         };
         let start = Instant::now();
         let result = SystemCommandRunner.run_with_options(

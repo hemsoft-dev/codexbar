@@ -24,17 +24,22 @@ pub struct GeminiProvider<H: HttpClient> {
 }
 
 fn coding_error(error: &CodingError) -> ProviderError {
-    ProviderError::Refused {
-        reason: match error {
-            CodingError::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
-            CodingError::TooOld => {
-                "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
-            }
-            CodingError::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
-            CodingError::TimedOut => "The Antigravity CLI took too long to report coding usage.",
-            CodingError::Unknown => "The Antigravity CLI reported coding usage in a shape CodexBar doesn't know.",
-        },
-    }
+    let reason = match error {
+        // Shown as signed out, never as a failed read, so the row points at the Settings sign-in (#282).
+        CodingError::SignedOut => {
+            return ProviderError::NotSignedIn {
+                hint: "Sign in to the Antigravity CLI from Settings > Accounts.",
+            };
+        }
+        CodingError::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
+        CodingError::TooOld => {
+            "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
+        }
+        CodingError::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
+        CodingError::TimedOut => "The Antigravity CLI took too long to report coding usage.",
+        CodingError::Unknown => "The Antigravity CLI reported coding usage in a shape CodexBar doesn't know.",
+    };
+    ProviderError::Refused { reason }
 }
 
 impl<H: HttpClient> GeminiProvider<H> {
@@ -227,6 +232,27 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         "2026-10-12T00:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn a_signed_out_cli_shows_the_account_as_not_signed_in() {
+        let runner = Arc::new(Agy(Ok(crate::CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: "Authentication required. Please visit the URL to log in:\n".to_owned(),
+        })));
+        let outcome = GeminiProvider::new(Offline, None, "gm-1", "Personal")
+            .with_coding(runner)
+            .fetch_outcomes(now())
+            .unwrap();
+        let AccountOutcome::Failed { error, .. } = &outcome[0] else {
+            panic!("a signed-out CLI has no usage to show");
+        };
+        assert!(error.needs_sign_in());
+        assert_eq!(
+            error.to_string(),
+            "Not signed in. Sign in to the Antigravity CLI from Settings > Accounts."
+        );
     }
 
     #[test]
