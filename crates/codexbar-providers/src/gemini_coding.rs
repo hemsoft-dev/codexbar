@@ -33,17 +33,31 @@ const BUCKETS: [(&str, &str, &str, i64); 5] = [
 /// that no creation flag on the agy CodexBar starts can reach. Agy run in a terminal still updates itself.
 pub const NO_AUTO_UPDATE: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
 
-/// Runs the Antigravity CLI without its self-updater: `SystemCommandRunner` with `NO_AUTO_UPDATE` set, and any
-/// value inherited from this process replaced. Its working folder stays this process's.
+/// A signed-out agy starts Google sign-in in the default browser unless it believes it runs over SSH; then it prints
+/// the sign-in link and waits for a pasted code instead (#282). A background read must never open a browser, so agy
+/// is told it runs over a loopback SSH session. The interactive sign-in (`gemini_login`) clears these again.
+pub const NO_BROWSER: [(&str, &str); 2] = [
+    ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
+    ("SSH_CLIENT", "127.0.0.1 50000 22"),
+];
+
+/// What a signed-out agy prints to stderr before it waits for a sign-in nobody here can give (`Authentication
+/// required. Please visit the URL to log in:`, or `Error: authentication required.` with no terminal).
+const SIGN_IN_PROMPT: &str = "authentication required";
+
+/// Runs the Antigravity CLI without its self-updater or browser sign-in: `SystemCommandRunner` with `NO_AUTO_UPDATE`
+/// and `NO_BROWSER` set, any value inherited from this process replaced, and the run stopped as soon as agy asks for
+/// sign-in. Its working folder stays this process's.
 pub struct CliRunner;
 
 impl CliRunner {
     fn options() -> CommandOptions {
         CommandOptions {
             cwd: None,
-            remove_env: vec![NO_AUTO_UPDATE.0],
-            env: vec![NO_AUTO_UPDATE],
+            remove_env: vec![NO_AUTO_UPDATE.0, NO_BROWSER[0].0, NO_BROWSER[1].0, "SSH_TTY"],
+            env: vec![NO_AUTO_UPDATE, NO_BROWSER[0], NO_BROWSER[1]],
             output_limit: 8 * 1024 * 1024,
+            stop_on_stderr: Some(SIGN_IN_PROMPT),
         }
     }
 }
@@ -73,6 +87,8 @@ pub fn cli() -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CodingError {
     NotInstalled,
+    /// The CLI has no sign-in and asked for one, which only the Settings sign-in can give.
+    SignedOut,
     /// The CLI is older than the first version whose `/usage` runs no model turn, or its version can't be read.
     TooOld,
     /// The CLI ran but didn't report usage: usually not signed in.
@@ -81,17 +97,34 @@ pub enum CodingError {
     Unknown,
 }
 
-impl std::fmt::Display for CodingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl CodingError {
+    /// What the account shows for this failure.
+    pub fn message(&self) -> &'static str {
+        match self {
             Self::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
+            Self::SignedOut => "The Antigravity CLI is signed out. Sign in again from Settings > Accounts.",
             Self::TooOld => {
                 "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
             }
             Self::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
             Self::TimedOut => "The Antigravity CLI took too long to report coding usage.",
             Self::Unknown => "The Antigravity CLI reported coding usage in a shape CodexBar doesn't know.",
-        })
+        }
+    }
+
+    /// Why a `/usage` run that didn't succeed failed: agy asking for sign-in, or anything else.
+    fn of_failed_run(stderr: &str) -> Self {
+        if stderr.to_ascii_lowercase().contains(SIGN_IN_PROMPT) {
+            Self::SignedOut
+        } else {
+            Self::NoUsage
+        }
+    }
+}
+
+impl std::fmt::Display for CodingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
     }
 }
 
@@ -220,7 +253,7 @@ pub fn fetch(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Result<CodingUsa
             CommandError::Failed => CodingError::NoUsage,
         })?;
     if !output.success {
-        return Err(CodingError::NoUsage);
+        return Err(CodingError::of_failed_run(&output.stderr));
     }
     parse(&output.stdout, now)
 }
@@ -420,10 +453,21 @@ mod tests {
     }
 
     #[test]
-    fn codexbar_runs_the_cli_with_its_self_updater_off() {
+    fn codexbar_runs_the_cli_with_its_self_updater_and_browser_sign_in_off() {
         let options = CliRunner::options();
-        assert_eq!(options.env, [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]);
-        assert_eq!(options.remove_env, ["AGY_CLI_DISABLE_AUTO_UPDATE"]);
+        assert_eq!(
+            options.env,
+            [
+                ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
+                ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
+                ("SSH_CLIENT", "127.0.0.1 50000 22"),
+            ]
+        );
+        assert_eq!(
+            options.remove_env,
+            ["AGY_CLI_DISABLE_AUTO_UPDATE", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        );
+        assert_eq!(options.stop_on_stderr, Some("authentication required"));
         assert_eq!(options.cwd, None);
         assert_eq!(options.output_limit, 8 * 1024 * 1024);
         assert_eq!(
@@ -476,6 +520,51 @@ mod tests {
         );
         let missing = Runner(Err(CommandError::NotFound), Default::default());
         assert_eq!(fetch(&missing, now()), Err(CodingError::NotInstalled));
+    }
+
+    #[test]
+    fn a_cli_that_asks_for_sign_in_is_reported_signed_out() {
+        for stderr in [
+            "Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth\n",
+            "Error: authentication required. Run 'agy' to log in, then retry.\n",
+        ] {
+            let runner = Runner(
+                Ok(CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: stderr.to_owned(),
+                }),
+                Default::default(),
+            );
+            assert_eq!(fetch(&runner, now()), Err(CodingError::SignedOut), "{stderr}");
+        }
+        let other = Runner(
+            Ok(CommandOutput {
+                success: false,
+                stdout: String::new(),
+                stderr: "error: something else".to_owned(),
+            }),
+            Default::default(),
+        );
+        assert_eq!(fetch(&other, now()), Err(CodingError::NoUsage));
+    }
+
+    #[test]
+    fn every_coding_error_has_its_own_message() {
+        let all = [
+            CodingError::NotInstalled,
+            CodingError::SignedOut,
+            CodingError::TooOld,
+            CodingError::NoUsage,
+            CodingError::TimedOut,
+            CodingError::Unknown,
+        ];
+        let messages: std::collections::HashSet<_> = all.iter().map(CodingError::message).collect();
+        assert_eq!(messages.len(), all.len());
+        for error in all {
+            assert_eq!(error.to_string(), error.message());
+            assert!(error.message().contains("Antigravity CLI"), "{error}");
+        }
     }
 
     /// Answers `--version` with `version`, and records whether `/usage` was ever asked.

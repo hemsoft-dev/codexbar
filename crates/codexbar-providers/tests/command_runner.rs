@@ -88,6 +88,7 @@ fn fixture(args: &[String]) -> ! {
                 ],
                 env: vec![("MUSE_LOGIN", "0"), ("MUSE_NO_AUTO_UPDATE", "1")],
                 output_limit: 4 * MIB,
+                stop_on_stderr: None,
             };
             let executable = std::env::current_exe().unwrap();
             let program = executable.to_str().unwrap();
@@ -121,6 +122,14 @@ fn fixture(args: &[String]) -> ! {
             std::process::exit(7);
         }
         "stdin" => assert_eq!(std::io::stdin().read(&mut [0u8; 1]).unwrap(), 0),
+        // A CLI that asks for sign-in and then waits for it, as a signed-out agy does (#282).
+        "prompt" => {
+            std::io::stdout().write_all(b"partial").unwrap();
+            std::io::stderr()
+                .write_all(b"Authentication required. Please visit the URL to log in:\n")
+                .unwrap();
+            idle()
+        }
         "hang" | "overflow" => {
             let _held = hold(Path::new(&args[1]));
             if args[0] == "overflow" {
@@ -389,11 +398,27 @@ fn main() {
         remove_env: vec!["AGY_CLI_DISABLE_AUTO_UPDATE"],
         env: vec![("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
         output_limit: MIB,
+        stop_on_stderr: None,
     };
     let kept = SystemCommandRunner
         .run_with_options(program, &["unscoped", here.to_str().unwrap()], timeout, &unscoped)
         .unwrap();
     assert!(kept.success, "{}", kept.stderr);
+    let prompting = CommandOptions {
+        stop_on_stderr: Some("authentication required"),
+        ..unscoped.clone()
+    };
+    let start = Instant::now();
+    let stopped = SystemCommandRunner
+        .run_with_options(program, &["prompt"], timeout, &prompting)
+        .expect("a sign-in prompt stops the command instead of timing it out");
+    assert!(start.elapsed() < timeout, "stopped at the prompt, not the deadline");
+    assert!(!stopped.success);
+    assert!(
+        stopped.stderr.starts_with("Authentication required."),
+        "{}",
+        stopped.stderr
+    );
     #[cfg(windows)]
     {
         let console = Command::new(program).arg("console-parent").output().unwrap();

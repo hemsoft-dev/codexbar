@@ -21,6 +21,22 @@ The `command_runner` fixture starts its child from a process with no console,
 as the release app does. The child and an ordinary grandchild must both report
 no console window.
 
+## No interactive sign-in
+
+A background CLI must never start a sign-in the user didn't ask for. A
+signed-out agy opens Google sign-in in the default browser (`rundll32
+url.dll,FileProtocolHandler` on Windows, `open` on macOS) and then waits 60 s
+for a code, unless it believes it runs over SSH; then it prints the link and
+waits instead ([Authenticate](https://antigravity.google/docs/install/)). A
+closed stdin doesn't stop it on Windows, where agy reads the code from the
+hidden console's `CONIN$`. `CliRunner` therefore sets a loopback
+`SSH_CONNECTION` and `SSH_CLIENT`, removes any inherited `SSH_TTY`, and sets
+`CommandOptions.stop_on_stderr` to agy's `authentication required`. The runner
+stops the command once that text appears on stderr, ignoring ASCII case, and
+returns what it wrote, so the account reports "Not signed in" at once instead
+of timing out. The Settings sign-in window clears the SSH variables again and
+uses agy's local browser flow.
+
 ## Output and deadline policy
 
 - Read stdout and stderr while the child runs. Each loop drains at most one

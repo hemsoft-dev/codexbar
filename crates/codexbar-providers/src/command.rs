@@ -26,6 +26,9 @@ pub struct CommandOptions {
     pub remove_env: Vec<&'static str>,
     pub env: Vec<(&'static str, &'static str)>,
     pub output_limit: usize,
+    /// Stderr text that means the command now waits for a person (agy's sign-in prompt). Once it appears the command
+    /// is stopped and returns what it wrote so far, instead of waiting out its deadline. ASCII case is ignored.
+    pub stop_on_stderr: Option<&'static str>,
 }
 
 /// Runs local CLIs (`gh`, …). A seam so provider logic is tested without touching the user's real tools.
@@ -93,6 +96,7 @@ impl SystemCommandRunner {
             &mut process.inner.child,
             timeout,
             options.map_or(OUTPUT_LIMIT, |o| o.output_limit.min(OUTPUT_LIMIT)),
+            options.and_then(|o| o.stop_on_stderr).unwrap_or_default(),
         );
         let status = process.stop().map_err(|_| CommandError::Failed)?;
         let (stdout, stderr) = output?;
@@ -198,20 +202,56 @@ impl<P: pipe::Pipe> Capture<P> {
     }
 }
 
+/// Watches stderr for `CommandOptions::stop_on_stderr`, ignoring ASCII case. Each look searches only what arrived
+/// since the previous one, plus enough before it to catch a marker split across reads. An empty marker never matches.
+struct StopMarker<'a> {
+    marker: &'a [u8],
+    searched: usize,
+}
+
+impl StopMarker<'_> {
+    fn seen(&mut self, stderr: &[u8]) -> bool {
+        let start = self.searched.saturating_sub(self.marker.len().saturating_sub(1));
+        self.searched = stderr.len();
+        !self.marker.is_empty()
+            && stderr[start..]
+                .windows(self.marker.len())
+                .any(|window| window.eq_ignore_ascii_case(self.marker))
+    }
+}
+
+/// Whether collection is over: the command asked for a person (`stop`), or both streams closed and it exited.
+fn complete<P: pipe::Pipe>(
+    child: &mut std::process::Child,
+    stdout_closed: bool,
+    stderr: &Capture<P>,
+    stop: &mut StopMarker,
+) -> Result<bool, CommandError> {
+    if stop.seen(&stderr.bytes) {
+        return Ok(true);
+    }
+    Ok(stdout_closed && stderr.closed && pipe::finished(child).map_err(|_| CommandError::Failed)?)
+}
+
 fn collect(
     child: &mut std::process::Child,
     timeout: Duration,
     limit: usize,
+    stop_on_stderr: &str,
 ) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
     let start = Instant::now();
     let mut stdout = Capture::new(child.stdout.take().ok_or(CommandError::Failed)?, limit)?;
     let mut stderr = Capture::new(child.stderr.take().ok_or(CommandError::Failed)?, limit)?;
+    let mut stop = StopMarker {
+        marker: stop_on_stderr.as_bytes(),
+        searched: 0,
+    };
     loop {
         if start.elapsed() >= timeout {
             return Err(CommandError::TimedOut);
         }
         let progress = stdout.drain()? | stderr.drain()?;
-        if stdout.closed && stderr.closed && pipe::finished(child).map_err(|_| CommandError::Failed)? {
+        if complete(child, stdout.closed, &stderr, &mut stop)? {
             return Ok((stdout.bytes, stderr.bytes));
         }
         if !progress {
@@ -230,5 +270,27 @@ mod tests {
             spawn_error(std::io::ErrorKind::PermissionDenied.into()),
             CommandError::Failed
         );
+    }
+
+    #[test]
+    fn a_stop_marker_is_found_across_reads_and_case() {
+        let text = b"Authentication required. Please visit the URL";
+        let marker = |searched| StopMarker {
+            marker: b"authentication required",
+            searched,
+        };
+        assert!(marker(0).seen(text));
+        // Read in two parts, split after "Authenti": the second look finds the marker that straddles both.
+        let mut split = marker(0);
+        assert!(!split.seen(&text[..8]));
+        assert!(split.seen(text));
+        // Already searched to the end: nothing new to find.
+        assert!(!marker(text.len()).seen(text));
+        assert!(!marker(0).seen(b"Authentication succeeded"));
+        let mut none = StopMarker {
+            marker: b"",
+            searched: 0,
+        };
+        assert!(!none.seen(text), "an empty marker never stops a command");
     }
 }
