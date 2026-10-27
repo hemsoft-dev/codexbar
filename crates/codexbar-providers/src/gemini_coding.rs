@@ -97,9 +97,10 @@ pub enum CodingError {
     Unknown,
 }
 
-impl std::fmt::Display for CodingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
+impl CodingError {
+    /// What the account shows for this failure.
+    pub fn message(&self) -> &'static str {
+        match self {
             Self::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
             Self::SignedOut => "The Antigravity CLI is signed out. Sign in again from Settings > Accounts.",
             Self::TooOld => {
@@ -108,7 +109,22 @@ impl std::fmt::Display for CodingError {
             Self::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
             Self::TimedOut => "The Antigravity CLI took too long to report coding usage.",
             Self::Unknown => "The Antigravity CLI reported coding usage in a shape CodexBar doesn't know.",
-        })
+        }
+    }
+
+    /// Why a `/usage` run that didn't succeed failed: agy asking for sign-in, or anything else.
+    fn of_failed_run(stderr: &str) -> Self {
+        if stderr.to_ascii_lowercase().contains(SIGN_IN_PROMPT) {
+            Self::SignedOut
+        } else {
+            Self::NoUsage
+        }
+    }
+}
+
+impl std::fmt::Display for CodingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
     }
 }
 
@@ -236,11 +252,8 @@ pub fn fetch(runner: &dyn CommandRunner, now: DateTime<Utc>) -> Result<CodingUsa
             CommandError::TimedOut => CodingError::TimedOut,
             CommandError::Failed => CodingError::NoUsage,
         })?;
-    if output.stderr.to_ascii_lowercase().contains(SIGN_IN_PROMPT) {
-        return Err(CodingError::SignedOut);
-    }
     if !output.success {
-        return Err(CodingError::NoUsage);
+        return Err(CodingError::of_failed_run(&output.stderr));
     }
     parse(&output.stdout, now)
 }
@@ -534,6 +547,24 @@ mod tests {
             Default::default(),
         );
         assert_eq!(fetch(&other, now()), Err(CodingError::NoUsage));
+    }
+
+    #[test]
+    fn every_coding_error_has_its_own_message() {
+        let all = [
+            CodingError::NotInstalled,
+            CodingError::SignedOut,
+            CodingError::TooOld,
+            CodingError::NoUsage,
+            CodingError::TimedOut,
+            CodingError::Unknown,
+        ];
+        let messages: std::collections::HashSet<_> = all.iter().map(CodingError::message).collect();
+        assert_eq!(messages.len(), all.len());
+        for error in all {
+            assert_eq!(error.to_string(), error.message());
+            assert!(error.message().contains("Antigravity CLI"), "{error}");
+        }
     }
 
     /// Answers `--version` with `version`, and records whether `/usage` was ever asked.

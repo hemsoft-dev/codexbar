@@ -96,9 +96,7 @@ impl SystemCommandRunner {
             &mut process.inner.child,
             timeout,
             options.map_or(OUTPUT_LIMIT, |o| o.output_limit.min(OUTPUT_LIMIT)),
-            options
-                .and_then(|o| o.stop_on_stderr)
-                .filter(|marker| !marker.is_empty()),
+            options.and_then(|o| o.stop_on_stderr).unwrap_or_default(),
         );
         let status = process.stop().map_err(|_| CommandError::Failed)?;
         let (stdout, stderr) = output?;
@@ -204,36 +202,56 @@ impl<P: pipe::Pipe> Capture<P> {
     }
 }
 
-/// Whether `marker` (ignoring ASCII case) ends somewhere past `searched`, the length already searched.
-fn contains_from(bytes: &[u8], searched: usize, marker: &[u8]) -> bool {
-    let start = searched.saturating_sub(marker.len() - 1);
-    bytes[start..]
-        .windows(marker.len())
-        .any(|window| window.eq_ignore_ascii_case(marker))
+/// Watches stderr for `CommandOptions::stop_on_stderr`, ignoring ASCII case. Each look searches only what arrived
+/// since the previous one, plus enough before it to catch a marker split across reads. An empty marker never matches.
+struct StopMarker<'a> {
+    marker: &'a [u8],
+    searched: usize,
+}
+
+impl StopMarker<'_> {
+    fn seen(&mut self, stderr: &[u8]) -> bool {
+        let start = self.searched.saturating_sub(self.marker.len().saturating_sub(1));
+        self.searched = stderr.len();
+        !self.marker.is_empty()
+            && stderr[start..]
+                .windows(self.marker.len())
+                .any(|window| window.eq_ignore_ascii_case(self.marker))
+    }
+}
+
+/// Whether collection is over: the command asked for a person (`stop`), or both streams closed and it exited.
+fn complete<P: pipe::Pipe>(
+    child: &mut std::process::Child,
+    stdout_closed: bool,
+    stderr: &Capture<P>,
+    stop: &mut StopMarker,
+) -> Result<bool, CommandError> {
+    if stop.seen(&stderr.bytes) {
+        return Ok(true);
+    }
+    Ok(stdout_closed && stderr.closed && pipe::finished(child).map_err(|_| CommandError::Failed)?)
 }
 
 fn collect(
     child: &mut std::process::Child,
     timeout: Duration,
     limit: usize,
-    stop_on_stderr: Option<&str>,
+    stop_on_stderr: &str,
 ) -> Result<(Vec<u8>, Vec<u8>), CommandError> {
     let start = Instant::now();
     let mut stdout = Capture::new(child.stdout.take().ok_or(CommandError::Failed)?, limit)?;
     let mut stderr = Capture::new(child.stderr.take().ok_or(CommandError::Failed)?, limit)?;
-    let mut searched = 0;
+    let mut stop = StopMarker {
+        marker: stop_on_stderr.as_bytes(),
+        searched: 0,
+    };
     loop {
         if start.elapsed() >= timeout {
             return Err(CommandError::TimedOut);
         }
         let progress = stdout.drain()? | stderr.drain()?;
-        if let Some(marker) = stop_on_stderr {
-            if contains_from(&stderr.bytes, searched, marker.as_bytes()) {
-                return Ok((stdout.bytes, stderr.bytes));
-            }
-            searched = stderr.bytes.len();
-        }
-        if stdout.closed && stderr.closed && pipe::finished(child).map_err(|_| CommandError::Failed)? {
+        if complete(child, stdout.closed, &stderr, &mut stop)? {
             return Ok((stdout.bytes, stderr.bytes));
         }
         if !progress {
@@ -257,14 +275,22 @@ mod tests {
     #[test]
     fn a_stop_marker_is_found_across_reads_and_case() {
         let text = b"Authentication required. Please visit the URL";
-        assert!(contains_from(text, 0, b"authentication required"));
-        // Split after "Authenti": the second read still finds the marker that straddles both.
-        assert!(contains_from(text, 8, b"authentication required"));
-        assert!(!contains_from(text, text.len(), b"authentication required"));
-        assert!(!contains_from(
-            b"Authentication succeeded",
-            0,
-            b"authentication required"
-        ));
+        let marker = |searched| StopMarker {
+            marker: b"authentication required",
+            searched,
+        };
+        assert!(marker(0).seen(text));
+        // Read in two parts, split after "Authenti": the second look finds the marker that straddles both.
+        let mut split = marker(0);
+        assert!(!split.seen(&text[..8]));
+        assert!(split.seen(text));
+        // Already searched to the end: nothing new to find.
+        assert!(!marker(text.len()).seen(text));
+        assert!(!marker(0).seen(b"Authentication succeeded"));
+        let mut none = StopMarker {
+            marker: b"",
+            searched: 0,
+        };
+        assert!(!none.seen(text), "an empty marker never stops a command");
     }
 }

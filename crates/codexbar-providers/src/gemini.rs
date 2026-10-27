@@ -24,22 +24,15 @@ pub struct GeminiProvider<H: HttpClient> {
 }
 
 fn coding_error(error: &CodingError) -> ProviderError {
-    let reason = match error {
+    match error {
         // Shown as signed out, never as a failed read, so the row points at the Settings sign-in (#282).
-        CodingError::SignedOut => {
-            return ProviderError::NotSignedIn {
-                hint: "Sign in to the Antigravity CLI from Settings > Accounts.",
-            };
-        }
-        CodingError::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
-        CodingError::TooOld => {
-            "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
-        }
-        CodingError::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
-        CodingError::TimedOut => "The Antigravity CLI took too long to report coding usage.",
-        CodingError::Unknown => "The Antigravity CLI reported coding usage in a shape CodexBar doesn't know.",
-    };
-    ProviderError::Refused { reason }
+        CodingError::SignedOut => ProviderError::NotSignedIn {
+            hint: "Sign in to the Antigravity CLI from Settings > Accounts.",
+        },
+        _ => ProviderError::Refused {
+            reason: error.message(),
+        },
+    }
 }
 
 impl<H: HttpClient> GeminiProvider<H> {
