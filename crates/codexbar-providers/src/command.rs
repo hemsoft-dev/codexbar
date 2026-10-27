@@ -179,6 +179,10 @@ impl<P: pipe::Pipe> Capture<P> {
         })
     }
 
+    fn open_pipe(&self) -> Option<&P> {
+        (!self.closed).then_some(&self.pipe)
+    }
+
     /// At most one chunk per stream per turn, so a noisy stream cannot starve the other stream or the deadline.
     fn drain(&mut self) -> Result<bool, CommandError> {
         if self.closed {
@@ -255,7 +259,11 @@ fn collect(
             return Ok((stdout.bytes, stderr.bytes));
         }
         if !progress {
-            std::thread::sleep(CHECK_INTERVAL.min(timeout.saturating_sub(start.elapsed())));
+            pipe::wait(
+                stdout.open_pipe(),
+                stderr.open_pipe(),
+                CHECK_INTERVAL.min(timeout.saturating_sub(start.elapsed())),
+            );
         }
     }
 }
