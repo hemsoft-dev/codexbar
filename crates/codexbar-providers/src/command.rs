@@ -280,6 +280,27 @@ mod tests {
         );
     }
 
+    /// Every drain outcome on a real pipe, independent of how a command's writes and EOFs happen to interleave.
+    #[cfg(unix)]
+    #[test]
+    fn a_drain_reports_pending_output_eof_a_closed_stream_and_overflow() {
+        use std::io::Write as _;
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let mut capture = Capture::new(reader, 4).unwrap();
+        assert_eq!(capture.drain(), Ok(false), "nothing written yet");
+        writer.write_all(b"abc").unwrap();
+        assert_eq!(capture.drain(), Ok(true));
+        assert_eq!(capture.bytes, b"abc");
+        writer.write_all(b"de").unwrap();
+        assert_eq!(capture.drain(), Err(CommandError::Failed), "past the 4-byte limit");
+        let (reader, writer) = std::io::pipe().unwrap();
+        let mut capture = Capture::new(reader, 4).unwrap();
+        drop(writer);
+        assert_eq!(capture.drain(), Ok(true), "EOF is progress");
+        assert!(capture.closed);
+        assert_eq!(capture.drain(), Ok(false), "a closed stream is never read again");
+    }
+
     /// Every way a collection turn ends or goes on, independent of which pipe a real command closes first.
     #[cfg(unix)]
     #[test]
