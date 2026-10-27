@@ -20,7 +20,8 @@ that local default-browser consent works.
    enable coding quotas without opening an interactive sign-in window. Confirm
    that the account's label and ID persist after restart and usage refreshes.
 4. For new consent, use a separate Windows test user without Antigravity
-   credentials. After the initial check reports that sign-in is needed, choose
+   credentials. The initial check must open no browser (#282); after it
+   reports that sign-in is needed, choose
    **Open Antigravity sign-in**. Expect the ordinary `agy` terminal and the
    user's default browser. There must be no disposable browser profile,
    embedded browser, debugging port, cookie extraction or browser-policy bypass.
