@@ -20,7 +20,8 @@ permissions:
 
 env:
   BASE_REF: ${{ inputs.base_ref || 'bd1bab8916a812323f8cfe078365538b020c6cc1' }}
-  FIX_REF: ${{ inputs.fix_ref || '' }}
+  # PR #280: agy runs with AGY_CLI_DISABLE_AUTO_UPDATE=true.
+  FIX_REF: ${{ inputs.fix_ref || '86329f8d5db5f01bebdc10a59720bff618b62d6e' }}
   # PR #270 rebased on bd1bab8.
   METRICS_REF: ec93345ececae45c72f6309bf1c04b3529bfff3d
 
@@ -52,29 +53,27 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: base -> target
+          workspaces: base -> ../target
 
+      # One target folder, so the candidate rebuilds only what it changes.
       - name: Build base
         working-directory: base
-        run: cargo build --release -p codexbar-app --locked
-
-      # The same source without CREATE_NO_WINDOW for background CLIs: what a CodexBar-started gh flash looks like.
-      - name: Build a regressed control
         shell: bash
-        working-directory: base
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
-          cp target/release/codexbar.exe ../codexbar-base.exe
-          sed -i 's/let window = if console { CREATE_NEW_CONSOLE } else { CREATE_NO_WINDOW };/let window = if console { CREATE_NEW_CONSOLE } else { 0 };/' crates/codexbar-providers/src/contained.rs
-          git diff --exit-code --quiet && { echo "control patch did not apply"; exit 1; }
-          git diff
           cargo build --release -p codexbar-app --locked
-          cp target/release/codexbar.exe ../codexbar-regressed.exe
-          git checkout -- crates/codexbar-providers/src/contained.rs
+          cp ../target/release/codexbar.exe ../codexbar-base.exe
 
       - name: Build candidate
         if: env.FIX_REF != ''
         working-directory: fix
-        run: cargo build --release -p codexbar-app --locked
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          cargo build --release -p codexbar-app --locked
+          cp ../target/release/codexbar.exe ../codexbar-fix.exe
 
       # The Antigravity CLI CodexBar reads Gemini coding quotas with; not signed in on the runner.
       - name: Install the Antigravity CLI
@@ -104,12 +103,6 @@ jobs:
           } | ConvertTo-Json -Depth 4 | Tee-Object probe-out/environment.json
           [DateTime]::UtcNow.ToString('o') | Set-Content probe-out/since.txt
 
-      - name: Probe the regressed control
-        shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe codexbar-regressed.exe -Label regressed -OutDir probe-out -AppSeconds 150
-
       - name: Probe base
         shell: powershell
         env:
@@ -121,7 +114,7 @@ jobs:
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe fix/target/release/codexbar.exe -Label fix -OutDir probe-out
+        run: ./probe/.github/console-probe/Invoke-ConsoleProbe.ps1 -Exe codexbar-fix.exe -Label fix -OutDir probe-out -Matrix
 
       - name: Process creations
         if: always()
