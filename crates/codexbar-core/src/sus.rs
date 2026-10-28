@@ -132,6 +132,16 @@ pub fn early(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
     if !(EARLY_SUS..WEEKLY_MATURITY).contains(&age) {
         return None;
     }
+    early_score(metric, now, length, reset, age)
+}
+
+fn early_score(
+    metric: &Metric,
+    now: DateTime<Utc>,
+    length: Duration,
+    reset: DateTime<Utc>,
+    age: Duration,
+) -> Option<Score> {
     let projected = metric.elapsed_projection(now)?;
     let used = metric.used_fraction()?;
     let rate = used / hours(age.max(Duration::minutes(1)));
@@ -142,6 +152,7 @@ pub fn early(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
         hours(length),
     )
 }
+
 /// The score to show: firm once mature, early before that, `None` for `SUS n/a`.
 pub fn reading(metric: &Metric, now: DateTime<Utc>) -> Option<Reading> {
     weekly(metric, now)

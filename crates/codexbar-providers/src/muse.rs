@@ -134,6 +134,11 @@ fn safe_text(value: Option<&Value>, max: usize, valid: impl Fn(char) -> bool) ->
         .map(str::to_owned)
 }
 
+fn allowance_pace(used: f64, elapsed: Duration) -> Option<Pace> {
+    (crate::pace::positive_usage(used) && elapsed >= codexbar_core::sus::WEEKLY_MATURITY)
+        .then(|| Pace::per_hour(used * 3_600_000.0 / elapsed.num_milliseconds() as f64))
+}
+
 /// Parse only the documented quota fields. Public for sanitized producer-to-consumer qualification.
 pub fn parse(text: &str, fetched: DateTime<Utc>, id: &str, label: &str) -> Result<AccountSnapshot, ProviderError> {
     if text.len() > OUTPUT_LIMIT {
@@ -178,8 +183,7 @@ pub fn parse(text: &str, fetched: DateTime<Utc>, id: &str, label: &str) -> Resul
         };
         let elapsed = length - (resets_at - observed);
         let used = percent / 100.0;
-        let pace = (used > 0.0 && elapsed >= codexbar_core::sus::WEEKLY_MATURITY)
-            .then(|| Pace::per_hour(used * 3600.0 / elapsed.num_milliseconds() as f64 * 1000.0));
+        let pace = allowance_pace(used, elapsed);
         metrics.push(Metric::Window {
             label: label.into(),
             used,
@@ -237,6 +241,28 @@ mod tests {
     fn reading(text: &str, at: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
         parse(text, at, "muse-account", "Demo")
     }
+    #[test]
+    fn allowance_pace_requires_recorded_usage_and_one_hour() {
+        for (used, age, expected) in [
+            (0., Duration::hours(1), None),
+            (0.1, Duration::minutes(59), None),
+            (0.1, Duration::hours(1), Some(0.1)),
+        ] {
+            assert_eq!(allowance_pace(used, age).map(Pace::fraction_per_hour), expected);
+        }
+    }
+
+    #[test]
+    fn oversized_and_incomplete_allowance_objects_are_rejected() {
+        for text in [
+            " ".repeat(OUTPUT_LIMIT + 1),
+            r#"{"schemaVersion":1,"allowance":5}"#.into(),
+            r#"{"schemaVersion":1,"allowance":{}}"#.into(),
+        ] {
+            assert!(reading(&text, now()).is_err());
+        }
+    }
+
     #[test]
     fn measured_mapping_and_observation_are_independent_of_fetch_time() {
         let a = reading(MEASURED, now() + Duration::minutes(1)).unwrap();

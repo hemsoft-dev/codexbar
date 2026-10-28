@@ -14,10 +14,15 @@ fn elapsed_pace_after(
     minimum: Duration,
 ) -> Option<Pace> {
     let elapsed = now - start;
-    if resets_at <= start || now >= resets_at || elapsed < minimum || !used.is_finite() || used <= 0.0 {
+    if resets_at <= start || now >= resets_at || elapsed < minimum {
         return None;
     }
-    Some(Pace::per_hour(used / (elapsed.num_seconds() as f64 / 3600.0)))
+    positive_usage(used).then(|| Pace::per_hour(used / (elapsed.num_seconds() as f64 / 3600.0)))
+}
+
+/// A recorded allowance fraction that can support a pace.
+pub(crate) fn positive_usage(used: f64) -> bool {
+    used.is_finite() && used > 0.0
 }
 
 #[cfg(test)]
@@ -26,6 +31,18 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn positive_usage_rejects_zero_negative_and_nonfinite_values() {
+        for used in [0., -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!positive_usage(used));
+            assert_eq!(
+                elapsed_pace(used, now() - Duration::hours(1), now() + Duration::hours(4), now()),
+                None
+            );
+        }
+        assert!(positive_usage(0.01));
     }
 
     #[test]

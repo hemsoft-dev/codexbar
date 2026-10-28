@@ -391,12 +391,8 @@ impl Metric {
 
     /// Time until the limit is exhausted at the current pace, when the pace is known.
     pub fn time_to_limit(&self) -> Option<Duration> {
-        let (used, pace) = match self {
-            Self::Window { pace: Some(pace), .. }
-            | Self::Quota { pace: Some(pace), .. }
-            | Self::Spend { pace: Some(pace), .. } => (self.used_fraction()?, *pace),
-            _ => return None,
-        };
+        let used = self.used_fraction()?;
+        let pace = self.known_pace()?;
         if pace.fraction_per_hour() <= 0.0 {
             return None;
         }
@@ -441,25 +437,36 @@ impl Metric {
             })
     }
 
+    /// Validate usage and maturity before either a provider pace or elapsed usage is used.
+    fn forecast_usage(&self, now: DateTime<Utc>) -> Option<f64> {
+        let used = match self {
+            Self::Window { used, .. } => *used,
+            _ => self.used_fraction()?,
+        };
+        (used.is_finite() && used > 0.0 && !self.forecast_is_early(now)).then_some(used)
+    }
+
+    fn known_pace(&self) -> Option<Pace> {
+        match self {
+            Self::Window { pace, .. } | Self::Quota { pace, .. } | Self::Spend { pace, .. } => *pace,
+            _ => None,
+        }
+    }
+
+    fn inferred_projection(&self, now: DateTime<Utc>) -> Option<f64> {
+        if self.is_exhausted() {
+            None
+        } else {
+            self.elapsed_projection(now)
+        }
+    }
+
     /// The fraction of the limit used by the reset if the current pace holds (#83): above 1 when it runs out first.
     /// Uses elapsed usage when pace is absent. Nothing is projected without usage, timing, or a future reset.
     pub fn projected_at_reset(&self, now: DateTime<Utc>) -> Option<f64> {
-        if matches!(self, Self::Window { used, .. } if !used.is_finite())
-            || self.used_fraction().is_none_or(|used| !used.is_finite() || used <= 0.0)
-            || self.forecast_is_early(now)
-        {
-            return None;
-        }
-        // Windows retain the source's raw share above 100%; counted quotas keep their existing capped share.
-        let (used, pace) = match self {
-            Self::Window {
-                used, pace: Some(pace), ..
-            } => (*used, *pace),
-            Self::Quota { pace: Some(pace), .. } | Self::Spend { pace: Some(pace), .. } => {
-                (self.used_fraction()?, *pace)
-            }
-            _ if self.is_exhausted() => return None,
-            _ => return self.elapsed_projection(now),
+        let used = self.forecast_usage(now)?;
+        let Some(pace) = self.known_pace() else {
+            return self.inferred_projection(now);
         };
         let left = self.resets_at()? - now;
         if left <= Duration::zero() || !pace.fraction_per_hour().is_finite() || pace.fraction_per_hour() < 0.0 {
@@ -484,11 +491,12 @@ impl Metric {
 
     /// True when the current pace exhausts the limit before it resets.
     pub fn exhausts_before_reset(&self, now: DateTime<Utc>) -> bool {
-        if self.projected_at_reset(now).is_none() {
-            return false;
-        }
-        match (self.time_to_limit_at(now), self.resets_at()) {
-            (Some(to_limit), Some(resets_at)) => now + to_limit < resets_at,
+        match (
+            self.projected_at_reset(now),
+            self.time_to_limit_at(now),
+            self.resets_at(),
+        ) {
+            (Some(_), Some(to_limit), Some(resets_at)) => now + to_limit < resets_at,
             _ => false,
         }
     }
@@ -552,6 +560,44 @@ pub fn group_thousands(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn forecast_validation_and_zero_pace_preserve_truthful_outlooks() {
+        let window = |used, pace| Metric::Window {
+            label: "Weekly".into(),
+            used,
+            pace: Some(Pace::per_hour(pace)),
+            length: Some(Duration::days(7)),
+            resets_at: now() + Duration::hours(167),
+        };
+        for used in [0., -0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(window(used, 0.1).forecast_usage(now()), None);
+            assert_eq!(window(used, 0.1).projected_at_reset(now()), None);
+        }
+        assert_eq!(window(0.2, 0.).forecast_usage(now()), Some(0.2));
+        let stopped = window(0.2, 0.);
+        assert_eq!(stopped.time_to_limit(), None);
+        assert_eq!(stopped.outlook(now()), Some(Outlook::Share(0.2)));
+        assert!(!stopped.exhausts_before_reset(now()));
+        let near_reset = Metric::Window {
+            label: "Session".into(),
+            used: 0.9,
+            pace: Some(Pace::per_hour(0.1)),
+            length: Some(Duration::hours(5)),
+            resets_at: now() + Duration::hours(1) + Duration::seconds(30),
+        };
+        assert_eq!(near_reset.outlook(now()), Some(Outlook::Share(1.)));
+        assert!(near_reset.exhausts_before_reset(now()));
+        let unknown = Metric::Quota {
+            label: "Unknown".into(),
+            used: 1,
+            limit: 0,
+            pace: None,
+            length: None,
+            resets_at: now() + Duration::hours(1),
+        };
+        assert_eq!(unknown.forecast_usage(now()), None);
+    }
+
     #[test]
     fn a_window_length_must_be_plausible() {
         use super::window_length_from_seconds;
