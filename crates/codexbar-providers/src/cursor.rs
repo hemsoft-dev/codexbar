@@ -560,7 +560,7 @@ mod tests {
         let end = "2026-10-21T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
         for at in [
             start - chrono::Duration::hours(1),
-            start + chrono::Duration::hours(12),
+            start + chrono::Duration::minutes(59),
             end,
             end + chrono::Duration::days(1),
         ] {

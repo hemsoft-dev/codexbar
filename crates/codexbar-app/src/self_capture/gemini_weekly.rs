@@ -28,17 +28,9 @@ pub(super) async fn run(
                     } else {
                         "progress-cell-gemini-sus"
                     };
-                    assert_eq!(
-                        window.find(id).label(),
-                        Some(if mature {
-                            "Gemini Models weekly: SUS 42, red"
-                        } else {
-                            // 11h 59m 59s: an early score, without a forecast until 12 hours.
-                            "Gemini Models weekly: SUS 42 early, early estimate"
-                        })
-                    );
+                    assert_eq!(window.find(id).label(), Some("Gemini Models weekly: SUS 42, red"));
                     let ring = window.find("focus-share");
-                    assert_eq!(ring.label().unwrap().contains("42% at reset"), mature);
+                    assert!(ring.label().unwrap().contains("42% at reset"));
                 })
             })
             .expect("CLI fixture must reach the actual table and selected weekly card");

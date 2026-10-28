@@ -103,7 +103,7 @@ fn metric(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>) -> Wid
         // Past 100 when the limit runs out first (#197); the tile says the figure, never a bar beyond its end.
         projected_percent: account
             .evaluation_time(metric, now)
-            .and_then(|at| metric.projected_at_reset(at))
+            .and_then(|at| crate::usage_bar::Forecast::of(metric, at).map(|forecast| forecast.at_reset))
             .map(|share| (share * 100.0).max(0.0)),
         // The share at the reset and when the limit runs out (#234), worded as the dashboard's bars word it.
         outlook: crate::usage_bar::outlook(metric, account, now),
@@ -208,7 +208,7 @@ mod tests {
             vec![Metric::Window {
                 label: "Weekly".into(),
                 used: 0.08,
-                resets_at: now() + chrono::Duration::hours(162),
+                resets_at: now() + chrono::Duration::days(7) - chrono::Duration::minutes(30),
                 pace: None,
                 length: Some(chrono::Duration::days(7)),
             }],
@@ -218,9 +218,10 @@ mod tests {
         let metric = &snapshot.accounts[0].metrics[0];
         assert_eq!(
             (metric.sus, metric.sus_early, metric.sus_eligible),
-            (None, Some(45), true)
+            (None, Some(4), true)
         );
-        assert_eq!(metric.projected_percent, None);
+        assert_eq!(metric.projected_percent, Some(2688.0));
+        assert_eq!(metric.outlook.as_deref(), Some("2688% early at reset"));
     }
 
     #[test]

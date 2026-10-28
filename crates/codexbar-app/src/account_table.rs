@@ -908,10 +908,14 @@ fn at_reset_cell(
         return plain(text, spoken, color);
     };
     let runway = forecast.runway();
-    let tint = match runway {
-        crate::usage_bar::Runway::Ok => cx.theme().foreground,
-        crate::usage_bar::Runway::Tight => cx.theme().warning,
-        crate::usage_bar::Runway::Risk | crate::usage_bar::Runway::Out => cx.theme().danger,
+    let tint = if forecast.provisional {
+        muted
+    } else {
+        match runway {
+            crate::usage_bar::Runway::Ok => cx.theme().foreground,
+            crate::usage_bar::Runway::Tight => cx.theme().warning,
+            crate::usage_bar::Runway::Risk | crate::usage_bar::Runway::Out => cx.theme().danger,
+        }
     };
     let phrase = forecast.phrase();
     h_flex()

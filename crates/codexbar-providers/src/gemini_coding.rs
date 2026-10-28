@@ -291,7 +291,7 @@ mod tests {
             let usage = parse(input, now).unwrap();
             for key in ["gemini-models-weekly", "argon-weekly", "other-models-weekly"] {
                 let metric = usage.metrics.iter().find(|m| m.key() == key).unwrap();
-                if age < Duration::hours(12) {
+                if age < Duration::hours(1) {
                     assert_eq!(metric.projected_at_reset(now), None);
                     assert_eq!(codexbar_core::sus::weekly(metric, now), None);
                 } else {

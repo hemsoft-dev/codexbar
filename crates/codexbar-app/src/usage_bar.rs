@@ -181,6 +181,7 @@ impl BarLayout {
 pub struct Forecast {
     /// The share used by the reset, past 1 when the pace overruns the limit.
     pub at_reset: f64,
+    pub provisional: bool,
     /// The share used now.
     pub used: f64,
     /// How long until the limit runs out, when that comes before the reset.
@@ -203,17 +204,23 @@ impl Forecast {
 
     /// The forecast for `metric` at `now`, when its pace allows one.
     pub fn of(metric: &Metric, now: DateTime<Utc>) -> Option<Self> {
-        let projected = metric.projected_at_reset(now)?;
+        let provisional = metric.forecast_is_early(now);
+        let projected = if provisional {
+            metric.elapsed_projection(now)?.min(99.99)
+        } else {
+            metric.projected_at_reset(now)?
+        };
         let used = metric.used_fraction()?;
         // A limit hit within a minute of the reset is a full share, not an overrun (#206), so it reads "100% at reset"
         // and grades as tight rather than at risk.
         let (at_reset, runs_out_in, early) = match metric.outlook(now) {
-            Some(Outlook::Early(early)) if used < 1.0 => (projected, metric.time_to_limit(), Some(early)),
+            Some(Outlook::Early(early)) if used < 1.0 => (projected, metric.time_to_limit_at(now), Some(early)),
             Some(Outlook::Share(_)) if used < 1.0 => (projected.min(1.0), None, None),
             _ => (projected, None, None),
         };
         Some(Self {
             at_reset,
+            provisional,
             used,
             runs_out_in,
             early,
@@ -222,16 +229,30 @@ impl Forecast {
 
     /// How the bar stands: out, at risk, tight or fine.
     pub fn runway(&self) -> Runway {
-        Runway::of(self.used, Some(self.at_reset))
+        if self.provisional {
+            Runway::Ok
+        } else {
+            Runway::of(self.used, Some(self.at_reset))
+        }
     }
 
     /// "112%": the share at the reset.
     pub fn share(&self) -> String {
-        format!("{:.0}%", self.at_reset.max(0.0) * 100.0)
+        if self.provisional && self.at_reset >= 99.99 {
+            return "≥9999% early".into();
+        }
+        format!(
+            "{:.0}%{}",
+            self.at_reset.max(0.0) * 100.0,
+            if self.provisional { " early" } else { "" }
+        )
     }
 
     /// What the runway says beside the share: "runs out in 5d 4h", "limit reached", "near limit", or nothing.
     pub fn phrase(&self) -> Option<String> {
+        if self.provisional {
+            return None;
+        }
         match self.runway() {
             Runway::Out => Some("limit reached".to_owned()),
             Runway::Risk => Some(match self.runs_out_in {
@@ -368,7 +389,9 @@ impl Projection {
         };
         // The share at the reset and when the limit runs out (#234), with how early that is (#206) and the pace. The
         // bar draws the same share the words say, so a limit hit at the reset is a full bar, not an overrun.
-        let projected = forecast.map(|forecast| forecast.at_reset);
+        let projected = forecast
+            .filter(|forecast| !forecast.provisional)
+            .map(|forecast| forecast.at_reset);
         let outlook = match forecast {
             Some(forecast) => {
                 let mut told = forecast.text();
@@ -408,6 +431,7 @@ impl Projection {
                 Metric::Balance { .. } | Metric::Activity { .. } => {
                     Runway::of_severity(codexbar_core::assess(metric, now).severity())
                 }
+                _ if forecast.is_some_and(|forecast| forecast.provisional) => Runway::Ok,
                 _ => Runway::of(used, projected),
             },
             label,
@@ -501,9 +525,10 @@ fn no_projection(metric: &Metric, pace: Option<Pace>, now: DateTime<Utc>) -> &'s
         Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { .. } => {
             match (metric.resets_at(), pace) {
                 (Some(at), _) if at <= now => "The reset is due; nothing left to project",
+                _ if metric.used_fraction() == Some(0.0) => "No usage recorded in this window",
                 // A spend's pace needs the period's start, which some providers never say (Cursor).
                 (_, None) if matches!(metric, Metric::Spend { .. }) => "No pace is known for this spend",
-                (_, None) => "Too early in the window to project",
+                (_, None) => "No elapsed usage data to project",
                 (None, Some(_)) => "No reset to project to",
                 (Some(_), Some(_)) => "Nothing to project",
             }
@@ -952,7 +977,7 @@ mod tests {
         assert_eq!(projection.label, "35% used");
         assert_eq!(
             projection.tooltip,
-            "35% used · resets in 2d · Too early in the window to project"
+            "35% used · resets in 2d · No elapsed usage data to project"
         );
     }
 
@@ -1018,7 +1043,7 @@ mod tests {
         assert!(
             Projection::of(&window(0.35, None), 0.35, now())
                 .tooltip
-                .ends_with("Too early in the window to project")
+                .ends_with("No elapsed usage data to project")
         );
     }
 
@@ -1101,5 +1126,55 @@ mod tests {
             projection.tooltip,
             "63% used · Credits don't project: the bar runs on the spend since the last top-up"
         );
+    }
+}
+
+#[cfg(test)]
+mod early_forecast_tests {
+    use super::*;
+    #[test]
+    fn every_window_projects_positive_usage_early_then_firm() {
+        let now: DateTime<Utc> = "2026-10-28T14:00:00Z".parse().unwrap();
+        for length in [Duration::hours(5), Duration::days(7), Duration::days(30)] {
+            for age in [Duration::milliseconds(1), Duration::minutes(30), Duration::hours(1)] {
+                let metric = Metric::Window {
+                    label: "Limit".into(),
+                    used: 0.02,
+                    resets_at: now + length - age,
+                    pace: None,
+                    length: Some(length),
+                };
+                let forecast = Forecast::of(&metric, now).unwrap();
+                assert_eq!(forecast.provisional, age < Duration::hours(1));
+                assert!(forecast.at_reset.is_finite() && forecast.at_reset <= 99.99);
+                if forecast.provisional {
+                    assert_eq!(forecast.runway(), Runway::Ok);
+                    assert_eq!(forecast.phrase(), None);
+                    assert!(forecast.text().contains("early"));
+                    assert!(Projection::of(&metric, 0.02, now).projected.is_none());
+                } else {
+                    assert!(!forecast.text().contains("early"));
+                    if length >= Duration::days(7) {
+                        assert_eq!(forecast.runway(), Runway::Risk);
+                        assert!(forecast.text().contains("runs out in"));
+                    }
+                }
+            }
+            for (used, age) in [
+                (0., Duration::minutes(30)),
+                (0.02, Duration::zero()),
+                (f64::NAN, Duration::minutes(30)),
+                (f64::INFINITY, Duration::minutes(30)),
+            ] {
+                let metric = Metric::Window {
+                    label: "Limit".into(),
+                    used,
+                    resets_at: now + length - age,
+                    pace: None,
+                    length: Some(length),
+                };
+                assert_eq!(Forecast::of(&metric, now), None);
+            }
+        }
     }
 }
