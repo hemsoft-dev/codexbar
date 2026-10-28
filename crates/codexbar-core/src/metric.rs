@@ -442,7 +442,7 @@ impl Metric {
     }
 
     /// The fraction of the limit used by the reset if the current pace holds (#83): above 1 when it runs out first.
-    /// `None` without a pace, a limit or a reset still ahead, so nothing is projected from too little information.
+    /// Uses elapsed usage when pace is absent. Nothing is projected without usage, timing, or a future reset.
     pub fn projected_at_reset(&self, now: DateTime<Utc>) -> Option<f64> {
         if matches!(self, Self::Window { used, .. } if !used.is_finite())
             || self.used_fraction().is_none_or(|used| !used.is_finite() || used <= 0.0)
@@ -458,6 +458,7 @@ impl Metric {
             Self::Quota { pace: Some(pace), .. } | Self::Spend { pace: Some(pace), .. } => {
                 (self.used_fraction()?, *pace)
             }
+            _ if self.is_exhausted() => return None,
             _ => return self.elapsed_projection(now),
         };
         let left = self.resets_at()? - now;

@@ -8314,7 +8314,10 @@ fn progress_bars_and_markers_are_centered_with_or_without_sus(cx: &mut TestAppCo
                         let tick = window.try_find(format!("{id}-{marker}"));
                         let expected = match marker {
                             "limit" => account != "openrouter",
-                            _ => matches!(account, "copilot-work" | "claude-personal" | "codex-personal"),
+                            _ => matches!(
+                                account,
+                                "copilot-work" | "claude-personal" | "codex-personal" | "gemini" | "x-subscription"
+                            ),
                         };
                         assert_eq!(tick.is_some(), expected, "{id}-{marker} must retain its visibility");
                         if let Some(tick) = tick {
@@ -8422,7 +8425,7 @@ fn claude_weekly_sus_is_early_on_usage_and_firm_from_one_hour(cx: &mut TestAppCo
             (
                 Age::hours(12) - Age::minutes(1),
                 "Weekly: SUS 89, yellow",
-                Some("Weekly: 112% at reset · runs out in 5d 18h"),
+                Some("Weekly: 112% at reset · runs out in 5d 17h"),
             ),
             (
                 Age::hours(12),
