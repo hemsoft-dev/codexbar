@@ -908,7 +908,7 @@ fn at_reset_cell(
         return plain(text, spoken, color);
     };
     let runway = forecast.runway();
-    let tint = if forecast.provisional {
+    let tint = if forecast.provisional && runway == crate::usage_bar::Runway::Ok {
         muted
     } else {
         match runway {

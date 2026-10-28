@@ -229,7 +229,7 @@ impl Forecast {
 
     /// How the bar stands: out, at risk, tight or fine.
     pub fn runway(&self) -> Runway {
-        if self.provisional {
+        if self.provisional && self.used < 1.0 {
             Runway::Ok
         } else {
             Runway::of(self.used, Some(self.at_reset))
@@ -250,7 +250,7 @@ impl Forecast {
 
     /// What the runway says beside the share: "runs out in 5d 4h", "limit reached", "near limit", or nothing.
     pub fn phrase(&self) -> Option<String> {
-        if self.provisional {
+        if self.provisional && self.used < 1.0 {
             return None;
         }
         match self.runway() {
@@ -431,7 +431,7 @@ impl Projection {
                 Metric::Balance { .. } | Metric::Activity { .. } => {
                     Runway::of_severity(codexbar_core::assess(metric, now).severity())
                 }
-                _ if forecast.is_some_and(|forecast| forecast.provisional) => Runway::Ok,
+                _ if forecast.is_some_and(|forecast| forecast.provisional) && used < 1.0 => Runway::Ok,
                 _ => Runway::of(used, projected),
             },
             label,
@@ -1132,6 +1132,39 @@ mod tests {
 #[cfg(test)]
 mod early_forecast_tests {
     use super::*;
+    #[test]
+    fn observed_exhaustion_stays_visible_during_the_early_hour() {
+        let now: DateTime<Utc> = "2026-10-28T14:00:00Z".parse().unwrap();
+        let metric = Metric::Window {
+            label: "Weekly".into(),
+            used: 1.,
+            resets_at: now + Duration::days(7) - Duration::minutes(30),
+            pace: None,
+            length: Some(Duration::days(7)),
+        };
+        let forecast = Forecast::of(&metric, now).unwrap();
+        assert_eq!(forecast.runway(), Runway::Out);
+        assert_eq!(forecast.phrase().as_deref(), Some("limit reached"));
+        let projection = Projection::of(&metric, 1., now);
+        assert_eq!(projection.runway, Runway::Out);
+        assert!(projection.label.contains("limit reached"));
+        let account = codexbar_core::AccountSnapshot::new(
+            codexbar_core::AccountId::new("covered"),
+            codexbar_core::Provider::Codex,
+            vec![
+                metric.clone(),
+                Metric::Credits {
+                    label: "Credits".into(),
+                    balance: Some(12.),
+                    start: None,
+                },
+            ],
+            now,
+        );
+        assert_eq!(ResetDisplay::of(&metric, &account, now), ResetDisplay::Covered);
+        assert_eq!(Projection::of_account(&metric, 1., &account, now).runway, Runway::Ok);
+    }
+
     #[test]
     fn every_window_projects_positive_usage_early_then_firm() {
         let now: DateTime<Utc> = "2026-10-28T14:00:00Z".parse().unwrap();

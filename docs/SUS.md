@@ -149,3 +149,8 @@ quota versus activity. These synthetic UI fixtures never read live providers.
 `CODEXBAR_CAPTURE_CLAUDE_WEEKLY=1` instead renders an 8%-used Claude week
 through the production parser at 59 minutes (early), then 1 hour, 6 hours,
 11h 59m, 12 hours and 15h 55m (firm). It asserts each state's label.
+
+On Linux, GPUI does not implement offscreen image export. In an isolated Xvfb
+session, set `CODEXBAR_CAPTURE_X11=1` to use ImageMagick's `import` for the demo
+app's own X11 window. This opt-in fallback never captures the desktop. Always
+set `CODEXBAR_SETTINGS_DIR` inside the fresh capture directory as well.
