@@ -1531,6 +1531,10 @@ fn pace_takeaway(metric: &Metric, at: DateTime<Utc>, now: DateTime<Utc>) -> Stri
     {
         return forecast.text();
     }
+    firm_pace_takeaway(metric, at, now)
+}
+
+fn firm_pace_takeaway(metric: &Metric, at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     // The outlook picks the wording (#206), so the card and its tile agree even at the minute where a limit hit
     // just before the reset counts as a full share.
     let to_limit = metric

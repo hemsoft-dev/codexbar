@@ -204,12 +204,7 @@ impl Forecast {
 
     /// The forecast for `metric` at `now`, when its pace allows one.
     pub fn of(metric: &Metric, now: DateTime<Utc>) -> Option<Self> {
-        let provisional = metric.forecast_is_early(now);
-        let projected = if provisional {
-            metric.elapsed_projection(now)?.min(99.99)
-        } else {
-            metric.projected_at_reset(now)?
-        };
+        let (projected, provisional) = display_projection(metric, now)?;
         let used = metric.used_fraction()?;
         // A limit hit within a minute of the reset is a full share, not an overrun (#206), so it reads "100% at reset"
         // and grades as tight rather than at risk.
@@ -229,30 +224,34 @@ impl Forecast {
 
     /// How the bar stands: out, at risk, tight or fine.
     pub fn runway(&self) -> Runway {
+        Runway::of(self.used, Some(self.at_reset)).min(self.runway_ceiling())
+    }
+
+    /// Provisional estimates do not raise risk. Observed exhaustion still does.
+    fn runway_ceiling(&self) -> Runway {
         if self.provisional && self.used < 1.0 {
             Runway::Ok
         } else {
-            Runway::of(self.used, Some(self.at_reset))
+            Runway::Out
         }
     }
 
     /// "112%": the share at the reset.
     pub fn share(&self) -> String {
-        if self.provisional && self.at_reset >= 99.99 {
-            return "≥9999% early".into();
+        let (prefix, percent, suffix) = self.share_parts();
+        format!("{prefix}{percent:.0}%{suffix}")
+    }
+
+    fn share_parts(&self) -> (&'static str, f64, &'static str) {
+        match (self.provisional, self.at_reset >= 99.99) {
+            (true, true) => ("≥", 9999., " early"),
+            (true, false) => ("", self.at_reset.max(0.) * 100., " early"),
+            (false, _) => ("", self.at_reset.max(0.) * 100., ""),
         }
-        format!(
-            "{:.0}%{}",
-            self.at_reset.max(0.0) * 100.0,
-            if self.provisional { " early" } else { "" }
-        )
     }
 
     /// What the runway says beside the share: "runs out in 5d 4h", "limit reached", "near limit", or nothing.
     pub fn phrase(&self) -> Option<String> {
-        if self.provisional && self.used < 1.0 {
-            return None;
-        }
         match self.runway() {
             Runway::Out => Some("limit reached".to_owned()),
             Runway::Risk => Some(match self.runs_out_in {
@@ -272,6 +271,17 @@ impl Forecast {
             None => format!("{} at reset", self.share()),
         }
     }
+}
+
+/// Early values use elapsed usage and a display ceiling; firm values use the metric's validated forecast.
+fn display_projection(metric: &Metric, now: DateTime<Utc>) -> Option<(f64, bool)> {
+    let provisional = metric.forecast_is_early(now);
+    let projected = if provisional {
+        metric.elapsed_projection(now)?.min(99.99)
+    } else {
+        metric.projected_at_reset(now)?
+    };
+    Some((projected, provisional))
 }
 
 /// What a used-up window the account's credits carry says (#150): it neither runs out nor is reached.
@@ -425,15 +435,7 @@ impl Projection {
                 metric,
                 Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { limit: Some(_), .. }
             ),
-            runway: match metric {
-                Metric::Credits { .. } => Runway::Ok,
-                // A balance has no limit: its bar runs on the pressure of its days left, graded by its severity.
-                Metric::Balance { .. } | Metric::Activity { .. } => {
-                    Runway::of_severity(codexbar_core::assess(metric, now).severity())
-                }
-                _ if forecast.is_some_and(|forecast| forecast.provisional) && used < 1.0 => Runway::Ok,
-                _ => Runway::of(used, projected),
-            },
+            runway: projection_runway(metric, used, projected, forecast, now),
             label,
             tooltip,
         }
@@ -515,6 +517,25 @@ fn status_projection(projection: Projection, account: &codexbar_core::AccountSna
     }
 }
 
+/// Grade the fill independently of text layout, keeping credits and early estimates calm.
+fn projection_runway(
+    metric: &Metric,
+    used: f64,
+    projected: Option<f64>,
+    forecast: Option<Forecast>,
+    now: DateTime<Utc>,
+) -> Runway {
+    match metric {
+        Metric::Credits { .. } => Runway::Ok,
+        // A balance has no limit: its bar runs on the pressure of its days left, graded by its severity.
+        Metric::Balance { .. } | Metric::Activity { .. } => {
+            Runway::of_severity(codexbar_core::assess(metric, now).severity())
+        }
+        _ if forecast.is_some_and(|forecast| forecast.provisional) && used < 1.0 => Runway::Ok,
+        _ => Runway::of(used, projected),
+    }
+}
+
 /// Why a metric projects nothing, for the tooltip: each reason is told from the metric's own state, so a window
 /// that is merely young is the only one called early.
 fn no_projection(metric: &Metric, pace: Option<Pace>, now: DateTime<Utc>) -> &'static str {
@@ -522,17 +543,18 @@ fn no_projection(metric: &Metric, pace: Option<Pace>, now: DateTime<Utc>) -> &'s
         Metric::Credits { .. } => "Credits don't project: the bar runs on the spend since the last top-up",
         Metric::Balance { .. } | Metric::Activity { .. } => "Nothing to project",
         Metric::Spend { limit: None, .. } => "No spend limit to project against",
-        Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { .. } => {
-            match (metric.resets_at(), pace) {
-                (Some(at), _) if at <= now => "The reset is due; nothing left to project",
-                _ if metric.used_fraction() == Some(0.0) => "No usage recorded in this window",
-                // A spend's pace needs the period's start, which some providers never say (Cursor).
-                (_, None) if matches!(metric, Metric::Spend { .. }) => "No pace is known for this spend",
-                (_, None) => "No elapsed usage data to project",
-                (None, Some(_)) => "No reset to project to",
-                (Some(_), Some(_)) => "Nothing to project",
-            }
-        }
+        Metric::Window { .. } | Metric::Quota { .. } | Metric::Spend { .. } => limited_no_projection(metric, pace, now),
+    }
+}
+
+fn limited_no_projection(metric: &Metric, pace: Option<Pace>, now: DateTime<Utc>) -> &'static str {
+    match (metric.resets_at(), pace) {
+        (Some(at), _) if at <= now => "The reset is due; nothing left to project",
+        _ if metric.used_fraction() == Some(0.0) => "No usage recorded in this window",
+        (_, None) if matches!(metric, Metric::Spend { .. }) => "No pace is known for this spend",
+        (_, None) => "No elapsed usage data to project",
+        (None, Some(_)) => "No reset to project to",
+        (Some(_), Some(_)) => "Nothing to project",
     }
 }
 
