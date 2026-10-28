@@ -279,17 +279,17 @@ pub struct WidgetMetric {
     #[serde(default)]
     pub status: Option<String>,
     /// The share of the limit used by the reset at the current pace, as a percent that can pass 100 (#197); none
-    /// with nothing to project (a window too young, a balance, a count, credits).
+    /// with nothing to project (no usage/data, a balance, a count, credits). Early values are marked in `outlook`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projected_percent: Option<f64>,
     /// The projection as the dashboard words it (#206): "on pace for 76%", or "21m early" when the limit runs out
     /// before the reset; none with nothing to project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outlook: Option<String>,
-    /// The firm score, from the week's 12-hour maturity; the only one a tile may color.
+    /// The firm score, from the week's one-hour maturity; the only one a tile may color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sus: Option<u8>,
-    /// The early, provisional score from 1 hour while `sus` is absent: shown marked early, never colored. A separate
+    /// The early, provisional score before 1 hour while `sus` is absent: shown marked early, never colored. A separate
     /// field so an older provider, which knows only `sus`, can never color it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sus_early: Option<u8>,

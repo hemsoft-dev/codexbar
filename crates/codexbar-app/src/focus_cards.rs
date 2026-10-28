@@ -1526,10 +1526,19 @@ fn pace_takeaway(metric: &Metric, at: DateTime<Utc>, now: DateTime<Utc>) -> Stri
     if let Some(days) = metric.days_of_credit() {
         return format!("About {days:.0} days of credit left");
     }
+    if let Some(forecast) = crate::usage_bar::Forecast::of(metric, at)
+        && forecast.provisional
+    {
+        return forecast.text();
+    }
+    firm_pace_takeaway(metric, at, now)
+}
+
+fn firm_pace_takeaway(metric: &Metric, at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     // The outlook picks the wording (#206), so the card and its tile agree even at the minute where a limit hit
     // just before the reset counts as a full share.
     let to_limit = metric
-        .time_to_limit()
+        .time_to_limit_at(at)
         .map(|left| (left - (now - at)).max(chrono::Duration::zero()));
     match (metric.outlook(at), to_limit) {
         (Some(outlook @ codexbar_core::Outlook::Early(_)), Some(to_limit)) => format!(
@@ -2106,6 +2115,25 @@ mod tests {
             "Gross charges",
             "no share anywhere: the second metric keeps the card"
         );
+    }
+
+    #[test]
+    fn cached_inferred_forecasts_and_early_estimates_reach_the_takeaway() {
+        for age in [Duration::minutes(30), Duration::hours(1)] {
+            let metric = Metric::Window {
+                label: "Weekly".into(),
+                used: 0.02,
+                resets_at: now() + Duration::days(7) - age,
+                pace: None,
+                length: Some(Duration::days(7)),
+            };
+            let text = pace_takeaway(&metric, now(), now());
+            if age < Duration::hours(1) {
+                assert_eq!(text, "672% early at reset");
+            } else {
+                assert!(text.starts_with("Hits the weekly limit in ~2d 1h"), "{text}");
+            }
+        }
     }
 
     #[test]

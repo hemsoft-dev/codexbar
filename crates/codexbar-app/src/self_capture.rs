@@ -67,15 +67,47 @@ async fn settle(cx: &mut AsyncApp) {
 }
 
 fn save(cx: &mut AsyncApp, handle: AnyWindowHandle, dir: &std::path::Path, name: &str) -> bool {
-    cx.update(|cx| {
-        cx.update_window(handle, |_, window, cx| {
-            window.render_frame(cx);
-            window.render_to_image()
+    let path = dir.join(format!("{name}.png"));
+    let saved = cx
+        .update(|cx| {
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_to_image()
+            })
         })
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|image| image.save(&path).is_ok());
+    #[cfg(target_os = "linux")]
+    if !saved && std::env::var_os("CODEXBAR_CAPTURE_X11").is_some() {
+        return save_x11(cx, handle, &path);
+    }
+    saved
+}
+
+/// Explicit fallback for Linux's missing offscreen export. Capture this demo window only, never the desktop.
+#[cfg(target_os = "linux")]
+fn save_x11(cx: &mut AsyncApp, handle: AnyWindowHandle, path: &std::path::Path) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let id = cx
+        .update(|cx| {
+            cx.update_window(handle, |_, window, _| {
+                match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+                    RawWindowHandle::Xlib(handle) => Some(handle.window.to_string()),
+                    RawWindowHandle::Xcb(handle) => Some(handle.window.get().to_string()),
+                    _ => None,
+                }
+            })
+        })
+        .ok()
+        .flatten();
+    id.is_some_and(|id| {
+        std::process::Command::new("import")
+            .args(["-silent", "-window", &id])
+            .arg(path)
+            .status()
+            .is_ok_and(|status| status.success())
     })
-    .ok()
-    .and_then(Result::ok)
-    .is_some_and(|image| image.save(dir.join(format!("{name}.png"))).is_ok())
 }
 
 /// Drags the usage table's column borders as a user would (#245): the account column down to its minimum and back

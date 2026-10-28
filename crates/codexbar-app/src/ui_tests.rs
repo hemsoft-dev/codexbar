@@ -1832,7 +1832,18 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
     };
     // 1%/h with 48h left on top of 42%: 90% at the reset, near the limit (#234).
     let paced = window("paced", Some(codexbar_core::Pace::per_hour(0.01)));
-    let young = window("young", None);
+    let young = AccountSnapshot::new(
+        AccountId::new("young"),
+        Provider::Claude,
+        vec![Metric::Window {
+            label: "Weekly".into(),
+            used: 0.42,
+            resets_at: now + chrono::Duration::days(7) - chrono::Duration::minutes(30),
+            pace: None,
+            length: Some(chrono::Duration::days(7)),
+        }],
+        now,
+    );
     let over = AccountSnapshot::new(
         AccountId::new("over"),
         Provider::Codex,
@@ -1877,12 +1888,28 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
         }],
         now,
     );
-    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![paced, young, over, covered, capped]));
+    let empty = AccountSnapshot::new(
+        AccountId::new("empty"),
+        Provider::Codex,
+        vec![Metric::Window {
+            label: "Weekly".into(),
+            used: 0.,
+            resets_at: now + chrono::Duration::days(6),
+            pace: Some(codexbar_core::Pace::per_hour(0.01)),
+            length: Some(chrono::Duration::days(7)),
+        }],
+        now,
+    );
+    let provider: Arc<dyn UsageProvider> = Arc::new(FixedProvider(vec![paced, young, over, covered, capped, empty]));
     let _dashboard = open_live_fixed(cx, &settings, vec![provider]);
     cx.run_until_parked();
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
+    assert_eq!(
+        label(cx, handle, "at-reset-empty").as_deref(),
+        Some("Weekly at reset: no forecast")
+    );
     assert_eq!(
         label(cx, handle, "at-reset-covered").as_deref(),
         Some("5-hour window at reset: covered by credits"),
@@ -1899,8 +1926,8 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
     );
     assert_eq!(
         label(cx, handle, "progress-cell-young").as_deref(),
-        Some("42% used"),
-        "too young to project: the label is the share alone"
+        Some("42% used, ≥9999% early at reset"),
+        "early estimates are marked and bounded"
     );
     assert_eq!(
         label(cx, handle, "progress-cell-over").as_deref(),
@@ -1918,7 +1945,7 @@ fn a_bar_names_the_projected_share_when_the_metric_has_a_pace(cx: &mut TestAppCo
     );
     assert_eq!(
         label(cx, handle, "at-reset-young").as_deref(),
-        Some("Weekly at reset: no forecast")
+        Some("Weekly: ≥9999% early at reset")
     );
     assert!(
         visible(cx, handle, "progress-cell-paced-bar"),
@@ -8287,7 +8314,10 @@ fn progress_bars_and_markers_are_centered_with_or_without_sus(cx: &mut TestAppCo
                         let tick = window.try_find(format!("{id}-{marker}"));
                         let expected = match marker {
                             "limit" => account != "openrouter",
-                            _ => matches!(account, "copilot-work" | "claude-personal" | "codex-personal"),
+                            _ => matches!(
+                                account,
+                                "copilot-work" | "claude-personal" | "codex-personal" | "gemini" | "x-subscription"
+                            ),
                         };
                         assert_eq!(tick.is_some(), expected, "{id}-{marker} must retain its visibility");
                         if let Some(tick) = tick {
@@ -8309,7 +8339,7 @@ fn progress_bars_and_markers_are_centered_with_or_without_sus(cx: &mut TestAppCo
 
 /// #262: the same CLI-derived weekly forecast reaches the row, marker, ring and SUS in both layouts.
 #[gpui_kit::test]
-fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut TestAppContext) {
+fn gemini_models_weekly_is_firm_after_one_hour(cx: &mut TestAppContext) {
     let settings = TempSettings::new("gemini-weekly-maturity", "{}");
     let (handle, dashboard) = open_dashboard(cx, &settings);
     for wide in [false, true] {
@@ -8343,24 +8373,15 @@ fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut Tes
                     }
                 )
                 .as_deref(),
-                Some(if mature {
-                    "Gemini Models weekly: SUS 42, red"
-                } else {
-                    // Early before 12 hours: shown, but without a band, a forecast or a projected marker.
-                    "Gemini Models weekly: SUS 42 early, early estimate"
-                })
+                Some("Gemini Models weekly: SUS 42, red")
             );
             assert_eq!(
                 label(cx, handle, forecast).as_deref(),
-                Some(if mature {
-                    "Gemini Models weekly: 42% at reset"
-                } else {
-                    "Gemini Models weekly at reset: no forecast"
-                })
+                Some("Gemini Models weekly: 42% at reset")
             );
             let ring = label(cx, handle, "focus-share").unwrap();
             assert!(ring.starts_with("Gemini Models weekly: 3% used"), "{ring}");
-            assert_eq!(ring.contains("42% at reset"), mature, "{ring}");
+            assert!(ring.contains("42% at reset"), "{ring}");
             assert_eq!(
                 label(cx, handle, "sparkline-gemini").as_deref(),
                 Some("14-day sparkline: 3 samples, latest 3%")
@@ -8372,7 +8393,7 @@ fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut Tes
             };
             assert!(label(cx, handle, resets).unwrap().ends_with("in 7d"));
             cx.update_window(handle, |_, window, _| {
-                assert_eq!(window.try_find(format!("{bar}-projected")).is_some(), mature);
+                assert!(window.try_find(format!("{bar}-projected")).is_some());
                 assert!(window.try_find("window-5h-gemini-bar-sus").is_none());
             })
             .unwrap();
@@ -8380,10 +8401,10 @@ fn gemini_models_weekly_is_the_row_pool_and_matures_at_twelve_hours(cx: &mut Tes
     }
 }
 
-/// A Claude week through the real parser: n/a before 1 hour, an uncolored early SUS until 12 hours, then the firm,
+/// A Claude week through the real parser: an uncolored early estimate before one hour, then the firm,
 /// banded score with its forecast, in both layouts.
 #[gpui_kit::test]
-fn claude_weekly_sus_is_early_from_one_hour_and_firm_from_twelve(cx: &mut TestAppContext) {
+fn claude_weekly_sus_is_early_on_usage_and_firm_from_one_hour(cx: &mut TestAppContext) {
     use chrono::Duration as Age;
     let settings = TempSettings::new("claude-weekly-early", "{}");
     let (handle, dashboard) = open_dashboard(cx, &settings);
@@ -8391,12 +8412,20 @@ fn claude_weekly_sus_is_early_from_one_hour_and_firm_from_twelve(cx: &mut TestAp
         gpui_kit::VisualTestContext::from_window(handle, cx)
             .simulate_resize(size(px(if wide { 2600. } else { 1440. }), px(1000.)));
         for (age, sus, forecast) in [
-            (Age::minutes(59), "Weekly: SUS n/a, unavailable", None),
-            (Age::hours(1), "Weekly: SUS 7 early, early estimate", None),
+            (
+                Age::minutes(59),
+                "Weekly: SUS 7 early, early estimate",
+                Some("Weekly: 1367% early at reset"),
+            ),
+            (
+                Age::hours(1),
+                "Weekly: SUS 7, red",
+                Some("Weekly: 1344% at reset · runs out in 11h 30m"),
+            ),
             (
                 Age::hours(12) - Age::minutes(1),
-                "Weekly: SUS 89 early, early estimate",
-                None,
+                "Weekly: SUS 89, yellow",
+                Some("Weekly: 112% at reset · runs out in 5d 17h"),
             ),
             (
                 Age::hours(12),

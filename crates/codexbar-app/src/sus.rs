@@ -47,13 +47,13 @@ fn tone(reading: Option<Reading>, cx: &App) -> (Hsla, &'static str) {
 }
 fn tooltip(early: bool) -> SharedString {
     if early {
-        "Early Weekly Sub Utilization Score: an estimate from usage in this week's first hours. It firms up 12 hours \
+        "Early Weekly Sub Utilization Score: an estimate from usage in this week's first hour. It firms up 1 hour \
          into the window. Until then it has no color and never raises risk or an alert."
             .into()
     } else {
         "Weekly Sub Utilization Score, 0–100. 100 means using the full allowance at reset. Green ≥90, yellow ≥75, red \
-         <75. Early values from 1 hour are gray and marked early until 12 hours. n/a means too little data, a window \
-         younger than 1 hour, or no quota forecast."
+         <75. Early values from positive usage are gray and marked early until 1 hour. n/a means no recorded usage, missing data, \
+         zero elapsed time, or no quota forecast."
             .into()
     }
 }

@@ -1,5 +1,5 @@
 //! Weekly Sub Utilization Score. The projection and exhaustion time are the metric's existing forecast.
-use crate::{AccountSnapshot, Metric, Pace, Provider};
+use crate::{AccountSnapshot, Metric, Provider};
 use chrono::{DateTime, Duration, Utc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,10 +50,10 @@ pub fn calculate(projected_percent: f64, out_hours: Option<f64>, reset_hours: f6
     };
     Some(Score::rounded(value))
 }
-/// A week shows an early, provisional SUS from this age. Early values are display-only: no forecast, risk or color.
-pub const EARLY_SUS: Duration = Duration::hours(1);
-/// Weekly forecasts and SUS firm up together at 12 hours, the fresh-window guard of usage.py and the Pi dashboard.
-pub const WEEKLY_MATURITY: Duration = Duration::hours(12);
+/// Minimum positive elapsed time for an early SUS. Early values are display-only, without risk or color.
+pub const EARLY_SUS: Duration = Duration::milliseconds(1);
+/// Weekly forecasts and SUS firm up together at one hour.
+pub const WEEKLY_MATURITY: Duration = Duration::hours(1);
 
 /// A weekly score as shown: early from [`EARLY_SUS`], firm from [`WEEKLY_MATURITY`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,7 +112,7 @@ fn week(metric: &Metric, now: DateTime<Utc>) -> Option<(Duration, DateTime<Utc>,
 fn score(metric: &Metric, now: DateTime<Utc>, length: Duration, reset: DateTime<Utc>) -> Option<Score> {
     calculate(
         metric.projected_at_reset(now)? * 100.,
-        metric.time_to_limit().map(hours),
+        metric.time_to_limit_at(now).map(hours),
         hours(reset - now),
         hours(length),
     )
@@ -126,17 +126,33 @@ pub fn weekly(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
     score(metric, now, length, reset)
 }
 /// The early score from [`EARLY_SUS`] until [`WEEKLY_MATURITY`]: usage so far over the time elapsed, projected to
-/// the reset. The pace stays local to the score, so the metric still forecasts nothing and raises no risk.
+/// the reset. The score remains display-only and raises no forecast risk.
 pub fn early(metric: &Metric, now: DateTime<Utc>) -> Option<Score> {
     let (length, reset, age) = week(metric, now)?;
     if !(EARLY_SUS..WEEKLY_MATURITY).contains(&age) {
         return None;
     }
-    let provisional = metric
-        .clone()
-        .with_pace(Pace::per_hour(metric.used_fraction()? / hours(age)));
-    score(&provisional, now, length, reset)
+    early_score(metric, now, length, reset, age)
 }
+
+fn early_score(
+    metric: &Metric,
+    now: DateTime<Utc>,
+    length: Duration,
+    reset: DateTime<Utc>,
+    age: Duration,
+) -> Option<Score> {
+    let projected = metric.elapsed_projection(now)?;
+    let used = metric.used_fraction()?;
+    let rate = used / hours(age.max(Duration::minutes(1)));
+    calculate(
+        projected * 100.,
+        Some((1. - used).max(0.) / rate),
+        hours(reset - now),
+        hours(length),
+    )
+}
+
 /// The score to show: firm once mature, early before that, `None` for `SUS n/a`.
 pub fn reading(metric: &Metric, now: DateTime<Utc>) -> Option<Reading> {
     weekly(metric, now)
@@ -235,9 +251,9 @@ mod tests {
         let left = Duration::days(7) - age;
         Metric::Window {
             label: "Weekly".into(),
-            used: 0.,
+            used: 0.01,
             resets_at: now() + left,
-            pace: Some(Pace::per_hour(projected / (left.num_seconds() as f64 / 3600.))),
+            pace: Some(Pace::per_hour((projected - 0.01) / (left.num_seconds() as f64 / 3600.))),
             length: Some(Duration::days(7)),
         }
     }
@@ -346,9 +362,9 @@ mod tests {
         }
     }
     #[test]
-    fn twelve_hour_boundary_and_missing_forecasts() {
+    fn one_hour_boundary_and_missing_forecasts() {
         assert_eq!(
-            weekly(&metric(Duration::hours(12) - Duration::seconds(1), 0.8), now()),
+            weekly(&metric(Duration::hours(1) - Duration::seconds(1), 0.8), now()),
             None
         );
         assert_eq!(weekly(&metric(Duration::hours(12), 0.8), now()).unwrap().value(), 80);
@@ -363,7 +379,7 @@ mod tests {
         assert_eq!(weekly(&m, now()), None);
         assert_eq!(calculate(f64::NAN, None, 5., 168.), None);
     }
-    /// `used` of a seven-day week `age` old, with the provider pace that only exists from the 12-hour maturity.
+    /// `used` of a seven-day week `age` old, with the provider pace that only exists from the one-hour maturity.
     fn young(used: f64, age: Duration) -> Metric {
         Metric::Window {
             label: "Weekly".into(),
@@ -374,14 +390,14 @@ mod tests {
         }
     }
     #[test]
-    fn early_from_one_hour_and_firm_from_twelve() {
+    fn early_on_usage_and_firm_from_one_hour() {
         let second = Duration::seconds(1);
         for (age, expected) in [
             (EARLY_SUS - second, None),
-            (EARLY_SUS, Some(Reading::Early(Score(7)))),
-            (Duration::hours(6), Some(Reading::Early(Score(45)))),
-            (WEEKLY_MATURITY - second, Some(Reading::Early(Score(89)))),
-            (WEEKLY_MATURITY, Some(Reading::Firm(Score(89)))),
+            (Duration::minutes(59), Some(Reading::Early(Score(7)))),
+            (Duration::hours(6), Some(Reading::Firm(Score(45)))),
+            (WEEKLY_MATURITY - second, Some(Reading::Early(Score(7)))),
+            (WEEKLY_MATURITY, Some(Reading::Firm(Score(7)))),
         ] {
             let metric = young(0.08, age);
             assert_eq!(reading(&metric, now()), expected, "{age}");
@@ -392,7 +408,7 @@ mod tests {
         assert_eq!(Reading::Early(Score(55)).text(), "SUS 55 early");
         assert!(Reading::Early(Score(55)).is_early() && !Reading::Firm(Score(55)).is_early());
         // Five-hour windows still have no SUS at any age.
-        let mut session = young(0.3, Duration::hours(2));
+        let mut session = young(0.3, Duration::minutes(30));
         if let Metric::Window { length, resets_at, .. } = &mut session {
             *length = Some(Duration::hours(5));
             *resets_at = now() + Duration::hours(3);
@@ -404,8 +420,8 @@ mod tests {
     fn an_early_score_never_forecasts_raises_risk_alerts_or_fleet() {
         // 30% two hours into a week projects a lockout: a red-range early score, and nothing else may act on it.
         let at = now();
-        let metric = young(0.3, Duration::hours(2));
-        assert_eq!(reading(&metric, at), Some(Reading::Early(Score(4))));
+        let metric = young(0.3, Duration::minutes(30));
+        assert_eq!(reading(&metric, at), Some(Reading::Early(Score(1))));
         assert_eq!(metric.projected_at_reset(at), None);
         assert_eq!(metric.time_to_limit(), None);
         let account = AccountSnapshot::new(AccountId::new("early"), Provider::Claude, vec![metric], at);

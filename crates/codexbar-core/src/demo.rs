@@ -547,12 +547,12 @@ mod tests {
                 "ChatGPT · Codex (work)",
                 "ChatGPT · Codex (personal · Pro)",
                 "Copilot · work",
+                "GitHub Billing · HemSoft",
                 "Claude · personal · Max 20x",
                 "Cursor",
                 "OpenRouter",
                 "ChatGPT · Codex (team)",
                 "X Subscription · Personal",
-                "GitHub Billing · HemSoft",
                 "Copilot · HemSoft",
                 "OpenCode Go + Zen",
                 "Grok · SuperGrok",
@@ -586,7 +586,8 @@ mod tests {
             .iter()
             .filter(|a| a.assess(now()).severity().needs_attention())
             .count();
-        assert_eq!(attention, 3);
+        assert_eq!(severity("github-billing"), Severity::AtRisk);
+        assert_eq!(attention, 4);
     }
 
     #[test]

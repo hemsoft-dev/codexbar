@@ -908,11 +908,10 @@ fn at_reset_cell(
         return plain(text, spoken, color);
     };
     let runway = forecast.runway();
-    let tint = match runway {
-        crate::usage_bar::Runway::Ok => cx.theme().foreground,
-        crate::usage_bar::Runway::Tight => cx.theme().warning,
-        crate::usage_bar::Runway::Risk | crate::usage_bar::Runway::Out => cx.theme().danger,
-    };
+    let tint = forecast_tint(
+        forecast,
+        [muted, cx.theme().foreground, cx.theme().warning, cx.theme().danger],
+    );
     let phrase = forecast.phrase();
     h_flex()
         .id(ElementId::Name(id.to_owned().into()))
@@ -937,6 +936,18 @@ fn at_reset_cell(
             div().truncate().text_color(color).child(phrase)
         }))
         .into_any_element()
+}
+
+/// The forecast's text color, preserving observed exhaustion even during the early hour.
+fn forecast_tint(forecast: crate::usage_bar::Forecast, palette: [gpui_kit::Hsla; 4]) -> gpui_kit::Hsla {
+    use crate::usage_bar::Runway;
+    let [muted, normal, warning, danger] = palette;
+    match (forecast.provisional, forecast.runway()) {
+        (true, Runway::Ok) => muted,
+        (false, Runway::Ok) => normal,
+        (_, Runway::Tight) => warning,
+        (_, Runway::Risk | Runway::Out) => danger,
+    }
 }
 
 /// The bar for `metric`: its share used, or for credits the spend from the remembered start (#150), with the share
@@ -1180,6 +1191,30 @@ mod tests {
 
     fn claude(metrics: Vec<Metric>) -> AccountSnapshot {
         AccountSnapshot::new(AccountId::new("claude-1"), Provider::Claude, metrics, now())
+    }
+
+    #[test]
+    fn forecast_text_colors_cover_early_firm_and_observed_exhaustion() {
+        use crate::usage_bar::Forecast;
+        let palette = [0.1, 0.2, 0.3, 0.4].map(|alpha| gpui_kit::hsla(0., 0., 0., alpha));
+        for (provisional, used, projected, color) in [
+            (true, 0.02, 0.46, 0),
+            (true, 0.02, 1.12, 0),
+            (false, 0.02, 0.46, 1),
+            (false, 0.02, 0.95, 2),
+            (false, 0.02, 1.12, 3),
+            (false, 1., 1.12, 3),
+            (true, 1., 1.12, 3),
+        ] {
+            let forecast = Forecast {
+                at_reset: projected,
+                provisional,
+                used,
+                runs_out_in: None,
+                early: None,
+            };
+            assert_eq!(forecast_tint(forecast, palette), palette[color]);
+        }
     }
 
     #[test]

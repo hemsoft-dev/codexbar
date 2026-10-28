@@ -135,7 +135,7 @@ pub fn assess(metric: &Metric, now: DateTime<Utc>) -> Assessment {
 
     let exhausts = metric.exhausts_before_reset(now);
     let soon = metric
-        .time_to_limit()
+        .time_to_limit_at(now)
         .is_some_and(|to_limit| to_limit <= Duration::hours(LIMIT_SOON_HORIZON_HOURS));
 
     let severity = if used >= LIMIT_SOON_FRACTION || (exhausts && soon) {

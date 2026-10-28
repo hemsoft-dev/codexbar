@@ -8,26 +8,18 @@ eight days also qualify, covering calendar offset changes without accepting
 short or monthly periods. Age and lockout calculations use the actual reported
 length, including 167- and 169-hour weeks.
 
-The score uses the metric's existing projection and time-to-limit, so its inputs
-agree with the forecast beside the bar. A window must be at least 12 hours old,
-have a known weekly length/reset, and have a forecast. Otherwise it says `SUS n/a`.
+Every provider and window length shows an at-reset estimate as soon as positive
+usage and positive elapsed time are recorded. During the first hour the value
+is muted and marked `early`; it does not color or rank tiles, warn, or say
+`runs out in`. At one hour the forecast is firm and participates in warnings,
+widgets, tiles and weekly SUS. Zero usage, missing data and zero elapsed time
+have no forecast. A one-minute denominator floor bounds initial extrapolation;
+early display values above 9999% read `≥9999% early`.
 
-Every weekly window forecasts from the same 12-hour maturity, the fresh-window
-guard of usage.py and the Pi dashboard. That covers Claude, Codex, Grok/X,
-OpenCode, Gemini Apps, Antigravity and Muse Code. Five-hour, monthly and other
-periods keep their existing rule: 10% of the period, at least 10 minutes (Muse
-Code's five-hour window: two minutes). Before this, every week except
-Antigravity's waited for 10% of the week, 16h 48m. That left SUS `n/a` until then.
-
-From 1 hour until 12 hours a weekly window shows an **early** SUS, such as
-`SUS 45 early`. It applies the same formula to usage so far divided by the time
-elapsed. It is gray, has no band color, and its tooltip says it firms up at 12
-hours. The bar still shows `no forecast`. An early value never sets a forecast,
-status, risk badge, ordering, alert or fleet SUS. Widget feeds carry it as
-`susEarly`, apart from the firm `sus`, so an older widget reader can't color it.
-At 12 hours the firm score and its band take over. Before 1 hour it says
-`SUS n/a`. Both thresholds are shared constants in `codexbar_core::sus`:
-`EARLY_SUS` and `WEEKLY_MATURITY`.
+Weekly SUS follows the same boundary. Early scores are gray and carried as
+`susEarly` in widget feeds. Firm `sus` scores color and rank subscriptions.
+All period lengths share the one-hour maturity, including monthly quotas and
+Muse's five-hour window. Cached readings use their observation time.
 
 - Projected usage at reset at or below 100%: SUS is the projected percentage.
 - Above 100%: `lockout = max(hours_to_reset - hours_to_limit, 0)` and
@@ -155,5 +147,10 @@ The harness asserts rendered fixture values before capturing light/dark states,
 including dated price changes, unknown prices, young Argon, and verified X
 quota versus activity. These synthetic UI fixtures never read live providers.
 `CODEXBAR_CAPTURE_CLAUDE_WEEKLY=1` instead renders an 8%-used Claude week
-through the production parser at 59 minutes (`n/a`), 1 hour, 6 hours and
-11h 59m (early), 12 hours and 15h 55m (firm). It asserts each state's label.
+through the production parser at 59 minutes (early), then 1 hour, 6 hours,
+11h 59m, 12 hours and 15h 55m (firm). It asserts each state's label.
+
+On Linux, GPUI does not implement offscreen image export. In an isolated Xvfb
+session, set `CODEXBAR_CAPTURE_X11=1` to use ImageMagick's `import` for the demo
+app's own X11 window. This opt-in fallback never captures the desktop. Always
+set `CODEXBAR_SETTINGS_DIR` inside the fresh capture directory as well.

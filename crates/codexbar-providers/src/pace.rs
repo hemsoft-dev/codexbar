@@ -1,28 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
-use codexbar_core::{
-    Pace,
-    sus::{WEEKLY_MATURITY, is_week_length},
-};
-
-/// Pace is unreliable early in a period: a few minutes of a weekly window extrapolate to a false lockout.
-/// A week projects from the SUS maturity; any other period once this much time, and this share of it, has elapsed.
-const MIN_ELAPSED_MINUTES: i64 = 10;
-const MIN_ELAPSED_FRACTION: f64 = 0.1;
+use codexbar_core::Pace;
 
 /// Usage so far divided by time elapsed in the period `[start, resets_at)`, or `None` while the period is too young.
 pub fn elapsed_pace(used: f64, start: DateTime<Utc>, resets_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<Pace> {
-    elapsed_pace_after(used, start, resets_at, now, maturity(resets_at - start))
-}
-
-/// How long a period of `length` runs before it projects.
-fn maturity(length: Duration) -> Duration {
-    if is_week_length(length) {
-        WEEKLY_MATURITY
-    } else {
-        Duration::minutes(MIN_ELAPSED_MINUTES).max(Duration::seconds(
-            (length.num_seconds() as f64 * MIN_ELAPSED_FRACTION) as i64,
-        ))
-    }
+    elapsed_pace_after(used, start, resets_at, now, codexbar_core::sus::WEEKLY_MATURITY)
 }
 
 fn elapsed_pace_after(
@@ -36,7 +17,12 @@ fn elapsed_pace_after(
     if resets_at <= start || now >= resets_at || elapsed < minimum {
         return None;
     }
-    Some(Pace::per_hour(used / (elapsed.num_seconds() as f64 / 3600.0)))
+    positive_usage(used).then(|| Pace::per_hour(used / (elapsed.num_seconds() as f64 / 3600.0)))
+}
+
+/// A recorded allowance fraction that can support a pace.
+pub(crate) fn positive_usage(used: f64) -> bool {
+    used.is_finite() && used > 0.0
 }
 
 #[cfg(test)]
@@ -45,6 +31,18 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn positive_usage_rejects_zero_negative_and_nonfinite_values() {
+        for used in [0., -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(!positive_usage(used));
+            assert_eq!(
+                elapsed_pace(used, now() - Duration::hours(1), now() + Duration::hours(4), now()),
+                None
+            );
+        }
+        assert!(positive_usage(0.01));
     }
 
     #[test]
@@ -65,18 +63,18 @@ mod tests {
             at,
             Duration::hours(12),
         );
-        assert_eq!(zero.unwrap().fraction_per_hour(), 0.);
+        assert_eq!(zero, None);
     }
 
     #[test]
-    fn weeks_mature_at_the_sus_boundary_and_other_periods_at_ten_percent() {
-        // Calendar weeks across an offset change are weeks too; a five-hour window and a month keep 10%.
+    fn all_periods_mature_at_one_hour() {
+        // Calendar weeks, five-hour windows and monthly quotas all firm up together.
         for (length, maturity) in [
-            (Duration::days(7), WEEKLY_MATURITY),
-            (Duration::hours(167), WEEKLY_MATURITY),
-            (Duration::hours(169), WEEKLY_MATURITY),
-            (Duration::hours(5), Duration::minutes(30)),
-            (Duration::days(30), Duration::hours(72)),
+            (Duration::days(7), Duration::hours(1)),
+            (Duration::hours(167), Duration::hours(1)),
+            (Duration::hours(169), Duration::hours(1)),
+            (Duration::hours(5), Duration::hours(1)),
+            (Duration::days(30), Duration::hours(1)),
         ] {
             let start = now() - maturity;
             let early = now() - Duration::seconds(1);
