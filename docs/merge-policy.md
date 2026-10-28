@@ -7,7 +7,9 @@ administrators, requires a pull request, and requires branches to be up to date.
 Existing force-push/deletion restrictions and conversation resolution stay enabled.
 
 The Chief's [maintainer decision](https://github.com/hemsoft-dev/codexbar/issues/237#issuecomment-6456251438)
-requires zero approving reviews. HemSoft is the only human maintainer; Codex uses
+requires zero approving reviews. The later
+[process-selection decision](https://github.com/hemsoft-dev/codexbar/issues/237#issuecomment-6456323454)
+supersedes that comment's proposed status-workflow bullet. HemSoft is the only human maintainer; Codex uses
 COMMENTED reviews. The merge owner enforces current-head Codex review through the
 process below. GitHub enforces CI and conversation resolution, but does not enforce
 the Codex verdict through an approval or status requirement.
@@ -41,6 +43,17 @@ The merge owner must perform each step on every PR, including documentation and
 dependency updates. The active ruleset requires no approvals, but a green GitHub
 merge box alone does not satisfy this repository policy.
 
+Authenticate every artifact used as review evidence, including summaries, clean
+bot receipts, and Claude fallback comments or review bodies. Use GraphQL `author`,
+`editor`, `lastEditedAt`, and every page of `userContentEdits`. The author must be
+the expected source: the connector Bot for Codex, or the verified HemSoft identity
+posting the delegated Claude audit. Require `editor` to be null for an unedited
+artifact or the original author, and require every edit to be by that same author.
+Deleted, unavailable, or incomplete edit history cannot establish authenticity;
+obtain fresh evidence. For a Claude receipt, also compare the body and revisions
+against the delegated audit's actual result. A comment claiming to be an audit
+does not establish that the audit ran.
+
 1. Capture the exact head and base using `gh pr view NUMBER --repo hemsoft-dev/codexbar
    --json headRefOid,baseRefOid`. Request `@codex review` once as the connected
    HemSoft account, unless a review of that unchanged head is already running or clean.
@@ -49,9 +62,8 @@ merge box alone does not satisfy this repository policy.
    result bound to the captured head. Current summaries contain
    `codex-review-state:v1` JSON with `code_review.commit_sha` equal to the full SHA,
    `status: completed`, `has_any_findings: false`, and
-   `has_unresolved_findings: false`. Confirm the summary's author and last editor
-   are the connector bot when edited, using GraphQL `author`, `editor`, and
-   `lastEditedAt`. A collaborator-edited or deleted summary requires fresh
+   `has_unresolved_findings: false`. Apply the authentication checks above to
+   this summary. A collaborator-edited or deleted summary requires fresh
    authenticated review evidence.
 3. A clean bot receipt with `Reviewed commit` can also qualify if its SHA prefix
    uniquely matches this PR's current head and the request/result can be bound to
@@ -98,7 +110,9 @@ that their current text is a Codex verdict.
 [gh-x's gate](https://github.com/hemsoft-dev/gh-x/blob/main/.github/scripts/changelog-merge/reviews.go)
 handles head attribution and receipt parsing, but copying it does not isolate the
 status publisher from this repository's writers or authenticate comment editors.
-Under the maintainer's explicit process option, this change keeps review in the
+Under the maintainer's
+[explicit process option](https://github.com/hemsoft-dev/codexbar/issues/237#issuecomment-6456323454),
+this change keeps review in the
 guarded merge process rather than claiming that an unauthenticated status is a
 reliable independent review gate. A future automated requirement needs a trusted
 publisher, authenticated mutable evidence, correct head/test-merge attribution,
