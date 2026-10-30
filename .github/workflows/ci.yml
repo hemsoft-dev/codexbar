@@ -131,6 +131,10 @@ jobs:
           if test -f artifacts/rust-metrics/candidate/summary.md; then
             cat artifacts/rust-metrics/candidate/summary.md >> "$GITHUB_STEP_SUMMARY"
           fi
+          if test -f artifacts/rust-metrics/base/test-run.json; then
+            echo '## Base test execution' >> "$GITHUB_STEP_SUMMARY"
+            cat artifacts/rust-metrics/base/test-run.json >> "$GITHUB_STEP_SUMMARY"
+          fi
           if test -f artifacts/rust-metrics/gate.json; then
             cat artifacts/rust-metrics/gate.json >> "$GITHUB_STEP_SUMMARY"
           fi

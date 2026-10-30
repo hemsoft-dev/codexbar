@@ -8271,7 +8271,8 @@ fn sus_legacy_ownership_checks_both_record_and_account_before_applying_price(cx:
 #[gpui_kit::test]
 fn progress_bars_and_markers_are_centered_with_or_without_sus(cx: &mut TestAppContext) {
     let settings = TempSettings::new("progress-centering", "{}");
-    let (handle, _dashboard) = open_dashboard(cx, &settings);
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    cx.update(|cx| dashboard.update(cx, |d, cx| d.set_alignment_demo(cx)));
     for wide in [false, true] {
         let viewport = size(px(if wide { 2600. } else { 1440. }), px(1000.));
         gpui_kit::VisualTestContext::from_window(handle, cx).simulate_resize(viewport);

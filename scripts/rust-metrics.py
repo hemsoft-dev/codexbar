@@ -537,7 +537,38 @@ def retain_collection_failure(root, output, target, context, original):
                 os.close(fd)
         capture.close()
 
-def collect(root, output, target):
+def coverage(command, root, env, output, context, tolerate_test_failure=False):
+    # Collect every base test binary before considering a fallback.
+    args = command + (["--no-fail-fast"] if tolerate_test_failure else [])
+    args += ["--workspace", "--locked", "--branch", "--json", "--output-path", str(output / "llvm.json")]
+    context["commands"].append(args)
+    status = {"status": "passed", "tolerated": False}
+    try:
+        run(args, root, env, output / "coverage.log")
+    except subprocess.CalledProcessError as error:
+        if not tolerate_test_failure or error.returncode != 101:
+            raise
+        try:
+            log = (output / "coverage.log").read_text(errors="replace")
+        except OSError:
+            raise error
+        test_failed = "test result: FAILED." in log and "error: test failed, to rerun pass" in log
+        producer_failed = re.search(r"error: (?:could not compile|failed to)", log, re.IGNORECASE)
+        if not test_failed or producer_failed:
+            raise
+        # Export the profiles from that same run. Never rerun tests or ignore merge/report/compile failures.
+        args = command + ["report", "--branch", "--json", "--output-path", str(output / "llvm.json")]
+        context["commands"].append(args)
+        run(args, root, env, output / "coverage.log")
+        status = {"status": "failed", "tolerated": True, "returncode": error.returncode,
+                  "failed_tests": re.findall(r"^test (.+) \.\.\. FAILED$", log, re.MULTILINE)}
+        print("::warning::Base tests failed; using coverage from the completed base test run. "
+              "Candidate tests and all coverage/CRAP regression gates remain strict.", file=sys.stderr)
+    (output / "test-run.json").write_text(json.dumps(status, indent=2) + "\n")
+    return status
+
+
+def collect(root, output, target, tolerate_test_failure=False):
     context = {"phase": "preflight", "revision": None, "source_sha256": None, "commands": []}
     failure_paths = (root, output, target)
     try:
@@ -566,9 +597,7 @@ def collect(root, output, target):
         before = {str(path): digest(path) for path in source_paths}
         context["source_sha256"] = before
         context["phase"] = "coverage"
-        context["commands"].append(command + ["--workspace", "--locked", "--branch", "--json", "--output-path", str(output / "llvm.json")])
-        run(command + ["--workspace", "--locked", "--branch", "--json", "--output-path", str(output / "llvm.json")],
-            root, env, output / "coverage.log")
+        test_run = coverage(command, root, env, output, context, tolerate_test_failure)
         context["phase"] = "lcov"
         context["commands"].append(command + ["report", "--branch", "--lcov", "--output-path", str(output / "lcov.info")])
         run(command + ["report", "--branch", "--lcov", "--output-path", str(output / "lcov.info")],
@@ -588,6 +617,7 @@ def collect(root, output, target):
         report = production_report(root, output / "complexity.json", output / "lcov.info")
         if revision != subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip():
             raise ValueError("Git revision changed during measurement")
+        report["test_run"] = test_run
         report["commit"] = revision
         report["host"] = platform.system() + "/" + platform.machine()
         report["compiler"] = subprocess.check_output(["rustc", "+" + PINS["toolchain"], "-vV"], text=True).strip()
@@ -672,10 +702,10 @@ def ci(root, output, target, base_sha):
     run(["git", "worktree", "add", "--detach", str(base_root), base_sha], root)
     primary_failure = None
     try:
-        base = collect(base_root, output / "base", target)
+        base = collect(base_root, output / "base", target, tolerate_test_failure=True)
         candidate = collect(root, output / "candidate", target)
         failures = compare(base, candidate)
-        (output / "gate.json").write_text(json.dumps({"base": base["commit"], "candidate": candidate["commit"], "failures": failures}, indent=2) + "\n")
+        (output / "gate.json").write_text(json.dumps({"base": base["commit"], "candidate": candidate["commit"], "base_test_run": base["test_run"], "failures": failures}, indent=2) + "\n")
         if failures:
             raise ValueError("\n".join(failures))
     except BaseException as error:

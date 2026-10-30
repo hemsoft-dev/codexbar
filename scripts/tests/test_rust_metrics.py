@@ -21,6 +21,53 @@ metrics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metrics)
 
 
+class BaseCoverageFallback(unittest.TestCase):
+    FAILED = "test ui_tests::geometry ... FAILED\ntest result: FAILED. 1 failed\nerror: test failed, to rerun pass `--lib`\n"
+
+    def invoke(self, root, tolerate, log=None, code=101, report_error=None):
+        output = root / "evidence"
+        output.mkdir()
+        (output / "coverage.log").write_text(self.FAILED if log is None else log)
+        primary = subprocess.CalledProcessError(code, ["cargo", "llvm-cov"])
+        context = {"commands": []}
+        errors = [primary, report_error]
+        with patch.object(metrics, "run", side_effect=errors) as run:
+            try:
+                result = metrics.coverage(["cargo", "+pinned", "llvm-cov"], root, {}, output, context, tolerate)
+            except subprocess.CalledProcessError as caught:
+                return caught, run.call_args_list, output, context
+        return result, run.call_args_list, output, context
+
+    def test_base_test_failure_exports_same_run_and_records_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result, calls, output, context = self.invoke(Path(temp), True)
+            self.assertTrue(result["tolerated"])
+            self.assertEqual(result["failed_tests"], ["ui_tests::geometry"])
+            self.assertIn("--no-fail-fast", calls[0].args[0])
+            self.assertEqual(calls[1].args[0][3], "report")
+            self.assertEqual(len(context["commands"]), 2)
+            self.assertEqual(json.loads((output / "test-run.json").read_text()), result)
+
+    def test_candidate_and_non_test_base_failures_remain_fatal(self):
+        for tolerate, log, code in [(False, self.FAILED, 101),
+                                    (True, "error: could not compile fixture", 101),
+                                    (True, self.FAILED + "error: Failed to merge profiles", 101),
+                                    (True, self.FAILED, 1), (True, "", 101)]:
+            with self.subTest(tolerate=tolerate, log=log, code=code), tempfile.TemporaryDirectory() as temp:
+                result, calls, output, _ = self.invoke(Path(temp), tolerate, log, code)
+                self.assertIsInstance(result, subprocess.CalledProcessError)
+                self.assertEqual(len(calls), 1)
+                self.assertFalse((output / "test-run.json").exists())
+
+    def test_failed_coverage_export_is_not_tolerated(self):
+        with tempfile.TemporaryDirectory() as temp:
+            primary = subprocess.CalledProcessError(1, ["cargo", "llvm-cov", "report"])
+            result, calls, output, _ = self.invoke(Path(temp), True, report_error=primary)
+            self.assertIs(result, primary)
+            self.assertEqual(len(calls), 2)
+            self.assertFalse((output / "test-run.json").exists())
+
+
 class FailureEvidence(unittest.TestCase):
     def test_corrupt_copy_is_preserved_before_original_failure_escapes(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -169,12 +216,12 @@ class FailureEvidence(unittest.TestCase):
                     measured = []
                     cleanup = []
 
-                    def collect(source_root, destination, cargo_target):
+                    def collect(source_root, destination, cargo_target, **options):
                         measured.append(destination.name)
                         if destination.name != failing:
                             return {}
                         with self.collection_fixture(source_root, destination, cargo_target, phase, primary):
-                            return real_collect(source_root, destination, cargo_target)
+                            return real_collect(source_root, destination, cargo_target, **options)
 
                     def worktree(args, *unused, **kwargs):
                         if args[2] == "remove":
@@ -407,6 +454,7 @@ class MetricsIntegration(unittest.TestCase):
 }
 #[cfg(test)] fn test_only_helper() -> u32 { 42 }
 #[cfg(test)] mod tests {
+    #[test] fn base_flake() { panic!("synthetic base test failure"); }
     #[test] fn covers_both() {
         assert_eq!(super::branch(true), 1);
         assert_eq!(super::branch(false), 0);
@@ -417,7 +465,11 @@ class MetricsIntegration(unittest.TestCase):
             metrics.run(["git", "init", "--quiet"], root)
             metrics.run(["cargo", "generate-lockfile"], root)
             self.commit(root)
-            before = metrics.collect(root, Path(temp) / "base", Path(temp) / "target")
+            before = metrics.collect(root, Path(temp) / "base", Path(temp) / "target", tolerate_test_failure=True)
+            self.assertTrue(before["test_run"]["tolerated"])
+            with self.assertRaises(subprocess.CalledProcessError):
+                metrics.collect(root, Path(temp) / "strict-candidate", Path(temp) / "target")
+            source.write_text(source.read_text().replace('panic!("synthetic base test failure");', 'assert!(true);'))
             self.assertEqual([entry["function"] for entry in before["entries"]], ["branch"])
             self.assertEqual(before["totals"]["lines"]["percent"], 100)
             self.assertEqual(before["totals"]["branches"]["percent"], 100)
