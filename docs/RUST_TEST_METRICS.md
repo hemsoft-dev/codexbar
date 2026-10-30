@@ -5,6 +5,41 @@ request's fixed base and head revisions on the same Ubuntu runner. Pushes
 compare the previous and new main commits. This is ordinary CI, with read-only
 repository permissions and no scheduled audit or external analysis service.
 
+## Base test failure fallback
+
+Base collection runs all test binaries with `--no-fail-fast`. If cargo exits 101
+and its log identifies a failed test result, the collector exports coverage
+from that same run with `llvm-cov report`. It does not rerun tests. Compile and
+producer errors remain fatal, as do failed profile merges and report exports.
+Candidate collection never enables this fallback. The existing coverage and
+per-function CRAP comparisons remain unchanged.
+
+A fallback emits an Actions warning and records the failed test names and exit
+status in `base/test-run.json`, `base/metrics.json`, and `gate.json`. The workflow
+includes the base test status in its summary. Full logs and raw failure evidence
+remain available if measurement fails. A failed base test can shorten that test's
+execution, so its coverage is explicitly a baseline with test failures, not a
+claim that the base test suite passed.
+
+The regression suite exercises a real failing base test with the pinned tools,
+verifies that the identical failure blocks candidate collection, and verifies
+that uncovered candidate code still fails the coverage/CRAP gate.
+
+## Progress alignment date dependency
+
+The geometry test previously used the real clock while expecting a projection
+tick. Gemini's demo uses 12% weekly usage and resets Thursday at 09:00 in the
+local timezone. Its inferred projection exceeds the bar's 125% scale until
+Friday about 01:07:41; the bar correctly clips the run and omits its tick. The
+first hour also has no firm forecast. This is a weekly failure window, not an
+end-of-month condition. Probes on October 1 and October 29 reproduced the same
+boundary in UTC, UTC-04:00 and UTC+14:00. With CI's UTC timezone, the October 29
+window is Thursday 05:00 through about 21:08 EDT.
+
+The alignment fixture now fixes both its demo data and evaluation clock to
+October 27 at 15:00 UTC, away from that reset. The product clock and reset
+behavior are unchanged.
+
 ## Initial measured baseline
 
 Measured on October 23, 2026 EDT, against product revision
