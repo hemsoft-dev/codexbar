@@ -53,8 +53,8 @@ coverage is not proof of that desktop check.
 
 ## Release handoff
 
-Prepare package version **1.1.0.247** from a single squash commit on main after
-2cac438. Confirm the main commit count before packaging; concurrent merges may
+Prepare package version **1.1.0.248** from a single squash commit on main after
+bffb4c6. Confirm the main commit count before packaging; concurrent merges may
 increase the revision. Cargo stays 0.1.0 under the existing package-version scheme.
 The Chief owns merge, tag and installation. Preserve Home's settings and launch
 only the app executable directly in session 1 through a windowless launcher,
