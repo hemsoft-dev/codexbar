@@ -33,12 +33,13 @@ const BUCKETS: [(&str, &str, &str, i64); 5] = [
 /// that no creation flag on the agy CodexBar starts can reach. Agy run in a terminal still updates itself.
 pub const NO_AUTO_UPDATE: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
 
-/// A signed-out agy starts Google sign-in in the default browser unless it believes it runs over SSH; then it prints
-/// the sign-in link and waits for a pasted code instead (#282). A background read must never open a browser, so agy
-/// is told it runs over a loopback SSH session. The interactive sign-in (`gemini_login`) clears these again.
+/// Keep native credential storage while disabling backend interactive OAuth. Faking SSH changes agy's token store to
+/// files, hiding the desktop keyring sign-in (#289). Both flags are needed: an inherited interactive override
+/// must not re-enable backend consent. Frontend browser helpers are additionally denied by the Windows job.
+/// These switches are qualified with agy 1.4.10.
 pub const NO_BROWSER: [(&str, &str); 2] = [
-    ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
-    ("SSH_CLIENT", "127.0.0.1 50000 22"),
+    ("AGY_CLI_NONINTERACTIVE_HEADLESS", "true"),
+    ("AGY_CLI_INTERACTIVE_HEADLESS", "false"),
 ];
 
 /// What a signed-out agy prints to stderr before it waits for a sign-in nobody here can give (`Authentication
@@ -54,7 +55,14 @@ impl CliRunner {
     fn options() -> CommandOptions {
         CommandOptions {
             cwd: None,
-            remove_env: vec![NO_AUTO_UPDATE.0, NO_BROWSER[0].0, NO_BROWSER[1].0, "SSH_TTY"],
+            remove_env: vec![
+                NO_AUTO_UPDATE.0,
+                NO_BROWSER[0].0,
+                NO_BROWSER[1].0,
+                "SSH_CONNECTION",
+                "SSH_CLIENT",
+                "SSH_TTY",
+            ],
             env: vec![NO_AUTO_UPDATE, NO_BROWSER[0], NO_BROWSER[1]],
             output_limit: 8 * 1024 * 1024,
             stop_on_stderr: Some(SIGN_IN_PROMPT),
@@ -64,7 +72,7 @@ impl CliRunner {
 
 impl CommandRunner for CliRunner {
     fn run(&self, program: &str, args: &[&str], timeout: StdDuration) -> Result<CommandOutput, CommandError> {
-        SystemCommandRunner.run_with_options(program, args, timeout, &Self::options())
+        SystemCommandRunner.run_without_console(program, args, timeout, &Self::options())
     }
 }
 
@@ -104,7 +112,7 @@ impl CodingError {
             Self::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
             Self::SignedOut => "The Antigravity CLI is signed out. Sign in again from Settings > Accounts.",
             Self::TooOld => {
-                "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
+                "Coding quotas need Antigravity CLI 1.4.10 or newer for a browser-free usage check. Update agy."
             }
             Self::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
             Self::TimedOut => "The Antigravity CLI took too long to report coding usage.",
@@ -215,9 +223,9 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
 }
 
 /// Runs the CLI and reads its coding quotas.
-/// The first Antigravity CLI whose non-interactive `/usage` answers without starting an agent turn (its changelog,
-/// 1.1.11). An older one could send `/usage` to the model as a prompt, using quota and starting a conversation.
-const FIRST_SAFE_VERSION: (u32, u32, u32) = (1, 1, 11);
+/// Require the version qualified for noninteractive native-keyring auth. `/usage` has been prompt-free since
+/// 1.1.11, but older builds are not qualified for the headless auth switches and could open a browser.
+const FIRST_SAFE_VERSION: (u32, u32, u32) = (1, 4, 10);
 
 /// The `major.minor.patch` the CLI's `--version` prints (`1.3.3`, possibly after a name or before a suffix).
 fn version(text: &str) -> Option<(u32, u32, u32)> {
@@ -459,13 +467,20 @@ mod tests {
             options.env,
             [
                 ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
-                ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
-                ("SSH_CLIENT", "127.0.0.1 50000 22"),
+                ("AGY_CLI_NONINTERACTIVE_HEADLESS", "true"),
+                ("AGY_CLI_INTERACTIVE_HEADLESS", "false"),
             ]
         );
         assert_eq!(
             options.remove_env,
-            ["AGY_CLI_DISABLE_AUTO_UPDATE", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+            [
+                "AGY_CLI_DISABLE_AUTO_UPDATE",
+                "AGY_CLI_NONINTERACTIVE_HEADLESS",
+                "AGY_CLI_INTERACTIVE_HEADLESS",
+                "SSH_CONNECTION",
+                "SSH_CLIENT",
+                "SSH_TTY"
+            ]
         );
         assert_eq!(options.stop_on_stderr, Some("authentication required"));
         assert_eq!(options.cwd, None);
@@ -491,7 +506,7 @@ mod tests {
             if args == ["--version"] {
                 return self.0.clone().map(|_| CommandOutput {
                     success: true,
-                    stdout: "1.3.3\n".to_owned(),
+                    stdout: "1.4.10\n".to_owned(),
                     stderr: String::new(),
                 });
             }
@@ -584,14 +599,17 @@ mod tests {
     }
 
     #[test]
-    fn a_cli_older_than_1_1_11_or_of_unknown_version_is_never_asked_for_usage() {
+    fn a_cli_without_qualified_headless_auth_is_never_asked_for_usage() {
         assert_eq!(version("1.3.3\n"), Some((1, 3, 3)));
         assert_eq!(version("agy v1.1.11-beta"), Some((1, 1, 11)));
         assert_eq!(version("1.3"), None);
         assert_eq!(version("1.3.3.4"), None);
         for (installed, safe) in [
-            ("1.1.11", true),
-            ("1.3.3", true),
+            ("1.1.11", false),
+            ("1.3.3", false),
+            ("1.4.9", false),
+            ("1.4.10", true),
+            ("1.4.11", true),
             ("2.0.0", true),
             ("1.1.10", false),
             ("1.1.8", false),

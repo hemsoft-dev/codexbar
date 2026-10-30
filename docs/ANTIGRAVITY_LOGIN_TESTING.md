@@ -11,7 +11,7 @@ Do not sign out an existing real user or delete their credentials to force a
 first-login case. The CLI's SSH URL/code flow is different and does not prove
 that local default-browser consent works.
 
-1. Install a supported `agy` (at least 1.1.11), and confirm `agy --version`.
+1. Install a supported `agy` (at least 1.4.10), and confirm `agy --version`.
    Leave normal browser windows open to check that they survive the flow.
 2. Run the candidate CodexBar build with an isolated `CODEXBAR_SETTINGS_DIR`.
    In Settings > Accounts, add a Gemini account with a test label. Choose

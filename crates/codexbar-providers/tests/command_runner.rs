@@ -51,6 +51,63 @@ fn hold(path: &Path) -> File {
 
 fn fixture(args: &[String]) -> ! {
     match args[0].as_str() {
+        // Reproduce agy's credential-store selection without reading any real credentials.
+        "agy-auth" => {
+            assert!(
+                std::env::var_os("SSH_CONNECTION").is_none(),
+                "SSH selects an empty file store"
+            );
+            assert!(std::env::var_os("SSH_CLIENT").is_none());
+            assert!(std::env::var_os("SSH_TTY").is_none());
+            assert_eq!(std::env::var("AGY_CLI_NONINTERACTIVE_HEADLESS").unwrap(), "true");
+            assert_eq!(std::env::var("AGY_CLI_INTERACTIVE_HEADLESS").unwrap(), "false");
+            assert_eq!(std::env::var("AGY_CLI_DISABLE_AUTO_UPDATE").unwrap(), "true");
+            assert_eq!(std::env::var("HOME").unwrap(), "synthetic-desktop-home");
+            assert_eq!(std::io::stdin().read(&mut [0u8; 1]).unwrap(), 0);
+            #[cfg(windows)]
+            {
+                assert_eq!(console_window(), "none");
+                assert!(std::fs::File::open("CONIN$").is_err(), "no console input for OAuth");
+                let denied = Command::new(std::env::current_exe().unwrap())
+                    .arg("stdin")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn();
+                match denied {
+                    Err(_) => {}
+                    Ok(mut child) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        panic!("browser helpers must be denied by the job");
+                    }
+                }
+            }
+            if args[1] == "signed-in" {
+                print!("native-keyring-usage");
+            } else {
+                eprintln!("Error: authentication required.");
+                idle();
+            }
+        }
+        "agy-parent" => {
+            use codexbar_providers::gemini_coding::CliRunner;
+            for state in ["signed-in", "signed-out"] {
+                let output = CliRunner
+                    .run(
+                        &std::env::current_exe().unwrap().to_string_lossy(),
+                        &["agy-auth", state],
+                        Duration::from_secs(5),
+                    )
+                    .unwrap();
+                assert_eq!(output.success, state == "signed-in");
+                if output.success {
+                    assert_eq!(output.stdout, "native-keyring-usage");
+                } else {
+                    assert!(output.stderr.contains("authentication required"));
+                }
+            }
+        }
         "emit" => emit(&args[1], args[2].parse().unwrap()),
         "held" => held(&args[1], args[2].parse().unwrap()),
         #[cfg(all(coverage, any(target_os = "linux", target_os = "macos")))]
@@ -334,6 +391,9 @@ fn assert_process_exited(pid: u32) {
 }
 
 fn main() {
+    if std::env::args().len() == 1 {
+        agy_uses_desktop_credentials_without_interactive_auth_even_with_inherited_ssh();
+    }
     let args: Vec<_> = std::env::args().skip(1).collect();
     if !args.is_empty() {
         fixture(&args);
@@ -460,4 +520,19 @@ fn main() {
     println!(
         "command runner: finite streams, cap boundary, overflow, timeout, descendant cleanup, exit status, UTF-8 and null stdin passed"
     );
+}
+
+fn agy_uses_desktop_credentials_without_interactive_auth_even_with_inherited_ssh() {
+    let result = Command::new(std::env::current_exe().unwrap())
+        .arg("agy-parent")
+        .env("SSH_CONNECTION", "synthetic-remote")
+        .env("SSH_CLIENT", "synthetic-remote")
+        .env("SSH_TTY", "synthetic-tty")
+        .env("AGY_CLI_NONINTERACTIVE_HEADLESS", "false")
+        .env("AGY_CLI_INTERACTIVE_HEADLESS", "true")
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "false")
+        .env("HOME", "synthetic-desktop-home")
+        .output()
+        .unwrap();
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
 }

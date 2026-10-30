@@ -56,7 +56,7 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(25);
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError> {
-        self.run_scoped(program, args, timeout, None)
+        self.run_scoped(program, args, timeout, None, false)
     }
     fn run_with_options(
         &self,
@@ -65,16 +65,27 @@ impl CommandRunner for SystemCommandRunner {
         timeout: Duration,
         options: &CommandOptions,
     ) -> Result<CommandOutput, CommandError> {
-        self.run_scoped(program, args, timeout, Some(options))
+        self.run_scoped(program, args, timeout, Some(options), false)
     }
 }
 impl SystemCommandRunner {
+    /// Detach from the Windows console too: agy otherwise opens CONIN$ for interactive OAuth even with null stdin.
+    pub(crate) fn run_without_console(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: Duration,
+        options: &CommandOptions,
+    ) -> Result<CommandOutput, CommandError> {
+        self.run_scoped(program, args, timeout, Some(options), true)
+    }
     fn run_scoped(
         &self,
         program: &str,
         args: &[&str],
         timeout: Duration,
         options: Option<&CommandOptions>,
+        _without_console: bool,
     ) -> Result<CommandOutput, CommandError> {
         let mut command = crate::platform::command(program);
         if let Some(options) = options {
@@ -90,7 +101,12 @@ impl SystemCommandRunner {
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
         }
-        let inner = crate::contained::spawn(&mut command).map_err(spawn_error)?;
+        let inner = if _without_console {
+            crate::contained::spawn_detached(&mut command)
+        } else {
+            crate::contained::spawn(&mut command)
+        }
+        .map_err(spawn_error)?;
         let mut process = Running { inner, stopped: false };
         let output = collect(
             &mut process.inner.child,

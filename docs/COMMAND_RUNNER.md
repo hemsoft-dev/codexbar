@@ -23,19 +23,21 @@ no console window.
 
 ## No interactive sign-in
 
-A background CLI must never start a sign-in the user didn't ask for. A
-signed-out agy opens Google sign-in in the default browser (`rundll32
-url.dll,FileProtocolHandler` on Windows, `open` on macOS) and then waits 60 s
-for a code, unless it believes it runs over SSH; then it prints the link and
-waits instead ([Authenticate](https://antigravity.google/docs/install/)). A
-closed stdin doesn't stop it on Windows, where agy reads the code from the
-hidden console's `CONIN$`. `CliRunner` therefore sets a loopback
-`SSH_CONNECTION` and `SSH_CLIENT`, removes any inherited `SSH_TTY`, and sets
-`CommandOptions.stop_on_stderr` to agy's `authentication required`. The runner
-stops the command once that text appears on stderr, ignoring ASCII case, and
-returns what it wrote, so the account reports "Not signed in" at once instead
-of timing out. The Settings sign-in window clears the SSH variables again and
-uses agy's local browser flow.
+A background CLI must never start a sign-in the user didn't ask for. Antigravity
+uses a different token store over SSH: forcing `SSH_CONNECTION` hides the
+Windows desktop keyring session (#289). `CliRunner` removes inherited SSH
+variables and keeps HOME and USERPROFILE unchanged. It sets
+`AGY_CLI_NONINTERACTIVE_HEADLESS=true`, overrides
+`AGY_CLI_INTERACTIVE_HEADLESS=false`, and disables the self-updater.
+
+Those headless flags alone do not stop the CLI frontend from attempting OAuth.
+On Windows the probe therefore starts detached, without `CONIN$`, inside a job
+with an active-process limit of one. The suspended CLI enters the job before
+it runs, so it cannot launch its browser helper or any other child. Failure to
+apply containment fails closed. The ordinary command runner and explicit
+Settings sign-in keep their existing process policies. The probe stops at
+`authentication required` on stderr and reports signed out. The version gate
+requires 1.4.10, the build inspected for this auth behavior.
 
 ## Output and deadline policy
 

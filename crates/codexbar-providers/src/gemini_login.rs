@@ -20,7 +20,13 @@ fn command(dir: &Path) -> Command {
         crate::gemini_coding::NO_AUTO_UPDATE.1,
     );
     // A desktop app launched by an SSH qualification harness must still use the vendor's local browser flow.
-    for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+    for name in [
+        "SSH_CONNECTION",
+        "SSH_CLIENT",
+        "SSH_TTY",
+        "AGY_CLI_NONINTERACTIVE_HEADLESS",
+        "AGY_CLI_INTERACTIVE_HEADLESS",
+    ] {
         command.env_remove(name);
     }
     command
@@ -125,7 +131,13 @@ mod tests {
             .get_envs()
             .filter_map(|(name, value)| value.is_none().then_some(name))
             .collect();
-        for name in ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+        for name in [
+            "SSH_CONNECTION",
+            "SSH_CLIENT",
+            "SSH_TTY",
+            "AGY_CLI_NONINTERACTIVE_HEADLESS",
+            "AGY_CLI_INTERACTIVE_HEADLESS",
+        ] {
             assert!(removed.contains(&std::ffi::OsStr::new(name)));
         }
         assert!(
