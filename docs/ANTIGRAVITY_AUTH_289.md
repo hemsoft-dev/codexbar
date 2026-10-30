@@ -33,7 +33,7 @@ containment rather than treated as a browser-prevention guarantee.
 
 ## Fix and validation boundary
 
-Remove inherited SSH mode for the usage probe. Keep the native HOME and user
+On Windows, remove inherited SSH mode for the usage probe. Keep the native HOME and user
 profile; do not read, copy or log vendor tokens. Disable interactive backend
 auth and self-update. On Windows launch detached inside a one-process job before
 resuming the CLI. Browser-helper creation is denied by the OS. Explicit user
@@ -60,3 +60,12 @@ The Chief owns merge, tag and installation. Preserve Home's settings and launch
 only the app executable directly in session 1 through a windowless launcher,
 never a bare PowerShell. Check connection and usage after installation and attach
 the connected-state screenshot to the PR.
+
+Non-Windows probes retain their existing loopback SSH browser guard until an
+equivalent OS restriction is qualified there.
+
+Native Windows OAuth decisions go to a private per-probe `--log-file`, which is
+removed after the run. The exact `Print mode: triggering interactive OAuth`
+marker maps to SignedOut even if the frontend waits until the command deadline.
+Network failures without that marker retain their original error. No shared
+vendor log is read by detection, and diagnostic content is never logged by CodexBar.

@@ -76,7 +76,7 @@ borrows no OAuth client and stores no token.
 
 - CodexBar first runs `agy --version` and requires 1.4.10 or newer for the
   qualified background auth path. `/usage` has run no model turn since 1.1.11.
-  Detection keeps the desktop credential store, removes inherited SSH mode,
+  On Windows, detection keeps the desktop credential store, removes inherited SSH mode,
   and on Windows denies child-process creation so agy cannot launch a browser.
   See [the diagnosis and release handoff](ANTIGRAVITY_AUTH_289.md).
 - Use **Connect Antigravity** in Settings to verify the CLI session, or select
@@ -121,3 +121,6 @@ for current-head evidence and the explicit manual Google-consent boundary.
 The SUS implementation also checked the structured producer shape with CLI 1.4.6
 on October 23, 2026, including the separate Argon bucket and zero model turns.
 The checked-in response fixture uses synthetic fractions and reset instants.
+
+Non-Windows probes retain their existing loopback SSH browser guard until an
+equivalent OS restriction is qualified there.

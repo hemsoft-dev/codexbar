@@ -53,7 +53,7 @@ pub struct CliRunner;
 
 impl CliRunner {
     fn options() -> CommandOptions {
-        CommandOptions {
+        let mut options = CommandOptions {
             cwd: None,
             remove_env: vec![
                 NO_AUTO_UPDATE.0,
@@ -66,13 +66,74 @@ impl CliRunner {
             env: vec![NO_AUTO_UPDATE, NO_BROWSER[0], NO_BROWSER[1]],
             output_limit: 8 * 1024 * 1024,
             stop_on_stderr: Some(SIGN_IN_PROMPT),
+        };
+        // The one-process Windows job prevents browser helpers. Other platforms retain the existing SSH guard
+        // until they have an equivalent native-keyring, browser-free launch policy.
+        if !cfg!(windows) {
+            options.env.extend([
+                ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
+                ("SSH_CLIENT", "127.0.0.1 50000 22"),
+            ]);
         }
+        options
     }
 }
 
 impl CommandRunner for CliRunner {
     fn run(&self, program: &str, args: &[&str], timeout: StdDuration) -> Result<CommandOutput, CommandError> {
+        #[cfg(windows)]
+        if args.contains(&"/usage") {
+            let log = ProbeLog::new()?;
+            let path = log.0.join("probe.log");
+            let mut args = args.to_vec();
+            let path = path.to_str().ok_or(CommandError::Failed)?;
+            args.extend(["--log-file", path]);
+            let result = SystemCommandRunner.run_without_console(program, &args, timeout, &Self::options());
+            // Native auth writes its sign-in decision to the log, not stderr. The job has already denied
+            // browser helpers; preserve SignedOut even when the frontend waits until our outer deadline.
+            let auth = std::fs::read_to_string(path).is_ok_and(|text| requires_sign_in(&text));
+            if auth {
+                return Ok(CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: SIGN_IN_PROMPT.to_owned(),
+                });
+            }
+            return result;
+        }
         SystemCommandRunner.run_without_console(program, args, timeout, &Self::options())
+    }
+}
+
+#[cfg(any(windows, test))]
+fn requires_sign_in(log: &str) -> bool {
+    log.contains("Print mode: triggering interactive OAuth")
+}
+
+/// Only this probe's diagnostic log is read. Never inspect a concurrent user's log or retain its contents.
+#[cfg(windows)]
+struct ProbeLog(PathBuf);
+
+#[cfg(windows)]
+impl ProbeLog {
+    fn new() -> Result<Self, CommandError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| CommandError::Failed)?
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("codexbar-agy-{}-{time}-{unique}", std::process::id()));
+        std::fs::create_dir(&dir).map_err(|_| CommandError::Failed)?;
+        Ok(Self(dir))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProbeLog {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0.join("probe.log"));
+        let _ = std::fs::remove_dir(&self.0);
     }
 }
 
@@ -463,14 +524,18 @@ mod tests {
     #[test]
     fn codexbar_runs_the_cli_with_its_self_updater_and_browser_sign_in_off() {
         let options = CliRunner::options();
-        assert_eq!(
-            options.env,
-            [
-                ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
-                ("AGY_CLI_NONINTERACTIVE_HEADLESS", "true"),
-                ("AGY_CLI_INTERACTIVE_HEADLESS", "false"),
-            ]
-        );
+        let mut expected = vec![
+            ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
+            ("AGY_CLI_NONINTERACTIVE_HEADLESS", "true"),
+            ("AGY_CLI_INTERACTIVE_HEADLESS", "false"),
+        ];
+        if !cfg!(windows) {
+            expected.extend([
+                ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
+                ("SSH_CLIENT", "127.0.0.1 50000 22"),
+            ]);
+        }
+        assert_eq!(options.env, expected);
         assert_eq!(
             options.remove_env,
             [
@@ -535,6 +600,21 @@ mod tests {
         );
         let missing = Runner(Err(CommandError::NotFound), Default::default());
         assert_eq!(fetch(&missing, now()), Err(CodingError::NotInstalled));
+    }
+
+    #[test]
+    fn native_auth_log_distinguishes_sign_in_from_network_failure() {
+        assert!(requires_sign_in(
+            "I1029 printmode.go:430] Print mode: triggering interactive OAuth"
+        ));
+        for log in [
+            "",
+            "network timeout",
+            "Print mode: silent auth failed",
+            "Print mode: starting",
+        ] {
+            assert!(!requires_sign_in(log));
+        }
     }
 
     #[test]

@@ -53,11 +53,16 @@ fn fixture(args: &[String]) -> ! {
     match args[0].as_str() {
         // Reproduce agy's credential-store selection without reading any real credentials.
         "agy-auth" => {
-            assert!(
-                std::env::var_os("SSH_CONNECTION").is_none(),
-                "SSH selects an empty file store"
-            );
-            assert!(std::env::var_os("SSH_CLIENT").is_none());
+            if cfg!(windows) {
+                assert!(
+                    std::env::var_os("SSH_CONNECTION").is_none(),
+                    "SSH selects an empty file store"
+                );
+                assert!(std::env::var_os("SSH_CLIENT").is_none());
+            } else {
+                assert!(std::env::var("SSH_CONNECTION").unwrap().starts_with("127.0.0.1"));
+                assert!(std::env::var("SSH_CLIENT").unwrap().starts_with("127.0.0.1"));
+            }
             assert!(std::env::var_os("SSH_TTY").is_none());
             assert_eq!(std::env::var("AGY_CLI_NONINTERACTIVE_HEADLESS").unwrap(), "true");
             assert_eq!(std::env::var("AGY_CLI_INTERACTIVE_HEADLESS").unwrap(), "false");
@@ -86,6 +91,11 @@ fn fixture(args: &[String]) -> ! {
             if args[1] == "signed-in" {
                 print!("native-keyring-usage");
             } else {
+                #[cfg(windows)]
+                {
+                    let index = args.iter().position(|arg| arg == "--log-file").unwrap();
+                    std::fs::write(&args[index + 1], "Print mode: triggering interactive OAuth").unwrap();
+                }
                 eprintln!("Error: authentication required.");
                 idle();
             }
@@ -96,7 +106,7 @@ fn fixture(args: &[String]) -> ! {
                 let output = CliRunner
                     .run(
                         &std::env::current_exe().unwrap().to_string_lossy(),
-                        &["agy-auth", state],
+                        &["agy-auth", state, "/usage"],
                         Duration::from_secs(5),
                     )
                     .unwrap();

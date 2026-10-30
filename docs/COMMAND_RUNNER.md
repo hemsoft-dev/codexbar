@@ -25,7 +25,7 @@ no console window.
 
 A background CLI must never start a sign-in the user didn't ask for. Antigravity
 uses a different token store over SSH: forcing `SSH_CONNECTION` hides the
-Windows desktop keyring session (#289). `CliRunner` removes inherited SSH
+Windows desktop keyring session (#289). On Windows, `CliRunner` removes inherited SSH
 variables and keeps HOME and USERPROFILE unchanged. It sets
 `AGY_CLI_NONINTERACTIVE_HEADLESS=true`, overrides
 `AGY_CLI_INTERACTIVE_HEADLESS=false`, and disables the self-updater.
@@ -156,3 +156,12 @@ accepts the exact `-1` sentinel, while other invalid group fields remain errors.
 
 Workspace tests and CI run this harness on Windows, macOS and Linux. No account,
 credential store, browser, desktop input or live provider response is involved.
+
+Non-Windows probes retain their existing loopback SSH browser guard until an
+equivalent OS restriction is qualified there.
+
+Native Windows OAuth decisions go to a private per-probe `--log-file`, which is
+removed after the run. The exact `Print mode: triggering interactive OAuth`
+marker maps to SignedOut even if the frontend waits until the command deadline.
+Network failures without that marker retain their original error. No shared
+vendor log is read by detection, and diagnostic content is never logged by CodexBar.
