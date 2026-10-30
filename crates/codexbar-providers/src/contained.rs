@@ -9,6 +9,40 @@ mod drain;
 #[cfg(windows)]
 mod job_drain;
 
+/// Console and child-process policy chosen before a suspended Windows process is resumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Launch {
+    Hidden,
+    Console,
+    Probe,
+}
+
+impl Launch {
+    #[cfg(any(windows, test))]
+    fn windows_flags(self) -> u32 {
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        let console = match self {
+            Self::Hidden => CREATE_NO_WINDOW,
+            Self::Console => CREATE_NEW_CONSOLE,
+            Self::Probe => DETACHED_PROCESS,
+        };
+        console | CREATE_SUSPENDED
+    }
+
+    #[cfg(any(windows, test))]
+    fn windows_job_limits(self) -> (u32, u32) {
+        const KILL_ON_JOB_CLOSE: u32 = 0x2000;
+        const ACTIVE_PROCESS: u32 = 0x0008;
+        match self {
+            Self::Probe => (KILL_ON_JOB_CLOSE | ACTIVE_PROCESS, 1),
+            _ => (KILL_ON_JOB_CLOSE, 0),
+        }
+    }
+}
+
 /// A started child in its job.
 pub(crate) struct Contained {
     pub child: Child,
@@ -31,40 +65,30 @@ impl Contained {
 
 /// Spawns `command` with no console window, inside a kill-on-close job.
 pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
-    spawn_with(command, false, false)
+    spawn_with(command, Launch::Hidden)
 }
 
 /// Spawns `command` in a console window of its own, for a CLI the user signs in through, inside a kill-on-close
 /// job. On macOS and Linux it runs in a terminal window instead (`terminal`).
 pub(crate) fn spawn_console(command: &mut Command) -> std::io::Result<Contained> {
-    spawn_with(command, true, false)
+    spawn_with(command, Launch::Console)
 }
 
 /// Start without a Windows console input device and deny child creation, including agy browser helpers.
 pub(crate) fn spawn_detached(command: &mut Command) -> std::io::Result<Contained> {
-    spawn_with(command, false, true)
+    spawn_with(command, Launch::Probe)
 }
 
-fn spawn_with(command: &mut Command, console: bool, _detached: bool) -> std::io::Result<Contained> {
+fn spawn_with(command: &mut Command, launch: Launch) -> std::io::Result<Contained> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_SUSPENDED: u32 = 0x0000_0004;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let window = if console {
-            CREATE_NEW_CONSOLE
-        } else if _detached {
-            0x0000_0008
-        } else {
-            CREATE_NO_WINDOW
-        };
         // Suspended until it is in its job, so nothing it starts can run outside the job.
-        command.creation_flags(window | CREATE_SUSPENDED);
+        command.creation_flags(launch.windows_flags());
     }
     #[cfg(not(windows))]
     {
-        let child = if console {
+        let child = if launch == Launch::Console {
             terminal::spawn(command)?
         } else {
             command.spawn()?
@@ -75,7 +99,7 @@ fn spawn_with(command: &mut Command, console: bool, _detached: bool) -> std::io:
     {
         let mut child = command.spawn()?;
         // Without its job the process could outlive CodexBar (and a GitHub sign-in finish unseen), so it doesn't run.
-        let job = job::Job::kill_on_close(&child, _detached);
+        let job = job::Job::kill_on_close(&child, launch);
         if job.is_none() || !job::resume(child.id()) {
             let _ = child.kill();
             let _ = child.wait();
@@ -327,9 +351,8 @@ mod job {
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
     use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
     use windows::core::PCWSTR;
@@ -342,17 +365,14 @@ mod job {
     unsafe impl Sync for Job {}
 
     impl Job {
-        pub fn kill_on_close(child: &Child, no_children: bool) -> Option<Self> {
+        pub fn kill_on_close(child: &Child, launch: super::Launch) -> Option<Self> {
             // SAFETY: no name and default security; the handle is owned by the returned Job and closed on drop.
             let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.ok()?;
             let job = Self(handle);
             let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if no_children {
-                // agy's OAuth uses a browser helper. Deny creation before the suspended CLI can run.
-                info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-                info.BasicLimitInformation.ActiveProcessLimit = 1;
-            }
+            let (flags, limit) = launch.windows_job_limits();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT(flags);
+            info.BasicLimitInformation.ActiveProcessLimit = limit;
             // SAFETY: `info` is the structure this information class expects, with its exact size.
             unsafe {
                 SetInformationJobObject(
@@ -409,6 +429,23 @@ mod job {
         fn drop(&mut self) {
             // SAFETY: the handle came from CreateJobObjectW and is closed once.
             let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::Launch;
+
+    #[test]
+    fn only_background_probes_are_detached_and_deny_children() {
+        for (launch, flags, limits) in [
+            (Launch::Hidden, 0x0800_0004, (0x2000, 0)),
+            (Launch::Console, 0x0000_0014, (0x2000, 0)),
+            (Launch::Probe, 0x0000_000c, (0x2008, 1)),
+        ] {
+            assert_eq!(launch.windows_flags(), flags);
+            assert_eq!(launch.windows_job_limits(), limits);
         }
     }
 }

@@ -93,6 +93,8 @@ fn fixture(args: &[String]) -> ! {
                     let index = args.iter().position(|arg| arg == "--log-file").unwrap();
                     std::fs::write(&args[index + 1], "Print mode: triggering interactive OAuth").unwrap();
                 }
+                // Native agy logs sign-out without stderr. Force the real timeout -> log override on Windows.
+                #[cfg(not(windows))]
                 eprintln!("Error: authentication required.");
                 idle();
             }

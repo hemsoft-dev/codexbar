@@ -52,84 +52,93 @@ const SIGN_IN_PROMPT: &str = "authentication required";
 pub struct CliRunner;
 
 impl CliRunner {
-    fn options() -> CommandOptions {
-        let mut options = CommandOptions {
-            cwd: None,
-            remove_env: vec![
-                NO_AUTO_UPDATE.0,
-                NO_BROWSER[0].0,
-                NO_BROWSER[1].0,
-                "SSH_CONNECTION",
-                "SSH_CLIENT",
-                "SSH_TTY",
-            ],
-            env: vec![NO_AUTO_UPDATE, NO_BROWSER[0], NO_BROWSER[1]],
-            output_limit: 8 * 1024 * 1024,
-            stop_on_stderr: Some(SIGN_IN_PROMPT),
-        };
-        // The one-process Windows job prevents browser helpers. Other platforms retain the existing SSH guard
-        // until they have an equivalent native-keyring, browser-free launch policy.
-        if !cfg!(windows) {
-            options.env.extend([
-                ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
-                ("SSH_CLIENT", "127.0.0.1 50000 22"),
-            ]);
-        }
-        options
+    fn options(native: bool) -> CommandOptions {
+        options_for(native)
     }
+}
+
+fn options_for(native: bool) -> CommandOptions {
+    let mut options = CommandOptions {
+        cwd: None,
+        remove_env: vec![
+            NO_AUTO_UPDATE.0,
+            NO_BROWSER[0].0,
+            NO_BROWSER[1].0,
+            "SSH_CONNECTION",
+            "SSH_CLIENT",
+            "SSH_TTY",
+        ],
+        env: vec![NO_AUTO_UPDATE, NO_BROWSER[0], NO_BROWSER[1]],
+        output_limit: 8 * 1024 * 1024,
+        stop_on_stderr: Some(SIGN_IN_PROMPT),
+    };
+    // The one-process Windows job prevents browser helpers. Other platforms retain the existing SSH guard
+    // until they have an equivalent native-keyring, browser-free launch policy.
+    if !native {
+        options.env.extend([
+            ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
+            ("SSH_CLIENT", "127.0.0.1 50000 22"),
+        ]);
+    }
+    options
 }
 
 impl CommandRunner for CliRunner {
     fn run(&self, program: &str, args: &[&str], timeout: StdDuration) -> Result<CommandOutput, CommandError> {
-        #[cfg(windows)]
-        if args.contains(&"/usage") {
-            let log = ProbeLog::new()?;
-            let path = log.0.join("probe.log");
-            let mut args = args.to_vec();
-            let path = path.to_str().ok_or(CommandError::Failed)?;
-            args.extend(["--log-file", path]);
-            let result = SystemCommandRunner.run_without_console(program, &args, timeout, &Self::options());
-            // Native auth writes its sign-in decision to the log, not stderr. The job has already denied
-            // browser helpers; preserve SignedOut even when the frontend waits until our outer deadline.
-            let auth = std::fs::read_to_string(path).is_ok_and(|text| requires_sign_in(&text));
-            if auth {
-                return Ok(CommandOutput {
-                    success: false,
-                    stdout: String::new(),
-                    stderr: SIGN_IN_PROMPT.to_owned(),
-                });
-            }
-            return result;
-        }
-        SystemCommandRunner.run_without_console(program, args, timeout, &Self::options())
+        run_probe(cfg!(windows), args, |args, options| {
+            SystemCommandRunner.run_without_console(program, args, timeout, options)
+        })
     }
 }
 
-#[cfg(any(windows, test))]
+/// Keep the native auth protocol testable on every host; only the executor starts an OS process.
+fn run_probe(
+    native: bool,
+    args: &[&str],
+    run: impl FnOnce(&[&str], &CommandOptions) -> Result<CommandOutput, CommandError>,
+) -> Result<CommandOutput, CommandError> {
+    let options = CliRunner::options(native);
+    if !native || !args.contains(&"/usage") {
+        return run(args, &options);
+    }
+    let log = ProbeLog::new_in(&std::env::temp_dir())?;
+    let path = log.0.join("probe.log");
+    let mut args = args.to_vec();
+    let path = path.to_str().ok_or(CommandError::Failed)?;
+    args.extend(["--log-file", path]);
+    let result = run(&args, &options);
+    // Native agy logs its OAuth decision without stderr. The process has stopped before the log is read.
+    if std::fs::read_to_string(path).is_ok_and(|text| requires_sign_in(&text)) {
+        return Ok(CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: SIGN_IN_PROMPT.to_owned(),
+        });
+    }
+    result
+}
+
 fn requires_sign_in(log: &str) -> bool {
     log.contains("Print mode: triggering interactive OAuth")
 }
 
 /// Only this probe's diagnostic log is read. Never inspect a concurrent user's log or retain its contents.
-#[cfg(windows)]
 struct ProbeLog(PathBuf);
 
-#[cfg(windows)]
 impl ProbeLog {
-    fn new() -> Result<Self, CommandError> {
+    fn new_in(base: &std::path::Path) -> Result<Self, CommandError> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| CommandError::Failed)?
+            .unwrap_or_default()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("codexbar-agy-{}-{time}-{unique}", std::process::id()));
+        let dir = base.join(format!("codexbar-agy-{}-{time}-{unique}", std::process::id()));
         std::fs::create_dir(&dir).map_err(|_| CommandError::Failed)?;
         Ok(Self(dir))
     }
 }
 
-#[cfg(windows)]
 impl Drop for ProbeLog {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.0.join("probe.log"));
@@ -523,7 +532,7 @@ mod tests {
 
     #[test]
     fn codexbar_runs_the_cli_with_its_self_updater_and_browser_sign_in_off() {
-        let options = CliRunner::options();
+        let options = options_for(cfg!(windows));
         let mut expected = vec![
             ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
             ("AGY_CLI_NONINTERACTIVE_HEADLESS", "true"),
@@ -558,6 +567,95 @@ mod tests {
             ),
             Err(CommandError::NotFound)
         );
+    }
+
+    #[test]
+    fn both_platform_policies_keep_user_paths_and_disable_interactive_auth() {
+        for native in [false, true] {
+            let options = CliRunner::options(native);
+            assert_eq!(options.cwd, None);
+            for name in ["HOME", "USERPROFILE", "AGY_HOME"] {
+                assert!(!options.remove_env.contains(&name));
+                assert!(!options.env.iter().any(|(key, _)| *key == name));
+            }
+            assert!(options.env.contains(&NO_AUTO_UPDATE));
+            for setting in NO_BROWSER {
+                assert!(options.env.contains(&setting));
+            }
+            assert_eq!(options.env.iter().any(|(key, _)| *key == "SSH_CONNECTION"), !native);
+            assert_eq!(options.env.iter().any(|(key, _)| *key == "SSH_CLIENT"), !native);
+        }
+    }
+
+    #[test]
+    fn native_log_only_sign_out_overrides_exit_and_timeout_but_not_network_errors() {
+        let success = CommandOutput {
+            success: true,
+            stdout: "usage".into(),
+            stderr: String::new(),
+        };
+        for result in [
+            Ok(success),
+            Err(CommandError::TimedOut),
+            Err(CommandError::Failed),
+            Err(CommandError::NotFound),
+        ] {
+            for contents in [
+                None,
+                Some(b"".as_slice()),
+                Some(b"network timeout".as_slice()),
+                Some(b"Print mode: triggering interactive OAuth".as_slice()),
+                Some(b"\xff".as_slice()),
+            ] {
+                let mut saved = None;
+                let actual = run_probe(true, &["-p", "/usage"], |args, options| {
+                    assert!(!options.env.iter().any(|(key, _)| *key == "SSH_CONNECTION"));
+                    assert_eq!(&args[..2], &["-p", "/usage"]);
+                    assert_eq!(args[2], "--log-file");
+                    let path = PathBuf::from(args[3]);
+                    if let Some(contents) = contents {
+                        std::fs::write(&path, contents).unwrap();
+                    }
+                    saved = Some(path);
+                    result.clone()
+                });
+                let expected = if contents == Some(b"Print mode: triggering interactive OAuth".as_slice()) {
+                    Ok(CommandOutput {
+                        success: false,
+                        stdout: String::new(),
+                        stderr: SIGN_IN_PROMPT.into(),
+                    })
+                } else {
+                    result.clone()
+                };
+                assert_eq!(actual, expected);
+                assert!(
+                    !saved.unwrap().parent().unwrap().exists(),
+                    "private diagnostic directory removed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn version_and_remote_probes_do_not_create_a_native_log() {
+        for (native, args) in [(true, vec!["--version"]), (false, vec!["-p", "/usage"])] {
+            assert_eq!(
+                run_probe(native, &args, |actual, _| {
+                    assert_eq!(actual, args);
+                    Err(CommandError::NotFound)
+                }),
+                Err(CommandError::NotFound)
+            );
+        }
+    }
+
+    #[test]
+    fn private_log_creation_fails_closed_for_an_unwritable_parent() {
+        let parent = ProbeLog::new_in(&std::env::temp_dir()).unwrap();
+        let file = parent.0.join("probe.log");
+        std::fs::write(&file, "occupied").unwrap();
+        assert!(matches!(ProbeLog::new_in(&file), Err(CommandError::Failed)));
     }
 
     struct Runner(Result<CommandOutput, CommandError>, std::sync::Mutex<Vec<Vec<String>>>);
