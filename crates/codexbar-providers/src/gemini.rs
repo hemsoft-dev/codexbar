@@ -201,7 +201,7 @@ mod tests {
             if args == ["--version"] {
                 return self.0.clone().map(|_| crate::CommandOutput {
                     success: true,
-                    stdout: "1.3.3".to_owned(),
+                    stdout: "1.4.10".to_owned(),
                     stderr: String::new(),
                 });
             }

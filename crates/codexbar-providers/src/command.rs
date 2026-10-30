@@ -56,7 +56,7 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(25);
 
 impl CommandRunner for SystemCommandRunner {
     fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput, CommandError> {
-        self.run_scoped(program, args, timeout, None)
+        self.run_scoped(program, args, timeout, None, crate::contained::spawn)
     }
     fn run_with_options(
         &self,
@@ -65,16 +65,27 @@ impl CommandRunner for SystemCommandRunner {
         timeout: Duration,
         options: &CommandOptions,
     ) -> Result<CommandOutput, CommandError> {
-        self.run_scoped(program, args, timeout, Some(options))
+        self.run_scoped(program, args, timeout, Some(options), crate::contained::spawn)
     }
 }
 impl SystemCommandRunner {
+    /// Detach from the Windows console too: agy otherwise opens CONIN$ for interactive OAuth even with null stdin.
+    pub(crate) fn run_without_console(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: Duration,
+        options: &CommandOptions,
+    ) -> Result<CommandOutput, CommandError> {
+        self.run_scoped(program, args, timeout, Some(options), crate::contained::spawn_detached)
+    }
     fn run_scoped(
         &self,
         program: &str,
         args: &[&str],
         timeout: Duration,
         options: Option<&CommandOptions>,
+        spawn: fn(&mut std::process::Command) -> std::io::Result<crate::contained::Contained>,
     ) -> Result<CommandOutput, CommandError> {
         let mut command = crate::platform::command(program);
         if let Some(options) = options {
@@ -90,7 +101,7 @@ impl SystemCommandRunner {
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
         }
-        let inner = crate::contained::spawn(&mut command).map_err(spawn_error)?;
+        let inner = spawn(&mut command).map_err(spawn_error)?;
         let mut process = Running { inner, stopped: false };
         let output = collect(
             &mut process.inner.child,
@@ -277,6 +288,37 @@ mod tests {
         assert_eq!(
             spawn_error(std::io::ErrorKind::PermissionDenied.into()),
             CommandError::Failed
+        );
+    }
+
+    #[test]
+    fn scoped_run_configures_the_command_before_its_selected_executor_and_fails_closed() {
+        fn reject(command: &mut std::process::Command) -> std::io::Result<crate::contained::Contained> {
+            assert_eq!(command.get_args().collect::<Vec<_>>(), ["--version"]);
+            assert_eq!(command.get_current_dir(), Some(std::env::temp_dir().as_path()));
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(key, value)| key == "CODEXBAR_PROBE_TEST" && value == Some("native".as_ref()))
+            );
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        }
+        let options = CommandOptions {
+            cwd: Some(std::env::temp_dir()),
+            remove_env: vec![],
+            env: vec![("CODEXBAR_PROBE_TEST", "native")],
+            output_limit: 1024,
+            stop_on_stderr: None,
+        };
+        assert_eq!(
+            SystemCommandRunner.run_scoped(
+                "synthetic",
+                &["--version"],
+                Duration::from_secs(1),
+                Some(&options),
+                reject
+            ),
+            Err(CommandError::Failed)
         );
     }
 

@@ -33,12 +33,13 @@ const BUCKETS: [(&str, &str, &str, i64); 5] = [
 /// that no creation flag on the agy CodexBar starts can reach. Agy run in a terminal still updates itself.
 pub const NO_AUTO_UPDATE: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
 
-/// A signed-out agy starts Google sign-in in the default browser unless it believes it runs over SSH; then it prints
-/// the sign-in link and waits for a pasted code instead (#282). A background read must never open a browser, so agy
-/// is told it runs over a loopback SSH session. The interactive sign-in (`gemini_login`) clears these again.
+/// Keep native credential storage while disabling backend interactive OAuth. Faking SSH changes agy's token store to
+/// files, hiding the desktop keyring sign-in (#289). Both flags are needed: an inherited interactive override
+/// must not re-enable backend consent. Frontend browser helpers are additionally denied by the Windows job.
+/// These switches are qualified with agy 1.4.10.
 pub const NO_BROWSER: [(&str, &str); 2] = [
-    ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
-    ("SSH_CLIENT", "127.0.0.1 50000 22"),
+    ("AGY_CLI_NONINTERACTIVE_HEADLESS", "true"),
+    ("AGY_CLI_INTERACTIVE_HEADLESS", "false"),
 ];
 
 /// What a signed-out agy prints to stderr before it waits for a sign-in nobody here can give (`Authentication
@@ -51,20 +52,97 @@ const SIGN_IN_PROMPT: &str = "authentication required";
 pub struct CliRunner;
 
 impl CliRunner {
-    fn options() -> CommandOptions {
-        CommandOptions {
-            cwd: None,
-            remove_env: vec![NO_AUTO_UPDATE.0, NO_BROWSER[0].0, NO_BROWSER[1].0, "SSH_TTY"],
-            env: vec![NO_AUTO_UPDATE, NO_BROWSER[0], NO_BROWSER[1]],
-            output_limit: 8 * 1024 * 1024,
-            stop_on_stderr: Some(SIGN_IN_PROMPT),
-        }
+    fn options(native: bool) -> CommandOptions {
+        options_for(native)
     }
+}
+
+fn options_for(native: bool) -> CommandOptions {
+    let mut options = CommandOptions {
+        cwd: None,
+        remove_env: vec![
+            NO_AUTO_UPDATE.0,
+            NO_BROWSER[0].0,
+            NO_BROWSER[1].0,
+            "SSH_CONNECTION",
+            "SSH_CLIENT",
+            "SSH_TTY",
+        ],
+        env: vec![NO_AUTO_UPDATE, NO_BROWSER[0], NO_BROWSER[1]],
+        output_limit: 8 * 1024 * 1024,
+        stop_on_stderr: Some(SIGN_IN_PROMPT),
+    };
+    // The one-process Windows job prevents browser helpers. Other platforms retain the existing SSH guard
+    // until they have an equivalent native-keyring, browser-free launch policy.
+    if !native {
+        options.env.extend([
+            ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
+            ("SSH_CLIENT", "127.0.0.1 50000 22"),
+        ]);
+    }
+    options
 }
 
 impl CommandRunner for CliRunner {
     fn run(&self, program: &str, args: &[&str], timeout: StdDuration) -> Result<CommandOutput, CommandError> {
-        SystemCommandRunner.run_with_options(program, args, timeout, &Self::options())
+        run_probe(cfg!(windows), args, |args, options| {
+            SystemCommandRunner.run_without_console(program, args, timeout, options)
+        })
+    }
+}
+
+/// Keep the native auth protocol testable on every host; only the executor starts an OS process.
+fn run_probe(
+    native: bool,
+    args: &[&str],
+    run: impl FnOnce(&[&str], &CommandOptions) -> Result<CommandOutput, CommandError>,
+) -> Result<CommandOutput, CommandError> {
+    let options = CliRunner::options(native);
+    if !native || !args.contains(&"/usage") {
+        return run(args, &options);
+    }
+    let log = ProbeLog::new_in(&std::env::temp_dir())?;
+    let path = log.0.join("probe.log");
+    let mut args = args.to_vec();
+    let path = path.to_str().ok_or(CommandError::Failed)?;
+    args.extend(["--log-file", path]);
+    let result = run(&args, &options);
+    // Native agy logs its OAuth decision without stderr. The process has stopped before the log is read.
+    if std::fs::read_to_string(path).is_ok_and(|text| requires_sign_in(&text)) {
+        return Ok(CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: SIGN_IN_PROMPT.to_owned(),
+        });
+    }
+    result
+}
+
+fn requires_sign_in(log: &str) -> bool {
+    log.contains("Print mode: triggering interactive OAuth")
+}
+
+/// Only this probe's diagnostic log is read. Never inspect a concurrent user's log or retain its contents.
+struct ProbeLog(PathBuf);
+
+impl ProbeLog {
+    fn new_in(base: &std::path::Path) -> Result<Self, CommandError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = base.join(format!("codexbar-agy-{}-{time}-{unique}", std::process::id()));
+        std::fs::create_dir(&dir).map_err(|_| CommandError::Failed)?;
+        Ok(Self(dir))
+    }
+}
+
+impl Drop for ProbeLog {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0.join("probe.log"));
+        let _ = std::fs::remove_dir(&self.0);
     }
 }
 
@@ -104,7 +182,7 @@ impl CodingError {
             Self::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
             Self::SignedOut => "The Antigravity CLI is signed out. Sign in again from Settings > Accounts.",
             Self::TooOld => {
-                "Coding quotas need Antigravity CLI 1.1.11 or newer, whose /usage runs no model turn. Update agy."
+                "Coding quotas need Antigravity CLI 1.4.10 or newer for a browser-free usage check. Update agy."
             }
             Self::NoUsage => "The Antigravity CLI didn't report coding usage. Sign in by running agy once.",
             Self::TimedOut => "The Antigravity CLI took too long to report coding usage.",
@@ -215,9 +293,9 @@ pub fn parse(stdout: &str, now: DateTime<Utc>) -> Result<CodingUsage, CodingErro
 }
 
 /// Runs the CLI and reads its coding quotas.
-/// The first Antigravity CLI whose non-interactive `/usage` answers without starting an agent turn (its changelog,
-/// 1.1.11). An older one could send `/usage` to the model as a prompt, using quota and starting a conversation.
-const FIRST_SAFE_VERSION: (u32, u32, u32) = (1, 1, 11);
+/// Require the version qualified for noninteractive native-keyring auth. `/usage` has been prompt-free since
+/// 1.1.11, but older builds are not qualified for the headless auth switches and could open a browser.
+const FIRST_SAFE_VERSION: (u32, u32, u32) = (1, 4, 10);
 
 /// The `major.minor.patch` the CLI's `--version` prints (`1.3.3`, possibly after a name or before a suffix).
 fn version(text: &str) -> Option<(u32, u32, u32)> {
@@ -454,18 +532,29 @@ mod tests {
 
     #[test]
     fn codexbar_runs_the_cli_with_its_self_updater_and_browser_sign_in_off() {
-        let options = CliRunner::options();
-        assert_eq!(
-            options.env,
-            [
-                ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
+        let options = options_for(cfg!(windows));
+        let mut expected = vec![
+            ("AGY_CLI_DISABLE_AUTO_UPDATE", "true"),
+            ("AGY_CLI_NONINTERACTIVE_HEADLESS", "true"),
+            ("AGY_CLI_INTERACTIVE_HEADLESS", "false"),
+        ];
+        if !cfg!(windows) {
+            expected.extend([
                 ("SSH_CONNECTION", "127.0.0.1 50000 127.0.0.1 22"),
                 ("SSH_CLIENT", "127.0.0.1 50000 22"),
-            ]
-        );
+            ]);
+        }
+        assert_eq!(options.env, expected);
         assert_eq!(
             options.remove_env,
-            ["AGY_CLI_DISABLE_AUTO_UPDATE", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+            [
+                "AGY_CLI_DISABLE_AUTO_UPDATE",
+                "AGY_CLI_NONINTERACTIVE_HEADLESS",
+                "AGY_CLI_INTERACTIVE_HEADLESS",
+                "SSH_CONNECTION",
+                "SSH_CLIENT",
+                "SSH_TTY"
+            ]
         );
         assert_eq!(options.stop_on_stderr, Some("authentication required"));
         assert_eq!(options.cwd, None);
@@ -480,6 +569,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn both_platform_policies_keep_user_paths_and_disable_interactive_auth() {
+        for native in [false, true] {
+            let options = CliRunner::options(native);
+            assert_eq!(options.cwd, None);
+            for name in ["HOME", "USERPROFILE", "AGY_HOME"] {
+                assert!(!options.remove_env.contains(&name));
+                assert!(!options.env.iter().any(|(key, _)| *key == name));
+            }
+            assert!(options.env.contains(&NO_AUTO_UPDATE));
+            for setting in NO_BROWSER {
+                assert!(options.env.contains(&setting));
+            }
+            assert_eq!(options.env.iter().any(|(key, _)| *key == "SSH_CONNECTION"), !native);
+            assert_eq!(options.env.iter().any(|(key, _)| *key == "SSH_CLIENT"), !native);
+        }
+    }
+
+    #[test]
+    fn native_log_only_sign_out_overrides_exit_and_timeout_but_not_network_errors() {
+        let success = CommandOutput {
+            success: true,
+            stdout: "usage".into(),
+            stderr: String::new(),
+        };
+        for result in [
+            Ok(success),
+            Err(CommandError::TimedOut),
+            Err(CommandError::Failed),
+            Err(CommandError::NotFound),
+        ] {
+            for contents in [
+                None,
+                Some(b"".as_slice()),
+                Some(b"network timeout".as_slice()),
+                Some(b"Print mode: triggering interactive OAuth".as_slice()),
+                Some(b"\xff".as_slice()),
+            ] {
+                let mut saved = None;
+                let actual = run_probe(true, &["-p", "/usage"], |args, options| {
+                    assert!(!options.env.iter().any(|(key, _)| *key == "SSH_CONNECTION"));
+                    assert_eq!(&args[..2], &["-p", "/usage"]);
+                    assert_eq!(args[2], "--log-file");
+                    let path = PathBuf::from(args[3]);
+                    if let Some(contents) = contents {
+                        std::fs::write(&path, contents).unwrap();
+                    }
+                    saved = Some(path);
+                    result.clone()
+                });
+                let expected = if contents == Some(b"Print mode: triggering interactive OAuth".as_slice()) {
+                    Ok(CommandOutput {
+                        success: false,
+                        stdout: String::new(),
+                        stderr: SIGN_IN_PROMPT.into(),
+                    })
+                } else {
+                    result.clone()
+                };
+                assert_eq!(actual, expected);
+                assert!(
+                    !saved.unwrap().parent().unwrap().exists(),
+                    "private diagnostic directory removed"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn version_and_remote_probes_do_not_create_a_native_log() {
+        for (native, args) in [(true, vec!["--version"]), (false, vec!["-p", "/usage"])] {
+            assert_eq!(
+                run_probe(native, &args, |actual, _| {
+                    assert_eq!(actual, args);
+                    Err(CommandError::NotFound)
+                }),
+                Err(CommandError::NotFound)
+            );
+        }
+    }
+
+    #[test]
+    fn private_log_creation_fails_closed_for_an_unwritable_parent() {
+        let parent = ProbeLog::new_in(&std::env::temp_dir()).unwrap();
+        let file = parent.0.join("probe.log");
+        std::fs::write(&file, "occupied").unwrap();
+        assert!(matches!(ProbeLog::new_in(&file), Err(CommandError::Failed)));
+    }
+
     struct Runner(Result<CommandOutput, CommandError>, std::sync::Mutex<Vec<Vec<String>>>);
 
     impl CommandRunner for Runner {
@@ -491,7 +669,7 @@ mod tests {
             if args == ["--version"] {
                 return self.0.clone().map(|_| CommandOutput {
                     success: true,
-                    stdout: "1.3.3\n".to_owned(),
+                    stdout: "1.4.10\n".to_owned(),
                     stderr: String::new(),
                 });
             }
@@ -520,6 +698,21 @@ mod tests {
         );
         let missing = Runner(Err(CommandError::NotFound), Default::default());
         assert_eq!(fetch(&missing, now()), Err(CodingError::NotInstalled));
+    }
+
+    #[test]
+    fn native_auth_log_distinguishes_sign_in_from_network_failure() {
+        assert!(requires_sign_in(
+            "I1029 printmode.go:430] Print mode: triggering interactive OAuth"
+        ));
+        for log in [
+            "",
+            "network timeout",
+            "Print mode: silent auth failed",
+            "Print mode: starting",
+        ] {
+            assert!(!requires_sign_in(log));
+        }
     }
 
     #[test]
@@ -584,14 +777,17 @@ mod tests {
     }
 
     #[test]
-    fn a_cli_older_than_1_1_11_or_of_unknown_version_is_never_asked_for_usage() {
+    fn a_cli_without_qualified_headless_auth_is_never_asked_for_usage() {
         assert_eq!(version("1.3.3\n"), Some((1, 3, 3)));
         assert_eq!(version("agy v1.1.11-beta"), Some((1, 1, 11)));
         assert_eq!(version("1.3"), None);
         assert_eq!(version("1.3.3.4"), None);
         for (installed, safe) in [
-            ("1.1.11", true),
-            ("1.3.3", true),
+            ("1.1.11", false),
+            ("1.3.3", false),
+            ("1.4.9", false),
+            ("1.4.10", true),
+            ("1.4.11", true),
             ("2.0.0", true),
             ("1.1.10", false),
             ("1.1.8", false),

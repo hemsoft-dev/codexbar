@@ -74,10 +74,11 @@ limit, plus a separate **Argon weekly** bucket. CodexBar reads them through Goog
 no model turn. The CLI keeps its own Google sign-in and renews it, so CodexBar
 borrows no OAuth client and stores no token.
 
-- CodexBar first runs `agy --version` and asks for `/usage` only from version
-  1.1.11 on, the first whose non-interactive `/usage` starts no agent turn. An
-  older CLI, or a version it can't read, is never asked, so `/usage` is never
-  sent to the model as a prompt.
+- CodexBar first runs `agy --version` and requires 1.4.10 or newer for the
+  qualified background auth path. `/usage` has run no model turn since 1.1.11.
+  On Windows, detection keeps the desktop credential store, removes inherited SSH mode,
+  and on Windows denies child-process creation so agy cannot launch a browser.
+  See [the diagnosis and release handoff](ANTIGRAVITY_AUTH_289.md).
 - Use **Connect Antigravity** in Settings to verify the CLI session, or select
   *From the Antigravity CLI* explicitly for an already configured session.
   Choose it only for the Google account `agy` is signed in to: CodexBar cannot
@@ -120,3 +121,6 @@ for current-head evidence and the explicit manual Google-consent boundary.
 The SUS implementation also checked the structured producer shape with CLI 1.4.6
 on October 23, 2026, including the separate Argon bucket and zero model turns.
 The checked-in response fixture uses synthetic fractions and reset instants.
+
+Non-Windows probes retain their existing loopback SSH browser guard until an
+equivalent OS restriction is qualified there.
