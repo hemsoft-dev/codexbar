@@ -79,13 +79,10 @@ fn fixture(args: &[String]) -> ! {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .spawn();
-                match denied {
-                    Err(_) => {}
-                    Ok(mut child) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        panic!("browser helpers must be denied by the job");
-                    }
+                if let Ok(mut child) = denied {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("browser helpers must be denied by the job");
                 }
             }
             if args[1] == "signed-in" {

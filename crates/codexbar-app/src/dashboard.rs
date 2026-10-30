@@ -1676,6 +1676,15 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Keep geometry fixtures independent of the real weekly reset day.
+    #[cfg(test)]
+    pub(crate) fn set_alignment_demo(&mut self, cx: &mut Context<Self>) {
+        let now = "2026-10-27T15:00:00Z".parse().unwrap();
+        crate::sus::capture_time(now, cx);
+        self.set_accounts(demo_accounts(now, &Utc), cx);
+        cx.notify();
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.ranked_with = alert_inputs(cx);
         self.now = crate::sus::now(cx);
