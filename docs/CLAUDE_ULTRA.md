@@ -30,8 +30,10 @@ metric disappears. They never synthesize a session reset or zero usage.
 ## Native evidence
 
 Build on Windows with `cargo build -p codexbar-app --locked --features capture`.
-Set `CODEXBAR_CAPTURE_DIR` to a fresh evidence folder and
+Set `CODEXBAR_CAPTURE_DIR` to a fresh evidence folder,
+`CODEXBAR_SETTINGS_DIR` to its `settings` subfolder, and
 `CODEXBAR_CAPTURE_CLAUDE_ULTRA=1`, then run the binary with `--demo`.
+Both directory overrides are required by the fixture isolation assertion.
 Repeat with `CODEXBAR_CAPTURE_WIDE=1` for the 2600x1000 viewport.
 Each run exercises finite Ultra, weekly-only Ultra, restored finite Ultra, Max,
 and malformed session states in light and dark themes through production parsing.
