@@ -204,10 +204,15 @@ async fn run(
         let actual = cx
             .update(|cx| cx.update_window(handle, |_, window, _| window.viewport_size()))
             .expect("wide capture viewport");
-        assert!(
-            actual.width >= gpui_kit::px(2600.) && actual.height >= gpui_kit::px(1000.),
-            "wide capture was clamped: {actual:?}"
-        );
+        if std::env::var_os("CODEXBAR_CAPTURE_CLAUDE_ULTRA").is_some() {
+            let is_wide = cx.update(|cx| dashboard.read(cx).capture_table_is_wide(cx));
+            assert!(is_wide, "Claude evidence requires the actual wide table: {actual:?}");
+        } else {
+            assert!(
+                actual.width >= gpui_kit::px(2600.) && actual.height >= gpui_kit::px(1000.),
+                "wide capture was clamped: {actual:?}"
+            );
+        }
     }
     let mut saved = Vec::new();
     for (appearance, suffix) in [(Appearance::Light, "light"), (Appearance::Dark, "dark")] {

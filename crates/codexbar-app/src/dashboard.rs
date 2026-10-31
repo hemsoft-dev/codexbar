@@ -1479,6 +1479,12 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Native evidence must prove the responsive wide table, including on smaller high-DPI displays.
+    #[cfg(feature = "capture")]
+    pub(crate) fn capture_table_is_wide(&self, cx: &gpui_kit::App) -> bool {
+        self.table.read(cx).delegate().is_wide()
+    }
+
     /// Claude compatibility states use the production parser and stable identity across refreshes.
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn capture_claude_ultra(&mut self, state: &str, cx: &mut Context<Self>) {
