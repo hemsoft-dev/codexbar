@@ -18,7 +18,8 @@
   "overrides": {
     "markdownlint-cli": {
       "js-yaml": "5.5.0",
-      "smol-toml": "1.9.1"
+      "smol-toml": "1.9.1",
+      "minimatch": "11.0.1"
     },
     "micromark-extension-math": {
       "katex": "0.18.2"
