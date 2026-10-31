@@ -1479,6 +1479,43 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Claude compatibility states use the production parser and stable identity across refreshes.
+    #[cfg(any(test, feature = "capture"))]
+    pub(crate) fn capture_claude_ultra(&mut self, state: &str, cx: &mut Context<Self>) {
+        assert!(matches!(self.source, DataSource::Demo));
+        let now: DateTime<Utc> = "2026-10-30T16:00:00Z".parse().unwrap();
+        crate::sus::capture_time(now, cx);
+        let mut payload = serde_json::json!({
+            "seven_day":{"utilization":32,"resets_at":"2026-11-03T16:00:00Z"},
+            "seven_day_opus":{"utilization":45,"resets_at":"2026-11-03T16:00:00Z"}});
+        if matches!(state, "finite" | "max" | "restored") {
+            payload["five_hour"] = serde_json::json!({"utilization":64,"resets_at":"2026-10-30T18:00:00Z"});
+        } else if state == "unknown" {
+            payload["five_hour"] = serde_json::json!({"utilization":"unavailable"});
+        } else {
+            payload["five_hour"] = serde_json::Value::Null;
+        }
+        let account = codexbar_providers::claude::parse_usage(&payload.to_string(), None, now)
+            .unwrap()
+            .with_plan(if state == "max" { "Max" } else { "Ultra" });
+        self.states.clear();
+        self.placeholders.clear();
+        self.set_accounts(vec![account], cx);
+        // Retain a saved session-card choice when its metric disappears, exercising automatic fallback.
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "claude", |choice| {
+            choice.rings = vec!["5-hour-window".into()];
+        });
+        self.focus_account(
+            &crate::handoff::FocusRequest {
+                account: "claude".into(),
+                metric: Some("5-hour-window".into()),
+            },
+            cx,
+        );
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     /// Synthetic CLI payload through the real parser, for age-boundary rendering without live accounts.
     #[cfg(any(test, feature = "capture"))]
     pub(crate) fn capture_gemini_weekly(&mut self, mature: bool, cx: &mut Context<Self>) {

@@ -588,34 +588,7 @@ impl TableDelegate for AccountTable {
         };
 
         match self.columns()[col_ix] {
-            Col::Window(kind, cell) => {
-                let metric = kind
-                    .in_account(row)
-                    .filter(|metric| !row.metric_ended(metric, self.now));
-                let id = format!("window-{}-{}", kind.key(), row.id().as_str());
-                let name = metric.map_or(kind.title(), Metric::label);
-                match cell {
-                    WindowCell::Percent => percent_cell(metric, name, &id, muted),
-                    WindowCell::Bar => match metric {
-                        Some(metric) => bar_cell(metric, row, &assessment, self.now, &format!("{id}-bar"), cx),
-                        None => missing_window_bar(kind, row, &assessment, severity, &format!("{id}-bar"), cx),
-                    },
-                    WindowCell::AtReset => match metric {
-                        Some(metric) => at_reset_cell(metric, row, self.now, &format!("{id}-at-reset"), name, cx),
-                        None => blank_cell(&format!("{id}-at-reset"), &format!("{} at reset", kind.title()), muted),
-                    },
-                    // The window's own reset (#204), as time left (#196), beside its bar.
-                    WindowCell::Resets => match metric.and_then(Metric::resets_at) {
-                        Some(at) => resets_cell(
-                            &format!("{id}-resets"),
-                            &format!("{name} resets"),
-                            &format::time_left_label(at, self.now),
-                            muted,
-                        ),
-                        None => blank_cell(&format!("{id}-resets"), &format!("{name} resets"), muted),
-                    },
-                }
-            }
+            Col::Window(kind, cell) => window_cell(kind, cell, row, &assessment, self.now, cx),
             Col::Account => h_flex()
                 .gap_2()
                 .items_center()
@@ -816,6 +789,59 @@ impl AccountTable {
                     .child(kind.change(summary.change)),
             )
             .into_any_element()
+    }
+}
+
+/// A standard window owns its measured, missing and unknown cells.
+fn window_cell(
+    kind: WindowKind,
+    cell: WindowCell,
+    row: &AccountSnapshot,
+    assessment: &codexbar_core::Assessment,
+    now: DateTime<Utc>,
+    cx: &gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let severity = assessment.severity();
+    let metric = kind.in_account(row).filter(|metric| !row.metric_ended(metric, now));
+    let id = format!("window-{}-{}", kind.key(), row.id().as_str());
+    let name = metric.map_or(kind.title(), Metric::label);
+    // Missing Claude session data is unknown, including old startup snapshots.
+    if metric.is_none() && row.provider() == Provider::Claude && kind == WindowKind::FiveHour {
+        let suffix = match cell {
+            WindowCell::Percent => "",
+            WindowCell::Bar => "-bar",
+            WindowCell::AtReset => "-at-reset",
+            WindowCell::Resets => "-resets",
+        };
+        return div()
+            .id(ElementId::Name(format!("{id}{suffix}").into()))
+            .test_support()
+            .aria_label("Claude 5-hour limit: unknown/unavailable")
+            .text_color(muted)
+            .child(if cell == WindowCell::Bar { "Unknown" } else { "?" })
+            .into_any_element();
+    }
+    match cell {
+        WindowCell::Percent => percent_cell(metric, name, &id, muted),
+        WindowCell::Bar => match metric {
+            Some(metric) => bar_cell(metric, row, assessment, now, &format!("{id}-bar"), cx),
+            None => missing_window_bar(kind, row, assessment, severity, &format!("{id}-bar"), cx),
+        },
+        WindowCell::AtReset => match metric {
+            Some(metric) => at_reset_cell(metric, row, now, &format!("{id}-at-reset"), name, cx),
+            None => blank_cell(&format!("{id}-at-reset"), &format!("{} at reset", kind.title()), muted),
+        },
+        // The window's own reset (#204), as time left (#196), beside its bar.
+        WindowCell::Resets => match metric.and_then(Metric::resets_at) {
+            Some(at) => resets_cell(
+                &format!("{id}-resets"),
+                &format!("{name} resets"),
+                &format::time_left_label(at, now),
+                muted,
+            ),
+            None => blank_cell(&format!("{id}-resets"), &format!("{name} resets"), muted),
+        },
     }
 }
 

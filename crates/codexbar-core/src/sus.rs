@@ -233,8 +233,8 @@ pub fn fleet(items: impl IntoIterator<Item = (Option<Score>, Option<u64>)>) -> F
 /// Explicit prices requested for these known tiers; never infer a tier from quota limits.
 pub fn known_price(provider: Provider, plan: &str) -> Option<Price> {
     let cents = match (provider, plan) {
-        (Provider::Codex, "pro") | (Provider::Claude, "Max 20x") => 20_000,
-        (Provider::Codex, "prolite") | (Provider::Claude, "Max 5x") => 10_000,
+        (Provider::Codex, "pro") | (Provider::Claude, "Max 20x" | "Ultra") => 20_000,
+        (Provider::Codex, "prolite") | (Provider::Claude, "Max 5x" | "Max") => 10_000,
         _ => return None,
     };
     Some(Price::fixed(cents))
@@ -244,6 +244,19 @@ pub fn known_price(provider: Provider, plan: &str) -> Option<Price> {
 mod tests {
     use super::*;
     use crate::{AccountId, Pace};
+    #[test]
+    fn claude_renamed_prices_preserve_weight_without_pricing_ambiguous_tiers() {
+        assert_eq!(
+            known_price(Provider::Claude, "Ultra"),
+            known_price(Provider::Claude, "Max 20x")
+        );
+        assert_eq!(
+            known_price(Provider::Claude, "Max"),
+            known_price(Provider::Claude, "Max 5x")
+        );
+        assert!(known_price(Provider::Claude, "Ultra").is_some());
+        assert_eq!(known_price(Provider::Claude, "Max (tier unknown)"), None);
+    }
     fn now() -> DateTime<Utc> {
         "2026-10-23T14:00:00Z".parse().unwrap()
     }

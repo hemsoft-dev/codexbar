@@ -850,6 +850,30 @@ mod tests {
     }
 
     #[test]
+    fn weekly_only_claude_snapshot_retains_unknown_session_without_synthetic_metric() {
+        let dir = Dir::new("claude-ultra");
+        let account = AccountSnapshot::new(
+            AccountId::new("claude"),
+            Provider::Claude,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used: 0.32,
+                resets_at: now() + chrono::Duration::days(4),
+                pace: None,
+                length: Some(chrono::Duration::days(7)),
+            }],
+            now(),
+        )
+        .with_plan("Ultra")
+        .with_message("Claude 5-hour limit unavailable. Verification and absence of a session limit are unknown.");
+        save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
+        let loaded = load_snapshots(&dir.0);
+        assert_eq!(loaded, vec![account]);
+        assert_eq!(loaded[0].metrics().len(), 1);
+        assert!(loaded[0].messages()[0].contains("unknown"));
+    }
+
+    #[test]
     fn spend_currency_and_messages_round_trip() {
         let dir = Dir::new("spend");
         let account = AccountSnapshot::new(
