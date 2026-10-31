@@ -8829,3 +8829,31 @@ fn cached_muse_alert_context_matches_source_assessment_but_reset_countdown_uses_
         crate::muse_fixture::base() + chrono::Duration::minutes(1)
     );
 }
+
+#[gpui_kit::test]
+fn claude_weekly_only_refresh_falls_back_and_restores_session(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-ultra-transition", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    gpui_kit::VisualTestContext::from_window(handle, cx).simulate_resize(size(px(2600.), px(1000.)));
+    for state in ["finite", "weekly", "restored", "max", "unknown"] {
+        cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_claude_ultra(state, cx)));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let ring = label(cx, handle, "focus-share").unwrap();
+        if matches!(state, "weekly" | "unknown") {
+            assert!(ring.contains("Weekly"), "{state}: {ring}");
+            assert_eq!(
+                label(cx, handle, "window-5h-claude-bar").as_deref(),
+                Some("Claude 5-hour limit: unknown/unavailable")
+            );
+            assert_eq!(
+                label(cx, handle, "window-5h-claude-resets").as_deref(),
+                Some("Claude 5-hour limit: unknown/unavailable")
+            );
+        } else {
+            assert!(!label(cx, handle, "window-5h-claude-bar").unwrap().contains("unknown"));
+        }
+        assert!(!ring.contains("No 5-hour limit"));
+    }
+}

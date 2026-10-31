@@ -36,10 +36,11 @@ seven affected packages. The qualified graph reports zero findings at every
 severity. markdownlint-cli is pinned at 0.49.1, and the lockfile records the full
 graph and integrity hashes.
 
-Three narrowly scoped overrides move beyond upstream's restricted minor ranges:
+Four narrowly scoped overrides move beyond upstream's restricted minor ranges:
 
 | Parent | Override | Reason |
 | --- | --- | --- |
+| markdownlint-cli | minimatch 11.0.1 | [Globparts amplification denial of service](https://github.com/advisories/GHSA-g3hv-75wg-m249) affects versions before 11.0.1, including 10.2.6. |
 | markdownlint-cli | js-yaml 5.5.0 | [Merge-source CPU exhaustion](https://github.com/advisories/GHSA-r3ph-w7gj-g6xm) affects versions through 5.4.0. |
 | markdownlint-cli | smol-toml 1.9.1 | [Quadratic key parsing](https://github.com/advisories/GHSA-r4xh-jqrq-34v2) affects versions through 1.8.0. |
 | micromark-extension-math | katex 0.18.2 | [Trust restrictions can be bypassed after prototype pollution](https://github.com/advisories/GHSA-238p-pmpm-9mq7) before 0.18.2. |

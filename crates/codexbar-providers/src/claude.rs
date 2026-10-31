@@ -557,7 +557,7 @@ pub fn parse_usage(
 ) -> Result<AccountSnapshot, ProviderError> {
     let json: Value = serde_json::from_str(payload).map_err(|_| ProviderError::Unexpected { detail: "not JSON" })?;
     let mut metrics = windows(&json, now);
-    let mut messages = Vec::new();
+    let mut messages = session_notes(&metrics);
     let (found, notes) = money(&json);
     metrics.extend(found);
     messages.extend(notes);
@@ -576,6 +576,15 @@ pub fn parse_usage(
     })
 }
 
+/// No documented OAuth field establishes verified Ultra entitlement.
+fn session_notes(metrics: &[Metric]) -> Vec<String> {
+    if !metrics.is_empty() && !metrics.iter().any(|metric| metric.label() == SESSION) {
+        vec!["Claude 5-hour limit unavailable. Verification and absence of a session limit are unknown.".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Only explicit current profile fields identify a tier. Sign-in metadata can remain stale after a downgrade.
 fn profile_plan(payload: &str) -> Option<String> {
     let json: Value = serde_json::from_str(payload).ok()?;
@@ -583,9 +592,9 @@ fn profile_plan(payload: &str) -> Option<String> {
     let kind = org.get("organization_type")?.as_str()?;
     let tier = org.get("rate_limit_tier").and_then(Value::as_str);
     let plan = match (kind, tier) {
-        ("claude_max", Some("default_claude_max_5x")) => "Max 5x",
-        ("claude_max", Some("default_claude_max_20x")) => "Max 20x",
-        ("claude_max", _) => "Max",
+        ("claude_max", Some("default_claude_max_5x")) => "Max",
+        ("claude_max", Some("default_claude_max_20x")) => "Ultra",
+        ("claude_max", _) => "Max (tier unknown)",
         ("claude_pro", _) => "Pro",
         ("claude_team", _) => "Team",
         ("claude_enterprise", _) => "Enterprise",
@@ -997,7 +1006,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
                 let plan = self.current_plan(&headers, now);
                 match plan {
                     Some(plan) => {
-                        if plan == "Max" {
+                        if plan == "Max (tier unknown)" {
                             account = account.with_message("Claude reports Max, but its current profile does not identify the 5x or 20x tier.");
                         }
                         if let Some(price)=codexbar_core::sus::known_price(Provider::Claude,&plan) {account=account.with_subscription_price(price);}
@@ -1838,21 +1847,29 @@ mod tests {
         folder.sign_in("tok", now() + Duration::hours(8), "user-1");
         let account = provider.fetch(now()).unwrap().remove(0);
         assert_eq!(account.label(), Some("Work"));
-        assert_eq!(account.plan(), Some("Max 20x"));
+        assert_eq!(account.plan(), Some("Ultra"));
     }
 
     #[test]
     fn current_profile_names_tiers_without_using_limits_or_stale_credentials() {
         for (kind, tier, expected) in [
-            ("claude_max", "default_claude_max_20x", "Max 20x"),
-            ("claude_max", "default_claude_max_5x", "Max 5x"),
+            ("claude_max", "default_claude_max_20x", "Ultra"),
+            ("claude_max", "default_claude_max_5x", "Max"),
             ("claude_pro", "default_claude_max_20x", "Pro"),
-            ("claude_max", "unknown", "Max"),
+            ("claude_max", "unknown", "Max (tier unknown)"),
         ] {
             let body =
                 serde_json::json!({"organization":{"organization_type":kind,"rate_limit_tier":tier}}).to_string();
             assert_eq!(profile_plan(&body).as_deref(), Some(expected));
         }
+        assert_eq!(
+            profile_plan(r#"{"organization":{"organization_type":"claude_max"}}"#).as_deref(),
+            Some("Max (tier unknown)")
+        );
+        assert_eq!(
+            profile_plan(r#"{"organization":{"organization_type":"claude_ultra"}}"#),
+            None
+        );
         assert_eq!(profile_plan("{}"), None);
         assert_eq!(profile_plan(r#"{"organization":{"organization_type":42}}"#), None);
     }
@@ -1892,14 +1909,14 @@ mod tests {
         };
         let provider = ClaudeProvider::new(http, file.0.clone());
         let first = provider.fetch(now()).unwrap().remove(0);
-        assert_eq!(first.plan(), Some("Max 20x"));
+        assert_eq!(first.plan(), Some("Ultra"));
         assert_eq!(
             provider.fetch(now() + Duration::minutes(5)).unwrap()[0].plan(),
-            Some("Max 20x")
+            Some("Ultra")
         );
         assert_eq!(provider.http.profile_calls.load(Ordering::SeqCst), 1);
         let next = provider.fetch(now() + Duration::minutes(11)).unwrap().remove(0);
-        assert_eq!(next.plan(), Some("Max 5x"));
+        assert_eq!(next.plan(), Some("Max"));
         assert_eq!(next.id(), first.id());
         assert_eq!(
             next.primary().unwrap().used_fraction(),
@@ -1956,6 +1973,81 @@ mod tests {
                 .iter()
                 .any(|message| message.contains("cached tier is not used"))
         );
+    }
+
+    #[test]
+    fn weekly_only_session_shapes_never_claim_unlimited() {
+        for session in [None, Some(Value::Null), Some(serde_json::json!({"utilization":"bad"}))] {
+            for structured in [false, true] {
+                let mut payload = if structured {
+                    serde_json::json!({"limits":[
+                        {"kind":"weekly_all","percent":32,"resets_at":"2026-10-12T02:00:00Z"},
+                        {"kind":"weekly_scoped","scope":{"model":{"display_name":"Opus"}},"percent":45,"resets_at":"2026-10-12T02:00:00Z"}]})
+                } else {
+                    serde_json::json!({"seven_day":{"utilization":32,"resets_at":"2026-10-12T02:00:00Z"},
+                        "seven_day_opus":{"utilization":45,"resets_at":"2026-10-12T02:00:00Z"}})
+                };
+                if let Some(session) = session.clone() {
+                    payload["five_hour"] = session;
+                }
+                let account = parse_usage(&payload.to_string(), None, now()).unwrap();
+                assert_eq!(account.metrics().len(), 2);
+                assert_eq!(account.metrics()[0].used_fraction(), Some(0.32));
+                assert_eq!(account.metrics()[1].label(), "Weekly Opus");
+                assert!(account.messages().iter().any(|m| m.contains("unknown")));
+                assert!(!account.messages().iter().any(|m| m.contains("No 5-hour limit")));
+                assert!(account.metrics()[0].resets_at().is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn structured_session_survives_flat_null_and_remains_a_status_limit() {
+        let payload = serde_json::json!({"five_hour":null,"limits":[
+            {"kind":"session","percent":100,"resets_at":"2026-10-07T04:00:00Z"},
+            {"kind":"weekly_all","percent":32,"resets_at":"2026-10-12T02:00:00Z"}]});
+        let account = parse_usage(&payload.to_string(), None, now())
+            .unwrap()
+            .with_plan("Ultra");
+        assert_eq!(account.metrics()[0].label(), SESSION);
+        assert_eq!(account.metrics()[0].used_fraction(), Some(1.0));
+        assert!(account.status_metrics().any(|metric| metric.label() == SESSION));
+        assert!(!account.messages().iter().any(|m| m.contains("unknown")));
+    }
+
+    #[test]
+    fn finite_weekly_only_finite_replaces_metrics_only_after_cache_expiry() {
+        let weekly = r#"{"five_hour":null,"seven_day":{"utilization":32,"resets_at":"2026-10-12T02:00:00Z"}}"#;
+        let (provider, _file) = provider(
+            "ultra-transition",
+            vec![
+                HttpResponse::new(200, FIXTURE),
+                HttpResponse::new(200, weekly),
+                HttpResponse::new(200, FIXTURE),
+                HttpResponse::new(500, ""),
+            ],
+        );
+        let first = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(first.plan(), Some("Ultra"));
+        assert_eq!(first.metrics()[0].label(), SESSION);
+        assert_eq!(
+            provider.fetch(now() + Duration::minutes(9)).unwrap()[0].fetched_at(),
+            first.fetched_at()
+        );
+        let weekly = provider.fetch(now() + Duration::minutes(11)).unwrap().remove(0);
+        assert_eq!(weekly.id(), first.id());
+        assert_eq!(weekly.metrics().len(), 1);
+        assert!(weekly.messages().iter().any(|m| m.contains("unknown")));
+        assert_eq!(
+            provider.fetch(now() + Duration::minutes(20)).unwrap()[0].fetched_at(),
+            weekly.fetched_at()
+        );
+        let finite = provider.fetch(now() + Duration::minutes(22)).unwrap().remove(0);
+        assert_eq!(finite.id(), first.id());
+        assert_eq!(finite.metrics()[0].label(), SESSION);
+        assert!(!finite.messages().iter().any(|m| m.contains("unknown")));
+        assert!(provider.fetch(now() + Duration::minutes(33)).is_err());
+        assert_eq!(provider.http.calls.load(Ordering::SeqCst), 4);
     }
 
     #[test]
