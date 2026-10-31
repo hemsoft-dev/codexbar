@@ -35,7 +35,7 @@ Set `CODEXBAR_CAPTURE_DIR` to a fresh evidence folder,
 `CODEXBAR_CAPTURE_CLAUDE_ULTRA=1`, then run the binary with `--demo`.
 Both directory overrides are required by the fixture isolation assertion.
 Repeat with `CODEXBAR_CAPTURE_WIDE=1` to request a 2600x1000 viewport.
-On a smaller high-DPI display, put `{"zoomLevel":0.7}` in the isolated
+On a smaller high-DPI display, put `{"zoomLevel":0.6}` in the isolated
 `settings/settings.json` before the wide run. This uses the app's normal zoom,
 without changing Windows settings. The Claude capture asserts the actual wide
 table is selected, and the native session columns expose their semantic labels;
