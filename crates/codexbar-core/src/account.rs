@@ -313,10 +313,13 @@ impl AccountSnapshot {
             (now - o.at.min(self.fetched_at)).num_milliseconds() > o.fresh_for_seconds.saturating_mul(1000)
         })
     }
-    /// Muse's last-seen window stops describing current allowance at its actual reset, even while
-    /// the account observation is still fresh. Other providers keep their existing reset semantics.
+    /// Claude quota windows and Muse's last-seen allowance stop describing current usage at their
+    /// actual reset, even while the snapshot is fresh. Keep the reported values as historical data;
+    /// expiry does not establish new usage or entitlement. Other providers keep their reset semantics.
     pub fn metric_ended(&self, metric: &Metric, now: DateTime<Utc>) -> bool {
-        self.provider == Provider::MuseCode && metric.resets_at().is_some_and(|reset| reset <= now)
+        (self.provider == Provider::MuseCode
+            || (self.provider == Provider::Claude && matches!(metric, Metric::Window { .. })))
+            && metric.resets_at().is_some_and(|reset| reset <= now)
     }
     /// Check wall-clock validity first; only then anchor decisions to the source observation.
     /// Kept per metric so an ended short window does not hide a valid weekly sibling.

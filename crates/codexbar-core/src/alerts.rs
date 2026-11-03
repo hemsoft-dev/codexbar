@@ -1364,9 +1364,10 @@ mod detail_tests {
         let expired = evaluate(&all_on(), &active, &[partial], wall);
         assert!(expired.recovered.contains(&old_key));
         assert!(expired.notify.iter().all(|alert| alert.metric == "Weekly"));
+        // Claude now shares quota expiry; other legacy providers retain their existing semantics.
         let legacy = AccountSnapshot::new(
             AccountId::new("legacy"),
-            Provider::Claude,
+            Provider::Codex,
             snapshot.metrics().to_vec(),
             now(),
         );
