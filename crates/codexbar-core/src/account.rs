@@ -317,10 +317,11 @@ impl AccountSnapshot {
     /// actual reset, even while the snapshot is fresh. Keep the reported values as historical data;
     /// expiry does not establish new usage or entitlement. Other providers keep their reset semantics.
     pub fn metric_ended(&self, metric: &Metric, now: DateTime<Utc>) -> bool {
-        matches!(
+        let expires_at_reset = matches!(
             (self.provider, metric),
             (Provider::MuseCode, _) | (Provider::Claude, Metric::Window { .. })
-        ) && metric.resets_at().is_some_and(|reset| reset <= now)
+        );
+        expires_at_reset && metric.resets_at().is_some_and(|reset| reset <= now)
     }
     /// Check wall-clock validity first; only then anchor decisions to the source observation.
     /// Kept per metric so an ended short window does not hide a valid weekly sibling.
