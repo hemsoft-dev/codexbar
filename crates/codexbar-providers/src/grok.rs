@@ -638,12 +638,13 @@ mod tests {
         assert_eq!(parse_auth(r#"{"https://other::x":{"key":"t","user_id":"s"}}"#), None);
     }
 
-    /// A home folder with an `auth.json`, removed when dropped.
+    /// A home folder with an `auth.json`, removed when dropped. The `home-` prefix keeps it apart from the
+    /// `grok_activity` tests' folders, which run in the same process (#298).
     struct Home(PathBuf);
 
     impl Home {
         fn with(name: &str, auth: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("codexbar-grok-{name}-{}", std::process::id()));
+            let path = std::env::temp_dir().join(format!("codexbar-grok-home-{name}-{}", std::process::id()));
             std::fs::create_dir_all(&path).unwrap();
             std::fs::write(path.join("auth.json"), auth).unwrap();
             Self(path)
