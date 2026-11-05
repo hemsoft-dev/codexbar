@@ -5,6 +5,8 @@
 //! kills the process group. A write that finishes first stays valid. A write still in progress is cut
 //! off. The fixture's `held` child never returns into its exit handler, so it never starts a write. That
 //! control stops exactly at the cap: only the deadline can end it, while an exiting child would finish.
+//! The `closed` order holds both streams while its owner closes their readers without a kill, as the runner
+//! does on overflow; the failed writes must not start the exit-time write either.
 use codexbar_providers::{CommandError, CommandOptions, CommandRunner, SystemCommandRunner};
 use std::ffi::{CString, c_char, c_int, c_void};
 use std::fs::File;
@@ -58,7 +60,8 @@ pub(super) fn helper(dir: &Path, order: &str) -> ! {
             RELEASE_IN_WRITE.store(true, Ordering::SeqCst);
             std::process::exit(0);
         }
-        "held" => super::held("stdout", CAP),
+        "held" => super::held("stdout", CAP, || ()),
+        "closed" => super::held("both", CAP, || trace("sent")),
         _ => panic!("unknown profile order"),
     }
     super::idle()
@@ -282,19 +285,8 @@ pub(super) fn qualify(program: &str, scratch: &Path) {
             .map(|output| (output.success, output.stdout.len(), &output.stderr));
         assert_eq!(result.as_ref().err(), Some(&expected), "{order}: {summary:?}");
         super::released(&dir.join(order));
-        let trace = std::fs::read_to_string(dir.join(format!("{order}.trace"))).unwrap();
+        let (trace, parsed) = evidence(&dir, order);
         let events: Vec<&str> = trace.lines().collect();
-        let mut profiles = Vec::new();
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().is_some_and(|extension| extension == "profraw") {
-                profiles.push((path.file_name().unwrap().to_owned(), std::fs::read(&path).unwrap()));
-            }
-        }
-        let parsed: Vec<_> = profiles
-            .iter()
-            .map(|(name, bytes)| (name, bytes.len(), parse(bytes)))
-            .collect();
         println!(
             "qualify profile boundary: {order} pid={pid} result={expected:?} elapsed_ms={} events={events:?} profiles={parsed:?}",
             elapsed.as_millis()
@@ -330,4 +322,38 @@ pub(super) fn qualify(program: &str, scratch: &Path) {
             }
         }
     }
+    let dir = scratch.join("profile-closed");
+    std::fs::create_dir(&dir).unwrap();
+    let trace = dir.join("closed.trace");
+    let helper = ["profile", dir.to_str().unwrap(), "closed"];
+    // Both writes have failed once `sent` is traced; the helper stays alive until this owner kills it.
+    let sent = || std::fs::read_to_string(&trace).is_ok_and(|trace| trace.lines().any(|event| event == "sent"));
+    drop(super::close_readers(program, &helper, sent));
+    super::released(&dir.join("closed"));
+    let (trace, parsed) = evidence(&dir, "closed");
+    let events: Vec<&str> = trace.lines().collect();
+    println!("qualify profile boundary: closed events={events:?} profiles={parsed:?}");
+    assert_eq!(
+        events,
+        ["diverted", "sent"],
+        "no profile write may start before the kill"
+    );
+    assert!(parsed.is_empty());
+}
+
+/// One raw profile: its file name, size and strict parse.
+type Parsed = (std::ffi::OsString, usize, Result<Raw, String>);
+
+/// A finished helper's trace and every raw profile in its folder, each strictly parsed.
+fn evidence(dir: &Path, order: &str) -> (String, Vec<Parsed>) {
+    let trace = std::fs::read_to_string(dir.join(format!("{order}.trace"))).unwrap();
+    let mut parsed = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "profraw") {
+            let bytes = std::fs::read(&path).unwrap();
+            parsed.push((path.file_name().unwrap().to_owned(), bytes.len(), parse(&bytes)));
+        }
+    }
+    (trace, parsed)
 }
