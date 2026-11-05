@@ -13,14 +13,31 @@ const LIMIT: usize = 8 * MIB;
 #[path = "command_runner/profile.rs"]
 mod profile;
 
-fn emit(stream: &str, size: usize) {
+/// Writes `size` bytes to the chosen streams at once, one thread each, and hands each result to `done`.
+fn output(stream: &str, size: usize, done: fn(std::io::Result<()>)) {
     std::thread::scope(|scope| {
         if stream != "stderr" {
-            scope.spawn(move || std::io::stdout().write_all(&vec![b'X'; size]).unwrap());
+            scope.spawn(move || done(std::io::stdout().write_all(&vec![b'X'; size])));
         }
         if stream != "stdout" {
-            scope.spawn(move || std::io::stderr().write_all(&vec![b'Y'; size]).unwrap());
+            scope.spawn(move || done(std::io::stderr().write_all(&vec![b'Y'; size])));
         }
+    });
+}
+
+/// Finite output: every byte must reach the reader.
+fn emit(stream: &str, size: usize) {
+    output(stream, size, |result| result.unwrap());
+}
+
+/// Output past a cap. On overflow the runner drops both pipes before it kills the group, so the slower writer
+/// gets `BrokenPipe`. That only ends its output: the fixture still waits for the kill instead of panicking out
+/// through the exit-time profile writer (#275). Any other write error aborts, which skips that writer too and
+/// ends the process before the caller's expected result.
+fn spill(stream: &str, size: usize) {
+    output(stream, size, |result| match result {
+        Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => std::process::abort(),
+        _ => {}
     });
 }
 
@@ -31,9 +48,11 @@ fn idle() -> ! {
     }
 }
 
-/// Overflow, then wait for the runner's kill instead of exiting into the profile writer (#275).
-fn held(stream: &str, size: usize) -> ! {
-    emit(stream, size);
+/// Overflow, then wait for the runner's kill instead of exiting into the profile writer (#275). `sent` runs
+/// once both writes have returned.
+fn held(stream: &str, size: usize, sent: impl FnOnce()) -> ! {
+    spill(stream, size);
+    sent();
     idle()
 }
 
@@ -118,7 +137,11 @@ fn fixture(args: &[String]) -> ! {
             }
         }
         "emit" => emit(&args[1], args[2].parse().unwrap()),
-        "held" => held(&args[1], args[2].parse().unwrap()),
+        "held" => held(&args[1], args[2].parse().unwrap(), || {
+            if let Some(marker) = args.get(3) {
+                File::create(marker).unwrap();
+            }
+        }),
         #[cfg(all(coverage, any(target_os = "linux", target_os = "macos")))]
         "profile" => profile::helper(Path::new(&args[1]), &args[2]),
         "invalid" => std::io::stdout().write_all(&[0xff, b'a']).unwrap(),
@@ -199,7 +222,7 @@ fn fixture(args: &[String]) -> ! {
         "hang" | "overflow" => {
             let _held = hold(Path::new(&args[1]));
             if args[0] == "overflow" {
-                emit("both", LIMIT + 1);
+                spill("both", LIMIT + 1);
             }
             idle()
         }
@@ -327,6 +350,44 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A fixture child this test started itself. It is killed and reaped however the test ends.
+struct OwnedChild(std::process::Child);
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The runner's overflow order without its kill (#275): start a held fixture with both streams piped and close
+/// both readers. The fixture reports `sent` only after both writes have returned, so `sent` before any exit
+/// shows the closed pipes did not end it. A fixture that exits first, or misses the deadline, fails the test.
+fn close_readers(program: &str, args: &[&str], sent: impl Fn() -> bool) -> OwnedChild {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // Hidden, like every runner child.
+    }
+    let mut child = OwnedChild(command.spawn().unwrap());
+    drop((child.0.stdout.take(), child.0.stderr.take()));
+    let start = Instant::now();
+    while !sent() {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            panic!("{args:?} exited on closed pipes before sent: {status}");
+        }
+        assert!(start.elapsed() < Duration::from_secs(5), "{args:?} never reported sent");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(child.0.try_wait().unwrap(), None, "{args:?} must idle after sent");
+    child
 }
 
 fn released(path: &Path) {
@@ -498,6 +559,9 @@ fn main() {
             "background CLIs and their descendants must get no console window (chief#43)"
         );
     }
+    let sent = scratch.marker("closed-pipes");
+    let closed = ["held", "both", &(LIMIT + 1).to_string(), sent.to_str().unwrap()];
+    drop(close_readers(program, &closed, || sent.is_file()));
     #[cfg(all(coverage, any(target_os = "linux", target_os = "macos")))]
     profile::qualify(program, &scratch.0);
     #[cfg(not(windows))]
@@ -527,7 +591,7 @@ fn main() {
         released(&marker);
     }
     println!(
-        "command runner: finite streams, cap boundary, overflow, timeout, descendant cleanup, exit status, UTF-8 and null stdin passed"
+        "command runner: finite streams, cap boundary, overflow, closed pipes, timeout, descendant cleanup, exit status, UTF-8 and null stdin passed"
     );
 }
 
