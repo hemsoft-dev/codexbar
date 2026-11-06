@@ -521,7 +521,7 @@ fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot
             cx,
         ))
         .children(pace.map(|pace| div().text_sm().text_color(muted).child(pace)));
-    let card = Card::new(window_title(metric), window_period(metric, now), body)
+    let card = Card::new(window_title(metric), window_period(metric, now, cx), body)
         .id(format!("focus-bar-card-{slot}"))
         .takeaway(pool_takeaway(1.0 - used))
         .caption(reset_caption(metric, now));
@@ -1055,7 +1055,7 @@ fn share_card(
     }
     Card::new(
         title,
-        window_period(metric, now),
+        window_period(metric, now, cx),
         v_flex()
             .size_full()
             .child(div().flex_1().min_h_0().child(ring))
@@ -1564,8 +1564,8 @@ fn reset_caption(metric: &Metric, now: DateTime<Utc>) -> String {
 }
 
 /// "Oct 2 – Oct 9" for a window that resets within a week; otherwise its reset date.
-fn window_period(metric: &Metric, now: DateTime<Utc>) -> String {
-    period_in(metric, now, &Local)
+fn window_period(metric: &Metric, now: DateTime<Utc>, cx: &App) -> String {
+    period_in(metric, now, &crate::locale::display_zone(cx))
 }
 
 /// The stretch of time a window covers, from the length the provider reports (#223): start and end times for a window
@@ -1573,10 +1573,10 @@ fn window_period(metric: &Metric, now: DateTime<Utc>) -> String {
 /// length there is no start to show, so only the end: its date, or its time when that is today.
 fn period_in<Tz: chrono::TimeZone>(metric: &Metric, now: DateTime<Utc>, tz: &Tz) -> String {
     let style = crate::locale::style();
-    let Some(end) = metric.resets_at() else {
+    // A reset `tz` can't show has no period, like one with no reset (#312).
+    let Some(end) = metric.resets_at().and_then(|end| format::in_zone(end, tz)) else {
         return String::new();
     };
-    let end = end.with_timezone(tz);
     match metric.window_length() {
         Some(length) if length <= chrono::Duration::days(1) => {
             let start = end.clone() - length;
@@ -1730,6 +1730,33 @@ mod tests {
             count: 3,
         };
         assert_eq!(period_in(&count, now, &eastern), "");
+    }
+
+    #[test]
+    fn a_reset_past_the_last_local_date_has_no_period_and_leaves_the_others() {
+        let now: DateTime<Utc> = "2026-11-06T12:00:00Z".parse().unwrap();
+        let last = DateTime::<Utc>::MAX_UTC;
+        let reset = (last - now).num_seconds() - 1800;
+        let page = format!(
+            r#"<script>_$HY.r["go"]=$R[0]={{rollingUsage:$R[1]={{usagePercent:38,resetInSec:3600,limit:1}},weeklyUsage:$R[2]={{resetInSec:{reset},usagePercent:12}}}}</script>"#
+        );
+        let metrics = codexbar_providers::opencode::parse_go(&page, now);
+        let [five_hours, weekly] = metrics.as_slice() else {
+            panic!("{metrics:?}")
+        };
+        // #306 keeps the weekly reset as a date, half an hour before the last UTC one.
+        assert!(weekly.resets_at().is_some_and(|at| last - at < Duration::hours(1)));
+        let east = chrono::FixedOffset::east_opt(3600).unwrap();
+        let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        let west = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        // #312: east of UTC that is past the last local date, so the card has no period rather than a panic.
+        assert_eq!(period_in(weekly, now, &east), "");
+        assert_eq!(period_in(weekly, now, &tokyo), "");
+        // West of UTC it is still a date and reads as before.
+        assert_eq!(period_in(weekly, now, &west), "Dec 24 – Dec 31");
+        // The other window on the account keeps its period.
+        assert_eq!(period_in(five_hours, now, &east), "09:00 – 14:00");
+        assert_eq!(period_in(five_hours, now, &tokyo), "17:00 – 22:00");
     }
 
     fn claude() -> AccountSnapshot {

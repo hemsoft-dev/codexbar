@@ -8857,3 +8857,53 @@ fn claude_weekly_only_refresh_falls_back_and_restores_session(cx: &mut TestAppCo
         assert!(!ring.contains("No 5-hour limit"));
     }
 }
+
+/// #312: provider dates half an hour before the last one chrono holds, shown through the real views in a fixed zone
+/// east of UTC, beside an ordinary window and balance, and in the machine's own zone, as `capture_far_dates` sets up
+/// for the screenshots.
+#[gpui_kit::test]
+fn far_dates_east_of_utc_show_no_date_and_leave_the_others(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("far-dates", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+    let show = |cx: &mut TestAppContext, zone, sibling, view| {
+        cx.update(|cx| {
+            dashboard.update(cx, |d, cx| {
+                d.capture_far_dates(zone, sibling, cx);
+                d.show_view(view, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+
+    // East of UTC the far dates are no date; the ordinary balance and window read as always.
+    let row = |cx: &mut TestAppContext, name: &str| {
+        let rows = spend_rows(cx, "balance-row");
+        rows.into_iter().find(|row| row.contains(name)).unwrap_or_default()
+    };
+    show(cx, Some(tokyo), true, DashboardView::Spend);
+    let far = row(cx, "Far run-out");
+    assert!(far.ends_with("No spending rate known yet"), "{far}");
+    let ordinary = row(cx, "Ordinary");
+    // The Spend view counts days from the real clock, so only the fixed date is checked.
+    assert!(ordinary.contains("until Nov 27"), "{ordinary}");
+    let first = label(cx, handle, "spend-runs-out-first").unwrap();
+    assert!(first.contains("Ordinary") && first.ends_with("Nov 27"), "{first}");
+    show(cx, Some(tokyo), true, DashboardView::Usage);
+    assert!(visible(cx, handle, "focus-bar-card-0") && visible(cx, handle, "focus-bar-card-1"));
+
+    // Alone, the far balance leaves no "Runs out first" total.
+    show(cx, Some(tokyo), false, DashboardView::Spend);
+    assert!(row(cx, "Far run-out").ends_with("No spending rate known yet"));
+    assert_eq!(label(cx, handle, "spend-runs-out-first"), None);
+
+    // Without a capture zone the views show the machine's own zone; at UTC or west of it, the far date fits.
+    show(cx, None, true, DashboardView::Spend);
+    let local = row(cx, "Far run-out");
+    if chrono::Local::now().offset().local_minus_utc() <= 0 {
+        assert!(local.contains("until Dec 31"), "{local}");
+    }
+    assert!(row(cx, "Ordinary").contains("until Nov 2"));
+}

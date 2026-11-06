@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
 
 /// How dates and times read on screen (#84). The app formats them in the Windows user's own locale (12- or 24-hour
 /// time, local month and weekday names, local order); `English` is the built-in style the tests use.
@@ -46,6 +46,15 @@ impl DateStyle for English {
     fn month_day(&self, at: NaiveDate) -> String {
         at.format("%b %-d").to_string()
     }
+}
+
+/// `at` in the viewer's timezone `tz`, or `None` when the zone's offset puts it past the first or last local time chrono
+/// holds (#312). A date that fits in UTC need not fit in local time: east of UTC, the hours before `MAX_UTC` don't, and
+/// `with_timezone(..).naive_local()` panics on them.
+pub fn in_zone<Tz: TimeZone>(at: DateTime<Utc>, tz: &Tz) -> Option<DateTime<Tz>> {
+    let offset = tz.offset_from_utc_datetime(&at.naive_utc());
+    at.naive_utc().checked_add_offset(offset.fix())?;
+    Some(DateTime::from_naive_utc_and_offset(at.naive_utc(), offset))
 }
 
 /// Describes when a limit resets, relative to `now` and in the viewer's timezone `tz`, in the English style.
@@ -178,6 +187,30 @@ mod tests {
         fn month_day(&self, at: NaiveDate) -> String {
             at.format("%-d %b").to_string()
         }
+    }
+
+    #[test]
+    fn in_zone_has_no_date_past_the_last_local_one() {
+        let east = FixedOffset::east_opt(3600).unwrap();
+        let west = FixedOffset::west_opt(5 * 3600).unwrap();
+        let last = DateTime::<Utc>::MAX_UTC - Duration::minutes(30);
+        // #312: an hour east of UTC, half an hour before the last UTC date is past the last local one.
+        assert_eq!(in_zone(last, &east), None);
+        assert_eq!(
+            in_zone(last - Duration::minutes(31), &east).map(|at| at.naive_local()),
+            Some((last + Duration::minutes(29)).naive_utc())
+        );
+        assert_eq!(
+            in_zone(last, &west).map(|at| at.naive_local()),
+            Some((last - Duration::hours(5)).naive_utc())
+        );
+        // West of UTC the first dates are the ones that don't fit.
+        let first = DateTime::<Utc>::MIN_UTC + Duration::minutes(30);
+        assert_eq!(in_zone(first, &west), None);
+        assert!(in_zone(first, &east).is_some());
+        // An ordinary date converts as `with_timezone` does.
+        assert_eq!(in_zone(now(), &eastern()), Some(now().with_timezone(&eastern())));
+        assert_eq!(in_zone(now(), &Utc), Some(now()));
     }
 
     #[test]

@@ -22,6 +22,106 @@ pub fn style() -> &'static dyn DateStyle {
     }
 }
 
+/// A fixed timezone a capture shows provider dates in, so a screenshot can prove a zone east of UTC (#312) without
+/// changing the machine's. Test and capture builds only, like `sus::capture_time`: the app always shows `Local`.
+#[cfg(any(test, feature = "capture"))]
+struct CaptureZone(chrono::FixedOffset);
+#[cfg(any(test, feature = "capture"))]
+impl gpui_kit::Global for CaptureZone {}
+
+/// Shows provider dates in `zone` from now on, or in `Local` again with `None`.
+#[cfg(any(test, feature = "capture"))]
+pub fn capture_zone(zone: Option<chrono::FixedOffset>, cx: &mut gpui_kit::App) {
+    match zone {
+        Some(zone) => cx.set_global(CaptureZone(zone)),
+        None if cx.has_global::<CaptureZone>() => {
+            cx.remove_global::<CaptureZone>();
+        }
+        None => {}
+    }
+}
+
+/// The zone a capture set with [`capture_zone`], if any. Always `None` in the app.
+fn captured_zone(cx: &gpui_kit::App) -> Option<chrono::FixedOffset> {
+    #[cfg(any(test, feature = "capture"))]
+    if let Some(zone) = cx.try_global::<CaptureZone>() {
+        return Some(zone.0);
+    }
+    let _ = cx;
+    None
+}
+
+/// The zone the views show provider dates in (#312): the user's own, or the fixed zone a capture set.
+pub fn display_zone(cx: &gpui_kit::App) -> DisplayZone {
+    captured_zone(cx).map_or(DisplayZone::Local, DisplayZone::Fixed)
+}
+
+/// A timezone that is either the user's own or a fixed offset, so a view formats dates through one code path
+/// whichever it shows. `Local` asks chrono's `Local` for every offset, and a date's zone stays `Local` through
+/// arithmetic, so daylight saving time works exactly as it does with `Local`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayZone {
+    Local,
+    Fixed(chrono::FixedOffset),
+}
+
+/// A [`DisplayZone`]'s offset at one moment, which remembers its zone so a date keeps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayOffset {
+    zone: DisplayZone,
+    fix: chrono::FixedOffset,
+}
+
+impl chrono::Offset for DisplayOffset {
+    fn fix(&self) -> chrono::FixedOffset {
+        self.fix
+    }
+}
+
+impl DisplayZone {
+    fn offset(self, fix: chrono::FixedOffset) -> DisplayOffset {
+        DisplayOffset { zone: self, fix }
+    }
+}
+
+impl chrono::TimeZone for DisplayZone {
+    type Offset = DisplayOffset;
+
+    fn from_offset(offset: &DisplayOffset) -> Self {
+        offset.zone
+    }
+
+    fn offset_from_local_date(&self, local: &NaiveDate) -> chrono::MappedLocalTime<DisplayOffset> {
+        match self {
+            Self::Local => chrono::Local.offset_from_local_date(local),
+            Self::Fixed(zone) => zone.offset_from_local_date(local),
+        }
+        .map(|fix| self.offset(fix))
+    }
+
+    fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> chrono::MappedLocalTime<DisplayOffset> {
+        match self {
+            Self::Local => chrono::Local.offset_from_local_datetime(local),
+            Self::Fixed(zone) => zone.offset_from_local_datetime(local),
+        }
+        .map(|fix| self.offset(fix))
+    }
+
+    fn offset_from_utc_date(&self, utc: &NaiveDate) -> DisplayOffset {
+        self.offset(match self {
+            Self::Local => chrono::Local.offset_from_utc_date(utc),
+            Self::Fixed(zone) => zone.offset_from_utc_date(utc),
+        })
+    }
+
+    fn offset_from_utc_datetime(&self, utc: &NaiveDateTime) -> DisplayOffset {
+        self.offset(match self {
+            Self::Local => chrono::Local.offset_from_utc_datetime(utc),
+            Self::Fixed(zone) => zone.offset_from_utc_datetime(utc),
+        })
+    }
+}
+
 /// A provider error's message with any time in the user's locale and timezone.
 pub fn describe(error: &codexbar_providers::ProviderError) -> String {
     error.describe_with(&|at| style().time(at.with_timezone(&chrono::Local).naive_local()))
@@ -416,5 +516,68 @@ mod tests {
     fn tests_use_the_fixed_english_style() {
         assert_eq!(style().weekday_time(thursday_nine()), "Thu 09:05");
         assert_eq!(style().month_day(thursday_nine().date()), "Oct 8");
+    }
+
+    /// #312: `DisplayZone::Local` answers every offset as chrono's `Local` does and keeps the zone through date
+    /// arithmetic, so daylight saving time is unchanged; `Fixed` answers as its `FixedOffset`.
+    #[test]
+    fn a_display_zone_answers_as_local_or_its_fixed_offset() {
+        use chrono::{DateTime, Duration, FixedOffset, Local, Offset as _, TimeZone, Utc};
+        fn same_offsets<Tz: TimeZone>(zone: DisplayZone, reference: &Tz) {
+            // Instants on both sides of the usual daylight-saving changes, plus an ordinary one.
+            for instant in [
+                "2026-03-08T12:00:00Z",
+                "2026-03-29T12:00:00Z",
+                "2026-10-25T12:00:00Z",
+                "2026-11-06T12:00:00Z",
+            ] {
+                let at: DateTime<Utc> = instant.parse().unwrap();
+                let (utc, date) = (at.naive_utc(), at.date_naive());
+                assert_eq!(
+                    zone.offset_from_utc_datetime(&utc).fix(),
+                    reference.offset_from_utc_datetime(&utc).fix()
+                );
+                assert_eq!(
+                    zone.offset_from_utc_date(&date).fix(),
+                    reference.offset_from_utc_date(&date).fix()
+                );
+                let local = at.with_timezone(reference).naive_local();
+                assert_eq!(
+                    zone.offset_from_local_datetime(&local).map(|offset| offset.fix()),
+                    reference.offset_from_local_datetime(&local).map(|offset| offset.fix())
+                );
+                assert_eq!(
+                    zone.offset_from_local_date(&local.date()).map(|offset| offset.fix()),
+                    reference
+                        .offset_from_local_date(&local.date())
+                        .map(|offset| offset.fix())
+                );
+                // A month back crosses a daylight-saving change in many zones; the local time follows the zone.
+                let shown = at.with_timezone(&zone);
+                assert_eq!(shown.timezone(), zone);
+                assert_eq!(
+                    (shown - Duration::days(30)).naive_local(),
+                    (at.with_timezone(reference) - Duration::days(30)).naive_local()
+                );
+            }
+        }
+        same_offsets(DisplayZone::Local, &Local);
+        let tokyo = FixedOffset::east_opt(9 * 3600).unwrap();
+        same_offsets(DisplayZone::Fixed(tokyo), &tokyo);
+    }
+
+    #[gpui_kit::test]
+    fn the_display_zone_is_local_until_a_capture_fixes_one(cx: &mut gpui_kit::TestAppContext) {
+        let tokyo = chrono::FixedOffset::east_opt(9 * 3600).unwrap();
+        cx.update(|cx| {
+            assert_eq!(display_zone(cx), DisplayZone::Local);
+            capture_zone(Some(tokyo), cx);
+            assert_eq!(display_zone(cx), DisplayZone::Fixed(tokyo));
+            capture_zone(None, cx);
+            assert_eq!(display_zone(cx), DisplayZone::Local);
+            // Clearing it again is harmless.
+            capture_zone(None, cx);
+            assert_eq!(display_zone(cx), DisplayZone::Local);
+        });
     }
 }

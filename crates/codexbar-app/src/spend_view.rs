@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use codexbar_core::spend::{BalanceRow, SpendRow, SpendSheet};
 use codexbar_core::{AccountSnapshot, Currency, Metric, Money, Provider, format};
 use codexbar_store::HistoryStore;
@@ -230,15 +230,16 @@ fn breakdown_text(row: &SpendRow<'_>) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// How long a balance lasts: "Empty", "About 6 days left, until Oct 25", or that no rate is known yet.
-fn runway_text(row: &BalanceRow<'_>, now: DateTime<Utc>) -> String {
+/// How long a balance lasts in the timezone `tz`: "Empty", "About 6 days left, until Oct 25", or that no rate is known
+/// yet. A run-out date that can't be shown there is no date, as one past the last UTC date is (#312).
+fn runway_text_in<Tz: TimeZone>(row: &BalanceRow<'_>, now: DateTime<Utc>, tz: &Tz) -> String {
     if row.is_empty() {
         return "Empty".to_owned();
     }
     // The days left count down to the date fixed at the last fetch, so they shrink while the reading ages.
-    match row.runs_out() {
-        Some(at) => {
-            let until = crate::locale::style().month_day(at.with_timezone(&Local).date_naive());
+    match row.runs_out().and_then(|at| Some((at, run_out_day(at, tz)?))) {
+        Some((at, day)) => {
+            let until = crate::locale::style().month_day(day);
             match (at - now).num_seconds() as f64 / 86_400.0 {
                 d if d <= 0.0 => format!("Expected to have run out by {until}"),
                 d if d < 1.0 => format!("Less than a day left, until {until}"),
@@ -248,6 +249,18 @@ fn runway_text(row: &BalanceRow<'_>, now: DateTime<Utc>) -> String {
         }
         None => "No spending rate known yet".to_owned(),
     }
+}
+
+/// The day in `tz` a balance runs out at `at`, or `None` when `tz` can't show that date (#312).
+fn run_out_day<Tz: TimeZone>(at: DateTime<Utc>, tz: &Tz) -> Option<NaiveDate> {
+    format::in_zone(at, tz).map(|at| at.date_naive())
+}
+
+/// The balance that runs out first and its day in `tz`, for the "Runs out first" total; `None` when `tz` can't show
+/// that day (#312).
+fn runs_out_first<'s, 'a, Tz: TimeZone>(sheet: &'s SpendSheet<'a>, tz: &Tz) -> Option<(&'s BalanceRow<'a>, NaiveDate)> {
+    let (row, at) = sheet.first_to_run_out()?;
+    Some((row, run_out_day(at, tz)?))
 }
 
 /// How an account's amounts are dated when they aren't from this refresh, as the Usage table's tags say it.
@@ -599,14 +612,16 @@ impl SpendView {
                     Some(accounts(left_count(amount.currency()))),
                 )
             }))
-            .children(sheet.first_to_run_out().map(|(row, at)| {
-                stat(
-                    "spend-runs-out-first".to_owned(),
-                    "Runs out first".to_owned(),
-                    row.account.display_name(),
-                    Some(crate::locale::style().month_day(at.with_timezone(&Local).date_naive())),
-                )
-            }))
+            .children(
+                runs_out_first(sheet, &crate::locale::display_zone(cx)).map(|(row, day)| {
+                    stat(
+                        "spend-runs-out-first".to_owned(),
+                        "Runs out first".to_owned(),
+                        row.account.display_name(),
+                        Some(crate::locale::style().month_day(day)),
+                    )
+                }),
+            )
     }
 
     fn render_trend(&self, sheet: &SpendSheet<'_>, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1033,7 +1048,7 @@ fn balance_row(
 ) -> AnyElement {
     let severity = codexbar_core::assess(row.metric, now).severity();
     let name = row.account.display_name();
-    let runway = runway_text(row, now);
+    let runway = runway_text_in(row, now, &crate::locale::display_zone(cx));
     let remaining = row.remaining().display();
     let spoken = match &stale {
         Some(stale) => format!("{name}, {}: {remaining} left, {stale}, {runway}", row.metric.label()),
@@ -1080,7 +1095,11 @@ fn balance_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone as _;
+
+    /// How long a balance lasts in the machine's own zone, as the app shows it outside a capture.
+    fn runway_text(row: &BalanceRow<'_>, now: DateTime<Utc>) -> String {
+        runway_text_in(row, now, &Local)
+    }
     use codexbar_core::{AccountId, Pace, Provider};
 
     fn now() -> DateTime<Utc> {
@@ -1125,6 +1144,54 @@ mod tests {
         );
         assert_eq!(runway(&balance(1842, None)), "No spending rate known yet");
         assert_eq!(runway(&balance(0, Some(310))), "Empty");
+    }
+
+    #[test]
+    fn a_run_out_date_past_the_last_local_one_has_no_date_and_leaves_the_others() {
+        // Fetched so the balance runs out half an hour before the last UTC date, which #306 keeps as a date.
+        let fetched: DateTime<Utc> = "2026-10-19T23:30:00Z".parse().unwrap();
+        let last = DateTime::<Utc>::MAX_UTC;
+        let days = (last.date_naive() - fetched.date_naive()).num_days();
+        let far = AccountSnapshot::new(
+            AccountId::new("far"),
+            Provider::OpenRouter,
+            vec![Metric::Balance {
+                label: "Credits".into(),
+                remaining: Money::from_cents(days),
+                burn_per_day: Some(Money::from_cents(1)),
+            }],
+            fetched,
+        );
+        let east = chrono::FixedOffset::east_opt(3600).unwrap();
+        let west = chrono::FixedOffset::west_opt(5 * 3600).unwrap();
+        let alone = [far.clone()];
+        let sheet = SpendSheet::of(&alone);
+        let row = &sheet.balances[0];
+        assert!(row.runs_out().is_some_and(|at| last - at < Duration::hours(1)));
+        // #312: an hour east of UTC that date is past the last local one, so it is no date rather than a panic.
+        assert_eq!(runway_text_in(row, now(), &east), "No spending rate known yet");
+        assert!(runs_out_first(&sheet, &east).is_none());
+        // West of UTC it is still a date and reads as before.
+        assert_eq!(
+            runway_text_in(row, now(), &west),
+            format!("About {days} days left, until Dec 31")
+        );
+        assert_eq!(
+            runs_out_first(&sheet, &west).map(|(row, day)| (row.account.id().as_str(), day)),
+            Some(("far", last.date_naive()))
+        );
+        // A balance that runs out in weeks keeps its date and runs out first beside it.
+        let both = [far, balance(2100, Some(100))];
+        let sheet = SpendSheet::of(&both);
+        let until = "2026-11-09".parse::<NaiveDate>().unwrap();
+        assert_eq!(
+            runway_text_in(&sheet.balances[1], now(), &east),
+            "About 21 days left, until Nov 9"
+        );
+        assert_eq!(
+            runs_out_first(&sheet, &east).map(|(row, day)| (row.account.id().as_str(), day)),
+            Some(("openrouter", until))
+        );
     }
 
     #[test]

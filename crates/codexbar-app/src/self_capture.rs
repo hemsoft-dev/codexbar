@@ -20,6 +20,7 @@ use crate::theme::Appearance;
 mod antigravity;
 mod claude_ultra;
 mod claude_weekly;
+mod far_dates;
 mod gemini_status;
 mod gemini_weekly;
 mod muse;
@@ -43,6 +44,7 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
         || std::env::var_os("CODEXBAR_CAPTURE_GEMINI_STATUS").is_some()
         || std::env::var_os("CODEXBAR_CAPTURE_CLAUDE_WEEKLY").is_some()
         || std::env::var_os("CODEXBAR_CAPTURE_CLAUDE_ULTRA").is_some()
+        || std::env::var_os("CODEXBAR_CAPTURE_FAR_DATES").is_some()
     {
         let hub = crate::settings_hub::SettingsHub::global(cx);
         assert!(
@@ -258,6 +260,9 @@ async fn run(
     }
     if std::env::var_os("CODEXBAR_CAPTURE_MUSE").is_some() {
         saved.extend(muse::run(cx, handle, dashboard, dir).await);
+    }
+    if std::env::var_os("CODEXBAR_CAPTURE_FAR_DATES").is_some() {
+        saved.extend(far_dates::run(cx, handle, dashboard, dir).await);
     }
     // Optional synthetic plan states. The normal live adapters never read these fixture values.
     if std::env::var_os("CODEXBAR_CAPTURE_PLANS").is_some() {
