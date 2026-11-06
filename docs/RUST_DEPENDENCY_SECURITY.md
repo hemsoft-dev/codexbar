@@ -4,7 +4,9 @@ The existing CI `security-scan` job scans the entire committed `Cargo.lock`
 with [cargo-audit](https://github.com/rustsec/rustsec/tree/main/cargo-audit).
 This includes every supported platform and development dependency, without
 filtering by the runner's Windows target. It runs on every pull request and
-push to main alongside the existing secret and Miasma scans.
+push to main alongside the existing secret and Miasma scans. GitHub's own
+secret scanning, push protection and Dependabot alerts run beside these CI
+scans; see [GitHub security features](#github-security-features).
 
 The scanner version is pinned in
 [`scripts/rust-audit-version.txt`](../scripts/rust-audit-version.txt).
@@ -66,6 +68,94 @@ remain in the graph: `instant`, `paste`, `rustls-pemfile`, `rustybuzz`,
 in the artifact for maintainer triage. They are not advisory-ID exceptions.
 
 The project merge policy requires a green CI security scan and clean
-current-head Codex review. This change adds the Rust scan to that existing
-check; it does not change repository settings. Enforced required-status
+current-head Codex review. The Rust scan was added to that existing check
+without changing repository settings. Enforced required-status
 configuration remains [blocked on the shared SFL reviewer App](https://github.com/hemsoft-dev/codexbar/issues/237#issuecomment-6358426342).
+
+## GitHub security features
+
+Since November 5, 2026 ([#299](https://github.com/hemsoft-dev/codexbar/issues/299)),
+the repository also uses three security features that GitHub provides free on
+public repositories. They run on GitHub, outside CI. No workflow, job or
+required check was added for them.
+
+| Feature | Live setting | What it does |
+| --- | --- | --- |
+| [Secret scanning](https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning) | `secret_scanning` enabled | Scans the Git history on all branches, plus issue, pull request and discussion text, for supported secret formats and opens an alert for what it finds. |
+| [Push protection](https://docs.github.com/en/code-security/secret-scanning/introduction/about-push-protection) | `secret_scanning_push_protection` enabled | Blocks a command-line push, web commit or REST API commit that contains a supported provider secret before it is published. |
+| [Dependabot alerts](https://docs.github.com/en/code-security/dependabot/dependabot-alerts/about-dependabot-alerts) | `GET /vulnerability-alerts` returns 204 | Opens an alert when a GitHub Advisory Database entry matches a dependency on the default branch, both when a new advisory is published and when a push changes the dependency graph. |
+
+These settings stay off: Dependabot security updates
+(`dependabot_security_updates`, automated security fixes), Dependabot version
+updates (there is no `.github/dependabot.yml`), non-provider patterns,
+validity checks, AI detection and delegated bypass. Security updates open pull
+requests on their own. In line with the `AGENTS.md` rule on autonomous
+automation, they stay off unless the maintainer turns them on.
+
+### How they relate to the CI scans
+
+- Gitleaks in `security-scan` scans the checkout's full history, but only after
+  a push. On this public repository, a secret it finds is already published.
+  Push protection stops supported secret formats before that. Gitleaks remains
+  the merge gate and keeps its own rules from `.gitleaks.toml`.
+- cargo-audit and `npm audit` run only on a pull request or a push to main.
+  Dependabot alerts also report an advisory published between commits. They use
+  the GitHub Advisory Database, not the RustSec database that CI fetches, so the
+  two can disagree for a while.
+- Dependabot reads the default branch only. Pull request changes are covered by
+  the CI scans until they merge.
+- GitHub alerts are not status checks. They never block a merge, and the CI
+  scans stay the merge gate.
+
+### Roles and alert handling
+
+The repository maintainer, HemSoft, owns alert triage. Alerts appear on the
+repository's Security and quality tab. By default, Dependabot emails people with write,
+maintain or admin access who watch the repository for security alerts. The
+REST API for secret scanning alerts needs repository admin access.
+
+Anyone with write access can bypass a push-protection block by giving a reason.
+GitHub records the bypass and opens an alert; "I'll fix it later" leaves it
+open. Don't bypass a block for a real credential: remove it from the commit,
+and rotate it if it was ever pushed.
+
+Keep secret values out of issues, pull requests, commit messages and logs. The
+secret scanning alert list returns the literal secret unless `hide_secret=true`
+is passed, so read only counts or fields such as `number`, `state` and
+`secret_type`. Dismiss an alert only with a stated reason after checking it.
+
+### Expected alerts from test fixtures
+
+Two test fixtures contain vulnerable versions on purpose. Do not fix, rewrite
+or remove them to clear an alert.
+
+- [`scripts/fixtures/npm-vulnerable-markdown/package-lock.json`](../scripts/fixtures/npm-vulnerable-markdown/package-lock.json)
+  locks KaTeX 0.18.1. It raised [Dependabot alert 1](https://github.com/hemsoft-dev/codexbar/security/dependabot/1),
+  low-severity GHSA-238p-pmpm-9mq7, with development scope.
+  [`scripts/tests/npm-audit.test.cjs`](../scripts/tests/npm-audit.test.cjs)
+  requires that advisory and a failing audit. The alert does not involve the
+  root `package-lock.json` or the shipped app. It was left open, not dismissed.
+- The cargo-audit fixtures under
+  [`scripts/tests/fixtures/rust-advisory/`](../scripts/tests/fixtures/rust-advisory/)
+  lock `idna 0.5.0` and `inconceivable 0.9.0`. On November 5, 2026 the
+  dependency graph listed the root `Cargo.lock`, the root `package-lock.json`
+  and the npm fixture lock, but not these lockfiles. An alert for them would be
+  the same kind of expected fixture alert.
+
+### Limits and checks
+
+Both scans run asynchronously after they are turned on. The first reads on
+November 5, 2026 found 0 secret scanning alerts and the one Dependabot alert
+above. That does not prove the historical scan has finished, so an empty alert
+list is not evidence of a clean history.
+
+Read the current state with:
+
+```sh
+gh api repos/hemsoft-dev/codexbar --jq .security_and_analysis
+gh api -i repos/hemsoft-dev/codexbar/vulnerability-alerts
+gh api "repos/hemsoft-dev/codexbar/dependabot/alerts?state=open" --jq length
+gh api "repos/hemsoft-dev/codexbar/secret-scanning/alerts?state=open&hide_secret=true" --jq length
+```
+
+The second command answers `HTTP/2.0 204` while Dependabot alerts are on.
