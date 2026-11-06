@@ -138,6 +138,7 @@ impl SettingsHub {
         let result = cx.update_global(|hub: &mut Self, _| {
             if let Some(err) = &hub.load_error {
                 return Err(match err {
+                    SettingsError::Unreadable => SettingsError::Unreadable,
                     SettingsError::NewerVersion => SettingsError::NewerVersion,
                     SettingsError::AmbiguousProviderKeys => SettingsError::AmbiguousProviderKeys,
                     _ => SettingsError::InvalidAccounts,
