@@ -64,3 +64,16 @@ test('selection uses complete history and final verification sees only this job'
     assert.ok(build.steps.indexOf(final) > build.steps.findIndex(step => step.id === id));
   }
 });
+
+// Every action is pinned to a reviewed commit, with the release it came from in a trailing comment (#301).
+// A movable tag such as `@v4` could change what runs after review, so a new reference must also be a SHA.
+test('every action reference in CI and Package is a full commit SHA with its version', () => {
+  for (const name of ['ci.yml', 'package.yml']) {
+    const text = fs.readFileSync(path.join(__dirname, '../../.github/workflows', name), 'utf8');
+    const references = text.split(/\r?\n/).filter(line => /^\s*(- )?uses:/.test(line));
+    assert.ok(references.length > 0, name);
+    for (const line of references) {
+      assert.match(line, /^\s*(- )?uses: [\w.-]+\/[\w./-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/, `${name}: ${line.trim()}`);
+    }
+  }
+});

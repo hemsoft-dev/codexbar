@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -48,7 +48,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Install, update, roll back and uninstall
         shell: pwsh
@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # The app shows a version with the commit count (#244), which a shallow clone would make 1.
         with:
           fetch-depth: 0
@@ -68,7 +68,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build CodexBar.app and the DMG
         run: OUT=dist ./package-macos.sh
@@ -81,7 +81,7 @@ jobs:
           hdiutil verify dist/CodexBar-*.dmg
 
       - name: Upload the DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codexbar-macos
           path: dist/CodexBar-*.dmg
@@ -92,7 +92,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         # The app shows a version with the commit count (#244), which a shallow clone would make 1.
         with:
           fetch-depth: 0
@@ -108,7 +108,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build the .deb
         run: OUT=dist ./package-linux.sh
@@ -121,7 +121,7 @@ jobs:
           test -f /usr/share/icons/hicolor/256x256/apps/HemSoft.CodexBar.png
 
       - name: Upload the .deb
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codexbar-linux
           path: dist/codexbar_*.deb
