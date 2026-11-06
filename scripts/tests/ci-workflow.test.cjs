@@ -65,6 +65,24 @@ test('selection uses complete history and final verification sees only this job'
   }
 });
 
+// Clippy and the tests unify codexbar-app's dev-dependency features (gpui-kit `test-support`) into the binary, so
+// only a check of the binary alone sees the build users install (#297). It runs on every platform, unconditionally.
+test('every platform checks the production binary without dev-dependency features', () => {
+  const steps = workflow.jobs.rust.steps;
+  const production = steps.filter(step => typeof step.run === 'string'
+    && /^cargo (check|build)\b/.test(step.run.trim()));
+  assert.equal(production.length, 1);
+  const [step] = production;
+  assert.equal(step.name, 'Check production binary');
+  assert.equal(step.run, 'cargo check -p codexbar-app --bin codexbar --locked');
+  assert.equal(step.if, undefined);
+  assert.equal(step['continue-on-error'], undefined);
+  assert.equal(step.env, undefined);
+  const names = steps.map(candidate => candidate.name);
+  assert.ok(names.indexOf('Install Rust toolchain') < steps.indexOf(step));
+  assert.ok(steps.indexOf(step) < names.indexOf('Test'));
+});
+
 // Every action is pinned to a reviewed commit, with the release it came from in a trailing comment (#301).
 // A movable tag such as `@v4` could change what runs after review, so a new reference must also be a SHA.
 test('every action reference in CI and Package is a full commit SHA with its version', () => {

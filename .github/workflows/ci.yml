@@ -93,6 +93,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # The binary as it ships (#297). Clippy and the tests build every target, so codexbar-app's dev-dependency on
+      # gpui-kit's `test-support` reaches the binary there too. This checks the binary alone, with only its own
+      # dependencies and features, so production code that compiles only with test support fails here.
+      - name: Check production binary
+        run: cargo check -p codexbar-app --bin codexbar --locked
+
       # Includes the headless UI integration tests (in-process gpui test windows; no desktop needed).
       - name: Test
         run: cargo test --workspace --locked

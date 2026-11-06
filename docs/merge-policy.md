@@ -27,7 +27,11 @@ and must be produced by GitHub Actions, integration ID `15368`:
 - `rust-metrics`
 - `rust-mutations`
 
-The three platform checks run format, Clippy, and tests. `rust-metrics` is the
+The three platform checks run format, Clippy, a check of the `codexbar` binary
+alone, and tests. That check builds the app without dev-dependency features such
+as gpui-kit's `test-support`, which Clippy and the tests unify into it, so a PR
+whose production code compiles only with test support fails every platform check
+without running Package. `rust-metrics` is the
 strict regression gate. `build` also runs Markdown, workflow regression, npm audit,
 and shared script checks. It selects the retired C# gates only when their inputs change.
 
