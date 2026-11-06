@@ -1733,6 +1733,8 @@ impl Dashboard {
         use codexbar_store::focus::{LimitChoice, LimitView};
         assert!(matches!(self.source, DataSource::Demo));
         let now: DateTime<Utc> = "2026-11-06T12:00:00Z".parse().unwrap();
+        // As in `capture_muse`: refreshed at the fixed time, so the clock's demo refresh doesn't replace the fixture.
+        self.last_refresh = Some(now);
         crate::sus::capture_time(now, cx);
         crate::locale::capture_zone(zone, cx);
         let last = DateTime::<Utc>::MAX_UTC;

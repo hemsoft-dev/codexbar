@@ -43,13 +43,17 @@ pub(super) async fn run(
                             return String::new();
                         }
                         // The view orders balances itself; the far one is found by its label.
-                        let far = (0..)
+                        let rows: Vec<String> = (0..)
                             .map_while(|ix| {
                                 window.try_find(gpui_kit::ElementId::Name(format!("balance-row-{ix}").into()))
                             })
                             .filter_map(|found| found.label().map(str::to_owned))
+                            .collect();
+                        let far = rows
+                            .iter()
                             .find(|label| label.contains("Far run-out"))
-                            .expect("the far balance row");
+                            .unwrap_or_else(|| panic!("{name}: no far balance row in {rows:?}"))
+                            .clone();
                         let first = window
                             .try_find("spend-runs-out-first")
                             .and_then(|found| found.label().map(str::to_owned));
