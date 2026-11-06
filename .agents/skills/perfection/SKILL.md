@@ -1,8 +1,8 @@
 ---
 name: perfection
-description: "V1.0 - Commands: audit, fix, status. Runs every quality gate in the repo and drives all metrics to perfection: 100% test coverage, CRAP < 30, zero build warnings, clean format, zero vulnerabilities, and markdown lint."
-version: "1.0.0"
-lastModified: "2026-05-04"
+description: "V1.1 - Commands: audit, fix, status. Retired C# / WPF app (src/) only: runs its quality gates and drives its metrics to perfection: 100% test coverage, CRAP < 30, zero build warnings, clean format, zero vulnerabilities, and markdown lint. Not for the Rust product; its gates are in AGENTS.md."
+version: "1.1.0"
+lastModified: "2026-11-05"
 hooks:
   PostToolUse:
     - matcher: "Read|Write|Edit"
@@ -38,10 +38,16 @@ hooks:
             Include a systemMessage with details about the history entry status.
 ---
 
-# Perfection — Total Quality Gate Audit
+# Perfection — Retired C# App Quality Gate Audit
 
-Drive every quality metric in this repository to its maximum possible score.
-When invoked, systematically run all quality gates and fix every finding.
+Drive every quality metric of the retired C# / WPF app under `src/` to its
+maximum possible score. When invoked, systematically run its quality gates and
+fix every finding.
+
+**Scope:** this skill and its script cover only the retired C# app. They run no
+Rust gate, so a passing score says nothing about the Rust product in `crates/`.
+For Rust work, use the gates in [AGENTS.md](../../../AGENTS.md#quality-gates),
+which CI runs on every pull request.
 
 ## Perfection Targets
 
@@ -64,14 +70,15 @@ Default command. Run all quality gates and produce a consolidated report.
 **Preferred repo command:**
 
 ```powershell
-npm run perfection:audit
+npm run perfection:audit:retired-csharp
 ```
 
 This runs `.agents/skills/perfection/scripts/Invoke-PerfectionCheck.ps1`, which
 performs the required preflight before the quality gates:
 
-- stops and later restarts only the repo-local Debug `CodexBar.App.exe` if it is
-  locking build output;
+- if the repo-local Debug `CodexBar.App.exe` is running, it says so and exits
+  with code 2 before any gate runs; it never stops or starts a process, so
+  close the app yourself and run it again;
 - removes stale WPF `*_wpftmp*` temporary artifacts before coverage collection;
 - removes stale ignored coverage outputs (`TestResults/` and `CoverageReport/`)
   before using the `**/coverage.cobertura.xml` ReportGenerator glob.

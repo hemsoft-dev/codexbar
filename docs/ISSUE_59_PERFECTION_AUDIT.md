@@ -10,6 +10,9 @@ Command:
 npm run perfection:audit
 ```
 
+That command was renamed `perfection:audit:retired-csharp` on 2026-11-05 (#302). It checks only the retired C# app
+under `src/`, not the Rust product.
+
 Result:
 
 ```text
