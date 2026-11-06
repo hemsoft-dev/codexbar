@@ -37,6 +37,9 @@ const RENEW_BACKOFF: std::time::Duration = std::time::Duration::from_secs(15 * 6
 const CACHE_TTL_MINUTES: i64 = 10;
 /// Minimum wait after a 429, even when Retry-After is shorter.
 const RATE_LIMIT_BACKOFF_MINUTES: i64 = 15;
+/// The longest wait a Retry-After can ask for, as Copilot's backoff caps it: a longer one is still a rate limit, but
+/// not a date to compute or show (#300).
+const RATE_LIMIT_BACKOFF_MAX_DAYS: i64 = 365;
 /// A 403 is usually an org policy; asking again soon only re-arms the limiter.
 const FORBIDDEN_BACKOFF_HOURS: i64 = 6;
 
@@ -833,6 +836,18 @@ fn with_state<R>(path: &Path, f: impl FnOnce(&mut State) -> R) -> R {
     f(state)
 }
 
+/// When a 429 lifts: Retry-After from `now`, never sooner than the minimum wait and never later than a year, so a
+/// header too large for a date still backs off instead of panicking (#300).
+fn rate_limit_until(now: DateTime<Utc>, retry_after_secs: Option<u64>) -> DateTime<Utc> {
+    let shortest = Duration::minutes(RATE_LIMIT_BACKOFF_MINUTES)
+        .num_seconds()
+        .unsigned_abs();
+    let longest = Duration::days(RATE_LIMIT_BACKOFF_MAX_DAYS).num_seconds().unsigned_abs();
+    let secs = retry_after_secs.unwrap_or_default().clamp(shortest, longest);
+    now.checked_add_signed(Duration::seconds(secs as i64))
+        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+}
+
 /// Asks Claude Code to renew a config folder's sign-in. A seam, so tests never start Claude Code.
 pub trait Renewer: Send + Sync {
     fn renew(&self, config: &Path) -> Result<(), ClaudeCliError>;
@@ -970,18 +985,12 @@ impl<H: HttpClient> ClaudeProvider<H> {
         }
         let response = self.http.get(PROFILE_ENDPOINT, headers).ok()?;
         if matches!(response.status, 429 | 403) {
-            let delay = if response.status == 403 {
-                Duration::hours(FORBIDDEN_BACKOFF_HOURS)
+            let until = if response.status == 403 {
+                now.checked_add_signed(Duration::hours(FORBIDDEN_BACKOFF_HOURS))
+                    .unwrap_or(DateTime::<Utc>::MAX_UTC)
             } else {
-                Duration::seconds(
-                    response
-                        .retry_after_secs
-                        .unwrap_or_default()
-                        .min(Duration::MAX.num_seconds() as u64) as i64,
-                )
-                .max(Duration::minutes(RATE_LIMIT_BACKOFF_MINUTES))
+                rate_limit_until(now, response.retry_after_secs)
             };
-            let until = now.checked_add_signed(delay).unwrap_or(DateTime::<Utc>::MAX_UTC);
             with_state(&self.credentials_path, |state| {
                 state.profile_backoff_until = Some((until, id))
             });
@@ -1016,11 +1025,7 @@ impl<H: HttpClient> ClaudeProvider<H> {
                 }
             }
             429 => {
-                let retry_after = response
-                    .retry_after_secs
-                    .map(|secs| Duration::seconds(secs as i64))
-                    .unwrap_or_default();
-                let until = now + retry_after.max(Duration::minutes(RATE_LIMIT_BACKOFF_MINUTES));
+                let until = rate_limit_until(now, response.retry_after_secs);
                 let id = self.identity();
                 with_state(&self.credentials_path, |state| state.backoff_until = Some((until, id)));
                 Err(ProviderError::RateLimited { retry_at: until })
@@ -1577,6 +1582,48 @@ mod tests {
             ProviderError::RateLimited {
                 retry_at: now() + Duration::minutes(15)
             }
+        );
+    }
+
+    #[test]
+    fn fetch_rate_limited_out_of_range_retry_after_still_backs_off() {
+        // #300: the first value overflowed the date, the others `Duration::seconds`; each used to panic.
+        for (name, secs) in [
+            ("429-far", 100_000_000_000_000),
+            ("429-huge", u64::MAX / 2),
+            ("429-max", u64::MAX),
+        ] {
+            let limited = HttpResponse {
+                retry_after_secs: Some(secs),
+                ..HttpResponse::new(429, "")
+            };
+            let (provider, _file) = provider(name, vec![limited, HttpResponse::new(200, FIXTURE)]);
+            let err = provider.fetch(now()).unwrap_err();
+            assert_eq!(
+                err,
+                ProviderError::RateLimited {
+                    retry_at: now() + Duration::days(RATE_LIMIT_BACKOFF_MAX_DAYS)
+                },
+                "{secs}"
+            );
+            assert!(provider.fetch(now() + Duration::minutes(30)).is_err(), "{secs}");
+            assert_eq!(provider.http.calls.load(Ordering::SeqCst), 1, "{secs}");
+        }
+    }
+
+    #[test]
+    fn rate_limit_until_keeps_retry_after_between_the_minimum_and_a_year() {
+        let at = |secs| rate_limit_until(now(), secs);
+        assert_eq!(at(None), now() + Duration::minutes(15));
+        assert_eq!(at(Some(0)), now() + Duration::minutes(15));
+        assert_eq!(at(Some(901)), now() + Duration::seconds(901));
+        let year = Duration::days(365);
+        assert_eq!(at(Some(year.num_seconds() as u64)), now() + year);
+        assert_eq!(at(Some(year.num_seconds() as u64 + 1)), now() + year);
+        // A clock at the last date still gets a date, not a panic.
+        assert_eq!(
+            rate_limit_until(DateTime::<Utc>::MAX_UTC, Some(3600)),
+            DateTime::<Utc>::MAX_UTC
         );
     }
 

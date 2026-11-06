@@ -46,13 +46,15 @@ impl BalanceRow<'_> {
     }
 
     /// When the balance runs out at its burn rate, counted from when it was fetched, so the date holds still while
-    /// the same reading stays on screen; `None` when it is already empty or no rate is known.
+    /// the same reading stays on screen; `None` when it is already empty, no rate is known, or the date would lie
+    /// past the last one a date can hold (#300).
     pub fn runs_out(&self) -> Option<DateTime<Utc>> {
         if self.is_empty() {
             return None;
         }
         let days = self.metric.days_of_credit()?;
-        Some(self.account.fetched_at() + Duration::seconds((days * 86_400.0).round() as i64))
+        Duration::try_seconds((days * 86_400.0).round() as i64)
+            .and_then(|left| self.account.fetched_at().checked_add_signed(left))
     }
 }
 
@@ -302,5 +304,28 @@ mod tests {
         let (first, at) = sheet.first_to_run_out().unwrap();
         assert_eq!(first.account.id().as_str(), "moonshot");
         assert_eq!((at - now()).num_hours(), 47);
+    }
+
+    #[test]
+    fn a_balance_too_large_for_a_date_has_no_run_out_date_and_leaves_the_others() {
+        // #300: the first lasts longer than `Duration::seconds` holds, the second past the last date; both panicked.
+        let lasting = |id, cents| {
+            account(
+                id,
+                Provider::OpenRouter,
+                vec![balance("Credits", Money::from_cents(cents), Some(Money::from_cents(1)))],
+            )
+        };
+        let accounts = [
+            lasting("forever", i64::MAX),
+            lasting("eons", 1_000_000_000),
+            lasting("weeks", 21),
+        ];
+        let sheet = SpendSheet::of(&accounts);
+        assert_eq!(sheet.balances[0].runs_out(), None);
+        assert_eq!(sheet.balances[1].runs_out(), None);
+        assert_eq!(sheet.balances[2].runs_out(), Some(now() + Duration::days(21)));
+        let (first, _) = sheet.first_to_run_out().unwrap();
+        assert_eq!(first.account.id().as_str(), "weeks");
     }
 }

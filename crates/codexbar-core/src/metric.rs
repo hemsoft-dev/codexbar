@@ -385,7 +385,10 @@ impl Metric {
             let used = self.used_fraction()?;
             let left = (self.resets_at()? - now).num_milliseconds() as f64;
             let rate = (projected - used) / left;
-            (rate > 0.).then(|| Duration::milliseconds(((1. - used).max(0.) / rate) as i64))
+            let to_limit = (1. - used).max(0.) / rate;
+            // Past what a duration holds is no time to limit, not the longest one (#300).
+            (rate > 0. && to_limit < Duration::MAX.num_milliseconds() as f64)
+                .then(|| Duration::milliseconds(to_limit as i64))
         })
     }
 
@@ -397,7 +400,8 @@ impl Metric {
             return None;
         }
         let hours = (1.0 - used) / pace.fraction_per_hour();
-        Some(Duration::seconds((hours * 3600.0).round() as i64))
+        // A pace slow enough to put the limit past what a duration holds has no time to limit (#300).
+        Duration::try_seconds((hours * 3600.0).round() as i64)
     }
 
     /// This metric with `pace`, for a projection that must not change the metric itself, such as an early SUS.
@@ -480,8 +484,12 @@ impl Metric {
     /// hit at the reset, or within a minute of it, is a full share rather than "0m early".
     pub fn outlook(&self, now: DateTime<Utc>) -> Option<Outlook> {
         let projected = self.projected_at_reset(now)?;
-        if let (Some(to_limit), Some(resets_at)) = (self.time_to_limit_at(now), self.resets_at()) {
-            let early = resets_at - (now + to_limit);
+        // A limit past the last date is never before the reset (#300).
+        let hits_at = self
+            .time_to_limit_at(now)
+            .and_then(|to_limit| now.checked_add_signed(to_limit));
+        if let (Some(hits_at), Some(resets_at)) = (hits_at, self.resets_at()) {
+            let early = resets_at - hits_at;
             if early >= Duration::minutes(1) {
                 return Some(Outlook::Early(early));
             }
@@ -496,7 +504,9 @@ impl Metric {
             self.time_to_limit_at(now),
             self.resets_at(),
         ) {
-            (Some(_), Some(to_limit), Some(resets_at)) => now + to_limit < resets_at,
+            (Some(_), Some(to_limit), Some(resets_at)) => now
+                .checked_add_signed(to_limit)
+                .is_some_and(|hits_at| hits_at < resets_at),
             _ => false,
         }
     }
@@ -723,6 +733,36 @@ mod tests {
         let to_limit = metric.time_to_limit().unwrap();
         assert_eq!(to_limit.num_minutes(), 25);
         assert!(metric.exhausts_before_reset(now()));
+    }
+
+    #[test]
+    fn a_pace_too_slow_for_a_date_never_hits_the_limit_before_the_reset() {
+        let window = |pace| Metric::Window {
+            label: "Weekly".into(),
+            used: 0.5,
+            resets_at: now() + Duration::hours(24),
+            pace: Some(Pace::per_hour(pace)),
+            length: Some(Duration::days(7)),
+        };
+        // #300: 1e-13 per hour put the limit past `Duration::seconds`, which panicked.
+        let slow = window(1e-13);
+        assert_eq!(slow.time_to_limit(), None);
+        assert_eq!(slow.time_to_limit_at(now()), None);
+        assert!(!slow.exhausts_before_reset(now()));
+        assert!(matches!(slow.outlook(now()), Some(Outlook::Share(_))));
+        // A time to limit that is a duration but lands past the last date never comes before the reset.
+        let late = window(1e-11);
+        assert!(
+            late.time_to_limit()
+                .is_some_and(|to_limit| now().checked_add_signed(to_limit).is_none())
+        );
+        assert!(!late.exhausts_before_reset(now()));
+        assert!(matches!(late.outlook(now()), Some(Outlook::Share(_))));
+        // An ordinary pace reads as before.
+        let fast = window(0.25);
+        assert_eq!(fast.time_to_limit(), Some(Duration::hours(2)));
+        assert!(fast.exhausts_before_reset(now()));
+        assert_eq!(fast.outlook(now()), Some(Outlook::Early(Duration::hours(22))));
     }
 
     #[test]
