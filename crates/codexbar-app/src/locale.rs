@@ -22,6 +22,35 @@ pub fn style() -> &'static dyn DateStyle {
     }
 }
 
+/// A fixed timezone a capture shows provider dates in, so a screenshot can prove a zone east of UTC (#312) without
+/// changing the machine's. Test and capture builds only, like `sus::capture_time`: the app always shows `Local`.
+#[cfg(any(test, feature = "capture"))]
+struct CaptureZone(chrono::FixedOffset);
+#[cfg(any(test, feature = "capture"))]
+impl gpui_kit::Global for CaptureZone {}
+
+/// Shows provider dates in `zone` from now on, or in `Local` again with `None`.
+#[cfg(any(test, feature = "capture"))]
+pub fn capture_zone(zone: Option<chrono::FixedOffset>, cx: &mut gpui_kit::App) {
+    match zone {
+        Some(zone) => cx.set_global(CaptureZone(zone)),
+        None if cx.has_global::<CaptureZone>() => {
+            cx.remove_global::<CaptureZone>();
+        }
+        None => {}
+    }
+}
+
+/// The zone a capture set with [`capture_zone`], if any. Always `None` in the app.
+pub fn captured_zone(cx: &gpui_kit::App) -> Option<chrono::FixedOffset> {
+    #[cfg(any(test, feature = "capture"))]
+    if let Some(zone) = cx.try_global::<CaptureZone>() {
+        return Some(zone.0);
+    }
+    let _ = cx;
+    None
+}
+
 /// A provider error's message with any time in the user's locale and timezone.
 pub fn describe(error: &codexbar_providers::ProviderError) -> String {
     error.describe_with(&|at| style().time(at.with_timezone(&chrono::Local).naive_local()))

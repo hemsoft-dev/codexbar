@@ -597,6 +597,11 @@ impl SpendView {
                 .filter(|row| row.remaining().currency() == currency)
                 .count()
         };
+        // A capture can show a fixed zone east of UTC (#312); the app always shows the user's own.
+        let first = match crate::locale::captured_zone(cx) {
+            Some(zone) => runs_out_first(sheet, &zone),
+            None => runs_out_first(sheet, &Local),
+        };
         h_flex()
             .id("spend-totals")
             .gap_10()
@@ -617,7 +622,7 @@ impl SpendView {
                     Some(accounts(left_count(amount.currency()))),
                 )
             }))
-            .children(runs_out_first(sheet, &Local).map(|(row, day)| {
+            .children(first.map(|(row, day)| {
                 stat(
                     "spend-runs-out-first".to_owned(),
                     "Runs out first".to_owned(),
@@ -1051,7 +1056,11 @@ fn balance_row(
 ) -> AnyElement {
     let severity = codexbar_core::assess(row.metric, now).severity();
     let name = row.account.display_name();
-    let runway = runway_text(row, now);
+    // A capture can show a fixed zone east of UTC (#312); the app always shows the user's own.
+    let runway = match crate::locale::captured_zone(cx) {
+        Some(zone) => runway_text_in(row, now, &zone),
+        None => runway_text(row, now),
+    };
     let remaining = row.remaining().display();
     let spoken = match &stale {
         Some(stale) => format!("{name}, {}: {remaining} left, {stale}, {runway}", row.metric.label()),

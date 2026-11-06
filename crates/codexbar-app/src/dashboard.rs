@@ -1719,6 +1719,88 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Dates half an hour before the last one chrono holds (#312), shown in the fixed `zone` (`None` keeps `Local`):
+    /// an OpenCode Go weekly reset through the real parser beside its ordinary 5-hour window, and a balance that runs
+    /// out then beside, with `sibling`, an ordinary one. Synthetic values only; no provider or account is read.
+    #[cfg(any(test, feature = "capture"))]
+    pub(crate) fn capture_far_dates(
+        &mut self,
+        zone: Option<chrono::FixedOffset>,
+        sibling: bool,
+        cx: &mut Context<Self>,
+    ) {
+        use codexbar_core::Money;
+        use codexbar_store::focus::{LimitChoice, LimitView};
+        assert!(matches!(self.source, DataSource::Demo));
+        let now: DateTime<Utc> = "2026-11-06T12:00:00Z".parse().unwrap();
+        crate::sus::capture_time(now, cx);
+        crate::locale::capture_zone(zone, cx);
+        let last = DateTime::<Utc>::MAX_UTC;
+        let page = format!(
+            r#"<script>_$HY.r["go"]=$R[0]={{rollingUsage:$R[1]={{usagePercent:38,resetInSec:3600,limit:1}},weeklyUsage:$R[2]={{resetInSec:{},usagePercent:12}}}}</script>"#,
+            (last - now).num_seconds() - 1800
+        );
+        let go = AccountSnapshot::new(
+            AccountId::new("opencode-far"),
+            Provider::OpenCode,
+            codexbar_providers::opencode::parse_go(&page, now),
+            now,
+        )
+        .with_label("Far reset");
+        let balance = |id: &str, provider, label: &str, cents: i64, burn: i64, fetched: DateTime<Utc>| {
+            AccountSnapshot::new(
+                AccountId::new(id),
+                provider,
+                vec![Metric::Balance {
+                    label: "Credits".into(),
+                    remaining: Money::from_cents(cents),
+                    burn_per_day: Some(Money::from_cents(burn)),
+                }],
+                fetched,
+            )
+            .with_label(label)
+        };
+        // Fetched at 23:30 UTC, a day's credit at a time, it runs out half an hour before the last date.
+        let fetched: DateTime<Utc> = "2026-11-05T23:30:00Z".parse().unwrap();
+        let days = (last.date_naive() - fetched.date_naive()).num_days();
+        let mut accounts = vec![
+            go,
+            balance("openrouter-far", Provider::OpenRouter, "Far run-out", days, 1, fetched),
+        ];
+        if sibling {
+            accounts.push(balance(
+                "moonshot-ordinary",
+                Provider::Moonshot,
+                "Ordinary",
+                2100,
+                100,
+                now,
+            ));
+        }
+        self.states.clear();
+        self.placeholders.clear();
+        self.set_accounts(accounts, cx);
+        crate::prefs_hub::PrefsHub::update_focus_choice(cx, "opencode-far", |choice| {
+            choice.limits[0] = Some(LimitChoice {
+                key: "5-hour-window".into(),
+                view: LimitView::Bar,
+            });
+            choice.limits[1] = Some(LimitChoice {
+                key: "weekly".into(),
+                view: LimitView::Bar,
+            });
+        });
+        self.focus_account(
+            &crate::handoff::FocusRequest {
+                account: "opencode-far".into(),
+                metric: None,
+            },
+            cx,
+        );
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     /// Keep geometry fixtures independent of the real weekly reset day.
     #[cfg(test)]
     pub(crate) fn set_alignment_demo(&mut self, cx: &mut Context<Self>) {

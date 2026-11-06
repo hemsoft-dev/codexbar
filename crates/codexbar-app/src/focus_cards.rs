@@ -521,7 +521,7 @@ fn bar_card(account: &AccountSnapshot, metric: &Metric, now: DateTime<Utc>, slot
             cx,
         ))
         .children(pace.map(|pace| div().text_sm().text_color(muted).child(pace)));
-    let card = Card::new(window_title(metric), window_period(metric, now), body)
+    let card = Card::new(window_title(metric), window_period(metric, now, cx), body)
         .id(format!("focus-bar-card-{slot}"))
         .takeaway(pool_takeaway(1.0 - used))
         .caption(reset_caption(metric, now));
@@ -1055,7 +1055,7 @@ fn share_card(
     }
     Card::new(
         title,
-        window_period(metric, now),
+        window_period(metric, now, cx),
         v_flex()
             .size_full()
             .child(div().flex_1().min_h_0().child(ring))
@@ -1564,8 +1564,12 @@ fn reset_caption(metric: &Metric, now: DateTime<Utc>) -> String {
 }
 
 /// "Oct 2 – Oct 9" for a window that resets within a week; otherwise its reset date.
-fn window_period(metric: &Metric, now: DateTime<Utc>) -> String {
-    period_in(metric, now, &Local)
+fn window_period(metric: &Metric, now: DateTime<Utc>, cx: &App) -> String {
+    // A capture can show a fixed zone east of UTC (#312); the app always shows the user's own.
+    match crate::locale::captured_zone(cx) {
+        Some(zone) => period_in(metric, now, &zone),
+        None => period_in(metric, now, &Local),
+    }
 }
 
 /// The stretch of time a window covers, from the length the provider reports (#223): start and end times for a window
