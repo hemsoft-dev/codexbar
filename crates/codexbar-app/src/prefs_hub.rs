@@ -268,3 +268,7 @@ impl PrefsHub {
         });
     }
 }
+
+// #297 probe, never to merge: production code that compiles only with gpui-kit's `test-support`.
+#[allow(dead_code)]
+type Probe297 = gpui_kit::base::test_support::ElementSnapshot;
