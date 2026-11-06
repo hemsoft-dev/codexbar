@@ -1565,11 +1565,7 @@ fn reset_caption(metric: &Metric, now: DateTime<Utc>) -> String {
 
 /// "Oct 2 – Oct 9" for a window that resets within a week; otherwise its reset date.
 fn window_period(metric: &Metric, now: DateTime<Utc>, cx: &App) -> String {
-    // A capture can show a fixed zone east of UTC (#312); the app always shows the user's own.
-    match crate::locale::captured_zone(cx) {
-        Some(zone) => period_in(metric, now, &zone),
-        None => period_in(metric, now, &Local),
-    }
+    period_in(metric, now, &crate::locale::display_zone(cx))
 }
 
 /// The stretch of time a window covers, from the length the provider reports (#223): start and end times for a window

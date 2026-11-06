@@ -230,13 +230,8 @@ fn breakdown_text(row: &SpendRow<'_>) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// How long a balance lasts: "Empty", "About 6 days left, until Oct 25", or that no rate is known yet.
-fn runway_text(row: &BalanceRow<'_>, now: DateTime<Utc>) -> String {
-    runway_text_in(row, now, &Local)
-}
-
-/// [`runway_text`] in the timezone `tz`. A run-out date that can't be shown there is no date, as one past the last
-/// UTC date is (#312).
+/// How long a balance lasts in the timezone `tz`: "Empty", "About 6 days left, until Oct 25", or that no rate is known
+/// yet. A run-out date that can't be shown there is no date, as one past the last UTC date is (#312).
 fn runway_text_in<Tz: TimeZone>(row: &BalanceRow<'_>, now: DateTime<Utc>, tz: &Tz) -> String {
     if row.is_empty() {
         return "Empty".to_owned();
@@ -597,11 +592,6 @@ impl SpendView {
                 .filter(|row| row.remaining().currency() == currency)
                 .count()
         };
-        // A capture can show a fixed zone east of UTC (#312); the app always shows the user's own.
-        let first = match crate::locale::captured_zone(cx) {
-            Some(zone) => runs_out_first(sheet, &zone),
-            None => runs_out_first(sheet, &Local),
-        };
         h_flex()
             .id("spend-totals")
             .gap_10()
@@ -622,14 +612,16 @@ impl SpendView {
                     Some(accounts(left_count(amount.currency()))),
                 )
             }))
-            .children(first.map(|(row, day)| {
-                stat(
-                    "spend-runs-out-first".to_owned(),
-                    "Runs out first".to_owned(),
-                    row.account.display_name(),
-                    Some(crate::locale::style().month_day(day)),
-                )
-            }))
+            .children(
+                runs_out_first(sheet, &crate::locale::display_zone(cx)).map(|(row, day)| {
+                    stat(
+                        "spend-runs-out-first".to_owned(),
+                        "Runs out first".to_owned(),
+                        row.account.display_name(),
+                        Some(crate::locale::style().month_day(day)),
+                    )
+                }),
+            )
     }
 
     fn render_trend(&self, sheet: &SpendSheet<'_>, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1056,11 +1048,7 @@ fn balance_row(
 ) -> AnyElement {
     let severity = codexbar_core::assess(row.metric, now).severity();
     let name = row.account.display_name();
-    // A capture can show a fixed zone east of UTC (#312); the app always shows the user's own.
-    let runway = match crate::locale::captured_zone(cx) {
-        Some(zone) => runway_text_in(row, now, &zone),
-        None => runway_text(row, now),
-    };
+    let runway = runway_text_in(row, now, &crate::locale::display_zone(cx));
     let remaining = row.remaining().display();
     let spoken = match &stale {
         Some(stale) => format!("{name}, {}: {remaining} left, {stale}, {runway}", row.metric.label()),
@@ -1107,6 +1095,11 @@ fn balance_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How long a balance lasts in the machine's own zone, as the app shows it outside a capture.
+    fn runway_text(row: &BalanceRow<'_>, now: DateTime<Utc>) -> String {
+        runway_text_in(row, now, &Local)
+    }
     use codexbar_core::{AccountId, Pace, Provider};
 
     fn now() -> DateTime<Utc> {
