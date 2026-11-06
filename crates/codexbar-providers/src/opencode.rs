@@ -43,7 +43,9 @@ pub fn parse_go(html: &str, now: DateTime<Utc>) -> Vec<Metric> {
         .filter_map(|(name, label, length)| {
             let object = hydrated_object(html, name)?;
             let used = (int_field(object, "usagePercent")?.clamp(0, 100)) as f64 / 100.0;
-            let resets_at = now + Duration::seconds(int_field(object, "resetInSec")?.max(0));
+            // A reset too far off to be a date is a malformed window, dropped like a missing one (#300).
+            let resets_at = Duration::try_seconds(int_field(object, "resetInSec")?.max(0))
+                .and_then(|left| now.checked_add_signed(left))?;
             let pace = elapsed_pace(used, resets_at - *length, resets_at, now);
             Some(Metric::Window {
                 label: (*label).to_owned(),
@@ -197,6 +199,25 @@ mod tests {
         assert_eq!(metrics[0].used_fraction(), Some(0.38));
         assert_eq!(metrics[1].used_fraction(), Some(0.12));
         assert_eq!(metrics[0].resets_at(), Some(now() + Duration::hours(1)));
+    }
+
+    #[test]
+    fn parse_go_drops_a_window_whose_reset_is_out_of_range_and_keeps_the_rest() {
+        // #300: the first value overflowed the date, the second `Duration::seconds`; both used to panic.
+        for far in ["100000000000000", "9223372036854775807"] {
+            let page = GO_PAGE.replace("resetInSec:432000", &format!("resetInSec:{far}"));
+            let metrics = parse_go(&page, now());
+            let labels: Vec<&str> = metrics.iter().map(Metric::label).collect();
+            assert_eq!(labels, ["5-hour window", "Monthly"], "{far}");
+            assert_eq!(metrics[0].resets_at(), Some(now() + Duration::hours(1)));
+            assert_eq!(metrics[1].resets_at(), Some(now() + Duration::days(20)));
+        }
+        // A reset far off but still a date is kept as the provider gave it.
+        let page = GO_PAGE.replace("resetInSec:432000", "resetInSec:3153600000");
+        assert_eq!(
+            parse_go(&page, now())[1].resets_at(),
+            Some(now() + Duration::seconds(3_153_600_000))
+        );
     }
 
     #[test]
