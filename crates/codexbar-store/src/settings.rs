@@ -328,8 +328,7 @@ impl Settings {
     /// byte order mark is skipped. A file that can't be read or isn't a JSON object, and schema problems, are errors so
     /// callers never save over them.
     pub fn load(dir: &Path) -> Result<Self, SettingsError> {
-        let (path, doc) = read_document(dir)?;
-        let accounts = accounts_of(&doc)?;
+        let (path, doc, accounts) = read_accounts(dir)?;
         Ok(Self {
             dir: dir.to_owned(),
             path,
@@ -533,8 +532,7 @@ impl Settings {
         fs::create_dir_all(&self.dir).map_err(io)?;
         let _lock = WriteLock::acquire(&self.dir.join(LOCK_FILE))?;
 
-        let (path, disk) = read_document(&self.dir)?;
-        let disk_accounts = accounts_of(&disk)?;
+        let (path, disk, disk_accounts) = read_accounts(&self.dir)?;
         let edited = self.accounts != self.loaded_accounts;
         if edited && disk_accounts != self.loaded_accounts {
             return Err(SettingsError::Conflict);
@@ -579,21 +577,23 @@ pub fn clamp_zoom(zoom: f64) -> f64 {
     ((zoom.clamp(MIN_ZOOM, MAX_ZOOM)) * 10.0).round() / 10.0
 }
 
+/// The settings file, its document and the accounts it holds, as `load` and `save` both read them.
+fn read_accounts(dir: &Path) -> Result<(PathBuf, Value, Vec<AccountRecord>), SettingsError> {
+    let (path, doc) = read_document(dir)?;
+    let accounts = accounts_of(&doc)?;
+    Ok((path, doc, accounts))
+}
+
 /// The settings file and its document; `Null` when neither file exists. A file that exists but can't be read, or
 /// doesn't hold a JSON object, is `Unreadable` so nothing is ever saved over it. A leading UTF-8 byte order mark is
-/// skipped, as the WPF app's `File.ReadAllText` does.
+/// skipped (see [`crate::json_file::read_object`]).
 fn read_document(dir: &Path) -> Result<(PathBuf, Value), SettingsError> {
     for name in [PRIMARY_FILE, FALLBACK_FILE] {
         let path = dir.join(name);
-        match fs::read_to_string(&path) {
-            Ok(text) => {
-                return match serde_json::from_str::<Value>(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
-                    Ok(doc) if doc.is_object() => Ok((path, doc)),
-                    _ => Err(SettingsError::Unreadable),
-                };
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(SettingsError::Unreadable),
+        if let Some(doc) = crate::json_file::read_object(&path).transpose() {
+            return doc
+                .map(|doc| (path, Value::Object(doc)))
+                .map_err(|_| SettingsError::Unreadable);
         }
     }
     Ok((dir.join(PRIMARY_FILE), Value::Null))

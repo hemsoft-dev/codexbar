@@ -7,6 +7,7 @@ mod demo;
 mod enrich;
 pub mod focus;
 mod history;
+mod json_file;
 mod lock;
 pub mod prefs;
 pub mod settings;

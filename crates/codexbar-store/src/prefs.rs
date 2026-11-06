@@ -430,9 +430,8 @@ impl DashboardPrefs {
                 "dashboard.json is from a newer CodexBar and was not changed",
             ));
         }
-        let _lock = crate::lock::FileLock::acquire(&dir.join(LOCK_FILE))?;
-        // A file that exists but can't be read is never replaced; the changes stay pending.
-        let mut doc = read(dir)?.unwrap_or_default();
+        // Held until the save returns. A file that exists but can't be read is never replaced; the changes stay pending.
+        let (_lock, mut doc) = lock_and_read(dir)?;
         // Another (newer) CodexBar may have upgraded the file since it was loaded; never downgrade it.
         if doc
             .get("version")
@@ -736,18 +735,19 @@ fn apply(hidden: &mut BTreeSet<String>, account: &str, show: bool) {
 /// Reads `dashboard.json`; `Ok(None)` when it doesn't exist. A file that exists but can't be read, or doesn't hold a
 /// JSON object, is an error so a save never replaces it. A leading UTF-8 byte order mark is skipped.
 fn read(dir: &Path) -> io::Result<Option<Map<String, Value>>> {
-    let text = match std::fs::read_to_string(dir.join(PREFS_FILE)) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err),
-    };
-    match serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
-        Ok(Value::Object(map)) => Ok(Some(map)),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "dashboard.json can't be read and was not changed",
-        )),
-    }
+    crate::json_file::read_object(&dir.join(PREFS_FILE)).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("dashboard.json can't be read and was not changed: {err}"),
+        )
+    })
+}
+
+/// Takes the shared write lock, then rereads the file under it, so a save starts from the latest file and never from
+/// one it can't read.
+fn lock_and_read(dir: &Path) -> io::Result<(crate::lock::FileLock, Map<String, Value>)> {
+    let lock = crate::lock::FileLock::acquire(&dir.join(LOCK_FILE))?;
+    Ok((lock, read(dir)?.unwrap_or_default()))
 }
 
 #[cfg(test)]
