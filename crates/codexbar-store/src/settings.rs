@@ -246,6 +246,8 @@ fn canonical_provider(name: &str) -> Option<&'static str> {
 /// Why settings could not be read or written. None of these overwrite the file.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SettingsError {
+    /// The file exists but can't be read, or doesn't hold a JSON object.
+    Unreadable,
     /// The file uses a newer account schema.
     NewerVersion,
     /// The versioned account list is missing or has an invalid record.
@@ -264,6 +266,10 @@ pub enum SettingsError {
 impl std::fmt::Display for SettingsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Unreadable => write!(
+                f,
+                "The settings file can't be read. Fix it, then restart CodexBar. The file was not overwritten."
+            ),
             Self::NewerVersion => {
                 write!(
                     f,
@@ -318,10 +324,11 @@ impl Settings {
         codexbar_core::home_dir().unwrap_or_default().join(".codexbar")
     }
 
-    /// Loads and validates settings. A missing or syntax-invalid file behaves like an empty one, as in the WPF app;
-    /// schema problems are errors so callers never save over them.
+    /// Loads and validates settings. A missing file behaves like an empty one, as in the WPF app, and a leading UTF-8
+    /// byte order mark is skipped. A file that can't be read or isn't a JSON object, and schema problems, are errors so
+    /// callers never save over them.
     pub fn load(dir: &Path) -> Result<Self, SettingsError> {
-        let (path, doc) = read_document(dir);
+        let (path, doc) = read_document(dir)?;
         let accounts = accounts_of(&doc)?;
         Ok(Self {
             dir: dir.to_owned(),
@@ -526,7 +533,7 @@ impl Settings {
         fs::create_dir_all(&self.dir).map_err(io)?;
         let _lock = WriteLock::acquire(&self.dir.join(LOCK_FILE))?;
 
-        let (path, disk) = read_document(&self.dir);
+        let (path, disk) = read_document(&self.dir)?;
         let disk_accounts = accounts_of(&disk)?;
         let edited = self.accounts != self.loaded_accounts;
         if edited && disk_accounts != self.loaded_accounts {
@@ -572,15 +579,24 @@ pub fn clamp_zoom(zoom: f64) -> f64 {
     ((zoom.clamp(MIN_ZOOM, MAX_ZOOM)) * 10.0).round() / 10.0
 }
 
-fn read_document(dir: &Path) -> (PathBuf, Value) {
+/// The settings file and its document; `Null` when neither file exists. A file that exists but can't be read, or
+/// doesn't hold a JSON object, is `Unreadable` so nothing is ever saved over it. A leading UTF-8 byte order mark is
+/// skipped, as the WPF app's `File.ReadAllText` does.
+fn read_document(dir: &Path) -> Result<(PathBuf, Value), SettingsError> {
     for name in [PRIMARY_FILE, FALLBACK_FILE] {
         let path = dir.join(name);
-        if let Ok(text) = fs::read_to_string(&path) {
-            let doc = serde_json::from_str(&text).unwrap_or(Value::Null);
-            return (path, doc);
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                return match serde_json::from_str::<Value>(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
+                    Ok(doc) if doc.is_object() => Ok((path, doc)),
+                    _ => Err(SettingsError::Unreadable),
+                };
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(SettingsError::Unreadable),
         }
     }
-    (dir.join(PRIMARY_FILE), Value::Null)
+    Ok((dir.join(PRIMARY_FILE), Value::Null))
 }
 
 /// Version 2 persists SUS prices. Version 1 shares the account decoder; version 0 migrates in memory.
@@ -1175,6 +1191,84 @@ mod tests {
         let mut fallback = Settings::load_or_default(&dir.0);
         assert_eq!(fallback.save(), Err(SettingsError::NewerVersion));
         assert_eq!(fs::read(dir.0.join(PRIMARY_FILE)).unwrap(), before);
+    }
+
+    /// Two accounts and a synthetic placeholder key, the data a lost settings file would take with it (#314).
+    const TWO_ACCOUNTS: &str = r#"{
+        "accountConfigurationVersion": 2,
+        "zoomLevel": 1.0,
+        "accounts": [
+            {"id":"a","providerId":"Copilot","displayLabel":"Work","enabled":true,"authenticationMethod":"OAuth"},
+            {"id":"b","providerId":"Codex","displayLabel":"Home","enabled":true,"authenticationMethod":"CommandLine"}
+        ],
+        "providers": { "OpenRouter": { "enabled": true, "apiKey": "synthetic-placeholder" } }
+    }"#;
+
+    #[test]
+    fn load_skips_a_utf8_byte_order_mark_and_save_keeps_the_accounts() {
+        let dir = TempDir::with(PRIMARY_FILE, "");
+        fs::write(dir.0.join(PRIMARY_FILE), format!("\u{feff}{TWO_ACCOUNTS}")).unwrap();
+        let mut settings = Settings::load(&dir.0).unwrap();
+        assert_eq!(settings.accounts().len(), 2);
+        settings.set_zoom_level(1.2);
+        settings.save().unwrap();
+        let saved = dir.read(PRIMARY_FILE);
+        assert_eq!(saved["accounts"].as_array().unwrap().len(), 2);
+        assert_eq!(saved["providers"]["OpenRouter"]["apiKey"], "synthetic-placeholder");
+        assert_eq!(saved["zoomLevel"], 1.2);
+    }
+
+    #[test]
+    fn load_unreadable_file_refuses_and_save_never_overwrites() {
+        let invalid_utf8 = [b"{\"zoomLevel\":".as_slice(), &[0xff, 0xfe], b"}"].concat();
+        for (case, bytes) in [
+            (
+                "trailing comma",
+                TWO_ACCOUNTS.replace("}\n        ],", "},\n        ],").into_bytes(),
+            ),
+            ("truncated", TWO_ACCOUNTS.as_bytes()[..TWO_ACCOUNTS.len() / 2].to_vec()),
+            ("not an object", b"[]".to_vec()),
+            ("empty", Vec::new()),
+            ("invalid UTF-8", invalid_utf8),
+        ] {
+            let dir = TempDir::with(PRIMARY_FILE, "");
+            fs::write(dir.0.join(PRIMARY_FILE), &bytes).unwrap();
+            assert_eq!(Settings::load(&dir.0).unwrap_err(), SettingsError::Unreadable, "{case}");
+            let mut fallback = Settings::load_or_default(&dir.0);
+            fallback.set_zoom_level(1.2);
+            assert_eq!(fallback.save(), Err(SettingsError::Unreadable), "{case}");
+            assert_eq!(
+                fs::read(dir.0.join(PRIMARY_FILE)).unwrap(),
+                bytes,
+                "{case}: bytes unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn save_refuses_a_file_that_became_unreadable_after_load_and_keeps_the_edit() {
+        let dir = TempDir::with(PRIMARY_FILE, TWO_ACCOUNTS);
+        let mut settings = Settings::load(&dir.0).unwrap();
+        let corrupt = &TWO_ACCOUNTS[..TWO_ACCOUNTS.len() / 2];
+        fs::write(dir.0.join(PRIMARY_FILE), corrupt).unwrap();
+        settings.set_zoom_level(1.2);
+        assert_eq!(settings.save(), Err(SettingsError::Unreadable));
+        assert_eq!(fs::read_to_string(dir.0.join(PRIMARY_FILE)).unwrap(), corrupt);
+        // Once the file is readable again, the same edit saves and the accounts survive.
+        fs::write(dir.0.join(PRIMARY_FILE), TWO_ACCOUNTS).unwrap();
+        settings.save().unwrap();
+        let saved = dir.read(PRIMARY_FILE);
+        assert_eq!(saved["zoomLevel"], 1.2);
+        assert_eq!(saved["accounts"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn missing_file_still_saves_normally() {
+        let dir = TempDir::with(PRIMARY_FILE, "");
+        let mut settings = Settings::load(&dir.0).unwrap();
+        settings.set_zoom_level(1.2);
+        settings.save().unwrap();
+        assert_eq!(dir.read(PRIMARY_FILE)["zoomLevel"], 1.2);
     }
 
     #[test]

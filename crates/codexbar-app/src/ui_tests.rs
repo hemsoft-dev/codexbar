@@ -276,6 +276,29 @@ fn failed_save_reloads_from_the_injected_folder(cx: &mut TestAppContext) {
     assert_eq!(settings.zoom_on_disk(), Some(1.3));
 }
 
+// A settings file that can't be parsed makes Settings read-only instead of loading as empty and being saved over (#314).
+#[gpui_kit::test]
+fn an_unparseable_settings_file_is_read_only_and_never_saved_over(cx: &mut TestAppContext) {
+    let unparseable = r#"{ "accountConfigurationVersion": 2, "accounts": [], }"#;
+    let settings = TempSettings::new("unparseable", unparseable);
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let (read_only, notice) =
+        cx.update(|cx| (SettingsHub::global(cx).is_read_only(), SettingsHub::global(cx).notice()));
+    assert!(read_only);
+    assert!(notice.is_some_and(|notice| notice.contains("can't be read")));
+    let result = cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.set_zoom_level(2.0);
+            Ok(())
+        })
+    });
+    assert_eq!(result, Err(codexbar_store::settings::SettingsError::Unreadable));
+    assert_eq!(
+        std::fs::read_to_string(settings.0.join("settings.json")).unwrap(),
+        unparseable
+    );
+}
+
 #[gpui_kit::test]
 fn the_title_bar_shows_the_version_on_every_view(cx: &mut TestAppContext) {
     let settings = TempSettings::new("title-version", "{}");

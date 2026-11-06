@@ -5,7 +5,7 @@
 //!
 //! They live in `dashboard.json`, not `settings.json`: the WPF app reads `settings.json` into typed settings and writes
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
-//! a file from a newer version is never overwritten.
+//! a file from a newer version, or one that can't be read, is never overwritten.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -103,9 +103,10 @@ pub struct DashboardPrefs {
 }
 
 impl DashboardPrefs {
-    /// Loads the preferences in `dir`. A missing or unreadable file gives the defaults (every account shows history).
+    /// Loads the preferences in `dir`. A missing or unreadable file gives the defaults (every account shows history);
+    /// an unreadable one is never saved over.
     pub fn load(dir: &Path) -> Self {
-        let Some(doc) = read(dir) else {
+        let Ok(Some(doc)) = read(dir) else {
             return Self::default();
         };
         let version = doc.get("version").and_then(Value::as_u64).unwrap_or(VERSION);
@@ -420,7 +421,8 @@ impl DashboardPrefs {
     /// Saves the unsaved changes. Under the shared `dashboard.write.lock` it rereads the file, applies only this
     /// instance's changes, keeps keys this version doesn't know, and swaps in a temp file, so concurrent writers
     /// never lose each other's changes and a crash never leaves a torn file. Afterwards this instance holds the
-    /// merged result. On failure the changes stay pending for the next save.
+    /// merged result. A file that can't be read is left as it is. On failure the changes stay pending for the next
+    /// save.
     pub fn save(&mut self, dir: &Path) -> io::Result<()> {
         if self.read_only {
             return Err(io::Error::new(
@@ -429,7 +431,8 @@ impl DashboardPrefs {
             ));
         }
         let _lock = crate::lock::FileLock::acquire(&dir.join(LOCK_FILE))?;
-        let mut doc = read(dir).unwrap_or_default();
+        // A file that exists but can't be read is never replaced; the changes stay pending.
+        let mut doc = read(dir)?.unwrap_or_default();
         // Another (newer) CodexBar may have upgraded the file since it was loaded; never downgrade it.
         if doc
             .get("version")
@@ -730,11 +733,20 @@ fn apply(hidden: &mut BTreeSet<String>, account: &str, show: bool) {
     }
 }
 
-fn read(dir: &Path) -> Option<Map<String, Value>> {
-    let text = std::fs::read_to_string(dir.join(PREFS_FILE)).ok()?;
-    match serde_json::from_str(&text).ok()? {
-        Value::Object(map) => Some(map),
-        _ => None,
+/// Reads `dashboard.json`; `Ok(None)` when it doesn't exist. A file that exists but can't be read, or doesn't hold a
+/// JSON object, is an error so a save never replaces it. A leading UTF-8 byte order mark is skipped.
+fn read(dir: &Path) -> io::Result<Option<Map<String, Value>>> {
+    let text = match std::fs::read_to_string(dir.join(PREFS_FILE)) {
+        Ok(text) => text,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    match serde_json::from_str(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
+        Ok(Value::Object(map)) => Ok(Some(map)),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dashboard.json can't be read and was not changed",
+        )),
     }
 }
 
@@ -853,6 +865,66 @@ mod tests {
         assert!(DashboardPrefs::load(&dir.0).shows_history("any"));
         dir.write("{ not json");
         assert!(DashboardPrefs::load(&dir.0).shows_history("any"));
+    }
+
+    const SAVED: &str = r#"{"version":1,"hiddenHistory":["cursor"],"appearance":"dark","futureKey":7}"#;
+
+    #[test]
+    fn load_skips_a_utf8_byte_order_mark_and_save_keeps_other_keys() {
+        let dir = Dir::new("bom");
+        dir.write(&format!("\u{feff}{SAVED}"));
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert!(!prefs.shows_history("cursor"));
+        assert_eq!(prefs.appearance(), Some("dark"));
+        prefs.set_shows_history("moonshot", false);
+        prefs.save(&dir.0).unwrap();
+        let saved = dir.read();
+        assert_eq!(saved["hiddenHistory"], json!(["cursor", "moonshot"]));
+        assert_eq!(saved["appearance"], "dark");
+        assert_eq!(saved["futureKey"], 7);
+    }
+
+    #[test]
+    fn save_never_replaces_an_unreadable_file_and_keeps_the_change_pending() {
+        for (case, bytes) in [
+            ("syntax error", b"{ not json".to_vec()),
+            ("truncated", SAVED.as_bytes()[..SAVED.len() / 2].to_vec()),
+            ("not an object", b"[]".to_vec()),
+            (
+                "invalid UTF-8",
+                [b"{\"appearance\":\"".as_slice(), &[0xff, 0xfe], b"\"}"].concat(),
+            ),
+        ] {
+            let dir = Dir::new(&format!("unreadable-{}", case.replace(' ', "-")));
+            std::fs::write(dir.0.join(PREFS_FILE), &bytes).unwrap();
+            let mut prefs = DashboardPrefs::load(&dir.0);
+            prefs.set_shows_history("moonshot", false);
+            assert!(prefs.save(&dir.0).is_err(), "{case}");
+            assert_eq!(
+                std::fs::read(dir.0.join(PREFS_FILE)).unwrap(),
+                bytes,
+                "{case}: bytes unchanged"
+            );
+            assert!(prefs.is_dirty(), "{case}: the change stays pending");
+            // Once the file is readable again, the pending change merges into it.
+            dir.write(SAVED);
+            prefs.save(&dir.0).unwrap();
+            let saved = dir.read();
+            assert_eq!(saved["hiddenHistory"], json!(["cursor", "moonshot"]), "{case}");
+            assert_eq!(saved["appearance"], "dark", "{case}");
+        }
+    }
+
+    #[test]
+    fn save_refuses_a_file_that_became_unreadable_after_load() {
+        let dir = Dir::new("unreadable-after-load");
+        dir.write(SAVED);
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        dir.write("{ not json");
+        prefs.set_shows_history("moonshot", false);
+        assert!(prefs.save(&dir.0).is_err());
+        assert_eq!(std::fs::read_to_string(dir.0.join(PREFS_FILE)).unwrap(), "{ not json");
+        assert!(prefs.is_dirty());
     }
 
     #[test]

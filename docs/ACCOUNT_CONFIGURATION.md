@@ -71,13 +71,17 @@ Version 2 adds persisted SUS price overrides. Version 1 account records and
 legacy settings still load with their existing IDs. Saving upgrades the file
 to version 2, so older builds refuse to overwrite the new price fields.
 
-- A missing or syntax-invalid `settings.json` behaves like an empty one.
-- A file from a newer CodexBar (a higher `accountConfigurationVersion`), an
-  invalid account record, or provider keys that differ only in case make
-  Settings read-only, and the file is never overwritten.
+- A missing `settings.json` behaves like an empty one. A leading UTF-8 byte
+  order mark is skipped.
+- A `settings.json` that can't be read or isn't a JSON object, a file from a
+  newer CodexBar (a higher `accountConfigurationVersion`), an invalid account
+  record, or provider keys that differ only in case make Settings read-only,
+  and the file is never overwritten.
 - API keys an older CodexBar kept in the file are moved to Credential Manager at
   startup; a key that can't be moved stays usable and is tried again next time.
 - Settings that only the Rust app uses (groups, order, appearance, alerts) are in
   `dashboard.json`. The manual order changes by dragging a row in the Usage
   table to a new place in its group, or with Move up / Move down on the focused
   account. A drag while Order is Smart switches it to Manual, so the drop shows.
+  A `dashboard.json` that can't be read shows the defaults and is never saved
+  over; changes stay pending until it can be read again.
