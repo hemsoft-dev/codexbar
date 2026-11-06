@@ -491,11 +491,12 @@ impl HistoryStore {
         if samples.is_empty() || !self.persist {
             return Ok(());
         }
-        let is_new = !self.path.exists();
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
         let mut file = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        // A file this open just created, or one left empty by a failed first write (#315), starts with the header.
+        let is_new = !file.metadata().is_ok_and(|meta| meta.len() > 0);
         let mut buf = String::new();
         if is_new {
             buf.push_str(&header_line());
@@ -627,6 +628,64 @@ mod tests {
         assert_eq!(reopened.len(), 2);
         let series: Vec<f64> = reopened.series("codex", "5-hour-window").map(Sample::value).collect();
         assert_eq!(series, [0.4]);
+    }
+
+    /// The file's lines and the names in its folder.
+    fn contents(dir: &TempDir) -> (Vec<String>, Vec<String>) {
+        let lines = fs::read_to_string(dir.file())
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let mut names: Vec<String> = fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        (lines, names)
+    }
+
+    // A first write that failed (a full disk, say) can leave an empty file behind; recording into it must still start
+    // with the header, or the next start sets the whole file aside (#315).
+    #[test]
+    fn record_into_an_empty_file_writes_the_header_and_reopens() {
+        let dir = TempDir::new();
+        fs::write(dir.file(), "").unwrap();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        assert_eq!(store.record(&[account("codex", 0.4, 3)], now()).unwrap(), 2);
+        let later = now() + Duration::minutes(5);
+        assert_eq!(store.record(&[account("codex", 0.6, 3)], later).unwrap(), 1);
+
+        let (lines, names) = contents(&dir);
+        assert_eq!(lines.first().map(String::as_str), Some(header_line().trim_end()));
+        assert_eq!(lines.iter().filter(|line| line.contains("codexbar_history")).count(), 1);
+        let reopened = HistoryStore::open(dir.file(), retention(), later);
+        assert_eq!(reopened.len(), 3);
+        let series: Vec<f64> = reopened.series("codex", "5-hour-window").map(Sample::value).collect();
+        assert_eq!(series, [0.4, 0.6]);
+        assert_eq!(contents(&dir).1, names);
+        assert_eq!(names, ["history.jsonl"], "nothing set aside");
+    }
+
+    #[test]
+    fn a_missing_or_existing_file_gets_exactly_one_header() {
+        let dir = TempDir::new();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        store.record(&[account("codex", 0.4, 3)], now()).unwrap();
+        let later = now() + Duration::minutes(5);
+        // Reopened on the existing, non-empty file, later appends add samples only.
+        let mut reopened = HistoryStore::open(dir.file(), retention(), later);
+        reopened.record(&[account("codex", 0.6, 3)], later).unwrap();
+        reopened
+            .record(&[account("codex", 0.7, 3)], later + Duration::minutes(5))
+            .unwrap();
+
+        let (lines, names) = contents(&dir);
+        assert_eq!(lines.first().map(String::as_str), Some(header_line().trim_end()));
+        assert_eq!(lines.iter().filter(|line| line.contains("codexbar_history")).count(), 1);
+        assert_eq!(lines.len(), 1 + 4);
+        assert_eq!(names, ["history.jsonl"]);
+        assert_eq!(HistoryStore::open(dir.file(), retention(), later).len(), 4);
     }
 
     #[test]
