@@ -29,6 +29,8 @@ const LOCK_FILE: &str = "settings.write.lock";
 /// Zoom range and step shared with the WPF app (`ZoomHelper`).
 pub const MIN_ZOOM: f64 = 0.5;
 pub const MAX_ZOOM: f64 = 3.0;
+/// The longest automatic refresh interval: a year, as the longest Retry-After a provider backoff honors.
+pub const MAX_REFRESH_INTERVAL_SECS: u64 = 365 * 24 * 3600;
 pub const ZOOM_STEP: f64 = 0.1;
 
 /// Provider names as the WPF app stores them (`ProviderId` enum names).
@@ -463,11 +465,13 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// Refresh interval in seconds; `None` means automatic refresh is off.
+    /// Refresh interval in seconds; `None` means automatic refresh is off. A longer interval than
+    /// [`MAX_REFRESH_INTERVAL_SECS`] (only a hand edit writes one) reads as that year, so the next refresh is
+    /// still a date the dashboard can count down to; the file keeps what it holds.
     pub fn refresh_interval_secs(&self) -> Option<u64> {
         match self.doc.get("refreshIntervalSeconds").and_then(Value::as_i64) {
             Some(secs) if secs <= 0 => None,
-            Some(secs) => Some(secs as u64),
+            Some(secs) => Some(secs.unsigned_abs().min(MAX_REFRESH_INTERVAL_SECS)),
             None => Some(120),
         }
     }
@@ -1436,6 +1440,32 @@ mod tests {
         assert_eq!(settings.refresh_interval_secs(), Some(120));
         settings.set_refresh_interval_secs(None);
         assert_eq!(settings.refresh_interval_secs(), None);
+    }
+
+    #[test]
+    fn refresh_interval_past_a_year_reads_as_a_year_and_stays_in_the_file() {
+        let year = MAX_REFRESH_INTERVAL_SECS;
+        for (stored, expected) in [
+            (3600, 3600),
+            (year as i64, year),
+            (year as i64 + 1, year),
+            (i64::MAX, year),
+        ] {
+            let settings = Settings::from_json(&format!(r#"{{"refreshIntervalSeconds": {stored}}}"#));
+            assert_eq!(settings.refresh_interval_secs(), Some(expected), "{stored}");
+        }
+        // Whatever it reads as, the next refresh is a date the dashboard can count down to.
+        let interval = chrono::Duration::try_seconds(i64::try_from(year).unwrap()).unwrap();
+        assert!(chrono::Utc::now().checked_add_signed(interval).is_some());
+        // Reading never rewrites the hand-edited value; another setting's save keeps it.
+        let dir = TempDir::with(PRIMARY_FILE, r#"{"refreshIntervalSeconds": 9000000000000000000}"#);
+        let mut settings = Settings::load(&dir.0).unwrap();
+        settings.set_zoom_level(1.5);
+        settings.save().unwrap();
+        assert_eq!(
+            dir.read(PRIMARY_FILE)["refreshIntervalSeconds"],
+            json!(9_000_000_000_000_000_000i64)
+        );
     }
 
     #[test]
