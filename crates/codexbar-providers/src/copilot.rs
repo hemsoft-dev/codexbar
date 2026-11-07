@@ -130,11 +130,7 @@ const QUOTAS: [(&str, &str); 3] = [
 /// A monthly quota with a real ceiling. Unlimited or zero entitlements are not limits, and a quota whose `remaining`
 /// isn't a whole number is left out rather than shown as used up.
 fn quota_metric(quota: &Value, label: &str, resets_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<Metric> {
-    let entitlement = quota.get("entitlement").and_then(Value::as_u64).filter(|e| *e > 0)?;
-    if quota.get("unlimited").and_then(Value::as_bool).unwrap_or(false) {
-        return None;
-    }
-    let used = quota_used(entitlement, quota.get("remaining")?)?;
+    let (used, entitlement) = quota_counts(quota)?;
     let start = resets_at.checked_sub_months(Months::new(1)).unwrap_or(resets_at);
     let pace = elapsed_pace(used as f64 / entitlement as f64, start, resets_at, now);
     Some(Metric::Quota {
@@ -145,6 +141,16 @@ fn quota_metric(quota: &Value, label: &str, resets_at: DateTime<Utc>, now: DateT
         pace,
         length: (start < resets_at).then(|| resets_at - start),
     })
+}
+
+/// Decode the bounded quota's used and entitled request counts before constructing a metric.
+fn quota_counts(quota: &Value) -> Option<(u64, u64)> {
+    let entitlement = quota.get("entitlement").and_then(Value::as_u64).filter(|e| *e > 0)?;
+    if quota.get("unlimited").and_then(Value::as_bool).unwrap_or(false) {
+        return None;
+    }
+    let used = quota_used(entitlement, quota.get("remaining")?)?;
+    Some((used, entitlement))
 }
 
 /// What a quota has used: its entitlement less what remains. Past the entitlement GitHub reports `remaining` below
