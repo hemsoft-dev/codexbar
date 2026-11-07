@@ -2693,6 +2693,40 @@ fn minute_ticks_refresh_compact_history_and_smart_order_without_a_fetch(cx: &mut
 }
 
 #[gpui_kit::test]
+fn a_refresh_interval_too_long_for_a_date_waits_instead_of_panicking(cx: &mut TestAppContext) {
+    // settings.json can be edited by hand: an interval no date can hold still shows and ticks, and doesn't fetch again.
+    let settings = TempSettings::new(
+        "huge-refresh-interval",
+        r#"{ "refreshIntervalSeconds": 9000000000000000000 }"#,
+    );
+    let base = chrono::Utc::now();
+    let account = AccountSnapshot::new(
+        AccountId::new("claude-huge-interval"),
+        Provider::Claude,
+        vec![Metric::Window {
+            label: "Weekly".into(),
+            used: 0.4,
+            resets_at: base + chrono::Duration::days(3),
+            pace: None,
+            length: None,
+        }],
+        base,
+    );
+    let dashboard = open_live_fixed(cx, &settings, vec![Arc::new(FixedProvider(vec![account]))]);
+    cx.run_until_parked();
+    let fetched = cx.update(|cx| dashboard.read(cx).last_refresh_for_test());
+    assert!(fetched.is_some(), "the first refresh runs");
+    cx.executor().advance_clock(Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-huge-interval"]);
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).last_refresh_for_test()),
+        fetched,
+        "no second fetch inside the interval"
+    );
+}
+
+#[gpui_kit::test]
 fn smart_order_puts_urgent_accounts_first_and_manual_comes_back(cx: &mut TestAppContext) {
     let settings = TempSettings::new("smart-order", "{}");
     let dashboard = open_live(
