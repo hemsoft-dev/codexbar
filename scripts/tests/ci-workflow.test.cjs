@@ -83,6 +83,33 @@ test('every platform checks the production binary without dev-dependency feature
   assert.ok(steps.indexOf(step) < names.indexOf('Test'));
 });
 
+// The account dialog's screenshots (#320) come from the Linux rust job, after its tests, and must exist: a capture that
+// renders nothing fails the job instead of uploading an empty artifact.
+test('the Linux rust job renders and uploads the account dialog captures', () => {
+  const steps = workflow.jobs.rust.steps;
+  const names = steps.map(step => step.name);
+  const render = steps.find(step => step.name === 'Render account dialog captures');
+  const upload = steps.find(step => step.name === 'Upload account dialog captures');
+  assert.ok(render && upload);
+  assert.ok(names.indexOf('Test') < steps.indexOf(render) && steps.indexOf(render) < steps.indexOf(upload));
+  for (const step of [render, upload]) {
+    assert.equal(step.if, "runner.os == 'Linux'");
+    assert.equal(step['continue-on-error'], undefined);
+  }
+  assert.equal(render.env.CODEXBAR_CAPTURE_DIR, '${{ github.workspace }}/artifacts/captures');
+  assert.match(render.run,
+    /^cargo test -p codexbar-app --bin codexbar --locked -- --ignored --exact captures::captures_refused_key_320 --nocapture$/m);
+  const frames = ['refused-key-not-restored', 'refused-key-not-restored-dark', 'refused-new-key-not-removed',
+    'refused-new-key-not-removed-dark'];
+  for (const frame of frames) {
+    assert.ok(render.run.includes(frame), frame);
+  }
+  assert.match(render.run, /test -s "\$CODEXBAR_CAPTURE_DIR\/\$name\.png" \|\| \{ .*exit 1; \}/);
+  assert.match(upload.uses, /^actions\/upload-artifact@/);
+  assert.equal(upload.with['if-no-files-found'], 'error');
+  assert.deepEqual(upload.with.path.trim().split('\n'), frames.map(frame => `artifacts/captures/${frame}.png`));
+});
+
 // Every action is pinned to a reviewed commit, with the release it came from in a trailing comment (#301).
 // A movable tag such as `@v4` could change what runs after review, so a new reference must also be a SHA.
 test('every action reference in CI and Package is a full commit SHA with its version', () => {

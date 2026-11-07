@@ -1064,7 +1064,7 @@ impl codexbar_store::credentials::CredentialStore for RefusesUndo {
     }
 }
 
-/// #320: the account dialog when a refused settings save can't be undone in the credential store, light and dark:
+/// #320: the account dialog when a refused settings save can't be undone in the credential store, Light and Dark:
 /// an edited account whose previous key couldn't be put back, then a new account whose key couldn't be removed.
 /// The settings are refused by a blank name; the dashboard's provider factory builds nothing, so no request is made.
 #[test]
@@ -1178,10 +1178,15 @@ fn captures_refused_key_320() {
             error.starts_with("Every account needs a name.") && error.contains(says),
             "{name}: {error}"
         );
-        save(&mut cx, handle, &out, name);
-        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::Dark));
-        cx.run_until_parked();
-        save(&mut cx, handle, &out, &format!("{name}-dark"));
+        // Light and Dark chosen explicitly, so neither frame depends on what System resolves to.
+        for (appearance, frame) in [
+            (theme::Appearance::Light, name.to_owned()),
+            (theme::Appearance::Dark, format!("{name}-dark")),
+        ] {
+            cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, appearance));
+            cx.run_until_parked();
+            save(&mut cx, handle, &out, &frame);
+        }
         cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);

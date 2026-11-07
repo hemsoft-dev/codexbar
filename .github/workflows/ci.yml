@@ -103,6 +103,33 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # PR screenshots of the account dialog's refused-save messages (#320), from GPUI's Linux offscreen renderer: the
+      # only platform with one. The runner has no GPU, so Mesa's software Vulkan driver draws them. No window opens,
+      # and the fixture uses an in-memory key store, a temporary settings folder and no providers.
+      - name: Render account dialog captures
+        if: runner.os == 'Linux'
+        env:
+          CODEXBAR_CAPTURE_DIR: ${{ github.workspace }}/artifacts/captures
+        run: |
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+          cargo test -p codexbar-app --bin codexbar --locked -- --ignored --exact captures::captures_refused_key_320 --nocapture
+          for name in refused-key-not-restored refused-key-not-restored-dark refused-new-key-not-removed refused-new-key-not-removed-dark; do
+            test -s "$CODEXBAR_CAPTURE_DIR/$name.png" || { echo "::error::$name.png was not rendered"; exit 1; }
+          done
+
+      - name: Upload account dialog captures
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: account-dialog-captures
+          path: |
+            artifacts/captures/refused-key-not-restored.png
+            artifacts/captures/refused-key-not-restored-dark.png
+            artifacts/captures/refused-new-key-not-removed.png
+            artifacts/captures/refused-new-key-not-removed-dark.png
+          if-no-files-found: error
+          retention-days: 14
+
   rust-metrics:
     runs-on: ubuntu-latest
     timeout-minutes: 45
