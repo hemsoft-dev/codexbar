@@ -33,9 +33,11 @@ test('the current development dependency lock passes the all-severity policy', (
 test('an actual vulnerable development lock fails even with conflicting npm defaults', () => {
   const directory = mkdtempSync(join(tmpdir(), 'codexbar-npm-audit-'));
   try {
+    // The fixture is stored under non-manifest names so GitHub's dependency graph does not
+    // raise a Dependabot alert for it; the audit sees the real file names in the copy.
     const fixture = join(root, 'scripts/fixtures/npm-vulnerable-markdown');
     for (const file of ['package.json', 'package-lock.json']) {
-      cpSync(join(fixture, file), join(directory, file));
+      cpSync(join(fixture, `${file}.fixture`), join(directory, file));
     }
     const before = readFileSync(join(directory, 'package-lock.json'));
     const { status, report } = audit(directory, {

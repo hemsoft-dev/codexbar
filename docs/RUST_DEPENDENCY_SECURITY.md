@@ -129,12 +129,16 @@ is passed, so read only counts or fields such as `number`, `state` and
 Two test fixtures contain vulnerable versions on purpose. Do not fix, rewrite
 or remove them to clear an alert.
 
-- [`scripts/fixtures/npm-vulnerable-markdown/package-lock.json`](../scripts/fixtures/npm-vulnerable-markdown/package-lock.json)
-  locks KaTeX 0.18.1. It raised [Dependabot alert 1](https://github.com/hemsoft-dev/codexbar/security/dependabot/1),
-  low-severity GHSA-238p-pmpm-9mq7, with development scope.
+- [`scripts/fixtures/npm-vulnerable-markdown/package-lock.json.fixture`](../scripts/fixtures/npm-vulnerable-markdown/package-lock.json.fixture)
+  locks KaTeX 0.18.1 (low-severity GHSA-238p-pmpm-9mq7).
   [`scripts/tests/npm-audit.test.cjs`](../scripts/tests/npm-audit.test.cjs)
-  requires that advisory and a failing audit. The alert does not involve the
-  root `package-lock.json` or the shipped app. It was left open, not dismissed.
+  copies it and `package.json.fixture` to a temporary folder under their real
+  names and requires that advisory and a failing audit. Under those names the
+  fixture raised [Dependabot alert 1](https://github.com/hemsoft-dev/codexbar/security/dependabot/1)
+  in the repository, so it is stored with a `.fixture` suffix. The dependency
+  graph reads only real manifest names, and Dependabot alerts come from the
+  graph: `dependabot.yml` options do not control them. Keep the suffix on any
+  new vulnerable npm fixture.
 - The cargo-audit fixtures under
   [`scripts/tests/fixtures/rust-advisory/`](../scripts/tests/fixtures/rust-advisory/)
   lock `idna 0.5.0` and `inconceivable 0.9.0`. On November 5, 2026 the
