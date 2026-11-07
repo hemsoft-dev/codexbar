@@ -1803,6 +1803,33 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Two Copilot accounts through the real parser (#318): one 740 premium requests past its 3,000 allowance, in the
+    /// shape GitHub returns past it, and one exactly at it. Synthetic payloads only; no provider or account is read.
+    #[cfg(any(test, feature = "capture"))]
+    pub(crate) fn capture_copilot_overage(&mut self, cx: &mut Context<Self>) {
+        assert!(matches!(self.source, DataSource::Demo));
+        let now: DateTime<Utc> = "2026-10-20T12:00:00Z".parse().unwrap();
+        // As in `capture_muse`: refreshed at the fixed time, so the clock's demo refresh doesn't replace the fixture.
+        self.last_refresh = Some(now);
+        crate::sus::capture_time(now, cx);
+        let account = |user: &str, remaining: i64| {
+            let payload = serde_json::json!({
+                "copilot_plan": "business",
+                "quota_reset_date_utc": "2026-11-01T00:00:00.000Z",
+                "quota_snapshots": {"premium_interactions": {
+                    "entitlement": 3000, "remaining": remaining, "percent_remaining": 0, "unlimited": false,
+                }},
+            });
+            codexbar_providers::copilot::parse_user(&payload.to_string(), user, now).unwrap()
+        };
+        let accounts = vec![account("over-allowance", -740), account("at-allowance", 0)];
+        self.states.clear();
+        self.placeholders.clear();
+        self.set_accounts(accounts, cx);
+        self.view = DashboardView::Usage;
+        cx.notify();
+    }
+
     /// Keep geometry fixtures independent of the real weekly reset day.
     #[cfg(test)]
     pub(crate) fn set_alignment_demo(&mut self, cx: &mut Context<Self>) {

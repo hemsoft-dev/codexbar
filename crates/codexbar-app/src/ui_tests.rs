@@ -8930,3 +8930,38 @@ fn far_dates_east_of_utc_show_no_date_and_leave_the_others(cx: &mut TestAppConte
     }
     assert!(row(cx, "Ordinary").contains("until Nov 2"));
 }
+
+/// #318: a Copilot account 740 premium requests past its 3,000 allowance reads 3,740 in the Usage table and stays
+/// limit reached, beside one exactly at it, through the real parser as `capture_copilot_overage` sets up for the
+/// screenshots.
+#[gpui_kit::test]
+fn copilot_quota_past_its_allowance_shows_the_overage_and_stays_limit_reached(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("copilot-overage", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    cx.update(|cx| dashboard.update(cx, |d, cx| d.capture_copilot_overage(cx)));
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+
+    assert_eq!(
+        label(cx, handle, "used-copilot-over-allowance").as_deref(),
+        Some("3,000 requests: 3,740")
+    );
+    assert_eq!(
+        label(cx, handle, "used-copilot-at-allowance").as_deref(),
+        Some("3,000 requests: 3,000")
+    );
+    // Both stay limit reached. The forecast follows the pace of what was used, so the account past its allowance
+    // projects further past it than the one at it, 19.5 days into the month.
+    assert_eq!(
+        label(cx, handle, "progress-cell-copilot-over-allowance").as_deref(),
+        Some("100% used, 174% at reset · limit reached")
+    );
+    assert_eq!(
+        label(cx, handle, "progress-cell-copilot-at-allowance").as_deref(),
+        Some("100% used, 159% at reset · limit reached")
+    );
+    // A used-up limit has no pill, past it or at it (#150).
+    assert!(label(cx, handle, "severity-tag-copilot-over-allowance").is_none());
+    assert!(label(cx, handle, "severity-tag-copilot-at-allowance").is_none());
+}

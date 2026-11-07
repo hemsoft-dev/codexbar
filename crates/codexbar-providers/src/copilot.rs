@@ -127,14 +127,10 @@ const QUOTAS: [(&str, &str); 3] = [
     ("completions", "Code completions"),
 ];
 
-/// A monthly quota with a real ceiling. Unlimited or zero entitlements are not limits.
+/// A monthly quota with a real ceiling. Unlimited or zero entitlements are not limits, and a quota whose `remaining`
+/// isn't a whole number is left out rather than shown as used up.
 fn quota_metric(quota: &Value, label: &str, resets_at: DateTime<Utc>, now: DateTime<Utc>) -> Option<Metric> {
-    let entitlement = quota.get("entitlement").and_then(Value::as_u64).filter(|e| *e > 0)?;
-    if quota.get("unlimited").and_then(Value::as_bool).unwrap_or(false) {
-        return None;
-    }
-    let remaining = quota.get("remaining").and_then(Value::as_i64).unwrap_or(0).max(0) as u64;
-    let used = entitlement.saturating_sub(remaining);
+    let (used, entitlement) = quota_counts(quota)?;
     let start = resets_at.checked_sub_months(Months::new(1)).unwrap_or(resets_at);
     let pace = elapsed_pace(used as f64 / entitlement as f64, start, resets_at, now);
     Some(Metric::Quota {
@@ -145,6 +141,26 @@ fn quota_metric(quota: &Value, label: &str, resets_at: DateTime<Utc>, now: DateT
         pace,
         length: (start < resets_at).then(|| resets_at - start),
     })
+}
+
+/// Decode the bounded quota's used and entitled request counts before constructing a metric.
+fn quota_counts(quota: &Value) -> Option<(u64, u64)> {
+    let entitlement = quota.get("entitlement").and_then(Value::as_u64).filter(|e| *e > 0)?;
+    if quota.get("unlimited").and_then(Value::as_bool).unwrap_or(false) {
+        return None;
+    }
+    let used = quota_used(entitlement, quota.get("remaining")?)?;
+    Some((used, entitlement))
+}
+
+/// What a quota has used: its entitlement less what remains. Past the entitlement GitHub reports `remaining` below
+/// zero, so the overage is added rather than dropped (#318). A `remaining` above the entitlement means nothing used.
+/// `None` when `remaining` isn't a whole number, or when the overage would take the count past `u64::MAX`.
+fn quota_used(entitlement: u64, remaining: &Value) -> Option<u64> {
+    match remaining.as_u64() {
+        Some(left) => Some(entitlement.saturating_sub(left)),
+        None => entitlement.checked_add(remaining.as_i64()?.unsigned_abs()),
+    }
 }
 
 /// `quota_reset_date_utc` (RFC 3339), falling back to the date-only `quota_reset_date` at midnight UTC.
@@ -1314,6 +1330,178 @@ mod tests {
         let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
         assert_eq!(labels, ["Chat messages", "Code completions"]);
         assert_eq!(account.primary().unwrap().used_display(), "1");
+    }
+
+    /// The `key` quota `parse_user` reads from a snapshot with these raw JSON `entitlement` and `remaining` values
+    /// (`None` leaves the field out), beside an ordinary sibling quota that must stay.
+    fn quota(key: &str, entitlement: Option<&str>, remaining: Option<&str>, unlimited: bool) -> Option<Metric> {
+        let label_of = |key: &str| QUOTAS.iter().find(|(name, _)| *name == key).unwrap().1;
+        let sibling = if key == "chat" { "completions" } else { "chat" };
+        let fields: Vec<String> = [("entitlement", entitlement), ("remaining", remaining)]
+            .into_iter()
+            .filter_map(|(name, value)| Some(format!(r#""{name}":{}"#, value?)))
+            .chain([format!(r#""unlimited":{unlimited}"#)])
+            .collect();
+        let payload = format!(
+            r#"{{"quota_reset_date_utc":"2026-11-01T00:00:00.000Z","quota_snapshots":{{"{sibling}":{{"entitlement":50,"remaining":40,"unlimited":false}},"{key}":{{{}}}}}}}"#,
+            fields.join(",")
+        );
+        let account = parse_user(&payload, "dev", now()).unwrap();
+        assert_eq!(
+            used_and_limit(
+                account
+                    .metrics()
+                    .iter()
+                    .find(|m| m.label() == label_of(sibling))
+                    .cloned()
+            ),
+            Some((10, 50)),
+            "the sibling quota is unaffected: {payload}"
+        );
+        account
+            .metrics()
+            .iter()
+            .find(|metric| metric.label() == label_of(key))
+            .cloned()
+    }
+
+    fn used_and_limit(metric: Option<Metric>) -> Option<(u64, u64)> {
+        match metric? {
+            Metric::Quota { used, limit, .. } => Some((used, limit)),
+            other => panic!("not a quota: {other:?}"),
+        }
+    }
+
+    const QUOTA_KEYS: [&str; 3] = ["premium_interactions", "chat", "completions"];
+
+    #[test]
+    fn parse_user_quota_past_its_entitlement_counts_the_overage() {
+        for key in QUOTA_KEYS {
+            // GitHub's shape past the allowance (#318): `remaining` below zero by the overage.
+            let over = quota(key, Some("3000"), Some("-740"), false).unwrap();
+            assert_eq!(used_and_limit(Some(over.clone())), Some((3740, 3000)), "{key}");
+            assert_eq!(over.used_display(), "3,740", "{key}");
+            assert_eq!(
+                over.used_fraction(),
+                Some(1.0),
+                "{key}: the share stays at the whole limit"
+            );
+            // One over is not the same as exactly at the limit.
+            assert_eq!(
+                used_and_limit(quota(key, Some("300"), Some("-1"), false)),
+                Some((301, 300)),
+                "{key}"
+            );
+            assert_eq!(
+                used_and_limit(quota(key, Some("300"), Some("0"), false)),
+                Some((300, 300)),
+                "{key}"
+            );
+            // Under the limit, and with nothing used, as before.
+            assert_eq!(
+                used_and_limit(quota(key, Some("1500"), Some("216"), false)),
+                Some((1284, 1500)),
+                "{key}"
+            );
+            assert_eq!(
+                used_and_limit(quota(key, Some("300"), Some("300"), false)),
+                Some((0, 300)),
+                "{key}"
+            );
+            // More left than the entitlement is nothing used, as before.
+            assert_eq!(
+                used_and_limit(quota(key, Some("300"), Some("5000"), false)),
+                Some((0, 300)),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_user_quota_past_its_entitlement_is_used_up_like_one_at_it() {
+        let snapshot = |remaining: i64| {
+            let payload = serde_json::json!({
+                "quota_reset_date_utc": "2026-11-01T00:00:00.000Z",
+                "quota_snapshots": {"premium_interactions": {"entitlement": 3000, "remaining": remaining, "unlimited": false}},
+            });
+            parse_user(&payload.to_string(), "dev", now()).unwrap()
+        };
+        let at = snapshot(0).assess(now());
+        let over = snapshot(-740).assess(now());
+        assert!(at.is_exhausted() && over.is_exhausted());
+        assert_eq!(over.severity(), at.severity());
+    }
+
+    #[test]
+    fn parse_user_quota_used_stays_exact_at_both_ends_of_the_integers() {
+        let premium = |entitlement: &str, remaining: &str| {
+            used_and_limit(quota("premium_interactions", Some(entitlement), Some(remaining), false))
+        };
+        let max = u64::MAX.to_string();
+        let min = i64::MIN.to_string();
+        // The most negative `remaining` adds 2^63 without wrapping.
+        assert_eq!(premium("3000", &min), Some((3000 + (1 << 63), 3000)));
+        // The largest entitlement: used up, exactly at `u64::MAX` with an overage that just fits, and left out once
+        // the overage would pass it.
+        assert_eq!(premium(&max, "0"), Some((u64::MAX, u64::MAX)));
+        let near = (u64::MAX - 740).to_string();
+        assert_eq!(premium(&near, "-740"), Some((u64::MAX, u64::MAX - 740)));
+        assert_eq!(premium(&near, "-741"), None);
+        assert_eq!(premium(&max, "-1"), None);
+        assert_eq!(premium(&max, &min), None);
+        // A `remaining` past `i64::MAX` is still a whole count left, so nothing is used.
+        assert_eq!(premium("3000", &max), Some((0, 3000)));
+        assert_eq!(premium(&max, &max), Some((0, u64::MAX)));
+    }
+
+    #[test]
+    fn parse_user_quota_without_a_whole_remaining_is_left_out() {
+        // A count CodexBar can't read is not shown as the whole entitlement used (#318), and its sibling stays.
+        for key in ["premium_interactions", "completions"] {
+            for remaining in [
+                None,
+                Some("null"),
+                Some("216.5"),
+                Some("216.0"),
+                Some("-740.5"),
+                Some(r#""216""#),
+                Some("true"),
+                Some("-1e30"),
+                // One past `u64::MAX` only fits a float.
+                Some("18446744073709551616"),
+            ] {
+                assert_eq!(quota(key, Some("3000"), remaining, false), None, "{key}: {remaining:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_user_quota_entitlement_limits_are_unchanged() {
+        for key in QUOTA_KEYS {
+            // No entitlement, or one that isn't a positive whole number, is no limit, whatever remains.
+            for entitlement in [
+                None,
+                Some("0"),
+                Some("-5"),
+                Some("300.5"),
+                Some(r#""300""#),
+                Some("null"),
+            ] {
+                assert_eq!(
+                    quota(key, entitlement, Some("-740"), false),
+                    None,
+                    "{key}: {entitlement:?}"
+                );
+            }
+            // Unlimited is no limit, even past an entitlement.
+            assert_eq!(quota(key, Some("3000"), Some("-740"), true), None, "{key}");
+            // The smallest entitlement is a limit.
+            assert_eq!(
+                used_and_limit(quota(key, Some("1"), Some("0"), false)),
+                Some((1, 1)),
+                "{key}"
+            );
+        }
     }
 
     #[test]
