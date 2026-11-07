@@ -124,10 +124,11 @@ secret scanning alert list returns the literal secret unless `hide_secret=true`
 is passed, so read only counts or fields such as `number`, `state` and
 `secret_type`. Dismiss an alert only with a stated reason after checking it.
 
-### Expected alerts from test fixtures
+### Vulnerable test fixtures
 
-Two test fixtures contain vulnerable versions on purpose. Do not fix, rewrite
-or remove them to clear an alert.
+Two test fixtures contain vulnerable versions on purpose. Do not upgrade, edit
+or delete them to clear an alert: the tests below need the vulnerable versions.
+Keep them out of the dependency graph instead.
 
 - [`scripts/fixtures/npm-vulnerable-markdown/package-lock.json.fixture`](../scripts/fixtures/npm-vulnerable-markdown/package-lock.json.fixture)
   locks KaTeX 0.18.1 (low-severity GHSA-238p-pmpm-9mq7).
@@ -143,8 +144,8 @@ or remove them to clear an alert.
   [`scripts/tests/fixtures/rust-advisory/`](../scripts/tests/fixtures/rust-advisory/)
   lock `idna 0.5.0` and `inconceivable 0.9.0`. On November 5, 2026 the
   dependency graph listed the root `Cargo.lock`, the root `package-lock.json`
-  and the npm fixture lock, but not these lockfiles. An alert for them would be
-  the same kind of expected fixture alert.
+  and the npm fixture lock, but not these lockfiles. If they ever raise an
+  alert, keep them out of the graph the same way rather than changing them.
 
 ### Limits and checks
 
