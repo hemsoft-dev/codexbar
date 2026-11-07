@@ -29,7 +29,7 @@ use crate::catalog::{self, PROVIDERS, SecretSpec};
 use crate::notifications::{Notifications, NotifierStatus};
 use crate::prefs_hub::PrefsHub;
 use crate::settings_hub::{SettingsHub, describe_source};
-use codexbar_store::credentials::SecretSource;
+use codexbar_store::credentials::{CredentialError, CredentialStore, SecretSource};
 
 /// Refresh choices required by #91, in minutes; 0 is Off.
 const REFRESH_CHOICES: [u64; 6] = [0, 1, 5, 15, 30, 60];
@@ -936,26 +936,19 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
         && !secret.is_empty()
         && previous.as_ref().is_some_and(crate::opencode_sign_in::is_managed);
 
-    // The secret is written first: if Credential Manager fails, the account isn't saved without its key. An OpenCode
-    // account on OAuth keeps its sign-in there instead, so no cookie is written over it.
-    // The sign-in a cookie replaces, put back if the settings can't be saved after it.
-    let mut replaced_sign_in = None;
+    // The secret is written first: if Credential Manager fails, the account isn't saved without its key. What it
+    // replaced is kept, to put back if the settings then can't be saved (#320). An OpenCode account on OAuth keeps
+    // its sign-in there instead, so no cookie is written over it.
+    let mut replaced = None;
     if info.secret.is_some() && !secret.is_empty() && !opencode_oauth {
         let store = SettingsHub::global(cx).credentials();
-        let written = if replaces_opencode_sign_in {
-            // One write that leaves the old sign-in readable until the cookie is in place, with no renewal writing
-            // at the same time.
-            codexbar_providers::opencode_console::exclusive(|| {
-                replaced_sign_in = codexbar_store::credentials::read_long(store.as_ref(), &record.id)?;
-                codexbar_store::credentials::write_long(store.as_ref(), &record.id, &secret)
-            })
-        } else {
-            store.write(&record.id, &secret)
-        };
-        if let Err(err) = written {
-            *form.error.borrow_mut() = Some(err.to_string().into());
-            window.refresh();
-            return false;
+        match ReplacedSecret::write(store.as_ref(), &record.id, &secret, replaces_opencode_sign_in) {
+            Ok(written) => replaced = Some(written),
+            Err(err) => {
+                *form.error.borrow_mut() = Some(err.to_string().into());
+                window.refresh();
+                return false;
+            }
         }
     }
     use crate::managed::Managed;
@@ -1019,16 +1012,94 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             true
         }
         Err(err) => {
-            // The account is still on OAuth, so it gets its sign-in back.
-            if let Some(previous) = replaced_sign_in {
-                let store = SettingsHub::global(cx).credentials();
-                let _ = codexbar_providers::opencode_console::exclusive(|| {
-                    codexbar_store::credentials::write_long(store.as_ref(), &record_id, &previous)
-                });
-            }
-            *form.error.borrow_mut() = Some(err.to_string().into());
+            let store = SettingsHub::global(cx).credentials();
+            let message = ReplacedSecret::undo(replaced, store.as_ref(), &record_id, &secret, &err);
+            *form.error.borrow_mut() = Some(message.into());
             window.refresh();
             false
+        }
+    }
+}
+
+/// What the account dialog's key write replaced under the account's id, so a settings save that is then refused can
+/// undo it (#320).
+struct ReplacedSecret {
+    /// The secret saved before, or `None` when the id held none.
+    before: Option<String>,
+    /// Written with `write_long`: an OpenCode sign-in that may span several credential parts, with no renewal
+    /// writing at the same time.
+    long: bool,
+}
+
+impl ReplacedSecret {
+    /// Saves `secret` under `id` after reading what it replaces. Nothing is written if that can't be read, since it
+    /// couldn't be put back.
+    fn write(store: &dyn CredentialStore, id: &str, secret: &str, long: bool) -> Result<Self, CredentialError> {
+        use codexbar_store::credentials::{read_long, write_long};
+        let write = || {
+            let before = if long { read_long(store, id)? } else { store.read(id)? };
+            if long {
+                write_long(store, id, secret)
+            } else {
+                store.write(id, secret)
+            }?;
+            Ok(Self { before, long })
+        };
+        if long {
+            codexbar_providers::opencode_console::exclusive(write)
+        } else {
+            write()
+        }
+    }
+
+    /// Undoes the write after the settings save failed with `refused`, and says why the save failed: the account
+    /// keeps the secret it had, and an id that held none is left empty. A secret another writer saved under the id
+    /// since then is left alone. A failure to undo it is added to the message, never hidden.
+    fn undo(
+        replaced: Option<Self>,
+        store: &dyn CredentialStore,
+        id: &str,
+        written: &str,
+        refused: &dyn std::fmt::Display,
+    ) -> String {
+        let Some(replaced) = replaced else {
+            return refused.to_string();
+        };
+        let had_secret = replaced.before.is_some();
+        match replaced.restore(store, id, written) {
+            Ok(()) => refused.to_string(),
+            Err(err) if had_secret => {
+                format!("{refused} The new key is still saved, and the previous one couldn't be put back: {err}")
+            }
+            Err(err) => format!(
+                "{refused} The key is still saved in {} and couldn't be removed: {err}",
+                codexbar_store::credentials::STORE_SHORT_NAME
+            ),
+        }
+    }
+
+    fn restore(self, store: &dyn CredentialStore, id: &str, written: &str) -> Result<(), CredentialError> {
+        use codexbar_store::credentials::{delete_long, read_long, write_long};
+        let restore = || {
+            let now = if self.long {
+                read_long(store, id)?
+            } else {
+                store.read(id)?
+            };
+            if now.as_deref() != Some(written) {
+                return Ok(());
+            }
+            match (&self.before, self.long) {
+                (Some(before), true) => write_long(store, id, before),
+                (Some(before), false) => store.write(id, before),
+                (None, true) => delete_long(store, id),
+                (None, false) => store.delete(id),
+            }
+        };
+        if self.long {
+            codexbar_providers::opencode_console::exclusive(restore)
+        } else {
+            restore()
         }
     }
 }
