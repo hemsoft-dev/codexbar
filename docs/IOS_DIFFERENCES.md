@@ -43,8 +43,8 @@ organization's Copilot budgets and whether they stop usage (#233).
 | Feature | iOS | Windows |
 | --- | --- | --- |
 | Dashboard, history charts, alerts, groups and ordering | Yes | Yes |
-| Home-screen / lock-screen widgets | Yes | Not yet: Windows widgets need a packaged app ([#93](https://github.com/hemsoft-dev/codexbar/issues/93)-[#95](https://github.com/hemsoft-dev/codexbar/issues/95)) |
+| Home-screen / lock-screen widgets | Yes | Windows 11 Widgets board, from the packaged (MSIX) app; the self-signed package needs Developer Mode ([PACKAGING.md](PACKAGING.md#widgets)) |
 | watchOS companion | Yes | Not applicable |
 | System tray icon and tooltip | Not applicable | Yes |
 | Codex credits pool metric | Yes, opt-in per account | Yes, always on; the headline once a window is used up ([CODEX_CREDITS.md](CODEX_CREDITS.md)) |
-| Distribution | App Store | Built from source for now; MSIX planned ([#93](https://github.com/hemsoft-dev/codexbar/issues/93)) |
+| Distribution | App Store | A self-signed MSIX package with updates from a local channel (`package.ps1`), or a build from source ([PACKAGING.md](PACKAGING.md)) |

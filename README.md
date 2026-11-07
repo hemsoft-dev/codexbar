@@ -20,6 +20,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 | **Grok** (experimental) | Grok CLI sign-in (`grok login`) | A paid plan's weekly usage and Extra Usage Credits |
 | **X Subscription** (experimental) | Grok CLI sign-in and Cursor sign-in | Weekly SuperGrok and Grok Bot limits, Extra Usage Credits |
 | **Gemini / Antigravity** (experimental) | Antigravity CLI shared local sign-in; previously saved Gemini Apps sessions | Antigravity coding quotas; Gemini Apps limits when a saved session still works |
+| **Muse Code** | Command line (`muse usage --json`, the Muse CLI's existing sign-in) | 5-hour + weekly subscription allowance |
 
 ## Features
 
@@ -48,7 +49,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - Windows 10 or later
 - [Rust](https://www.rust-lang.org/tools/install) (the MSVC toolchain; `rust-toolchain.toml` pins stable)
 - Visual Studio Build Tools with the "Desktop development with C++" workload (its Windows SDK supplies `rc.exe`, which compiles the executable's icon)
-- Node.js 20 or later (required for `npm install` / pre-commit hook setup)
+- Node.js 22 or later (required for `npm install` / pre-commit hook setup)
 
 CodexBar also runs on macOS and Linux ([#161](https://github.com/hemsoft-dev/codexbar/issues/161)), built from
 source. It keeps secrets in the macOS Keychain or the Linux Secret Service and finds the provider CLIs on PATH and in
@@ -109,6 +110,7 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 10. **Gemini / Antigravity** (experimental): Add a Gemini account in Settings > Accounts and choose **Connect Antigravity**. CodexBar reuses the CLI's local sign-in, or hands off to its normal default-browser sign-in, then verifies usage. Previously saved Gemini Apps sessions remain separate; new website sign-in is unavailable. See [docs/GEMINI.md](docs/GEMINI.md)
 11. **Grok** (experimental): Sign in with the Grok CLI (`grok login`) and add a Grok account in Settings (Automatic), or choose OAuth to sign an account in through the CLI in a folder of its own; see [docs/GROK.md](docs/GROK.md)
 12. **X Subscription** (experimental): Sign in with the Grok CLI (`grok login`) and to Cursor (step 4), then add an X Subscription account in Settings. It shows what Grok's Settings > Usage shows, each once; see [docs/X_SUBSCRIPTION.md](docs/X_SUBSCRIPTION.md)
+13. **Muse Code**: Sign in with the Muse CLI, then add one Muse Code account in Settings with the Command line method. CodexBar runs `muse usage --json` and never starts a sign-in, an update or a model turn; one account reads the CLI's session. See [docs/MUSE_CODE.md](docs/MUSE_CODE.md)
 
 How each sign-in works, and what CodexBar stores and sends, is in [docs/OAUTH.md](docs/OAUTH.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
 
@@ -174,6 +176,3 @@ The `src/` folder holds the retired C# / WPF app.
 ## License
 
 MIT
-
-Muse Code subscription allowance is available through the existing CLI session.
-See [Muse Code setup, contract and limits](docs/MUSE_CODE.md).

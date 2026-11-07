@@ -8,7 +8,7 @@ sign-in or key you gave it, and to nothing else.
 
 CodexBar sends requests only to providers that are on and have a sign-in or key
 to use. On a first start, before any account is set up, every provider except
-Moonshot, Greptile, GitHub Billing, Gemini, Grok and X Subscription is on: one already signed in on this PC (the Codex CLI, Claude Code, the
+Moonshot, Greptile, GitHub Billing, Gemini, Grok, X Subscription and Muse Code is on: one already signed in on this PC (the Codex CLI, Claude Code, the
 Cursor app, the GitHub CLI) is fetched right away, and one without a sign-in or
 key makes no request. To stop one, add an account for it in Settings > Accounts
 (the provider's own sign-in, Automatic) and switch that account off.
@@ -41,6 +41,14 @@ it does.
 A Gemini account with coding quotas on runs Google's Antigravity CLI
 (`agy -p "/usage" --output-format json`) on each refresh; the CLI reads the
 quotas from Google with its own sign-in. It runs no model turn.
+
+A Muse Code account runs the Muse CLI (`muse usage --json`) on refresh, reusing
+a good result for up to five minutes or until a window resets; the CLI reads the
+allowance with its own session.
+CodexBar starts no sign-in, update or model turn, removes `META_API_KEY` from
+the CLI's environment and keeps only the allowance percentages, reset and
+observation times, tier and source. See
+[MUSE_CODE.md](MUSE_CODE.md).
 
 Signing an account in from Settings runs the provider's own CLI (Codex CLI,
 GitHub CLI, Claude Code, Cursor CLI or Antigravity CLI), which talks to that provider's

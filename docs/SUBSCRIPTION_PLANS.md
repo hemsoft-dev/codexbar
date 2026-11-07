@@ -38,6 +38,7 @@ Old generic `Pro` stays generic because the previous writer collapsed both
 | Gemini | Existing Apps usage and Antigravity CLI usage | The connected usage shapes provide quotas, without an explicit subscription plan field. No plan is guessed from a quota or model list. |
 | OpenRouter / Moonshot | Existing credit/balance endpoints | A prepaid balance is not a subscription plan. The generic provider name remains. |
 | Greptile | Existing read-only review-activity endpoint | Review counts do not identify a billing plan. The generic name remains. |
+| Muse Code | `muse usage --json` (schema 1), `allowance.tier` | Displays the reported tier verbatim, for example Muse Code Power Usage, when it passes the text check in [MUSE_CODE.md](MUSE_CODE.md). The payload reports no billing mode or model entitlement, so none is inferred. |
 
 When no plan is reported, the focused Usage view says the connected source
 does not report a subscription plan. Provider-specific lookup failures also
