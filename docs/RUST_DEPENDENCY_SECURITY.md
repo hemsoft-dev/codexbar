@@ -124,23 +124,28 @@ secret scanning alert list returns the literal secret unless `hide_secret=true`
 is passed, so read only counts or fields such as `number`, `state` and
 `secret_type`. Dismiss an alert only with a stated reason after checking it.
 
-### Expected alerts from test fixtures
+### Vulnerable test fixtures
 
-Two test fixtures contain vulnerable versions on purpose. Do not fix, rewrite
-or remove them to clear an alert.
+Two test fixtures contain vulnerable versions on purpose. Do not upgrade, edit
+or delete them to clear an alert: the tests below need the vulnerable versions.
+Keep them out of the dependency graph instead.
 
-- [`scripts/fixtures/npm-vulnerable-markdown/package-lock.json`](../scripts/fixtures/npm-vulnerable-markdown/package-lock.json)
-  locks KaTeX 0.18.1. It raised [Dependabot alert 1](https://github.com/hemsoft-dev/codexbar/security/dependabot/1),
-  low-severity GHSA-238p-pmpm-9mq7, with development scope.
+- [`scripts/fixtures/npm-vulnerable-markdown/package-lock.json.fixture`](../scripts/fixtures/npm-vulnerable-markdown/package-lock.json.fixture)
+  locks KaTeX 0.18.1 (low-severity GHSA-238p-pmpm-9mq7).
   [`scripts/tests/npm-audit.test.cjs`](../scripts/tests/npm-audit.test.cjs)
-  requires that advisory and a failing audit. The alert does not involve the
-  root `package-lock.json` or the shipped app. It was left open, not dismissed.
+  copies it and `package.json.fixture` to a temporary folder under their real
+  names and requires that advisory and a failing audit. Under those names the
+  fixture raised [Dependabot alert 1](https://github.com/hemsoft-dev/codexbar/security/dependabot/1)
+  in the repository, so it is stored with a `.fixture` suffix. The dependency
+  graph reads only real manifest names, and Dependabot alerts come from the
+  graph: `dependabot.yml` options do not control them. Keep the suffix on any
+  new vulnerable npm fixture.
 - The cargo-audit fixtures under
   [`scripts/tests/fixtures/rust-advisory/`](../scripts/tests/fixtures/rust-advisory/)
   lock `idna 0.5.0` and `inconceivable 0.9.0`. On November 5, 2026 the
   dependency graph listed the root `Cargo.lock`, the root `package-lock.json`
-  and the npm fixture lock, but not these lockfiles. An alert for them would be
-  the same kind of expected fixture alert.
+  and the npm fixture lock, but not these lockfiles. If they ever raise an
+  alert, keep them out of the graph the same way rather than changing them.
 
 ### Limits and checks
 
