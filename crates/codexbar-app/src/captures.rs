@@ -1042,3 +1042,158 @@ fn captures() {
     }
     let _ = std::fs::remove_dir_all(&settings);
 }
+
+/// A store that refuses to undo the account dialog's key write (#320): it won't save `sk-old` again and deletes
+/// nothing.
+struct RefusesUndo(MemoryCredentialStore);
+
+impl codexbar_store::credentials::CredentialStore for RefusesUndo {
+    fn read(&self, account_id: &str) -> Result<Option<String>, codexbar_store::credentials::CredentialError> {
+        self.0.read(account_id)
+    }
+
+    fn write(&self, account_id: &str, secret: &str) -> Result<(), codexbar_store::credentials::CredentialError> {
+        if secret == "sk-old" {
+            return Err(codexbar_store::credentials::CredentialError { code: 5 });
+        }
+        self.0.write(account_id, secret)
+    }
+
+    fn delete(&self, _: &str) -> Result<(), codexbar_store::credentials::CredentialError> {
+        Err(codexbar_store::credentials::CredentialError { code: 5 })
+    }
+}
+
+/// #320: the account dialog when a refused settings save can't be undone in the credential store, Light and Dark:
+/// an edited account whose previous key couldn't be put back, then a new account whose key couldn't be removed.
+/// The settings are refused by a blank name; the dashboard's provider factory builds nothing, so no request is made.
+#[test]
+#[ignore = "writes screenshots; run with CODEXBAR_CAPTURE_DIR set"]
+fn captures_refused_key_320() {
+    use codexbar_store::credentials::CredentialStore as _;
+    let Some(out) = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(PathBuf::from) else {
+        return;
+    };
+    std::fs::create_dir_all(&out).unwrap();
+    let settings = std::env::temp_dir().join(format!("codexbar-captures-320-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&settings);
+    std::fs::create_dir_all(&settings).unwrap();
+    std::fs::write(settings.join("settings.json"), SETTINGS).unwrap();
+
+    let text_system = gpui_kit::platform::current_platform(true).text_system();
+    let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(crate::assets::Assets), || {
+        gpui_kit::platform::current_headless_renderer()
+    });
+    let store = MemoryCredentialStore::default();
+    store.write("or-1", "sk-old").unwrap();
+    store.write("ms-1", "sk-ms-capture").unwrap();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+        theme::init(cx);
+        SettingsHub::init_with(cx, &settings, Arc::new(RefusesUndo(store)));
+        crate::prefs_hub::PrefsHub::init_in_memory(cx);
+        zoom::init(cx);
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+        crate::package::Updates::init(cx, false);
+        crate::package::StartupSetting::init(cx);
+    });
+    let mut dashboard = None;
+    let handle = cx
+        .open_window(size(px(1440.), px(960.)), |window, cx| {
+            let source = DataSource::Live {
+                history: Arc::new(std::sync::Mutex::new(codexbar_store::HistoryStore::in_memory(
+                    chrono::Duration::days(30),
+                ))),
+                providers: Arc::new(|_| Vec::new()),
+            };
+            let view = cx.new(|cx| Dashboard::new(source, window, cx));
+            dashboard = Some(view.clone());
+            cx.new(|cx| Root::new(view, window, cx))
+        })
+        .unwrap();
+    let handle: AnyWindowHandle = handle.into();
+    let dashboard = dashboard.unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.run_until_parked();
+    let openrouter = crate::catalog::PROVIDERS
+        .iter()
+        .position(|info| info.id == codexbar_store::settings::names::OPENROUTER)
+        .unwrap();
+    for entry in ["0-1".to_owned(), format!("0-1-{openrouter}")] {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("settings-sidebar").click(entry, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    // Each case: open the dialog, clear the name, enter a key and press Save.
+    let cases = [
+        (
+            "edit-or-1",
+            "sk-new",
+            "refused-key-not-restored",
+            "couldn't be put back",
+        ),
+        (
+            "add-OpenRouter",
+            "sk-abandoned",
+            "refused-new-key-not-removed",
+            "couldn't be removed",
+        ),
+    ];
+    for (open, key, name, says) in cases {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(open, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        for press in ["backspace", "tab", "tab"] {
+            cx.update_window(handle, |_, window, cx| window.press(press, cx))
+                .unwrap();
+            cx.run_until_parked();
+        }
+        cx.update_window(handle, |_, window, cx| window.input(key, cx)).unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("account-save", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let error = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("account-error")
+                    .and_then(|found| found.label().map(str::to_owned))
+            })
+            .unwrap()
+            .unwrap_or_default();
+        assert!(
+            error.starts_with("Every account needs a name.") && error.contains(says),
+            "{name}: {error}"
+        );
+        // Light and Dark chosen explicitly, so neither frame depends on what System resolves to.
+        for (appearance, frame) in [
+            (theme::Appearance::Light, name.to_owned()),
+            (theme::Appearance::Dark, format!("{name}-dark")),
+        ] {
+            cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, appearance));
+            cx.run_until_parked();
+            save(&mut cx, handle, &out, &frame);
+        }
+        cx.update(|cx| crate::prefs_hub::PrefsHub::set_appearance(cx, theme::Appearance::System));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("escape", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    let _ = std::fs::remove_dir_all(&settings);
+}

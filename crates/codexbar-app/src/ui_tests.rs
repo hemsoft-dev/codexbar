@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use codexbar_store::credentials::MemoryCredentialStore;
+use codexbar_store::credentials::{CredentialError, CredentialStore, MemoryCredentialStore};
 use gpui_kit::component::Root;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
@@ -1230,7 +1230,7 @@ fn open_live_with(
     cx: &mut TestAppContext,
     settings: &TempSettings,
     providers: Vec<Arc<FakeProvider>>,
-    store: MemoryCredentialStore,
+    store: impl CredentialStore + 'static,
 ) -> Entity<Dashboard> {
     let providers = providers
         .into_iter()
@@ -1252,7 +1252,7 @@ fn open_live_dyn(
     cx: &mut TestAppContext,
     settings: &TempSettings,
     providers: Vec<Arc<dyn UsageProvider>>,
-    store: MemoryCredentialStore,
+    store: impl CredentialStore + 'static,
 ) -> Entity<Dashboard> {
     let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
     open_live_factory(cx, settings, factory, store)
@@ -1263,7 +1263,7 @@ fn open_live_factory(
     cx: &mut TestAppContext,
     settings: &TempSettings,
     factory: crate::dashboard::ProviderFactory,
-    store: MemoryCredentialStore,
+    store: impl CredentialStore + 'static,
 ) -> Entity<Dashboard> {
     use codexbar_store::HistoryStore;
     cx.update(|cx| {
@@ -2767,7 +2767,7 @@ fn smart_order_re_ranks_when_held_alerts_change(cx: &mut TestAppContext) {
 fn open_settings_page(
     cx: &mut TestAppContext,
     settings: &TempSettings,
-    store: MemoryCredentialStore,
+    store: impl CredentialStore + 'static,
     page: usize,
 ) -> AnyWindowHandle {
     let dashboard = open_live_with(cx, settings, vec![], store);
@@ -3463,6 +3463,313 @@ fn secure_store_failures_are_shown_and_nothing_is_saved_without_its_key(cx: &mut
     assert!(
         saved_settings(&settings).accounts().is_empty(),
         "no account without its key"
+    );
+}
+
+// A key saved before a settings save that is then refused is put back (#320).
+
+/// A store that saves the first `writes` secrets, then refuses every write and delete, so putting a key back fails.
+struct FailsAfter {
+    inner: MemoryCredentialStore,
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+impl FailsAfter {
+    fn new(writes: usize) -> Self {
+        Self {
+            inner: MemoryCredentialStore::default(),
+            writes: std::sync::atomic::AtomicUsize::new(writes),
+        }
+    }
+}
+
+impl CredentialStore for FailsAfter {
+    fn read(&self, account_id: &str) -> Result<Option<String>, CredentialError> {
+        self.inner.read(account_id)
+    }
+
+    fn write(&self, account_id: &str, secret: &str) -> Result<(), CredentialError> {
+        use std::sync::atomic::Ordering;
+        self.writes
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1))
+            .map_err(|_| CredentialError { code: 5 })?;
+        self.inner.write(account_id, secret)
+    }
+
+    fn delete(&self, _: &str) -> Result<(), CredentialError> {
+        Err(CredentialError { code: 5 })
+    }
+}
+
+/// A store that records every id written, so a test can see what a refused save left behind. Clones share it.
+#[derive(Clone, Default)]
+struct RecordingStore {
+    inner: Arc<MemoryCredentialStore>,
+    written: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl CredentialStore for RecordingStore {
+    fn read(&self, account_id: &str) -> Result<Option<String>, CredentialError> {
+        self.inner.read(account_id)
+    }
+
+    fn write(&self, account_id: &str, secret: &str) -> Result<(), CredentialError> {
+        self.written.lock().unwrap().push(account_id.to_owned());
+        self.inner.write(account_id, secret)
+    }
+
+    fn delete(&self, account_id: &str) -> Result<(), CredentialError> {
+        self.inner.delete(account_id)
+    }
+}
+
+/// Opens an account's dialog, clears its name or types a new one, enters `key` and presses Save.
+fn edit_openrouter(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &str, name: Option<&str>, key: &str) {
+    click(cx, handle, format!("edit-{id}"));
+    match name {
+        Some(name) => type_text(cx, handle, name),
+        None => press(cx, handle, "backspace"),
+    }
+    press(cx, handle, "tab");
+    press(cx, handle, "tab");
+    type_text(cx, handle, key);
+    click(cx, handle, "account-save");
+}
+
+/// Holds the shared settings write lock, as a second CodexBar saving settings does, until dropped.
+fn hold_settings_lock(settings: &TempSettings) -> std::fs::File {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.share_mode(0);
+    }
+    let file = options.open(settings.0.join("settings.write.lock")).unwrap();
+    #[cfg(not(windows))]
+    file.try_lock().unwrap();
+    file
+}
+
+#[gpui_kit::test]
+fn a_refused_edit_keeps_the_accounts_saved_key(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-refused-key", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    add_openrouter(cx, handle, "Work", "sk-old");
+    let id = saved_settings(&settings).accounts()[0].id.clone();
+    let before = std::fs::read(settings.0.join("settings.json")).unwrap();
+
+    // Without a new key there is nothing to put back.
+    edit_openrouter(cx, handle, &id, None, "");
+    assert_eq!(
+        label(cx, handle, "account-error").as_deref(),
+        Some("Every account needs a name.")
+    );
+    assert_eq!(secret_of(cx, &id).as_deref(), Some("sk-old"));
+    press(cx, handle, "escape");
+
+    // A blank name is refused after the key was written: the old key is put back.
+    edit_openrouter(cx, handle, &id, None, "sk-new");
+    assert_eq!(
+        label(cx, handle, "account-error").as_deref(),
+        Some("Every account needs a name.")
+    );
+    assert!(exists(cx, handle, "account-save"), "the dialog stays open");
+    assert_eq!(std::fs::read(settings.0.join("settings.json")).unwrap(), before);
+    assert_eq!(secret_of(cx, &id).as_deref(), Some("sk-old"));
+    press(cx, handle, "escape");
+    assert_eq!(secret_of(cx, &id).as_deref(), Some("sk-old"), "cancelling keeps it");
+
+    // Another CodexBar holding the settings lock refuses the save too.
+    let held = hold_settings_lock(&settings);
+    edit_openrouter(cx, handle, &id, Some("Personal"), "sk-new");
+    assert_eq!(
+        label(cx, handle, "account-error").as_deref(),
+        Some("Another CodexBar window is saving settings. Try again in a moment.")
+    );
+    assert_eq!(saved_settings(&settings).accounts()[0].label, "Work");
+    assert_eq!(secret_of(cx, &id).as_deref(), Some("sk-old"));
+    press(cx, handle, "escape");
+    drop(held);
+
+    // Once the save goes through, the new key is the one saved.
+    edit_openrouter(cx, handle, &id, Some("Personal"), "sk-new");
+    assert_eq!(saved_settings(&settings).accounts()[0].label, "Personal");
+    assert_eq!(secret_of(cx, &id).as_deref(), Some("sk-new"));
+}
+
+#[gpui_kit::test]
+fn a_refused_new_account_leaves_no_key_behind(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-refused-new", "{}");
+    let store = RecordingStore::default();
+    let handle = open_settings_page(cx, &settings, store.clone(), 1);
+    click(cx, handle, "add-OpenRouter");
+    press(cx, handle, "backspace");
+    press(cx, handle, "tab");
+    press(cx, handle, "tab");
+    type_text(cx, handle, "sk-abandoned");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label(cx, handle, "account-error").as_deref(),
+        Some("Every account needs a name.")
+    );
+    press(cx, handle, "escape");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    let written = store.written.lock().unwrap().clone();
+    assert!(!written.is_empty(), "the key was written before the refusal");
+    for id in written {
+        assert_eq!(store.inner.read(&id).unwrap(), None, "nothing is left under {id}");
+    }
+}
+
+#[gpui_kit::test]
+fn a_key_that_cannot_be_put_back_is_reported(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-restore-fails", "{}");
+    // The first key and the edit's key are saved; putting the first one back is refused.
+    let handle = open_settings_page(cx, &settings, FailsAfter::new(2), 1);
+    add_openrouter(cx, handle, "Work", "sk-old");
+    let id = saved_settings(&settings).accounts()[0].id.clone();
+    edit_openrouter(cx, handle, &id, None, "sk-new");
+    let store_error = CredentialError { code: 5 }.to_string();
+    assert_eq!(
+        label(cx, handle, "account-error"),
+        Some(format!(
+            "Every account needs a name. The new key is still saved, and the previous one couldn't be put back: \
+             {store_error}"
+        ))
+    );
+    assert_eq!(
+        secret_of(cx, &id).as_deref(),
+        Some("sk-new"),
+        "the message says what is saved"
+    );
+}
+
+#[gpui_kit::test]
+fn a_new_accounts_key_that_cannot_be_removed_is_reported(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-remove-fails", "{}");
+    let handle = open_settings_page(cx, &settings, FailsAfter::new(1), 1);
+    click(cx, handle, "add-OpenRouter");
+    press(cx, handle, "backspace");
+    press(cx, handle, "tab");
+    press(cx, handle, "tab");
+    type_text(cx, handle, "sk-abandoned");
+    click(cx, handle, "account-save");
+    let store_error = CredentialError { code: 5 }.to_string();
+    assert_eq!(
+        label(cx, handle, "account-error"),
+        Some(format!(
+            "Every account needs a name. The key is still saved in {} and couldn't be removed: {store_error}",
+            codexbar_store::credentials::STORE_SHORT_NAME
+        ))
+    );
+}
+
+/// A store where another writer saves `theirs` for an account right after this one saves `mine` there.
+struct ReplacedMeanwhile {
+    inner: MemoryCredentialStore,
+    mine: &'static str,
+    theirs: &'static str,
+}
+
+impl CredentialStore for ReplacedMeanwhile {
+    fn read(&self, account_id: &str) -> Result<Option<String>, CredentialError> {
+        self.inner.read(account_id)
+    }
+
+    fn write(&self, account_id: &str, secret: &str) -> Result<(), CredentialError> {
+        let secret = if secret == self.mine { self.theirs } else { secret };
+        self.inner.write(account_id, secret)
+    }
+
+    fn delete(&self, account_id: &str) -> Result<(), CredentialError> {
+        self.inner.delete(account_id)
+    }
+}
+
+#[gpui_kit::test]
+fn a_key_another_writer_saved_meanwhile_is_not_rolled_back(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-refused-newer", "{}");
+    let store = ReplacedMeanwhile {
+        inner: MemoryCredentialStore::default(),
+        mine: "sk-mine",
+        theirs: "sk-theirs",
+    };
+    let handle = open_settings_page(cx, &settings, store, 1);
+    add_openrouter(cx, handle, "Work", "sk-old");
+    let id = saved_settings(&settings).accounts()[0].id.clone();
+    edit_openrouter(cx, handle, &id, None, "sk-mine");
+    assert_eq!(
+        label(cx, handle, "account-error").as_deref(),
+        Some("Every account needs a name.")
+    );
+    assert_eq!(
+        secret_of(cx, &id).as_deref(),
+        Some("sk-theirs"),
+        "the newer key is left alone"
+    );
+}
+
+#[gpui_kit::test]
+fn a_refused_cookie_leaves_a_signed_out_opencode_account_without_one(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-refused-cookie-signed-out",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth", "workspaceId": "wrk_01ABC" } ] }"#,
+    );
+    let handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    let held = hold_settings_lock(&settings);
+    click(cx, handle, "edit-oc-1");
+    choose_browser_session(cx, handle);
+    press(cx, handle, "tab");
+    type_text(cx, handle, "Fe26.2**new-cookie");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("Another CodexBar window is saving settings. Try again in a moment.")
+    );
+    drop(held);
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "oc-1"));
+    assert_eq!(stored.unwrap(), None, "the signed-out account keeps no cookie");
+}
+
+#[gpui_kit::test]
+fn a_refused_cookie_gives_an_opencode_account_its_sign_in_back(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "opencode-refused-cookie",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "oc-1", "providerId": "OpenCodeGo", "displayLabel": "Team", "enabled": true,
+              "authenticationMethod": "OAuth", "workspaceId": "wrk_01ABC", "externalAccountId": "usr_1" } ] }"#,
+    );
+    let handle = open_opencode_accounts(cx, &settings, &FakeOpenCode::default());
+    let sign_in = opencode_fixture::credential("wrk_01ABC", "usr_1").to_secret();
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(SettingsHub::global(cx).credentials().as_ref(), "oc-1", &sign_in)
+    })
+    .unwrap();
+    let held = hold_settings_lock(&settings);
+    click(cx, handle, "edit-oc-1");
+    choose_browser_session(cx, handle);
+    press(cx, handle, "tab");
+    type_text(cx, handle, "Fe26.2**new-cookie");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("Another CodexBar window is saving settings. Try again in a moment.")
+    );
+    drop(held);
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].method,
+        codexbar_store::settings::AuthMethod::OAuth
+    );
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "oc-1"));
+    assert_eq!(
+        stored.unwrap().as_deref(),
+        Some(sign_in.as_str()),
+        "the OAuth sign-in is back"
     );
 }
 
