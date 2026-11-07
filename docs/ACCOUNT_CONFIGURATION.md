@@ -13,7 +13,7 @@ account in again with another identity replaces it without asking (see
 | Field | Meaning |
 | --- | --- |
 | `id` | Stable id (32 hex digits for accounts CodexBar creates) |
-| `providerId` | `Codex`, `Claude`, `Copilot`, `Cursor`, `OpenRouter`, `OpenCodeGo`, `OpenCodeZen`, `Moonshot`, `Greptile`, `GitHubBilling`, `Gemini`, `Grok` or `XSubscription` |
+| `providerId` | `Codex`, `Claude`, `Copilot`, `Cursor`, `OpenRouter`, `OpenCodeGo`, `OpenCodeZen`, `Moonshot`, `Greptile`, `GitHubBilling`, `Gemini`, `Grok`, `XSubscription` or `MuseCode` |
 | `displayLabel` | The account's name |
 | `enabled` | Whether it is fetched and shown |
 | `authenticationMethod` | `Automatic`, `ApiKey`, `CommandLine`, `OAuth` or `BrowserSession` (see below) |
@@ -45,10 +45,11 @@ the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.m
 | X Subscription | Automatic (the Grok CLI's own sign-in and the Cursor app's) | (experimental; see [X_SUBSCRIPTION.md](X_SUBSCRIPTION.md)) |
 | Gemini | | Connect Antigravity through its shared local CLI sign-in and default browser; previously saved Gemini Apps sessions remain separate (experimental) |
 | OpenCode Go / Zen | Browser session (a copied dashboard cookie) | OAuth (OpenCode Go): OpenCode's device approval in the browser, sign-in kept by CodexBar |
+| Muse Code | Command line (the Muse CLI's existing session, read with `muse usage --json`; one account) | (see [MUSE_CODE.md](MUSE_CODE.md)) |
 
 Accounts CodexBar signs in show **Sign in…**, **Sign in again…** and **Sign out**
 in Settings. [OAUTH.md](OAUTH.md) explains each one. Several accounts can be added
-for every provider except OpenCode Zen; OpenCode Go takes one OAuth account per
+for every provider except OpenCode Zen, X Subscription and Muse Code; OpenCode Go takes one OAuth account per
 workspace. Adding the first account CodexBar signs in
 for Codex, Claude or Cursor keeps the provider's own sign-in as an account of its
 own, so it doesn't disappear.
