@@ -449,6 +449,22 @@ mod tests {
     }
 
     #[test]
+    fn refused_memory_store_operations_leave_saved_secrets_unchanged() {
+        let mut store = MemoryCredentialStore::default();
+        store.write("existing", "before").unwrap();
+        store.fail = true;
+
+        assert_eq!(store.read("existing").unwrap_err().code, 5);
+        assert_eq!(store.write("existing", "after").unwrap_err().code, 5);
+        assert_eq!(store.write("new", "abandoned").unwrap_err().code, 5);
+        assert_eq!(store.delete("existing").unwrap_err().code, 5);
+
+        store.fail = false;
+        assert_eq!(store.read("existing").unwrap().as_deref(), Some("before"));
+        assert_eq!(store.read("new").unwrap(), None);
+    }
+
+    #[test]
     fn memory_store_add_replace_read_delete() {
         let store = MemoryCredentialStore::default();
         assert_eq!(store.read("a").unwrap(), None);
