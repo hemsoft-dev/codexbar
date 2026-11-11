@@ -59,3 +59,17 @@ fn cli_login_failures_discard_credential_bearing_messages() {
         assert_private(&error);
     }
 }
+
+#[test]
+fn malformed_login_start_discards_credential_bearing_payload() {
+    let (tx, rx) = channel();
+    // A missing URL must reject the whole response without echoing its other fields.
+    tx.send(json!({"id":1,"result":{"loginId":SECRET,"error":format!("code={SECRET}")}}))
+        .unwrap();
+    let result = AppServer::over(Box::new(Sink), rx).begin_sign_in();
+    let Err(error) = result else {
+        panic!("malformed login start was accepted")
+    };
+    assert_eq!(error, AppServerError::Failed);
+    assert_private(&error);
+}
