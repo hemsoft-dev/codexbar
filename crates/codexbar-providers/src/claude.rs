@@ -658,7 +658,10 @@ fn windows(json: &Value, now: DateTime<Utc>) -> Vec<Metric> {
             _ => continue,
         };
         let (Some(percent), Some(resets_at)) = (
-            limit.get("percent").and_then(Value::as_f64),
+            limit
+                .get("percent")
+                .and_then(Value::as_f64)
+                .filter(|percent| *percent >= 0.0),
             reset(limit.get("resets_at")),
         ) else {
             continue;
@@ -691,7 +694,10 @@ fn windows(json: &Value, now: DateTime<Utc>) -> Vec<Metric> {
         }
         let window = keys.iter().find_map(|key| {
             let value = json.get(*key)?;
-            Some((value.get("utilization")?.as_f64()?, reset(value.get("resets_at"))?))
+            Some((
+                value.get("utilization")?.as_f64().filter(|percent| *percent >= 0.0)?,
+                reset(value.get("resets_at"))?,
+            ))
         });
         if let Some((percent, resets_at)) = window {
             found.push(Window {

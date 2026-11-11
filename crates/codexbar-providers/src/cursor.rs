@@ -153,7 +153,8 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
     ]
     .iter()
     .filter_map(|(key, label)| {
-        let used = (plan.get(*key)?.as_f64()? / 100.0).clamp(0.0, 1.0);
+        let percent = plan.get(*key)?.as_f64().filter(|percent| *percent >= 0.0)?;
+        let used = (percent / 100.0).clamp(0.0, 1.0);
         Some(Metric::Window {
             label: (*label).to_owned(),
             used,

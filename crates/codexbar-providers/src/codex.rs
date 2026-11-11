@@ -224,7 +224,7 @@ struct Window {
 
 impl Window {
     fn from_json(value: &Value) -> Option<Self> {
-        let used = value.get("used_percent")?.as_f64()?;
+        let used = value.get("used_percent")?.as_f64().filter(|percent| *percent >= 0.0)?;
         let resets_at = Utc.timestamp_opt(value.get("reset_at")?.as_i64()?, 0).single()?;
         // An implausible length, even one too large to be a duration, drops the window rather than panicking (#226).
         let duration_secs = value
