@@ -3,7 +3,7 @@
 //! and goes on writing that home's `auth.json`. CodexBar never holds a Codex client id and never writes the file.
 //!
 //! Each session starts one app-server for one home (`CODEX_HOME`), asks one thing and ends it. Messages are JSON, one
-//! per line, without the `jsonrpc` field. Errors never carry tokens: only Codex's short error text is kept.
+//! per line, without the `jsonrpc` field. CLI error text is discarded because it can contain credentials.
 
 use std::io::{BufReader, Write as _};
 use std::path::{Path, PathBuf};
@@ -23,8 +23,6 @@ const POLL: Duration = Duration::from_millis(200);
 /// How long a completion may still arrive after Codex answered a cancel: Codex answers the cancel before the
 /// sign-in task it stops publishes its own completion.
 const AFTER_CANCEL: Duration = Duration::from_secs(2);
-/// Longest error text kept from Codex.
-const MAX_ERROR: usize = 200;
 
 /// Why a session with Codex failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,7 +33,7 @@ pub enum AppServerError {
     Failed,
     TimedOut,
     Cancelled,
-    /// Codex answered with an error, or the sign-in didn't complete. Codex's own short message.
+    /// Codex answered with an error, or the sign-in didn't complete. Only locally defined messages are used.
     Refused(String),
 }
 
@@ -158,7 +156,7 @@ impl AppServer {
             let message = self.next_message(deadline)?;
             if message.get("id").and_then(Value::as_u64) == Some(id) && message.get("method").is_none() {
                 return match message.get("error") {
-                    Some(error) => Err(refused(error.get("message"))),
+                    Some(_) => Err(refused()),
                     None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
                 };
             }
@@ -266,10 +264,7 @@ impl SignIn {
                 if params.get("success").and_then(Value::as_bool) == Some(true) {
                     Ok(())
                 } else {
-                    Err(match params.get("error") {
-                        Some(error) if error.is_string() => refused(Some(error)),
-                        _ => AppServerError::Refused("The sign-in didn't complete.".to_owned()),
-                    })
+                    Err(AppServerError::Refused("The sign-in didn't complete.".to_owned()))
                 }
             }
             Err(err) => Err(err),
@@ -277,16 +272,8 @@ impl SignIn {
     }
 }
 
-fn refused(message: Option<&Value>) -> AppServerError {
-    let text = message
-        .and_then(Value::as_str)
-        .unwrap_or("The request was refused.")
-        .trim();
-    let mut text: String = text.chars().take(MAX_ERROR).collect();
-    if text.is_empty() {
-        text = "The request was refused.".to_owned();
-    }
-    AppServerError::Refused(text)
+fn refused() -> AppServerError {
+    AppServerError::Refused("The request was refused.".to_owned())
 }
 
 /// Reads JSON lines until the app-server exits. Lines that aren't JSON (none are expected) are skipped.
@@ -416,7 +403,7 @@ mod tests {
         });
         assert_eq!(
             refused_server.renew(),
-            Err(AppServerError::Refused("refresh token expired".to_owned()))
+            Err(AppServerError::Refused("The request was refused.".to_owned()))
         );
     }
 
@@ -465,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_browser_sign_in_reports_codex_s_reason() {
+    fn a_failed_browser_sign_in_reports_a_local_message() {
         let failed = json!({"method": "account/login/completed",
             "params": {"loginId": "login-1", "success": false, "error": "Login was cancelled in the browser"}});
         let (server, _) = sign_in_server(Some(failed));
@@ -475,7 +462,7 @@ mod tests {
             .finish(Duration::from_secs(5), &AtomicBool::new(false));
         assert_eq!(
             result,
-            Err(AppServerError::Refused("Login was cancelled in the browser".to_owned()))
+            Err(AppServerError::Refused("The sign-in didn't complete.".to_owned()))
         );
     }
 
@@ -560,16 +547,9 @@ mod tests {
     }
 
     #[test]
-    fn errors_are_short_and_never_echo_more_than_codex_s_message() {
-        let long = "x".repeat(500);
-        let error = refused(Some(&json!(long)));
-        assert!(matches!(&error, AppServerError::Refused(text) if text.len() == MAX_ERROR));
+    fn refused_requests_use_a_local_message() {
         assert_eq!(
-            refused(Some(&json!("  "))),
-            AppServerError::Refused("The request was refused.".to_owned())
-        );
-        assert_eq!(
-            refused(None),
+            refused(),
             AppServerError::Refused("The request was refused.".to_owned())
         );
     }
