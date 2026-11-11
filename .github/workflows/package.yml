@@ -99,6 +99,10 @@ jobs:
 
       - name: Install Linux build dependencies
         run: |
+          # Keep the image's Canonical mirrors when the preferred Azure mirror cannot resolve (#335).
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '\|azure\.archive\.ubuntu\.com|d' /etc/apt/apt-mirrors.txt
+          fi
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libfreetype-dev libxcb1-dev libx11-xcb-dev \
