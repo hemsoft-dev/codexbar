@@ -82,13 +82,16 @@ pub fn prefs_dir() -> Option<PathBuf> {
     std::env::var_os("CODEXBAR_CAPTURE_DIR").map(|dir| PathBuf::from(dir).join("prefs"))
 }
 
-/// True when `dir` is the real settings folder, however it is spelled. A folder that doesn't exist yet can't be it.
+/// True when `dir` is a real settings folder, however it is spelled: the one this process uses, or the profile's own
+/// `.codexbar` when `CODEXBAR_SETTINGS_DIR` points this process elsewhere. A folder that doesn't exist yet can't be
+/// either.
 fn is_settings_dir(dir: &std::path::Path) -> bool {
-    let settings = codexbar_store::settings::Settings::default_dir();
-    match (std::fs::canonicalize(dir), std::fs::canonicalize(&settings)) {
+    let same = |settings: &std::path::Path| match (std::fs::canonicalize(dir), std::fs::canonicalize(settings)) {
         (Ok(dir), Ok(settings)) => dir == settings,
         _ => dir == settings,
-    }
+    };
+    let profile = codexbar_core::home_dir().map(|home| home.join(".codexbar"));
+    same(&codexbar_store::settings::Settings::default_dir()) || profile.is_some_and(|profile| same(&profile))
 }
 
 async fn settle(cx: &mut AsyncApp) {

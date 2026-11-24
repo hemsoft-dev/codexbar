@@ -187,36 +187,52 @@ pub struct Edges {
     pub bottom: i32,
 }
 
-/// The normal rectangle that gives the window `wanted`'s content size, from its normal rectangle and content bounds
-/// now, at the display's `scale`. Only the size is corrected, and only when the window is where it was saved (within
-/// a logical pixel): a window GPUI placed elsewhere (its own fallback for bounds it judged off the display) is left
-/// where it is, so settling never moves it onto another display. `None` when there is nothing to correct. The frame
-/// around the content (its borders and shadow) keeps the size it has now.
+/// Where settling can put a window: its saved bounds, or, where those would take it onto another display, its saved
+/// size where it is now (`None` when its size is already right).
 #[cfg(any(windows, test))]
-pub fn settled_normal(normal: Edges, now: Bounds<Pixels>, wanted: Bounds<Pixels>, scale: f32) -> Option<Edges> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settled {
+    pub at_saved: Edges,
+    pub in_place: Option<Edges>,
+}
+
+/// The normal rectangles that give the window `wanted` as its content bounds, from its normal rectangle and content
+/// bounds now, at the display's `scale`; `None` when it already has them (within a logical pixel). GPUI can have put
+/// it elsewhere: it centers a window whose saved bounds have their center off the display, though CodexBar keeps
+/// bounds whose title bar is still on it. The frame around the content (its borders and shadow) keeps the size it
+/// has now.
+#[cfg(any(windows, test))]
+pub fn settled_normal(normal: Edges, now: Bounds<Pixels>, wanted: Bounds<Pixels>, scale: f32) -> Option<Settled> {
     let close = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() < 1.;
-    if !close(now.origin.x, wanted.origin.x) || !close(now.origin.y, wanted.origin.y) {
-        return None;
-    }
-    if close(now.size.width, wanted.size.width) && close(now.size.height, wanted.size.height) {
+    let same_size = close(now.size.width, wanted.size.width) && close(now.size.height, wanted.size.height);
+    if same_size && close(now.origin.x, wanted.origin.x) && close(now.origin.y, wanted.origin.y) {
         return None;
     }
     let physical = |value: Pixels| (f32::from(value) * scale).round() as i32;
-    let frame_right = normal.right - physical(now.origin.x + now.size.width);
-    let frame_bottom = normal.bottom - physical(now.origin.y + now.size.height);
-    Some(Edges {
-        left: normal.left,
-        top: normal.top,
-        right: physical(now.origin.x + wanted.size.width) + frame_right,
-        bottom: physical(now.origin.y + wanted.size.height) + frame_bottom,
+    let frame = Edges {
+        left: physical(now.origin.x) - normal.left,
+        top: physical(now.origin.y) - normal.top,
+        right: normal.right - physical(now.origin.x + now.size.width),
+        bottom: normal.bottom - physical(now.origin.y + now.size.height),
+    };
+    let around = |origin: gpui_kit::Point<Pixels>| Edges {
+        left: physical(origin.x) - frame.left,
+        top: physical(origin.y) - frame.top,
+        right: physical(origin.x + wanted.size.width) + frame.right,
+        bottom: physical(origin.y + wanted.size.height) + frame.bottom,
+    };
+    Some(Settled {
+        at_saved: around(wanted.origin),
+        in_place: (!same_size).then(|| around(now.origin)),
     })
 }
 
 /// Gives a restored window the bounds it was saved with (#336). GPUI turns the saved bounds into the display's
 /// pixels, but the window is created on the primary display; when it then moves to a display with another scale,
 /// Windows scales it once more, so on a 175% display beside a 100% one it opened 1.75 times too large, and larger at
-/// every start. Called once the window is on its display, so nothing scales it again. The placement is applied from a
-/// task, never while `App` is borrowed: Windows sends the window's move and size messages before `SetWindowPlacement`
+/// every start. Called once the window is on its display, so nothing scales it again. It also restores saved bounds
+/// GPUI replaced with its own centered ones (a window left partly past a display's outer edge). The placement is
+/// applied from a task, never while `App` is borrowed: Windows sends the window's move and size messages before `SetWindowPlacement`
 /// returns, and GPUI's handlers for them update the app.
 /// With nothing saved, the window opened at its default bounds and there is nothing to settle.
 #[cfg(windows)]
@@ -253,7 +269,34 @@ pub fn settle(window: &Window, restored: Option<&Restored>, cx: &App) {
     };
     cx.foreground_executor()
         .spawn(async move {
+            use windows::Win32::Graphics::Gdi::{
+                MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MonitorFromRect, MonitorFromWindow,
+            };
             use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, SW_HIDE};
+            let rect = |edges: Edges| RECT {
+                left: edges.left,
+                top: edges.top,
+                right: edges.right,
+                bottom: edges.bottom,
+            };
+            // The saved bounds, unless most of them lie on another display: Windows would move the window there and
+            // scale it to that display, which is what settling undoes. Then just the saved size, where it is.
+            let saved = rect(settled.at_saved);
+            // SAFETY: plain monitor lookups for this window's handle and a rectangle on the stack.
+            let (on, home) = unsafe {
+                (
+                    MonitorFromRect(&saved, MONITOR_DEFAULTTONULL),
+                    MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                )
+            };
+            let target = if on.is_invalid() || on == home {
+                Some(saved)
+            } else {
+                settled.in_place.map(rect)
+            };
+            let Some(target) = target else {
+                return;
+            };
             // Read again: startup may have hidden the window (a start with Windows) since `settle` was called.
             let mut placement = WINDOWPLACEMENT {
                 length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
@@ -263,12 +306,7 @@ pub fn settle(window: &Window, restored: Option<&Restored>, cx: &App) {
             if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_err() {
                 return;
             }
-            placement.rcNormalPosition = RECT {
-                left: settled.left,
-                top: settled.top,
-                right: settled.right,
-                bottom: settled.bottom,
-            };
+            placement.rcNormalPosition = target;
             // A hidden window stays hidden (its maximized state is kept for when it shows); a shown one keeps the
             // state read back, so a maximized window stays maximized.
             // SAFETY: `hwnd` is this window's handle.
@@ -493,15 +531,15 @@ mod tests {
         let now = content(3675. / 1.75, 167. / 1.75, 3062. / 1.75, 2144. / 1.75);
         let wanted = content(3675. / 1.75, 167. / 1.75, 1000., 700.);
         let settled = settled_normal(normal, now, wanted, 1.75).unwrap();
-        assert_eq!(
-            settled,
-            Edges {
-                left: 3667,
-                top: 136,
-                right: 3675 + 1750 + 8,
-                bottom: 167 + 1225 + 8,
-            }
-        );
+        let expected = Edges {
+            left: 3667,
+            top: 136,
+            right: 3675 + 1750 + 8,
+            bottom: 167 + 1225 + 8,
+        };
+        // At its saved origin already, so both choices are the same rectangle.
+        assert_eq!(settled.at_saved, expected);
+        assert_eq!(settled.in_place, Some(expected));
     }
 
     #[test]
@@ -516,10 +554,10 @@ mod tests {
         assert_eq!(settled_normal(normal, bounds, bounds, 1.), None);
     }
 
-    // GPUI centers a window whose saved bounds it judges off the display; settling must not move it back across a
-    // display boundary, even when its size is off too.
+    // GPUI centers a window whose saved bounds have their center off the display. Settling offers the saved bounds
+    // back, and the saved size where the window is for when the saved bounds lie mostly on another display.
     #[test]
-    fn a_window_gpui_placed_elsewhere_is_left_where_it_is() {
+    fn a_window_gpui_placed_elsewhere_can_go_back_or_keep_its_place() {
         let normal = Edges {
             left: 0,
             top: 0,
@@ -528,7 +566,47 @@ mod tests {
         };
         let now = content(8., 31., 1750., 1200.);
         let wanted = content(208., 131., 1000., 700.);
-        assert_eq!(settled_normal(normal, now, wanted, 1.), None);
+        assert_eq!(
+            settled_normal(normal, now, wanted, 1.),
+            Some(Settled {
+                at_saved: Edges {
+                    left: 200,
+                    top: 100,
+                    right: 1216,
+                    bottom: 839,
+                },
+                in_place: Some(Edges {
+                    left: 0,
+                    top: 0,
+                    right: 1016,
+                    bottom: 739,
+                }),
+            })
+        );
+    }
+
+    // Only the origin is off: the saved bounds come back, and there is no size to correct in place.
+    #[test]
+    fn a_window_at_its_saved_size_elsewhere_only_moves_back() {
+        let normal = Edges {
+            left: 0,
+            top: 0,
+            right: 1016,
+            bottom: 739,
+        };
+        let now = content(8., 31., 1000., 700.);
+        let wanted = content(208., 131., 1000., 700.);
+        let settled = settled_normal(normal, now, wanted, 1.).unwrap();
+        assert_eq!(settled.in_place, None);
+        assert_eq!(
+            settled.at_saved,
+            Edges {
+                left: 200,
+                top: 100,
+                right: 1216,
+                bottom: 839,
+            }
+        );
     }
 
     fn args(list: &[&str]) -> Vec<String> {
