@@ -4,6 +4,7 @@
 //! so the user doesn't have to find a terminal and type the command. Nothing starts without a click.
 
 use std::path::PathBuf;
+use std::process::Command;
 
 /// A CLI whose own sign-in an account can use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,85 +83,120 @@ pub struct SignInWindow(Window);
 
 enum Window {
     Console(crate::contained::Contained),
-    Claude(Option<crate::claude_cli::LoginWindow>),
+    Claude(crate::claude_cli::LoginWindow),
 }
 
 impl SignInWindow {
     /// Opens `cli`'s sign-in in a console window of its own.
     pub fn open(cli: Cli) -> Result<Self, CliSignInError> {
         if cli == Cli::Claude {
-            // Claude Code's own folder, with its environment set the way CodexBar reads it (claude_cli).
-            return crate::claude_cli::LoginWindow::open(&crate::claude::default_config_dir())
-                .map(|window| Self(Window::Claude(Some(window))))
-                .map_err(|err| match err {
-                    crate::claude_cli::ClaudeCliError::NotInstalled => CliSignInError::NotInstalled,
-                    other => CliSignInError::Start(other.to_string()),
-                });
+            return open_claude();
         }
         let program = program(cli).ok_or(CliSignInError::NotInstalled)?;
-        let mut command = crate::platform::command(&program);
-        command.args(args(cli));
-        // CodexBar's working folder, which the terminal (macOS and Linux) otherwise wouldn't start in: a relative
-        // program or profile path then resolves where CodexBar's refresh resolves it.
-        if let Ok(folder) = std::env::current_dir() {
-            command.current_dir(folder);
-        }
-        // The profile CodexBar reads, set on the command itself: a console started through a terminal (macOS and
-        // Linux) gets only what is set here, and would otherwise sign in whatever profile the terminal points at.
-        for (name, value) in profile(cli) {
-            command.env(name, value);
-        }
-        if cli == Cli::GitHub {
-            // A token in CodexBar's environment would make `gh` act as that token instead of signing in.
-            for name in [
-                "GH_TOKEN",
-                "GITHUB_TOKEN",
-                "GH_ENTERPRISE_TOKEN",
-                "GITHUB_ENTERPRISE_TOKEN",
-            ] {
-                command.env_remove(name);
-            }
-        }
+        let mut command = command_for(cli, &program, profile(cli));
         crate::contained::spawn_console(&mut command)
             .map(|process| Self(Window::Console(process)))
-            .map_err(|err| match err.kind() {
-                std::io::ErrorKind::NotFound => CliSignInError::NotInstalled,
-                _ => CliSignInError::Start(err.to_string()),
-            })
+            .map_err(start_error)
     }
 
     /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success.
     pub fn finish(
-        mut self,
+        self,
         timeout: std::time::Duration,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> Result<(), CliSignInError> {
-        match &mut self.0 {
-            Window::Claude(window) => {
-                let Some(window) = window.take() else {
-                    return Err(CliSignInError::Failed);
-                };
-                window.finish(timeout, cancel).map_err(|_| CliSignInError::Failed)
-            }
-            Window::Console(process) => {
-                let deadline = std::time::Instant::now() + timeout;
-                loop {
-                    if cancel.load(std::sync::atomic::Ordering::SeqCst) || std::time::Instant::now() >= deadline {
+        match self.0 {
+            Window::Claude(window) => window.finish(timeout, cancel).map_err(|_| CliSignInError::Failed),
+            Window::Console(mut process) => wait_for(
+                |ask| match ask {
+                    Ask::Poll => process
+                        .child
+                        .try_wait()
+                        .map(|status| status.map(|status| status.success())),
+                    Ask::Stop => {
                         let _ = process.child.kill();
-                        let _ = process.child.wait();
-                        return Err(CliSignInError::Failed);
+                        process.child.wait().map(|_| None)
                     }
-                    match process.child.try_wait() {
-                        Ok(Some(status)) if status.success() => return Ok(()),
-                        Ok(Some(_)) | Err(_) => return Err(CliSignInError::Failed),
-                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(250)),
-                    }
-                }
-            }
+                },
+                timeout,
+                cancel,
+                std::time::Duration::from_millis(250),
+            ),
         }
     }
 }
 
+/// Claude Code's sign-in for its own folder, with its environment set the way CodexBar reads it (`claude_cli`).
+fn open_claude() -> Result<SignInWindow, CliSignInError> {
+    crate::claude_cli::LoginWindow::open(&crate::claude::default_config_dir())
+        .map(|window| SignInWindow(Window::Claude(window)))
+        .map_err(|err| match err {
+            crate::claude_cli::ClaudeCliError::NotInstalled => CliSignInError::NotInstalled,
+            other => CliSignInError::Start(other.to_string()),
+        })
+}
+
+/// `cli`'s sign-in command for `program`, set up to sign in `profile`.
+fn command_for(cli: Cli, program: &std::path::Path, profile: Vec<(&'static str, std::ffi::OsString)>) -> Command {
+    let mut command = crate::platform::command(program);
+    command.args(args(cli));
+    // CodexBar's working folder, which the terminal (macOS and Linux) otherwise wouldn't start in: a relative program
+    // or profile path then resolves where CodexBar's refresh resolves it.
+    crate::platform::in_working_folder(&mut command);
+    // The profile CodexBar reads, set on the command itself: a console started through a terminal (macOS and Linux)
+    // gets only what is set here, and would otherwise sign in whatever profile the terminal points at.
+    command.envs(profile);
+    if cli == Cli::GitHub {
+        // A token in CodexBar's environment would make `gh` act as that token instead of signing in.
+        for name in [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+        ] {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
+/// Why a console couldn't start.
+fn start_error(err: std::io::Error) -> CliSignInError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => CliSignInError::NotInstalled,
+        _ => CliSignInError::Start(err.to_string()),
+    }
+}
+
+/// What the waiting loop asks of the running CLI.
+enum Ask {
+    /// Whether it has exited, and if so whether it succeeded.
+    Poll,
+    /// Stop it.
+    Stop,
+}
+
+/// Waits for a CLI's console: Ok when it exits successfully; a failed exit, an error, cancellation or the timeout
+/// (which stop it) are all a sign-in that didn't finish.
+fn wait_for(
+    mut cli: impl FnMut(Ask) -> std::io::Result<Option<bool>>,
+    timeout: std::time::Duration,
+    cancel: &std::sync::atomic::AtomicBool,
+    every: std::time::Duration,
+) -> Result<(), CliSignInError> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if cancel.load(std::sync::atomic::Ordering::SeqCst) || std::time::Instant::now() >= deadline {
+            let _ = cli(Ask::Stop);
+            return Err(CliSignInError::Failed);
+        }
+        match cli(Ask::Poll) {
+            Ok(Some(true)) => return Ok(()),
+            Ok(Some(false)) | Err(_) => return Err(CliSignInError::Failed),
+            Ok(None) => std::thread::sleep(every),
+        }
+    }
+}
 /// The CLI's arguments for signing in.
 fn args(cli: Cli) -> &'static [&'static str] {
     match cli {
@@ -328,6 +364,104 @@ mod tests {
         assert!(made.ends_with("relative-profile"));
         let already = std::env::temp_dir().join("profile").into_os_string();
         assert_eq!(absolute(already.clone()), already);
+    }
+
+    #[test]
+    fn the_github_cli_sign_in_runs_in_codexbar_s_folder_with_its_profile_and_no_token() {
+        let profile = vec![("GH_CONFIG_DIR", std::ffi::OsString::from("gh-profile"))];
+        let command = command_for(Cli::GitHub, std::path::Path::new("gh"), profile);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["auth", "login", "--web", "--hostname", "github.com"]
+        );
+        assert_eq!(command.get_current_dir(), std::env::current_dir().ok().as_deref());
+        let envs: std::collections::HashMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            envs.get(std::ffi::OsStr::new("GH_CONFIG_DIR")),
+            Some(&Some(std::ffi::OsStr::new("gh-profile")))
+        );
+        for token in [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+        ] {
+            assert_eq!(envs.get(std::ffi::OsStr::new(token)), Some(&None), "{token} is removed");
+        }
+    }
+
+    #[test]
+    fn the_codex_sign_in_keeps_the_environment_s_tokens() {
+        let command = command_for(Cli::Codex, std::path::Path::new("codex"), Vec::new());
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["login"]);
+        assert!(command.get_envs().next().is_none(), "nothing set or removed");
+    }
+
+    #[test]
+    fn a_console_that_cant_start_says_whether_the_cli_is_missing() {
+        assert_eq!(
+            start_error(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            CliSignInError::NotInstalled
+        );
+        assert!(matches!(
+            start_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            CliSignInError::Start(_)
+        ));
+    }
+
+    /// Runs `wait_for` over the answers a CLI gives to each poll, returning its result and whether it was stopped.
+    fn wait(
+        answers: Vec<std::io::Result<Option<bool>>>,
+        timeout: std::time::Duration,
+        cancel: bool,
+    ) -> (Result<(), CliSignInError>, bool) {
+        let mut answers = answers.into_iter();
+        let mut stopped = false;
+        let cancel = std::sync::atomic::AtomicBool::new(cancel);
+        let result = wait_for(
+            |ask| match ask {
+                Ask::Poll => answers.next().unwrap_or(Ok(None)),
+                Ask::Stop => {
+                    stopped = true;
+                    Ok(None)
+                }
+            },
+            timeout,
+            &cancel,
+            std::time::Duration::ZERO,
+        );
+        (result, stopped)
+    }
+
+    #[test]
+    fn a_cli_that_exits_successfully_signed_in() {
+        let long = std::time::Duration::from_secs(60);
+        assert_eq!(wait(vec![Ok(None), Ok(Some(true))], long, false), (Ok(()), false));
+    }
+
+    #[test]
+    fn a_failed_exit_or_an_error_didn_t_sign_in() {
+        let long = std::time::Duration::from_secs(60);
+        assert_eq!(
+            wait(vec![Ok(Some(false))], long, false),
+            (Err(CliSignInError::Failed), false)
+        );
+        assert_eq!(
+            wait(vec![Err(std::io::Error::other("gone"))], long, false),
+            (Err(CliSignInError::Failed), false)
+        );
+    }
+
+    #[test]
+    fn cancelling_or_timing_out_stops_the_cli() {
+        assert_eq!(
+            wait(Vec::new(), std::time::Duration::from_secs(60), true),
+            (Err(CliSignInError::Failed), true)
+        );
+        assert_eq!(
+            wait(Vec::new(), std::time::Duration::ZERO, false),
+            (Err(CliSignInError::Failed), true)
+        );
     }
 
     #[test]

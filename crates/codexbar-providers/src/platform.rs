@@ -66,6 +66,14 @@ pub fn program_in(dir: &Path, name: &str) -> Option<PathBuf> {
     find_in(name, &[dir.to_owned()])
 }
 
+/// Starts `command` in CodexBar's own working folder, when it has one: a console started through a terminal (macOS and
+/// Linux) otherwise starts wherever the terminal does, and a relative program or profile path resolves there (#337).
+pub(crate) fn in_working_folder(command: &mut std::process::Command) {
+    if let Ok(folder) = std::env::current_dir() {
+        command.current_dir(folder);
+    }
+}
+
 /// A command for the CLI `program`, a path or a bare name. On macOS and Linux a bare name is looked up like
 /// `find_program`, and the CLI's PATH gains its own folder and the usual install folders: an npm-installed CLI is a
 /// `#!/usr/bin/env node` script, and a macOS app's PATH doesn't reach `node` (#161). Windows starts it as before.
