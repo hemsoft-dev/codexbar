@@ -67,11 +67,28 @@ pub fn prefs_dir() -> Option<PathBuf> {
     if !crate::is_demo() {
         return None;
     }
-    // A demo run by hand for desktop evidence (#336) keeps its preferences, and so its window placement, here.
+    // A demo run by hand for desktop evidence (#336) keeps its preferences, and so its window placement, here. Never
+    // in the real settings folder, whose dashboard.json it would overwrite.
     if let Some(dir) = std::env::var_os("CODEXBAR_DEMO_PREFS").filter(|dir| !dir.is_empty()) {
-        return Some(PathBuf::from(dir));
+        let dir = PathBuf::from(dir);
+        if is_settings_dir(&dir) {
+            eprintln!(
+                "codexbar: CODEXBAR_DEMO_PREFS can't be the settings folder; the demo keeps its preferences in memory"
+            );
+            return None;
+        }
+        return Some(dir);
     }
     std::env::var_os("CODEXBAR_CAPTURE_DIR").map(|dir| PathBuf::from(dir).join("prefs"))
+}
+
+/// True when `dir` is the real settings folder, however it is spelled. A folder that doesn't exist yet can't be it.
+fn is_settings_dir(dir: &std::path::Path) -> bool {
+    let settings = codexbar_store::settings::Settings::default_dir();
+    match (std::fs::canonicalize(dir), std::fs::canonicalize(&settings)) {
+        (Ok(dir), Ok(settings)) => dir == settings,
+        _ => dir == settings,
+    }
 }
 
 async fn settle(cx: &mut AsyncApp) {
