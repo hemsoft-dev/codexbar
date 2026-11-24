@@ -57,9 +57,11 @@ pub fn help(info: &ProviderInfo, record: Option<&AccountRecord>) -> Option<Help>
     }
 }
 
-/// Providers CodexBar can sign in itself, besides their CLI's or app's own sign-in.
+/// Providers CodexBar can sign in itself, besides their CLI's or app's own sign-in. Cursor's needs Windows or Linux:
+/// on macOS its sign-in reports itself unsupported.
 fn has_own_sign_in(provider: &str) -> bool {
-    [names::CODEX, names::COPILOT, names::CLAUDE, names::CURSOR, names::GROK].contains(&provider)
+    [names::CODEX, names::COPILOT, names::CLAUDE, names::GROK].contains(&provider)
+        || (provider == names::CURSOR && !cfg!(target_os = "macos"))
 }
 
 /// The button that starts a CodexBar sign-in.
@@ -196,12 +198,14 @@ mod tests {
     }
 
     #[test]
-    fn a_cursor_account_on_the_app_s_sign_in_can_only_switch() {
+    fn a_cursor_account_on_the_app_s_sign_in_can_only_switch_where_codexbar_signs_cursor_in() {
         let cursor = record(names::CURSOR, AuthMethod::Automatic);
-        assert_eq!(
-            help(crate::catalog::info(names::CURSOR), Some(&cursor)),
-            Some(Help::Switch(cursor))
-        );
+        let expected = if cfg!(target_os = "macos") {
+            None
+        } else {
+            Some(Help::Switch(cursor.clone()))
+        };
+        assert_eq!(help(crate::catalog::info(names::CURSOR), Some(&cursor)), expected);
     }
 
     #[test]

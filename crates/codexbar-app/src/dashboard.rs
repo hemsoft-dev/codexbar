@@ -236,14 +236,51 @@ fn named_record<'a>(
     owned: &HashMap<String, String>,
     records: &'a [codexbar_store::settings::AccountRecord],
 ) -> Option<&'a codexbar_store::settings::AccountRecord> {
-    let id = failure.account.as_ref().or(failure.outcome.as_ref())?;
-    records.iter().find(|record| &record.id == id).or_else(|| {
-        let owner = owned
-            .iter()
-            .find(|(_, account)| *account == id)
-            .and_then(|(key, _)| key.split('#').next())?;
-        records.iter().find(|record| record.id == owner)
-    })
+    // An adapter serves its record whether or not it's enabled; an account that failed in a shared adapter belongs to
+    // an enabled record only (a disabled one can remember the same user).
+    let (id, any) = match (&failure.account, &failure.outcome) {
+        (Some(id), _) => (id, true),
+        (None, Some(id)) => (id, false),
+        (None, None) => return None,
+    };
+    let usable = |record: &&codexbar_store::settings::AccountRecord| any || record.enabled;
+    records
+        .iter()
+        .filter(usable)
+        .find(|record| &record.id == id)
+        .or_else(|| {
+            let owner = owned
+                .iter()
+                .find(|(_, account)| *account == id)
+                .and_then(|(key, _)| key.split('#').next())?;
+            records.iter().filter(usable).find(|record| record.id == owner)
+        })
+}
+
+/// The record a failure row's help goes by (#337), from the record Settings would open and whether the failure named
+/// it; `None` when no help is right. CodexBar's own sign-in signs in one record, so a record the target only fell back
+/// to gets it when it is its provider's only enabled record. When other enabled records use their CLI's sign-in, help
+/// goes by the provider's own method (`Some(None)`); when they are all CodexBar's, which one failed is unknown.
+fn help_record(
+    record: Option<codexbar_store::settings::AccountRecord>,
+    named: bool,
+    records: &[codexbar_store::settings::AccountRecord],
+) -> Option<Option<codexbar_store::settings::AccountRecord>> {
+    let managed = |record: &codexbar_store::settings::AccountRecord| crate::managed::Managed::of(record).is_some();
+    let Some(guess) = record.as_ref().filter(|record| !named && managed(record)) else {
+        return Some(record);
+    };
+    let enabled: Vec<&codexbar_store::settings::AccountRecord> = records
+        .iter()
+        .filter(|other| other.enabled && other.provider == guess.provider)
+        .collect();
+    if enabled.len() == 1 {
+        Some(record)
+    } else if enabled.iter().all(|other| managed(other)) {
+        None
+    } else {
+        Some(None)
+    }
 }
 
 /// True when `record` owns a dashboard account other than the one that failed (#337): a failure of one Copilot user
@@ -837,11 +874,11 @@ impl Dashboard {
             return None;
         }
         let (group, record) = settings_target(failure, &self.owned_ids, cx)?;
-        // CodexBar's own sign-in only for the account's own record: one the failure names. A record the target fell
-        // back to (an OAuth record beside a GitHub CLI user, an OpenCode OAuth record beside the cookie) is a guess,
-        // and its sign-in would sign in something else; help then goes by the provider's own method.
-        let named = named_record(failure, &self.owned_ids, SettingsHub::global(cx).settings().accounts()).is_some();
-        let record = record.filter(|record| named || crate::managed::Managed::of(record).is_none());
+        // CodexBar's own sign-in only for the account's own record (`help_record`): a record the target fell back to
+        // (an OAuth record beside a GitHub CLI user, an OpenCode OAuth record beside the cookie) is a guess.
+        let records = SettingsHub::global(cx).settings().accounts();
+        let named = named_record(failure, &self.owned_ids, records).is_some();
+        let record = help_record(record, named, records)?;
         crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref())
     }
 

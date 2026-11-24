@@ -1704,6 +1704,8 @@ fn a_codexbar_sign_in_that_cannot_start_says_why_on_its_row(cx: &mut TestAppCont
     );
 }
 
+// CodexBar signs Cursor in on Windows and Linux only; on macOS its sign-in reports itself unsupported.
+#[cfg(not(target_os = "macos"))]
 #[gpui_kit::test]
 fn a_cursor_app_account_can_move_to_codexbar_s_sign_in(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
@@ -1917,6 +1919,82 @@ fn an_expired_opencode_cookie_never_starts_another_record_s_sign_in(cx: &mut Tes
         !visible(cx, handle, "sign-in-OpenCode Go + Zen"),
         "no OAuth for the Console record"
     );
+}
+
+// SFL on #340: a disabled OAuth record that remembers Bob never takes his GitHub CLI failure.
+#[gpui_kit::test]
+fn a_disabled_record_never_takes_a_live_copilot_user_s_failure(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-copilot-disabled",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-old", "providerId": "Copilot", "displayLabel": "Old", "enabled": false,
+              "authenticationMethod": "OAuth", "externalAccountId": "bob" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "cli-sign-in-Copilot-bob"),
+        "the GitHub CLI's sign-in"
+    );
+    assert!(
+        !visible(cx, handle, "sign-in-Copilot-bob"),
+        "not the disabled record's OAuth"
+    );
+    let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
+    assert_eq!(target.as_deref(), Some("cp-cli"));
+}
+
+/// Copilot failing as a whole (no account reported), with only OAuth records: `ids` of them.
+fn copilot_oauth_only(cx: &mut TestAppContext, name: &str, ids: &[&str]) -> (AnyWindowHandle, TempSettings) {
+    let accounts: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            format!(
+                r#"{{ "id": "{id}", "providerId": "Copilot", "displayLabel": "{id}", "enabled": true,
+                  "authenticationMethod": "OAuth" }}"#
+            )
+        })
+        .collect();
+    let settings = TempSettings::new(
+        name,
+        &format!(
+            r#"{{ "accountConfigurationVersion": 1, "accounts": [ {} ] }}"#,
+            accounts.join(", ")
+        ),
+    );
+    let copilot = FakeProvider::new(Provider::Copilot, "copilot", None)
+        .failing_with(ProviderError::NotSignedIn { hint: "Sign in again." });
+    let _dashboard = open_live(cx, &settings, vec![copilot]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    (handle, settings)
+}
+
+// SFL on #340: with only CodexBar's sign-in in use, the GitHub CLI's sign-in would sign in something Copilot never
+// reads. One OAuth record gets its own sign-in; several leave Open settings.
+#[gpui_kit::test]
+fn an_oauth_only_copilot_failure_offers_codexbar_s_sign_in(cx: &mut TestAppContext) {
+    let (handle, _settings) = copilot_oauth_only(cx, "failure-copilot-oauth-only", &["cp-1"]);
+    assert!(visible(cx, handle, "sign-in-Copilot"), "the one OAuth record's sign-in");
+    assert!(!visible(cx, handle, "cli-sign-in-Copilot"));
+}
+
+#[gpui_kit::test]
+fn several_oauth_records_failing_as_one_offer_no_guess(cx: &mut TestAppContext) {
+    let (handle, _settings) = copilot_oauth_only(cx, "failure-copilot-oauth-two", &["cp-1", "cp-2"]);
+    assert!(!visible(cx, handle, "sign-in-Copilot") && !visible(cx, handle, "cli-sign-in-Copilot"));
+    assert!(visible(cx, handle, "fix-Copilot"), "Open settings stays");
 }
 
 #[gpui_kit::test]
