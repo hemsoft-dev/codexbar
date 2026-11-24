@@ -166,7 +166,9 @@ pub fn restore(saved: Option<&WindowPlacement>, displays: &[Display], primary: O
     })
 }
 
-/// A window rectangle in physical pixels, as Windows keeps a window's normal (restore) position.
+/// A window rectangle in physical pixels, as Windows keeps a window's normal (restore) position. Only Windows settles
+/// a window; the tests check the arithmetic on every platform.
+#[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Edges {
     pub left: i32,
@@ -178,6 +180,7 @@ pub struct Edges {
 /// The normal rectangle that gives the window `wanted` as its content bounds, from its normal rectangle and content
 /// bounds now, at the display's `scale`; `None` when it already has them (within a logical pixel). The frame around
 /// the content (its borders and shadow) keeps the size it has now.
+#[cfg(any(windows, test))]
 pub fn settled_normal(normal: Edges, now: Bounds<Pixels>, wanted: Bounds<Pixels>, scale: f32) -> Option<Edges> {
     let close = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() < 1.;
     if close(now.origin.x, wanted.origin.x)
