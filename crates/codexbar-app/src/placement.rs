@@ -313,64 +313,65 @@ pub fn settle(window: &Window, restored: Option<&Restored>, cx: &App) {
 /// is on now, or on none: Windows moves a window to the display it overlaps most, and scales it to that display.
 #[cfg(windows)]
 fn stays_on_its_display(hwnd: windows::Win32::Foundation::HWND, normal: Edges) -> bool {
-    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
-        MonitorFromPoint, MonitorFromRect, MonitorFromWindow,
+        GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromRect,
+        MonitorFromWindow,
     };
-    // Workspace coordinates are screen coordinates less the primary display's taskbar when it is docked on the left or
-    // at the top; `MonitorFromRect` takes screen coordinates.
-    let mut primary = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
+    // Workspace coordinates are screen coordinates less the work-area offset (a taskbar docked on the left or at the
+    // top) of the display the rectangle is on; `MonitorFromRect` takes screen coordinates.
+    let shifted = |monitor: HMONITOR| {
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: a plain monitor lookup into a properly sized MONITORINFO on the stack.
+        let (dx, dy) = if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+            let edges = |rect: RECT| Edges {
+                left: rect.left,
+                top: rect.top,
+                right: rect.right,
+                bottom: rect.bottom,
+            };
+            workspace_offset(edges(info.rcMonitor), edges(info.rcWork))
+        } else {
+            (0, 0)
+        };
+        RECT {
+            left: normal.left + dx,
+            top: normal.top + dy,
+            right: normal.right + dx,
+            bottom: normal.bottom + dy,
+        }
     };
-    // SAFETY: plain monitor lookups; `primary` is a properly sized MONITORINFO on the stack.
-    let offset = if unsafe {
-        GetMonitorInfoW(
-            MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY),
-            &mut primary,
-        )
-    }
-    .as_bool()
-    {
-        workspace_offset(
-            Edges {
-                left: primary.rcMonitor.left,
-                top: primary.rcMonitor.top,
-                right: primary.rcMonitor.right,
-                bottom: primary.rcMonitor.bottom,
-            },
-            Edges {
-                left: primary.rcWork.left,
-                top: primary.rcWork.top,
-                right: primary.rcWork.right,
-                bottom: primary.rcWork.bottom,
-            },
-        )
-    } else {
-        (0, 0)
+    let workspace = RECT {
+        left: normal.left,
+        top: normal.top,
+        right: normal.right,
+        bottom: normal.bottom,
     };
-    let screen = RECT {
-        left: normal.left + offset.0,
-        top: normal.top + offset.1,
-        right: normal.right + offset.0,
-        bottom: normal.bottom + offset.1,
+    // SAFETY: plain monitor lookups for this window's handle and rectangles on the stack.
+    let on = unsafe {
+        // The display the rectangle seems to be on gives the offset; when the shifted rectangle lies mostly on a
+        // neighbor instead (near the seam), that neighbor's offset is the one that applies.
+        let guess = MonitorFromRect(&workspace, MONITOR_DEFAULTTONEAREST);
+        let first = MonitorFromRect(&shifted(guess), MONITOR_DEFAULTTONULL);
+        if first.is_invalid() || first == guess {
+            first
+        } else {
+            MonitorFromRect(&shifted(first), MONITOR_DEFAULTTONULL)
+        }
     };
-    // SAFETY: plain monitor lookups for this window's handle and a rectangle on the stack.
-    let (on, home) = unsafe {
-        (
-            MonitorFromRect(&screen, MONITOR_DEFAULTTONULL),
-            MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
-        )
-    };
+    // SAFETY: a plain monitor lookup for this window's handle.
+    let home = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
     on.is_invalid() || on == home
 }
 
-/// What turns workspace coordinates into screen coordinates: how far the primary display's work area starts from the
-/// display's own corner (its taskbar's width when docked on the left, its height when at the top).
+/// What turns a display's workspace coordinates into screen coordinates: how far its work area starts from its own
+/// corner (its taskbar's width when docked on the left, its height when at the top).
 #[cfg(any(windows, test))]
-pub fn workspace_offset(primary: Edges, work: Edges) -> (i32, i32) {
-    (work.left - primary.left, work.top - primary.top)
+pub fn workspace_offset(display: Edges, work: Edges) -> (i32, i32) {
+    (work.left - display.left, work.top - display.top)
 }
 
 /// Other platforms place the window in one step.
@@ -656,6 +657,18 @@ mod tests {
         assert_eq!(workspace_offset(primary, bottom_taskbar), (0, 0));
         assert_eq!(workspace_offset(primary, left_taskbar), (62, 0));
         assert_eq!(workspace_offset(primary, top_taskbar), (0, 48));
+        // A secondary display to the right, with its own taskbar on its left: its offset is its own.
+        let secondary = Edges {
+            left: 3440,
+            top: 0,
+            right: 7280,
+            bottom: 2160,
+        };
+        let secondary_work = Edges {
+            left: 3548,
+            ..secondary
+        };
+        assert_eq!(workspace_offset(secondary, secondary_work), (108, 0));
     }
 
     // Only the origin is off: the saved bounds come back, and there is no size to correct in place.
