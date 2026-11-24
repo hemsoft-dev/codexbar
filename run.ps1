@@ -55,9 +55,11 @@ for ($attempt = 1; ; $attempt++) {
 }
 
 # The WPF app's "Start with Windows" wrote a CodexBar value to the Run key. Keep that choice, pointed at this app.
+# `--startup` tells CodexBar that Windows started it at sign-in, so it stays in the notification area; a start
+# without it shows the window (#336).
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 if (Get-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -ErrorAction SilentlyContinue) {
-    Set-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -Value "`"$installedExe`""
+    Set-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -Value "`"$installedExe`" --startup"
 }
 
 $processStartInfo = [System.Diagnostics.ProcessStartInfo]::new($installedExe)

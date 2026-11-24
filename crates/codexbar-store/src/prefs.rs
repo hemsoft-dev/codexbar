@@ -37,7 +37,8 @@ pub struct WindowPlacement {
     pub height: f64,
     #[serde(default)]
     pub maximized: bool,
-    /// Minimized, or hidden to the tray: out of the way either way.
+    /// Minimized, or hidden to the tray: out of the way either way. Kept for the saved maximized state (a minimized
+    /// window can't report it); it no longer hides the window at the next start (#336).
     #[serde(default)]
     pub minimized: bool,
 }

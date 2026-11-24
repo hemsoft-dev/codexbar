@@ -64,8 +64,47 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
 
 /// Where a capture run keeps the demo's preferences: inside the capture folder, so the user's own are never touched.
 pub fn prefs_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(PathBuf::from)?;
-    crate::is_demo().then(|| dir.join("prefs"))
+    if !crate::is_demo() {
+        return None;
+    }
+    // A demo run by hand for desktop evidence (#336) keeps its preferences, and so its window placement, here. Never
+    // in the real settings folder, whose dashboard.json it would overwrite.
+    if let Some(dir) = std::env::var_os("CODEXBAR_DEMO_PREFS").filter(|dir| !dir.is_empty()) {
+        let dir = PathBuf::from(dir);
+        if is_settings_dir(&dir) {
+            eprintln!(
+                "codexbar: CODEXBAR_DEMO_PREFS can't be the settings folder; the demo keeps its preferences in memory"
+            );
+            return None;
+        }
+        return Some(dir);
+    }
+    let dir = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(|dir| PathBuf::from(dir).join("prefs"))?;
+    if is_settings_dir(&dir) {
+        eprintln!(
+            "codexbar: CODEXBAR_CAPTURE_DIR's prefs folder can't be the settings folder; the demo keeps its preferences in memory"
+        );
+        return None;
+    }
+    Some(dir)
+}
+
+/// True when `dir` is a real settings folder, however it is spelled: the one this process uses, or the profile's own
+/// `.codexbar` when `CODEXBAR_SETTINGS_DIR` points this process elsewhere, even before either exists.
+fn is_settings_dir(dir: &std::path::Path) -> bool {
+    // A folder that doesn't exist yet can't be canonicalized; compare it as an absolute path instead, so a relative
+    // spelling of a profile not created yet still matches.
+    // Windows paths are compared without regard to case, as the file system treats them.
+    let full = |path: &std::path::Path| {
+        let full = std::fs::canonicalize(path)
+            .or_else(|_| std::path::absolute(path))
+            .unwrap_or_else(|_| path.to_owned());
+        let text = full.to_string_lossy().into_owned();
+        if cfg!(windows) { text.to_lowercase() } else { text }
+    };
+    let same = |settings: &std::path::Path| full(dir) == full(settings);
+    let profile = codexbar_core::home_dir().map(|home| home.join(".codexbar"));
+    same(&codexbar_store::settings::Settings::default_dir()) || profile.is_some_and(|profile| same(&profile))
 }
 
 async fn settle(cx: &mut AsyncApp) {

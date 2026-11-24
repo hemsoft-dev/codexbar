@@ -1792,6 +1792,86 @@ fn the_window_placement_is_saved_once_the_window_rests(cx: &mut TestAppContext) 
     assert_eq!((saved.width, saved.height), (1300., 900.));
 }
 
+// #336: hiding the window to the tray changes nothing saved but the out-of-the-way flag. Windows keeps a hidden
+// window's normal bounds and display, but a hidden or minimized window can't say whether it is also maximized, so the
+// state seen while it was up is kept.
+#[gpui_kit::test]
+fn hiding_the_window_keeps_its_saved_display_bounds_and_maximized_state(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("placement-hidden", "{}");
+    let dashboard = open_live(cx, &settings, vec![]);
+    cx.run_until_parked();
+    let shown = codexbar_store::prefs::WindowPlacement {
+        display: Some("right".to_owned()),
+        x: 2100.,
+        y: 80.,
+        width: 1100.,
+        height: 760.,
+        maximized: true,
+        minimized: false,
+    };
+    let hidden = codexbar_store::prefs::WindowPlacement {
+        maximized: false,
+        minimized: true,
+        ..shown.clone()
+    };
+    let saved = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        codexbar_store::prefs::DashboardPrefs::load(&settings.0)
+            .window_placement()
+            .cloned()
+    };
+    // A sample is saved once it is seen twice in a row.
+    for seen in [shown.clone(), shown.clone()] {
+        dashboard.update(cx, |dashboard, cx| dashboard.note_placement_for_test(seen, cx));
+    }
+    assert_eq!(saved(cx), Some(shown.clone()));
+    for seen in [hidden.clone(), hidden] {
+        dashboard.update(cx, |dashboard, cx| dashboard.note_placement_for_test(seen, cx));
+    }
+    assert_eq!(
+        saved(cx),
+        Some(codexbar_store::prefs::WindowPlacement {
+            minimized: true,
+            ..shown
+        })
+    );
+}
+
+// #336: a demo whose preferences are saved to a folder (a capture build's CODEXBAR_DEMO_PREFS) saves its placement
+// there, so its window can be restarted and checked; with in-memory preferences it saves nothing.
+#[gpui_kit::test]
+fn a_demo_with_saved_preferences_saves_its_window_placement(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("placement-demo", "{}");
+    let (handle, _dashboard) = open_dashboard_sized(cx, &settings, size(px(1100.), px(760.)));
+    cx.simulate_window_resize(handle, size(px(1150.), px(780.)));
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0)
+        .window_placement()
+        .cloned()
+        .expect("the demo's placement is in its dashboard.json");
+    assert_eq!((saved.width, saved.height), (1150., 780.));
+}
+
+#[gpui_kit::test]
+fn a_demo_with_in_memory_preferences_saves_no_window_placement(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("placement-demo-memory", "{}");
+    let (handle, _dashboard) = open_dashboard_sized(cx, &settings, size(px(1100.), px(760.)));
+    cx.update(crate::prefs_hub::PrefsHub::init_in_memory);
+    cx.simulate_window_resize(handle, size(px(1150.), px(780.)));
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    assert!(
+        cx.update(|cx| crate::prefs_hub::PrefsHub::window_placement(cx))
+            .is_none()
+    );
+    assert!(
+        codexbar_store::prefs::DashboardPrefs::load(&settings.0)
+            .window_placement()
+            .is_none()
+    );
+}
+
 // The Resets column always says how long is left (#196), never a weekday, time or date.
 
 #[gpui_kit::test]

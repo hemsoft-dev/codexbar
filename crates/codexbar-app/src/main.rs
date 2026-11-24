@@ -162,6 +162,19 @@ fn already_running() -> bool {
     }
 }
 
+/// A launch that found CodexBar already running: a widget tile (#95) or a second launch has the running CodexBar show
+/// its window, on the tile's account. A start with Windows that finds it running (the user started it before Windows
+/// got to the Run entry) leaves the running window as it is (#336).
+fn hand_over(args: &[String], focus: Option<&handoff::FocusRequest>, settings_dir: &std::path::Path) {
+    if placement::Start::from_args(args, package::launched_at_startup(), focus.is_some()).stays_hidden() {
+        return;
+    }
+    if let Some(request) = focus {
+        let _ = handoff::write_request(settings_dir, request);
+    }
+    handoff::signal(settings_dir, &instance());
+}
+
 fn main() {
     // Settings, history and sign-ins in ~/.codexbar stay readable by this user only (#161).
     #[cfg(unix)]
@@ -191,12 +204,9 @@ fn main() {
     // the lock taken always reaches a live event (one this instance holds open) rather than one it creates alone.
     let settings_dir = codexbar_store::settings::Settings::default_dir();
     let handoff_listener = handoff::listen(&settings_dir, &instance());
+    let args: Vec<String> = std::env::args().collect();
     if already_running() {
-        // A widget tile (#95) or a second launch: the running CodexBar shows its window, on the tile's account.
-        if let Some(request) = &focus {
-            let _ = handoff::write_request(&settings_dir, request);
-        }
-        handoff::signal(&settings_dir, &instance());
+        hand_over(&args, focus.as_ref(), &settings_dir);
         return;
     }
     gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
@@ -282,12 +292,10 @@ fn main() {
             cx.new(|cx| Dashboard::new(data_source(), window, cx))
         })
         .expect("failed to open the dashboard window");
-        // Start with Windows (the package's startup task) goes straight to the notification area.
-        // Out of the way at a start with Windows, and when it was minimized or hidden to the tray when it last ran,
-        // unless this start was asked to show something: a widget tile's account, or Settings.
-        let asked_to_show = focus.is_some() || std::env::args().any(|arg| arg == "--settings");
-        let stays_hidden = restored.as_ref().is_some_and(|restored| restored.hidden) && !asked_to_show;
-        if package::launched_at_startup() || stays_hidden {
+        let _ = cx.update_window(handle, |_, window, cx| placement::settle(window, restored.as_ref(), cx));
+        // A start the user made shows the window (#336); only a start with Windows goes straight to the notification
+        // area, unless it was asked to show something: a widget tile's account, or Settings.
+        if placement::Start::from_args(&args, package::launched_at_startup(), focus.is_some()).stays_hidden() {
             let _ = cx.update_window(handle, |_, window, cx| tray::hide(window, cx));
         } else {
             cx.activate(true);
