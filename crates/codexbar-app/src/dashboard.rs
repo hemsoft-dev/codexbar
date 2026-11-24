@@ -127,6 +127,9 @@ struct Failure {
     account: Option<String>,
     /// That account's label, to tell sibling failures apart.
     label: Option<String>,
+    /// The dashboard account that failed, when the adapter reported it by itself among others (Copilot's one adapter
+    /// serves every Copilot account): what finds the failed account's own record for Settings and sign-in (#337).
+    outcome: Option<String>,
     message: String,
     /// The sign-in or key is the problem, so the row offers Settings beside Retry (#188).
     sign_in: bool,
@@ -163,7 +166,8 @@ enum CliSignIn {
 /// by the record's id or by the dashboard account the record owns (a Codex or Claude account CodexBar signed in
 /// reports under its identity, a Copilot one under its username); `owned` maps record ids to those. A
 /// provider-wide failure (OpenCode's cookie adapter, which covers Go and Zen) goes to its first enabled record,
-/// then any record, then the provider's first group with none.
+/// then any record, then the provider's first group with none. One account failing in an adapter that serves several
+/// (Copilot's) is found by the account it reported (#337), and never falls back to a record that owns another.
 fn settings_target(
     failure: &Failure,
     owned: &HashMap<String, String>,
@@ -173,25 +177,17 @@ fn settings_target(
     let group_of = |provider: &str| providers.iter().position(|info| info.id.eq_ignore_ascii_case(provider));
     let hub = SettingsHub::global(cx);
     let records = hub.settings().accounts();
-    let named = failure.account.as_ref().and_then(|id| {
-        records.iter().find(|record| &record.id == id).or_else(|| {
-            // A Copilot organization card is owned under "<record id>#org".
-            let owner = owned
-                .iter()
-                .find(|(_, account)| *account == id)
-                .and_then(|(key, _)| key.split('#').next())?;
-            records.iter().find(|record| record.id == owner)
-        })
-    });
-    if let Some(record) = named {
+    if let Some(record) = named_record(failure, owned, records) {
         return group_of(&record.provider).map(|group| (group, Some(record.clone())));
     }
     let kind = Provider::from_display_name(failure.provider)?;
     let of_kind = |provider: &str| {
         group_of(provider).is_some_and(|group| crate::brand::from_settings_name(providers[group].id) == Some(kind))
     };
-    let siblings: Vec<&codexbar_store::settings::AccountRecord> =
-        records.iter().filter(|record| of_kind(&record.provider)).collect();
+    let siblings: Vec<&codexbar_store::settings::AccountRecord> = records
+        .iter()
+        .filter(|record| of_kind(&record.provider) && !owns_another(failure, owned, record))
+        .collect();
     match siblings.iter().find(|record| record.enabled).or(siblings.first()) {
         Some(record) => group_of(&record.provider).map(|group| (group, Some((*record).clone()))),
         None => providers
@@ -199,6 +195,36 @@ fn settings_target(
             .position(|info| crate::brand::from_settings_name(info.id) == Some(kind))
             .map(|group| (group, None)),
     }
+}
+
+/// The record a failure names: by the adapter's configured account (its record id, or the dashboard account a record
+/// owns), else by the account that failed (#337). A Copilot organization card is owned under "<record id>#org".
+fn named_record<'a>(
+    failure: &Failure,
+    owned: &HashMap<String, String>,
+    records: &'a [codexbar_store::settings::AccountRecord],
+) -> Option<&'a codexbar_store::settings::AccountRecord> {
+    let id = failure.account.as_ref().or(failure.outcome.as_ref())?;
+    records.iter().find(|record| &record.id == id).or_else(|| {
+        let owner = owned
+            .iter()
+            .find(|(_, account)| *account == id)
+            .and_then(|(key, _)| key.split('#').next())?;
+        records.iter().find(|record| record.id == owner)
+    })
+}
+
+/// True when `record` owns a dashboard account other than the one that failed (#337): a failure of one Copilot user
+/// never lands on another user's record.
+fn owns_another(
+    failure: &Failure,
+    owned: &HashMap<String, String>,
+    record: &codexbar_store::settings::AccountRecord,
+) -> bool {
+    failure
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| owned.get(&record.id).is_some_and(|account| account != outcome))
 }
 
 /// Whether one of `adapters` serves `account`: an adapter for one configured account by that account's id, a
@@ -1191,6 +1217,7 @@ impl Dashboard {
                                     provider,
                                     account: account_id.clone(),
                                     label,
+                                    outcome: Some(account.as_str().to_owned()),
                                     message,
                                     sign_in: error.needs_sign_in(),
                                 });
@@ -1221,6 +1248,7 @@ impl Dashboard {
                         provider,
                         account: account_id.clone(),
                         label: account_label.clone(),
+                        outcome: None,
                         message,
                         sign_in: error.needs_sign_in(),
                     });

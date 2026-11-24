@@ -1705,6 +1705,95 @@ fn a_cursor_app_account_can_move_to_codexbar_s_sign_in(cx: &mut TestAppContext) 
     );
 }
 
+/// Copilot's one adapter for every account, as in production: Alice signed in through CodexBar, Bob failing on the
+/// GitHub CLI.
+struct CopilotUsers;
+
+impl UsageProvider for CopilotUsers {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        Ok(vec![
+            codexbar_providers::AccountOutcome::Fresh(AccountSnapshot::new(
+                codexbar_providers::copilot::account_id("alice"),
+                Provider::Copilot,
+                Vec::new(),
+                now,
+            )),
+            codexbar_providers::AccountOutcome::Failed {
+                account: codexbar_providers::copilot::account_id("bob"),
+                label: Some("bob".into()),
+                error: ProviderError::NotSignedIn {
+                    hint: "Sign in to the GitHub CLI for this account.",
+                },
+            },
+        ])
+    }
+}
+
+/// Bob's failure row with Alice's OAuth record first and Bob's on the GitHub CLI, `bob` naming his user or not.
+fn bob_fails_beside_alice(
+    cx: &mut TestAppContext,
+    name: &str,
+    bob: &str,
+) -> (Entity<Dashboard>, AnyWindowHandle, TempSettings) {
+    let settings = TempSettings::new(
+        name,
+        &format!(
+            r#"{{ "accountConfigurationVersion": 1, "accounts": [
+                {{ "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+                  "authenticationMethod": "OAuth", "externalAccountId": "alice" }},
+                {{ "id": "cp-bob", "providerId": "Copilot", "displayLabel": "Bob", "enabled": true,
+                  "authenticationMethod": "CommandLine"{bob} }} ] }}"#
+        ),
+    );
+    let dashboard = open_live_fixed(cx, &settings, vec![Arc::new(CopilotUsers) as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    (dashboard, handle, settings)
+}
+
+// Codex on #340: Copilot's one adapter reports every account, so a failed account must be found by the account it
+// reported, not the provider's first record (Alice's, which CodexBar signs in).
+#[gpui_kit::test]
+fn one_copilot_user_failing_gets_its_own_record_s_sign_in(cx: &mut TestAppContext) {
+    let (dashboard, handle, _settings) =
+        bob_fails_beside_alice(cx, "failure-copilot-bob", r#", "externalAccountId": "bob""#);
+    assert!(
+        visible(cx, handle, "cli-sign-in-Copilot-bob"),
+        "Bob signs the GitHub CLI in"
+    );
+    assert!(
+        !visible(cx, handle, "sign-in-Copilot-bob"),
+        "not Alice's CodexBar sign-in"
+    );
+    let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
+    assert_eq!(target.as_deref(), Some("cp-bob"));
+}
+
+#[gpui_kit::test]
+fn a_failed_copilot_user_no_record_names_skips_records_owning_others(cx: &mut TestAppContext) {
+    let (dashboard, handle, _settings) = bob_fails_beside_alice(cx, "failure-copilot-unnamed", "");
+    assert!(visible(cx, handle, "cli-sign-in-Copilot-bob"));
+    let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
+    assert_eq!(
+        target.as_deref(),
+        Some("cp-bob"),
+        "not Alice's, which owns her own account"
+    );
+}
+
 #[gpui_kit::test]
 fn a_network_failure_offers_no_sign_in(cx: &mut TestAppContext) {
     let settings = TempSettings::new("failure-network-no-sign-in", "{}");
