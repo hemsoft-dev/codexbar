@@ -64,8 +64,14 @@ pub fn start(cx: &mut App, handle: AnyWindowHandle, dashboard: Entity<Dashboard>
 
 /// Where a capture run keeps the demo's preferences: inside the capture folder, so the user's own are never touched.
 pub fn prefs_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(PathBuf::from)?;
-    crate::is_demo().then(|| dir.join("prefs"))
+    if !crate::is_demo() {
+        return None;
+    }
+    // A demo run by hand for desktop evidence (#336) keeps its preferences, and so its window placement, here.
+    if let Some(dir) = std::env::var_os("CODEXBAR_DEMO_PREFS").filter(|dir| !dir.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::var_os("CODEXBAR_CAPTURE_DIR").map(|dir| PathBuf::from(dir).join("prefs"))
 }
 
 async fn settle(cx: &mut AsyncApp) {

@@ -39,6 +39,11 @@ impl PrefsHub {
         });
     }
 
+    /// True when preferences are saved to `dashboard.json`; false for the demo's in-memory ones.
+    pub fn is_persistent(cx: &App) -> bool {
+        cx.try_global::<Self>().is_some_and(|hub| hub.dir.is_some())
+    }
+
     pub fn shows(cx: &App, account: &str) -> bool {
         cx.try_global::<Self>()
             .is_none_or(|hub| hub.prefs.shows_history(account))

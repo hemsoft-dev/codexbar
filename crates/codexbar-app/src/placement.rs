@@ -85,12 +85,33 @@ fn current_display(window: &Window, cx: &App) -> Option<std::rc::Rc<dyn gpui_kit
     window.display(cx)
 }
 
-/// How the window opens: its bounds and state, the display to open it on, and whether it stays out of the way.
+/// The argument run.ps1's `Run` entry passes when Windows starts CodexBar at sign-in. The package's startup task is
+/// told apart by its activation kind instead.
+pub const STARTUP_ARG: &str = "--startup";
+
+/// What started this CodexBar, which decides whether its window shows (#336).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Start {
+    /// Windows started it at sign-in: the package's startup task, or the `Run` entry with `--startup`.
+    pub with_windows: bool,
+    /// It was asked to show something: a widget tile's account, or Settings.
+    pub asked_to_show: bool,
+}
+
+impl Start {
+    /// Only a start with Windows stays in the notification area, and only when it wasn't asked to show something.
+    /// Where the window was when CodexBar last ran (hidden to the tray, minimized) never hides it: a user who starts
+    /// CodexBar expects to see it.
+    pub fn stays_hidden(self) -> bool {
+        self.with_windows && !self.asked_to_show
+    }
+}
+
+/// How the window opens: its bounds and state, and the display to open it on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Restored {
     pub bounds: WindowBounds,
     pub display: Option<DisplayId>,
-    pub hidden: bool,
 }
 
 /// Where `saved` reopens on the displays connected now; `None` with nothing saved.
@@ -105,7 +126,8 @@ pub fn restore_in(saved: Option<&WindowPlacement>, cx: &App) -> Option<Restored>
 /// display at the saved size. The own display is checked first because logical bounds are only comparable within one
 /// display: each display's bounds and the bounds of a window on it use that display's own scale, so a window on a
 /// 150% display can seem to overlap a 100% display it is nowhere near. The size never drops below the minimum, and a
-/// maximized or minimized window comes back that way.
+/// maximized window comes back maximized. Whether the window was hidden or minimized doesn't decide anything here: a
+/// start the user made always shows the window (`Start`).
 pub fn restore(saved: Option<&WindowPlacement>, displays: &[Display], primary: Option<DisplayId>) -> Option<Restored> {
     let saved = saved?;
     let requested = Bounds {
@@ -141,9 +163,95 @@ pub fn restore(saved: Option<&WindowPlacement>, displays: &[Display], primary: O
             WindowBounds::Windowed(bounds)
         },
         display: display.map(|display| display.id),
-        hidden: saved.minimized,
     })
 }
+
+/// A window rectangle in physical pixels, as Windows keeps a window's normal (restore) position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edges {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+/// The normal rectangle that gives the window `wanted` as its content bounds, from its normal rectangle and content
+/// bounds now, at the display's `scale`; `None` when it already has them (within a logical pixel). The frame around
+/// the content (its borders and shadow) keeps the size it has now.
+pub fn settled_normal(normal: Edges, now: Bounds<Pixels>, wanted: Bounds<Pixels>, scale: f32) -> Option<Edges> {
+    let close = |a: Pixels, b: Pixels| (f32::from(a) - f32::from(b)).abs() < 1.;
+    if close(now.origin.x, wanted.origin.x)
+        && close(now.origin.y, wanted.origin.y)
+        && close(now.size.width, wanted.size.width)
+        && close(now.size.height, wanted.size.height)
+    {
+        return None;
+    }
+    let physical = |value: Pixels| (f32::from(value) * scale).round() as i32;
+    let content = |bounds: Bounds<Pixels>| Edges {
+        left: physical(bounds.origin.x),
+        top: physical(bounds.origin.y),
+        right: physical(bounds.origin.x + bounds.size.width),
+        bottom: physical(bounds.origin.y + bounds.size.height),
+    };
+    let (now, wanted) = (content(now), content(wanted));
+    Some(Edges {
+        left: wanted.left - (now.left - normal.left),
+        top: wanted.top - (now.top - normal.top),
+        right: wanted.right + (normal.right - now.right),
+        bottom: wanted.bottom + (normal.bottom - now.bottom),
+    })
+}
+
+/// Gives a restored window the bounds it was saved with (#336). GPUI turns the saved bounds into the display's
+/// pixels, but the window is created on the primary display; when it then moves to a display with another scale,
+/// Windows scales it once more, so on a 175% display beside a 100% one it opened 1.75 times too large, and larger at
+/// every start. Called once the window is on its display, so nothing scales it again.
+#[cfg(windows)]
+pub fn settle(window: &Window, restored: &Restored) {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, SetWindowPlacement, WINDOWPLACEMENT};
+    let Some(hwnd) = crate::tray::hwnd(window) else {
+        return;
+    };
+    let bounds_of = |bounds: WindowBounds| match bounds {
+        WindowBounds::Windowed(bounds) | WindowBounds::Maximized(bounds) | WindowBounds::Fullscreen(bounds) => bounds,
+    };
+    let mut placement = WINDOWPLACEMENT {
+        length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `hwnd` is this window's handle and `placement` is a properly sized WINDOWPLACEMENT.
+    if unsafe { GetWindowPlacement(hwnd, &mut placement) }.is_err() {
+        return;
+    }
+    let normal = placement.rcNormalPosition;
+    let Some(settled) = settled_normal(
+        Edges {
+            left: normal.left,
+            top: normal.top,
+            right: normal.right,
+            bottom: normal.bottom,
+        },
+        bounds_of(window.window_bounds()),
+        bounds_of(restored.bounds),
+        window.scale_factor(),
+    ) else {
+        return;
+    };
+    placement.rcNormalPosition = RECT {
+        left: settled.left,
+        top: settled.top,
+        right: settled.right,
+        bottom: settled.bottom,
+    };
+    // SAFETY: as above; the show state read back is kept, so a maximized window stays maximized.
+    let _ = unsafe { SetWindowPlacement(hwnd, &placement) };
+}
+
+/// Other platforms place the window in one step.
+#[cfg(not(windows))]
+pub fn settle(_: &Window, _: &Restored) {}
 
 /// True when enough of the window's title bar lies on `area` to grab it: a window whose bottom edge alone peeks onto
 /// a display can't be moved back.
@@ -235,7 +343,6 @@ mod tests {
                 size: size(px(1440.), px(960.)),
             }
         );
-        assert!(!restored.hidden);
     }
 
     #[test]
@@ -325,12 +432,103 @@ mod tests {
     }
 
     #[test]
-    fn maximized_and_minimized_states_come_back() {
-        let mut placement = saved("primary", 10., 10., 1440., 960.);
+    fn a_window_hidden_while_maximized_comes_back_maximized_on_its_display() {
+        let mut placement = saved("right", 2200., 100., 1440., 960.);
         placement.maximized = true;
         placement.minimized = true;
         let restored = restore(Some(&placement), &two_displays(), Some(DisplayId::new(1))).unwrap();
         assert!(matches!(restored.bounds, WindowBounds::Maximized(_)));
-        assert!(restored.hidden);
+        assert_eq!(restored.display, Some(DisplayId::new(2)));
+    }
+
+    fn content(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(width), px(height)),
+        }
+    }
+
+    // #336: saved at 1000×700 on a 175% display, the window came back scaled twice (3062×2144 physical content).
+    // Settling it gives the saved content size back and keeps the 8px frame on each side and the 31px title strip.
+    #[test]
+    fn a_window_scaled_twice_settles_at_its_saved_size() {
+        let normal = Edges {
+            left: 3667,
+            top: 136,
+            right: 3667 + 8 + 3062 + 8,
+            bottom: 136 + 31 + 2144 + 8,
+        };
+        let now = content(3675. / 1.75, 167. / 1.75, 3062. / 1.75, 2144. / 1.75);
+        let wanted = content(3675. / 1.75, 167. / 1.75, 1000., 700.);
+        let settled = settled_normal(normal, now, wanted, 1.75).unwrap();
+        assert_eq!(
+            settled,
+            Edges {
+                left: 3667,
+                top: 136,
+                right: 3675 + 1750 + 8,
+                bottom: 167 + 1225 + 8,
+            }
+        );
+    }
+
+    #[test]
+    fn a_window_already_at_its_saved_bounds_is_left_alone() {
+        let normal = Edges {
+            left: 100,
+            top: 100,
+            right: 1116,
+            bottom: 839,
+        };
+        let bounds = content(108., 131., 1000., 700.);
+        assert_eq!(settled_normal(normal, bounds, bounds, 1.), None);
+    }
+
+    #[test]
+    fn a_settled_window_moves_to_its_saved_origin() {
+        let normal = Edges {
+            left: 0,
+            top: 0,
+            right: 1016,
+            bottom: 739,
+        };
+        let now = content(8., 31., 1000., 700.);
+        let wanted = content(208., 131., 1000., 700.);
+        assert_eq!(
+            settled_normal(normal, now, wanted, 1.),
+            Some(Edges {
+                left: 200,
+                top: 100,
+                right: 1216,
+                bottom: 839,
+            })
+        );
+    }
+
+    #[test]
+    fn a_start_the_user_made_shows_the_window() {
+        let start = Start {
+            with_windows: false,
+            asked_to_show: false,
+        };
+        assert!(!start.stays_hidden());
+    }
+
+    #[test]
+    fn a_start_with_windows_stays_in_the_notification_area() {
+        let start = Start {
+            with_windows: true,
+            asked_to_show: false,
+        };
+        assert!(start.stays_hidden());
+    }
+
+    #[test]
+    fn a_start_with_windows_asked_to_show_something_shows_the_window() {
+        let start = Start {
+            with_windows: true,
+            asked_to_show: true,
+        };
+        assert!(!start.stays_hidden());
     }
 }
