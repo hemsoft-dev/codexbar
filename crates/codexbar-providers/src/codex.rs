@@ -19,7 +19,7 @@ use crate::pace::elapsed_pace;
 use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
-const SIGN_IN_HINT: &str = "Run `codex` and sign in with ChatGPT.";
+const SIGN_IN_HINT: &str = "Sign in to the Codex CLI with ChatGPT.";
 /// The hint for a Codex home CodexBar signed in (#78).
 pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again.";
 /// The account of a sign-in whose user can't be read (no ID token).
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn provider_error_display_never_includes_token() {
         let message = ProviderError::Expired { hint: SIGN_IN_HINT }.to_string();
-        assert_eq!(message, "Sign-in expired. Run `codex` and sign in with ChatGPT.");
+        assert_eq!(message, "Sign-in expired. Sign in to the Codex CLI with ChatGPT.");
     }
 
     /// Answers each GET with the next status in turn, recording the bearer token each one carried.
