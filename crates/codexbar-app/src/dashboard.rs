@@ -1187,10 +1187,9 @@ impl Dashboard {
 
     /// Remembers where the window is (#194), once a placement has stayed the same for a tick. A minimized window
     /// can't say whether it is also maximized, so the state last seen while it was up is kept: the sample still
-    /// pending when there is one, else the saved one. The demo saves nothing, unless a capture build gave it a
-    /// preferences folder of its own.
+    /// pending when there is one, else the saved one.
     fn note_placement(&mut self, mut seen: codexbar_store::prefs::WindowPlacement, cx: &mut Context<Self>) {
-        if !matches!(self.source, DataSource::Live { .. }) && !crate::prefs_hub::PrefsHub::is_persistent(cx) {
+        if !self.saves_placement(cx) {
             return;
         }
         // A sample not yet saved (a maximize a moment before the hide) is the latest word on that.
@@ -1212,6 +1211,12 @@ impl Dashboard {
         } else {
             self.placement_pending = Some(seen);
         }
+    }
+
+    /// Whether the window placement is saved: always for live data; for the demo only when a capture build gave it a
+    /// preferences folder of its own (#336), never into memory.
+    fn saves_placement(&self, cx: &gpui_kit::App) -> bool {
+        matches!(self.source, DataSource::Live { .. }) || crate::prefs_hub::PrefsHub::is_persistent(cx)
     }
 
     /// The adapters the current settings produce, as (provider name, account id) pairs: what a shown account or failure

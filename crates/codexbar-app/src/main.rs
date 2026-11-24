@@ -191,14 +191,11 @@ fn main() {
     // the lock taken always reaches a live event (one this instance holds open) rather than one it creates alone.
     let settings_dir = codexbar_store::settings::Settings::default_dir();
     let handoff_listener = handoff::listen(&settings_dir, &instance());
+    let args: Vec<String> = std::env::args().collect();
     if already_running() {
         // A start with Windows that finds CodexBar already running (the user started it before Windows got to the
         // Run entry) leaves the running window as it is (#336).
-        let start = placement::Start {
-            with_windows: std::env::args().any(|arg| arg == placement::STARTUP_ARG) || package::launched_at_startup(),
-            asked_to_show: focus.is_some() || std::env::args().any(|arg| arg == "--settings"),
-        };
-        if start.stays_hidden() {
+        if placement::Start::from_args(&args, package::launched_at_startup(), focus.is_some()).stays_hidden() {
             return;
         }
         // A widget tile (#95) or a second launch: the running CodexBar shows its window, on the tile's account.
@@ -291,16 +288,10 @@ fn main() {
             cx.new(|cx| Dashboard::new(data_source(), window, cx))
         })
         .expect("failed to open the dashboard window");
-        if let Some(restored) = &restored {
-            let _ = cx.update_window(handle, |_, window, cx| placement::settle(window, restored, cx));
-        }
+        let _ = cx.update_window(handle, |_, window, cx| placement::settle(window, restored.as_ref(), cx));
         // A start the user made shows the window (#336); only a start with Windows goes straight to the notification
         // area, unless it was asked to show something: a widget tile's account, or Settings.
-        let start = placement::Start {
-            with_windows: package::launched_at_startup() || std::env::args().any(|arg| arg == placement::STARTUP_ARG),
-            asked_to_show: focus.is_some() || std::env::args().any(|arg| arg == "--settings"),
-        };
-        if start.stays_hidden() {
+        if placement::Start::from_args(&args, package::launched_at_startup(), focus.is_some()).stays_hidden() {
             let _ = cx.update_window(handle, |_, window, cx| tray::hide(window, cx));
         } else {
             cx.activate(true);

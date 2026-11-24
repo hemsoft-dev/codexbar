@@ -99,6 +99,16 @@ pub struct Start {
 }
 
 impl Start {
+    /// What this process's arguments say started it. `startup_task` is whether the package's startup task did, and
+    /// `focus` whether a widget tile asked for an account.
+    pub fn from_args(args: &[String], startup_task: bool, focus: bool) -> Self {
+        let has = |wanted: &str| args.iter().any(|arg| arg == wanted);
+        Self {
+            with_windows: startup_task || has(STARTUP_ARG),
+            asked_to_show: focus || has("--settings"),
+        }
+    }
+
     /// Only a start with Windows stays in the notification area, and only when it wasn't asked to show something.
     /// Where the window was when CodexBar last ran (hidden to the tray, minimized) never hides it: a user who starts
     /// CodexBar expects to see it.
@@ -208,11 +218,12 @@ pub fn settled_normal(normal: Edges, now: Bounds<Pixels>, wanted: Bounds<Pixels>
 /// every start. Called once the window is on its display, so nothing scales it again. The placement is applied from a
 /// task, never while `App` is borrowed: Windows sends the window's move and size messages before `SetWindowPlacement`
 /// returns, and GPUI's handlers for them update the app.
+/// With nothing saved, the window opened at its default bounds and there is nothing to settle.
 #[cfg(windows)]
-pub fn settle(window: &Window, restored: &Restored, cx: &App) {
+pub fn settle(window: &Window, restored: Option<&Restored>, cx: &App) {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, SetWindowPlacement, WINDOWPLACEMENT};
-    let Some(hwnd) = crate::tray::hwnd(window) else {
+    let (Some(restored), Some(hwnd)) = (restored, crate::tray::hwnd(window)) else {
         return;
     };
     let bounds_of = |bounds: WindowBounds| match bounds {
@@ -272,7 +283,7 @@ pub fn settle(window: &Window, restored: &Restored, cx: &App) {
 
 /// Other platforms place the window in one step.
 #[cfg(not(windows))]
-pub fn settle(_: &Window, _: &Restored, _: &App) {}
+pub fn settle(_: &Window, _: Option<&Restored>, _: &App) {}
 
 /// True when enough of the window's title bar lies on `area` to grab it: a window whose bottom edge alone peeks onto
 /// a display can't be moved back.
@@ -518,6 +529,34 @@ mod tests {
         let now = content(8., 31., 1750., 1200.);
         let wanted = content(208., 131., 1000., 700.);
         assert_eq!(settled_normal(normal, now, wanted, 1.), None);
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_run_entry_s_startup_argument_is_a_start_with_windows() {
+        let start = Start::from_args(&args(&["codexbar.exe", STARTUP_ARG]), false, false);
+        assert!(start.with_windows && !start.asked_to_show);
+        assert!(start.stays_hidden());
+    }
+
+    #[test]
+    fn the_package_startup_task_is_a_start_with_windows() {
+        assert!(Start::from_args(&args(&["codexbar.exe"]), true, false).stays_hidden());
+    }
+
+    #[test]
+    fn a_start_with_windows_asked_for_settings_or_an_account_shows_the_window() {
+        assert!(!Start::from_args(&args(&["codexbar.exe", STARTUP_ARG, "--settings"]), false, false).stays_hidden());
+        assert!(!Start::from_args(&args(&["codexbar.exe"]), true, true).stays_hidden());
+    }
+
+    #[test]
+    fn a_plain_start_shows_the_window() {
+        let start = Start::from_args(&args(&["codexbar.exe"]), false, false);
+        assert!(!start.with_windows && !start.asked_to_show);
     }
 
     #[test]

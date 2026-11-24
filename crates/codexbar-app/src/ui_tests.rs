@@ -1792,6 +1792,41 @@ fn the_window_placement_is_saved_once_the_window_rests(cx: &mut TestAppContext) 
     assert_eq!((saved.width, saved.height), (1300., 900.));
 }
 
+// #336: a demo whose preferences are saved to a folder (a capture build's CODEXBAR_DEMO_PREFS) saves its placement
+// there, so its window can be restarted and checked; with in-memory preferences it saves nothing.
+#[gpui_kit::test]
+fn a_demo_with_saved_preferences_saves_its_window_placement(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("placement-demo", "{}");
+    let (handle, _dashboard) = open_dashboard_sized(cx, &settings, size(px(1100.), px(760.)));
+    cx.simulate_window_resize(handle, size(px(1150.), px(780.)));
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0)
+        .window_placement()
+        .cloned()
+        .expect("the demo's placement is in its dashboard.json");
+    assert_eq!((saved.width, saved.height), (1150., 780.));
+}
+
+#[gpui_kit::test]
+fn a_demo_with_in_memory_preferences_saves_no_window_placement(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("placement-demo-memory", "{}");
+    let (handle, _dashboard) = open_dashboard_sized(cx, &settings, size(px(1100.), px(760.)));
+    cx.update(crate::prefs_hub::PrefsHub::init_in_memory);
+    cx.simulate_window_resize(handle, size(px(1150.), px(780.)));
+    cx.executor().advance_clock(std::time::Duration::from_secs(3));
+    cx.run_until_parked();
+    assert!(
+        cx.update(|cx| crate::prefs_hub::PrefsHub::window_placement(cx))
+            .is_none()
+    );
+    assert!(
+        codexbar_store::prefs::DashboardPrefs::load(&settings.0)
+            .window_placement()
+            .is_none()
+    );
+}
+
 // The Resets column always says how long is left (#196), never a weekday, time or date.
 
 #[gpui_kit::test]
