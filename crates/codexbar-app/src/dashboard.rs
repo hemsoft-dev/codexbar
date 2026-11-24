@@ -209,7 +209,7 @@ fn settings_target(
     let group_of = |provider: &str| providers.iter().position(|info| info.id.eq_ignore_ascii_case(provider));
     let hub = SettingsHub::global(cx);
     let records = hub.settings().accounts();
-    if let Some(record) = named_record(failure, owned, records) {
+    if let Some(record) = named_record(failure, owned, hub) {
         return group_of(&record.provider).map(|group| (group, Some(record.clone())));
     }
     let kind = Provider::from_display_name(failure.provider)?;
@@ -234,8 +234,9 @@ fn settings_target(
 fn named_record<'a>(
     failure: &Failure,
     owned: &HashMap<String, String>,
-    records: &'a [codexbar_store::settings::AccountRecord],
+    hub: &'a SettingsHub,
 ) -> Option<&'a codexbar_store::settings::AccountRecord> {
+    let records = hub.settings().accounts();
     // An adapter serves its record whether or not it's enabled; an account that failed in a shared adapter belongs to
     // an enabled record only (a disabled one can remember the same user).
     let (id, any) = match (&failure.account, &failure.outcome) {
@@ -243,33 +244,49 @@ fn named_record<'a>(
         (None, Some(id)) => (id, false),
         (None, None) => return None,
     };
-    let usable = |record: &&codexbar_store::settings::AccountRecord| any || record.enabled;
+    // Only the failed provider's records: another provider's record can carry the same id.
+    let kind = Provider::from_display_name(failure.provider);
+    let usable = |record: &&codexbar_store::settings::AccountRecord| {
+        (any || record.enabled) && kind.is_none_or(|kind| record_kind(record) == Some(kind))
+    };
     if let Some(record) = records.iter().filter(usable).find(|record| &record.id == id) {
         return Some(record);
     }
     // The records owning it, in settings order (a Copilot organization card is owned under "<record id>#org"). Two can
-    // own one account (an OAuth and a Command line record for the same user); the adapter prefers CodexBar's own
-    // sign-in, so an enabled record with it comes first, then any enabled one.
+    // own one account (an OAuth and a Command line record for the same user). The adapter reads CodexBar's own token
+    // when the record has one and the CLI's otherwise, so a signed-in record with CodexBar's sign-in comes first, then
+    // an enabled one without it, then any enabled one.
     let owns = |record: &&codexbar_store::settings::AccountRecord| {
         owned.get(&record.id) == Some(id) || owned.get(&format!("{}#org", record.id)) == Some(id)
     };
     let owners: Vec<&codexbar_store::settings::AccountRecord> = records.iter().filter(usable).filter(owns).collect();
-    let managed = |record: &&&codexbar_store::settings::AccountRecord| crate::managed::Managed::of(record).is_some();
+    let managed = |record: &codexbar_store::settings::AccountRecord| crate::managed::Managed::of(record);
+    let signed_in = |record: &&&codexbar_store::settings::AccountRecord| {
+        record.enabled && managed(record).is_some_and(|kind| kind.signed_in(hub, record))
+    };
     owners
         .iter()
-        .filter(|record| record.enabled)
-        .find(managed)
+        .find(signed_in)
+        .or_else(|| owners.iter().find(|record| record.enabled && managed(record).is_none()))
         .or_else(|| owners.iter().find(|record| record.enabled))
         .or(owners.first())
         .copied()
+}
+
+/// The provider a settings record is for, by its catalog entry.
+fn record_kind(record: &codexbar_store::settings::AccountRecord) -> Option<Provider> {
+    crate::catalog::PROVIDERS
+        .iter()
+        .find(|info| info.id.eq_ignore_ascii_case(&record.provider))
+        .and_then(|info| crate::brand::from_settings_name(info.id))
 }
 
 /// The record a failure row's help goes by (#337), from the record Settings would open and whether the failure named
 /// it; `None` when no help is right. CodexBar's own sign-in signs in one record, so a record the target only fell back
 /// to gets it only from Copilot's shared adapter (the one that also serves CodexBar-signed accounts; every other
 /// provider's have adapters of their own, whose failures name them) and only as Copilot's only enabled record. When
-/// other enabled records use their CLI's sign-in, help goes by the provider's own method (`Some(None)`); when they
-/// are all CodexBar's, which one failed is unknown.
+/// other enabled records use their CLI's or app's sign-in, help goes by the first of them (a Cursor app account keeps
+/// its switch); when they are all CodexBar's, which one failed is unknown.
 fn help_record(
     record: Option<codexbar_store::settings::AccountRecord>,
     named: bool,
@@ -284,12 +301,10 @@ fn help_record(
         .filter(|other| other.enabled && other.provider == guess.provider)
         .collect();
     if enabled.len() == 1 && guess.provider == codexbar_store::settings::names::COPILOT {
-        Some(record)
-    } else if enabled.iter().all(|other| managed(other)) {
-        None
-    } else {
-        Some(None)
+        return Some(record);
     }
+    let other = enabled.into_iter().find(|other| !managed(other))?;
+    Some(Some(other.clone()))
 }
 
 /// True when `record` owns a dashboard account other than the one that failed (#337): a failure of one Copilot user
@@ -885,9 +900,9 @@ impl Dashboard {
         let (group, record) = settings_target(failure, &self.owned_ids, cx)?;
         // CodexBar's own sign-in only for the account's own record (`help_record`): a record the target fell back to
         // (an OAuth record beside a GitHub CLI user, an OpenCode OAuth record beside the cookie) is a guess.
-        let records = SettingsHub::global(cx).settings().accounts();
-        let named = named_record(failure, &self.owned_ids, records).is_some();
-        let record = help_record(record, named, records)?;
+        let hub = SettingsHub::global(cx);
+        let named = named_record(failure, &self.owned_ids, hub).is_some();
+        let record = help_record(record, named, hub.settings().accounts())?;
         crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref())
     }
 

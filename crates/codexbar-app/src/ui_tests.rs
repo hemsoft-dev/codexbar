@@ -1997,17 +1997,109 @@ fn several_oauth_records_failing_as_one_offer_no_guess(cx: &mut TestAppContext) 
     assert!(visible(cx, handle, "fix-Copilot"), "Open settings stays");
 }
 
-// SFL on #340: an OAuth and a Command line record for the same user both own Bob's account. Copilot prefers the OAuth
-// token, so his row signs the OAuth record in, whichever record the ownership map happens to list first.
-#[gpui_kit::test]
-fn a_user_two_records_own_gets_the_sign_in_copilot_reads(cx: &mut TestAppContext) {
+/// Bob's row with an OAuth and a Command line record both owning his account, in that settings order reversed (the
+/// Command line record first); `signed_in` gives the OAuth record a saved token.
+fn bob_owned_twice(
+    cx: &mut TestAppContext,
+    name: &str,
+    signed_in: bool,
+) -> (Entity<Dashboard>, AnyWindowHandle, TempSettings) {
     let settings = TempSettings::new(
-        "failure-copilot-shared-identity",
+        name,
         r#"{ "accountConfigurationVersion": 1, "accounts": [
             { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "CLI", "enabled": true,
               "authenticationMethod": "CommandLine", "externalAccountId": "bob" },
             { "id": "cp-oauth", "providerId": "Copilot", "displayLabel": "OAuth", "enabled": true,
               "authenticationMethod": "OAuth", "externalAccountId": "bob" } ] }"#,
+    );
+    let store = MemoryCredentialStore::default();
+    if signed_in {
+        codexbar_store::credentials::write_long(&store, "cp-oauth", "gho_test_token").unwrap();
+    }
+    let dashboard = open_live_dyn(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
+        store,
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    (dashboard, handle, settings)
+}
+
+// SFL on #340: Copilot reads CodexBar's own token for Bob when his OAuth record has one, so his row signs that record
+// in, whichever record the ownership map lists first.
+#[gpui_kit::test]
+fn a_user_two_records_own_gets_the_sign_in_copilot_reads(cx: &mut TestAppContext) {
+    let (dashboard, handle, _settings) = bob_owned_twice(cx, "failure-copilot-shared-identity", true);
+    assert!(visible(cx, handle, "sign-in-Copilot-bob"), "the OAuth record's sign-in");
+    assert!(!visible(cx, handle, "cli-sign-in-Copilot-bob"));
+    let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
+    assert_eq!(target.as_deref(), Some("cp-oauth"));
+}
+
+// SFL on #340: with no token on the OAuth record, Copilot reads the GitHub CLI's for Bob, so a rejected one is the
+// CLI's to fix.
+#[gpui_kit::test]
+fn a_user_whose_codexbar_sign_in_is_gone_gets_the_github_cli_s(cx: &mut TestAppContext) {
+    let (dashboard, handle, _settings) = bob_owned_twice(cx, "failure-copilot-shared-signed-out", false);
+    assert!(
+        visible(cx, handle, "cli-sign-in-Copilot-bob"),
+        "the GitHub CLI's sign-in"
+    );
+    assert!(!visible(cx, handle, "sign-in-Copilot-bob"));
+    let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
+    assert_eq!(target.as_deref(), Some("cp-cli"));
+}
+
+// SFL on #340: a Cursor app account reported under its token's identity (owned by no record) beside an OAuth record
+// keeps its switch: help goes by the Cursor app record, not the OAuth record the target fell back to.
+#[cfg(not(target_os = "macos"))]
+#[gpui_kit::test]
+fn a_cursor_app_account_reported_by_its_identity_keeps_its_switch(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-cursor-identity",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cu-oauth", "providerId": "Cursor", "displayLabel": "OAuth", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "user_oauth" },
+            { "id": "cu-app", "providerId": "Cursor", "displayLabel": "App", "enabled": true,
+              "authenticationMethod": "Automatic" } ] }"#,
+    );
+    let cursor =
+        FakeProvider::for_account(Provider::Cursor, "user_app", None).failing_with(ProviderError::NotSignedIn {
+            hint: "Sign in to Cursor, then refresh CodexBar.",
+        });
+    let _dashboard = open_live(cx, &settings, vec![cursor]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "switch-sign-in-Cursor-user_app"),
+        "the app account's switch"
+    );
+    assert!(
+        !visible(cx, handle, "sign-in-Cursor-user_app"),
+        "not the OAuth record's sign-in"
+    );
+}
+
+// SFL on #340: another provider's record whose id happens to equal Bob's Copilot account never takes his failure.
+#[gpui_kit::test]
+fn another_provider_s_record_never_takes_a_copilot_failure(cx: &mut TestAppContext) {
+    let bob = codexbar_providers::copilot::account_id("bob");
+    let settings = TempSettings::new(
+        "failure-copilot-foreign-id",
+        &format!(
+            r#"{{ "accountConfigurationVersion": 1, "accounts": [
+                {{ "id": "{bob}", "providerId": "OpenRouter", "displayLabel": "Same id", "enabled": true,
+                  "authenticationMethod": "ApiKey" }},
+                {{ "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+                  "authenticationMethod": "CommandLine" }} ] }}"#,
+            bob = bob.as_str()
+        ),
     );
     let dashboard = open_live_fixed(
         cx,
@@ -2015,15 +2107,13 @@ fn a_user_two_records_own_gets_the_sign_in_copilot_reads(cx: &mut TestAppContext
         vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
     );
     cx.run_until_parked();
-    let handle = cx.windows()[0];
-    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
-        .unwrap();
-    assert!(visible(cx, handle, "sign-in-Copilot-bob"), "the OAuth record's sign-in");
-    assert!(!visible(cx, handle, "cli-sign-in-Copilot-bob"));
     let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
-    assert_eq!(target.as_deref(), Some("cp-oauth"));
+    assert_eq!(
+        target.as_deref(),
+        Some("cp-cli"),
+        "the Copilot record, not the OpenRouter one"
+    );
 }
-
 // SFL on #340: the implicit OpenCode cookie adapter failing beside the one OAuth record (whose own adapter would name
 // it) gets no OAuth sign-in.
 #[gpui_kit::test]

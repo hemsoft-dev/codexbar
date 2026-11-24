@@ -100,6 +100,11 @@ impl SignInWindow {
         let program = program(cli).ok_or(CliSignInError::NotInstalled)?;
         let mut command = crate::platform::command(&program);
         command.args(args(cli));
+        // CodexBar's working folder, which the terminal (macOS and Linux) otherwise wouldn't start in: a relative
+        // program or profile path then resolves where CodexBar's refresh resolves it.
+        if let Ok(folder) = std::env::current_dir() {
+            command.current_dir(folder);
+        }
         // The profile CodexBar reads, set on the command itself: a console started through a terminal (macOS and
         // Linux) gets only what is set here, and would otherwise sign in whatever profile the terminal points at.
         for (name, value) in profile(cli) {
