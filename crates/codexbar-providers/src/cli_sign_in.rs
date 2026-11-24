@@ -394,7 +394,11 @@ mod tests {
     fn the_codex_sign_in_keeps_the_environment_s_tokens() {
         let command = command_for(Cli::Codex, std::path::Path::new("codex"), Vec::new());
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["login"]);
-        assert!(command.get_envs().next().is_none(), "nothing set or removed");
+        // Nothing set or removed, apart from the PATH `platform::command` gives a CLI on macOS and Linux.
+        assert!(
+            command.get_envs().all(|(name, _)| name == "PATH"),
+            "nothing set or removed"
+        );
     }
 
     #[test]
