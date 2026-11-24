@@ -93,7 +93,9 @@ impl SignInWindow {
             return open_claude();
         }
         let program = program(cli).ok_or(CliSignInError::NotInstalled)?;
-        let mut command = command_for(cli, crate::platform::command(&program), profile(cli));
+        let profile = profile(cli);
+        prepare(&profile);
+        let mut command = command_for(cli, crate::platform::command(&program), profile);
         crate::contained::spawn_console(&mut command)
             .map(|process| Self(Window::Console(process)))
             .map_err(start_error)
@@ -157,6 +159,16 @@ fn command_for(cli: Cli, mut command: Command, profile: Vec<(&'static str, std::
         }
     }
     command
+}
+
+/// Makes the profile folders a sign-in names, so a first sign-in can start: the Codex CLI refuses a `CODEX_HOME` that
+/// doesn't exist yet, where on its own it would make `~/.codex`. The GitHub CLI's folder is left to the GitHub CLI.
+fn prepare(profile: &[(&'static str, std::ffi::OsString)]) {
+    for (name, folder) in profile {
+        if matches!(*name, "CODEX_HOME" | "GROK_HOME") {
+            let _ = std::fs::create_dir_all(folder);
+        }
+    }
 }
 
 /// Why a console couldn't start.
@@ -395,6 +407,23 @@ mod tests {
         let command = command_for(Cli::Codex, Command::new("codex"), Vec::new());
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["login"]);
         assert!(command.get_envs().next().is_none(), "nothing set or removed");
+    }
+
+    #[test]
+    fn a_first_sign_in_gets_the_codex_and_grok_folders_it_names() {
+        let root = std::env::temp_dir().join(format!("codexbar-cli-prepare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let codex = root.join("codex-home");
+        let grok = root.join("grok-home");
+        let gh = root.join("gh-config");
+        prepare(&[
+            ("CODEX_HOME", codex.clone().into_os_string()),
+            ("GROK_HOME", grok.clone().into_os_string()),
+            ("GH_CONFIG_DIR", gh.clone().into_os_string()),
+        ]);
+        assert!(codex.is_dir() && grok.is_dir());
+        assert!(!gh.exists(), "the GitHub CLI makes its own folder");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
