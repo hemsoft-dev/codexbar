@@ -165,24 +165,46 @@ fn args(cli: Cli) -> &'static [&'static str] {
     }
 }
 
-/// The profile the CLI signs in, as the variables naming it: the folder its provider reads (`CODEX_HOME`, or
-/// `~/.codex`; `GROK_HOME`, or `~/.grok`), and the GitHub CLI's `GH_CONFIG_DIR` and `XDG_CONFIG_HOME` when CodexBar
-/// runs with them.
+/// The profile the CLI signs in, as the variable naming the folder CodexBar reads, always set: `CODEX_HOME` (or
+/// `~/.codex`), `GROK_HOME` (or `~/.grok`), or the GitHub CLI's `GH_CONFIG_DIR`, resolved the way the GitHub CLI
+/// resolves it. A terminal's own setting then can't point the sign-in at another profile.
 fn profile(cli: Cli) -> Vec<(&'static str, std::ffi::OsString)> {
-    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    let home = |name: &'static str, folder: &str| {
-        set(name)
-            .or_else(|| crate::platform::home_dir().map(|home| home.join(folder).into_os_string()))
-            .map(|value| (name, value))
-    };
+    let get = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    profile_in(cli, &get, crate::platform::home_dir(), cfg!(windows))
+}
+
+/// `profile` with the environment (`get`, which treats an empty value as unset), the home folder and the platform
+/// given.
+fn profile_in(
+    cli: Cli,
+    get: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+    windows: bool,
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    let at_home = |folder: &str| home.as_ref().map(|home| home.join(folder).into_os_string());
+    let named = |name: &'static str, value: Option<std::ffi::OsString>| value.map(|value| (name, value));
     match cli {
-        // The GitHub CLI finds its profile through GH_CONFIG_DIR, then XDG_CONFIG_HOME.
-        Cli::GitHub => ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]
+        // GH_CONFIG_DIR, else $XDG_CONFIG_HOME/gh, else $AppData/GitHub CLI on Windows, else ~/.config/gh
+        // (https://cli.github.com/manual/gh_help_environment).
+        Cli::GitHub => named(
+            "GH_CONFIG_DIR",
+            get("GH_CONFIG_DIR")
+                .or_else(|| get("XDG_CONFIG_HOME").map(|xdg| PathBuf::from(xdg).join("gh").into_os_string()))
+                .or_else(|| {
+                    get("AppData")
+                        .filter(|_| windows)
+                        .map(|app_data| PathBuf::from(app_data).join("GitHub CLI").into_os_string())
+                })
+                .or_else(|| at_home(".config/gh")),
+        )
+        .into_iter()
+        .collect(),
+        Cli::Codex => named("CODEX_HOME", get("CODEX_HOME").or_else(|| at_home(".codex")))
             .into_iter()
-            .filter_map(|name| set(name).map(|value| (name, value)))
             .collect(),
-        Cli::Codex => home("CODEX_HOME", ".codex").into_iter().collect(),
-        Cli::Grok => home("GROK_HOME", ".grok").into_iter().collect(),
+        Cli::Grok => named("GROK_HOME", get("GROK_HOME").or_else(|| at_home(".grok")))
+            .into_iter()
+            .collect(),
         // Claude Code's folder is set by `claude_cli`.
         Cli::Claude => Vec::new(),
     }
@@ -220,17 +242,68 @@ mod tests {
         }
     }
 
+    /// `profile_in` over a fixed environment and home folder; never the real ones.
+    fn resolve(cli: Cli, env: &[(&str, &str)], windows: bool) -> Vec<(&'static str, std::ffi::OsString)> {
+        let env: std::collections::HashMap<String, String> = env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let get = |name: &str| {
+            env.get(name)
+                .filter(|value| !value.is_empty())
+                .map(std::ffi::OsString::from)
+        };
+        profile_in(cli, &get, Some(PathBuf::from("home")), windows)
+    }
+
+    fn one(name: &'static str, path: PathBuf) -> Vec<(&'static str, std::ffi::OsString)> {
+        vec![(name, path.into_os_string())]
+    }
+
     #[test]
     fn the_codex_and_grok_sign_ins_name_the_folder_codexbar_reads() {
-        let names = |cli| profile(cli).into_iter().map(|(name, _)| name).collect::<Vec<_>>();
-        assert_eq!(names(Cli::Codex), ["CODEX_HOME"]);
-        assert_eq!(names(Cli::Grok), ["GROK_HOME"]);
-        assert!(names(Cli::Claude).is_empty(), "claude_cli sets Claude Code's folder");
-        let codex = profile(Cli::Codex).remove(0).1;
         assert_eq!(
-            std::path::Path::new(&codex).join("auth.json"),
-            crate::codex::default_auth_path(),
-            "the same auth.json the Codex provider reads"
+            resolve(Cli::Codex, &[], false),
+            one("CODEX_HOME", PathBuf::from("home").join(".codex"))
+        );
+        assert_eq!(
+            resolve(Cli::Codex, &[("CODEX_HOME", "codex-home")], false),
+            one("CODEX_HOME", PathBuf::from("codex-home"))
+        );
+        assert_eq!(
+            resolve(Cli::Grok, &[], false),
+            one("GROK_HOME", PathBuf::from("home").join(".grok"))
+        );
+        assert_eq!(
+            resolve(Cli::Grok, &[("GROK_HOME", "")], false),
+            one("GROK_HOME", PathBuf::from("home").join(".grok")),
+            "an empty value is unset"
+        );
+        assert!(
+            resolve(Cli::Claude, &[], false).is_empty(),
+            "claude_cli sets Claude Code's folder"
+        );
+    }
+
+    #[test]
+    fn the_github_cli_sign_in_always_names_the_profile_the_github_cli_reads() {
+        let gh = |env: &[(&str, &str)], windows| resolve(Cli::GitHub, env, windows);
+        assert_eq!(
+            gh(&[("GH_CONFIG_DIR", "gh-dir"), ("XDG_CONFIG_HOME", "xdg")], true),
+            one("GH_CONFIG_DIR", PathBuf::from("gh-dir"))
+        );
+        assert_eq!(
+            gh(&[("XDG_CONFIG_HOME", "xdg"), ("AppData", "roaming")], true),
+            one("GH_CONFIG_DIR", PathBuf::from("xdg").join("gh"))
+        );
+        assert_eq!(
+            gh(&[("AppData", "roaming")], true),
+            one("GH_CONFIG_DIR", PathBuf::from("roaming").join("GitHub CLI"))
+        );
+        assert_eq!(
+            gh(&[("AppData", "roaming")], false),
+            one("GH_CONFIG_DIR", PathBuf::from("home").join(".config/gh")),
+            "AppData counts on Windows only"
         );
     }
 
