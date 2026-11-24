@@ -162,6 +162,19 @@ fn already_running() -> bool {
     }
 }
 
+/// A launch that found CodexBar already running: a widget tile (#95) or a second launch has the running CodexBar show
+/// its window, on the tile's account. A start with Windows that finds it running (the user started it before Windows
+/// got to the Run entry) leaves the running window as it is (#336).
+fn hand_over(args: &[String], focus: Option<&handoff::FocusRequest>, settings_dir: &std::path::Path) {
+    if placement::Start::from_args(args, package::launched_at_startup(), focus.is_some()).stays_hidden() {
+        return;
+    }
+    if let Some(request) = focus {
+        let _ = handoff::write_request(settings_dir, request);
+    }
+    handoff::signal(settings_dir, &instance());
+}
+
 fn main() {
     // Settings, history and sign-ins in ~/.codexbar stay readable by this user only (#161).
     #[cfg(unix)]
@@ -193,16 +206,7 @@ fn main() {
     let handoff_listener = handoff::listen(&settings_dir, &instance());
     let args: Vec<String> = std::env::args().collect();
     if already_running() {
-        // A start with Windows that finds CodexBar already running (the user started it before Windows got to the
-        // Run entry) leaves the running window as it is (#336).
-        if placement::Start::from_args(&args, package::launched_at_startup(), focus.is_some()).stays_hidden() {
-            return;
-        }
-        // A widget tile (#95) or a second launch: the running CodexBar shows its window, on the tile's account.
-        if let Some(request) = &focus {
-            let _ = handoff::write_request(&settings_dir, request);
-        }
-        handoff::signal(&settings_dir, &instance());
+        hand_over(&args, focus.as_ref(), &settings_dir);
         return;
     }
     gpui_kit::application().with_assets(assets::Assets).run(move |cx| {
