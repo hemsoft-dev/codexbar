@@ -1544,6 +1544,17 @@ impl crate::sign_in_help::CliSignIn for FakeCliSignIn {
     }
 }
 
+#[gpui_kit::test]
+fn the_console_cli_sign_in_is_the_default_until_a_test_sets_another(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        assert!(cx.try_global::<crate::sign_in_help::Service>().is_none());
+        // Without a service set, the console one; never asked to sign in here.
+        let _console = crate::sign_in_help::service(cx);
+        crate::sign_in_help::init(cx);
+        assert!(cx.try_global::<crate::sign_in_help::Service>().is_some());
+    });
+}
+
 /// A Copilot account on the GitHub CLI's own sign-in (Command line), signed out.
 fn signed_out_copilot(
     cx: &mut TestAppContext,

@@ -92,15 +92,9 @@ impl SignInWindow {
         if cli == Cli::Claude {
             return open_claude();
         }
-        let program = program(cli).ok_or(CliSignInError::NotInstalled)?;
-        let profile = profile(cli);
-        prepare(&profile);
-        let mut command = command_for(cli, crate::platform::command(&program), profile);
-        crate::contained::spawn_console(&mut command)
-            .map(|process| Self(Window::Console(process)))
-            .map_err(start_error)
+        let base = program(cli).map(crate::platform::command);
+        open_with(cli, base, profile(cli), crate::contained::spawn_console)
     }
-
     /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success.
     pub fn finish(
         self,
@@ -126,6 +120,22 @@ impl SignInWindow {
             ),
         }
     }
+}
+
+/// `open` for a CLI other than Claude Code: `base` is the command for its program, `None` when it isn't installed, and
+/// `spawn` starts it in a console of its own.
+fn open_with(
+    cli: Cli,
+    base: Option<Command>,
+    profile: Vec<(&'static str, std::ffi::OsString)>,
+    spawn: impl FnOnce(&mut Command) -> std::io::Result<crate::contained::Contained>,
+) -> Result<SignInWindow, CliSignInError> {
+    let base = base.ok_or(CliSignInError::NotInstalled)?;
+    prepare(&profile);
+    let mut command = command_for(cli, base, profile);
+    spawn(&mut command)
+        .map(|process| SignInWindow(Window::Console(process)))
+        .map_err(start_error)
 }
 
 /// Claude Code's sign-in for its own folder, with its environment set the way CodexBar reads it (`claude_cli`).
@@ -424,6 +434,44 @@ mod tests {
         assert!(codex.is_dir() && grok.is_dir());
         assert!(!gh.exists(), "the GitHub CLI makes its own folder");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn each_cli_names_itself() {
+        let names = [Cli::GitHub, Cli::Codex, Cli::Claude, Cli::Grok].map(Cli::name);
+        assert_eq!(
+            names,
+            ["the GitHub CLI", "the Codex CLI", "Claude Code", "the Grok CLI"]
+        );
+    }
+
+    #[test]
+    fn a_cli_that_isnt_installed_never_starts() {
+        let mut started = false;
+        let result = open_with(Cli::Codex, None, Vec::new(), |_| {
+            started = true;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
+        assert!(matches!(result, Err(CliSignInError::NotInstalled)));
+        assert!(!started, "nothing to start");
+    }
+
+    #[test]
+    fn a_console_that_fails_to_start_says_why_after_running_the_cli_s_own_sign_in() {
+        let mut ran = Vec::new();
+        let result = open_with(Cli::Codex, Some(Command::new("codex")), Vec::new(), |command| {
+            ran = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        });
+        assert!(matches!(result, Err(CliSignInError::NotInstalled)));
+        assert_eq!(ran, ["login"]);
+        let result = open_with(Cli::Grok, Some(Command::new("grok")), Vec::new(), |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert!(matches!(result, Err(CliSignInError::Start(_))));
     }
 
     #[test]
