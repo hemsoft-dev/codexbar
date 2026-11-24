@@ -887,6 +887,30 @@ impl Dashboard {
         }
     }
 
+    /// The account a row's "Use CodexBar's sign-in" moves: the one its help picked, not Settings' first guess.
+    fn switch_record(&self, failure: &Failure, cx: &gpui_kit::App) -> Option<codexbar_store::settings::AccountRecord> {
+        match self.sign_in_help(failure, cx)? {
+            crate::sign_in_help::Help::Switch(record) => Some(record),
+            crate::sign_in_help::Help::Cli { switch, .. } => switch,
+            crate::sign_in_help::Help::Managed { .. } => None,
+        }
+    }
+
+    /// The record a failure row's "Use CodexBar's sign-in" would open, for the headless UI tests.
+    #[cfg(test)]
+    pub fn switch_target_record(
+        &self,
+        provider: &'static str,
+        account: Option<String>,
+        cx: &gpui_kit::App,
+    ) -> Option<String> {
+        self.failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .and_then(|failure| self.switch_record(failure, cx))
+            .map(|record| record.id)
+    }
+
     /// The failure a row's button belongs to.
     fn failure(&self, key: &FailureKey) -> Option<&Failure> {
         self.failures.iter().find(|failure| failure.key() == *key)
@@ -1075,10 +1099,13 @@ impl Dashboard {
     /// A failure row's "Use CodexBar's sign-in" (#337): Settings on the account, with its dialog open, where choosing
     /// CodexBar's sign-in applies the same rules as any other change of method.
     pub fn switch_sign_in(&mut self, key: &FailureKey, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self
-            .failure(key)
-            .and_then(|failure| settings_target(failure, &self.owned_ids, cx));
-        let Some((group, Some(record))) = target else {
+        let Some(record) = self.failure(key).and_then(|failure| self.switch_record(failure, cx)) else {
+            return;
+        };
+        let Some(group) = crate::catalog::PROVIDERS
+            .iter()
+            .position(|info| info.id.eq_ignore_ascii_case(&record.provider))
+        else {
             return;
         };
         self.settings_start = Some(gpui_kit::component::setting::SelectIndex {

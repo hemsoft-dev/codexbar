@@ -1875,7 +1875,7 @@ fn a_discovered_github_cli_user_never_gets_an_oauth_record_s_sign_in(cx: &mut Te
             { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
               "authenticationMethod": "CommandLine" } ] }"#,
     );
-    let _dashboard = open_live_fixed(
+    let dashboard = open_live_fixed(
         cx,
         &settings,
         vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
@@ -1884,6 +1884,10 @@ fn a_discovered_github_cli_user_never_gets_an_oauth_record_s_sign_in(cx: &mut Te
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
+    // Codex on #340: the switch moves the Command line record the help picked, not the OAuth record Settings would
+    // open first.
+    let switch = cx.update(|cx| dashboard.read(cx).switch_target_record("Copilot", None, cx));
+    assert_eq!(switch.as_deref(), Some("cp-cli"));
     assert!(
         visible(cx, handle, "cli-sign-in-Copilot-bob"),
         "Bob signs the GitHub CLI in"
@@ -2071,7 +2075,7 @@ fn a_cursor_app_account_reported_by_its_identity_keeps_its_switch(cx: &mut TestA
         FakeProvider::for_account(Provider::Cursor, "user_app", None).failing_with(ProviderError::NotSignedIn {
             hint: "Sign in to Cursor, then refresh CodexBar.",
         });
-    let _dashboard = open_live(cx, &settings, vec![cursor]);
+    let dashboard = open_live(cx, &settings, vec![cursor]);
     cx.run_until_parked();
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
@@ -2084,6 +2088,18 @@ fn a_cursor_app_account_reported_by_its_identity_keeps_its_switch(cx: &mut TestA
         !visible(cx, handle, "sign-in-Cursor-user_app"),
         "not the OAuth record's sign-in"
     );
+    // Codex on #340: the switch moves the app account, not the OAuth record Settings would open first.
+    let target = cx.update(|cx| {
+        dashboard
+            .read(cx)
+            .switch_target_record("Cursor", Some("user_app".to_owned()), cx)
+    });
+    assert_eq!(target.as_deref(), Some("cu-app"));
+    click(cx, handle, "switch-sign-in-Cursor-user_app");
+    assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Settings);
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "account-save"), "the app account's dialog");
 }
 
 // SFL on #340: another provider's record whose id happens to equal Bob's Copilot account never takes his failure.
