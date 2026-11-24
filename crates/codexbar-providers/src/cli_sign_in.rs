@@ -171,6 +171,15 @@ fn args(cli: Cli) -> &'static [&'static str] {
 fn profile(cli: Cli) -> Vec<(&'static str, std::ffi::OsString)> {
     let get = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
     profile_in(cli, &get, crate::platform::home_dir(), cfg!(windows))
+        .into_iter()
+        .map(|(name, value)| (name, absolute(value)))
+        .collect()
+}
+
+/// `value` as an absolute path, against CodexBar's working folder: a relative one would otherwise resolve against
+/// wherever the console's terminal starts.
+fn absolute(value: std::ffi::OsString) -> std::ffi::OsString {
+    std::path::absolute(PathBuf::from(&value)).map_or(value, PathBuf::into_os_string)
 }
 
 /// `profile` with the environment (`get`, which treats an empty value as unset), the home folder and the platform
@@ -305,6 +314,15 @@ mod tests {
             one("GH_CONFIG_DIR", PathBuf::from("home").join(".config/gh")),
             "AppData counts on Windows only"
         );
+    }
+
+    #[test]
+    fn a_relative_profile_is_made_absolute() {
+        let made = PathBuf::from(absolute("relative-profile".into()));
+        assert!(made.is_absolute());
+        assert!(made.ends_with("relative-profile"));
+        let already = std::env::temp_dir().join("profile").into_os_string();
+        assert_eq!(absolute(already.clone()), already);
     }
 
     #[test]

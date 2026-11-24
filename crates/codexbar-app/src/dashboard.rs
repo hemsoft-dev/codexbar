@@ -244,23 +244,32 @@ fn named_record<'a>(
         (None, None) => return None,
     };
     let usable = |record: &&codexbar_store::settings::AccountRecord| any || record.enabled;
-    records
+    if let Some(record) = records.iter().filter(usable).find(|record| &record.id == id) {
+        return Some(record);
+    }
+    // The records owning it, in settings order (a Copilot organization card is owned under "<record id>#org"). Two can
+    // own one account (an OAuth and a Command line record for the same user); the adapter prefers CodexBar's own
+    // sign-in, so an enabled record with it comes first, then any enabled one.
+    let owns = |record: &&codexbar_store::settings::AccountRecord| {
+        owned.get(&record.id) == Some(id) || owned.get(&format!("{}#org", record.id)) == Some(id)
+    };
+    let owners: Vec<&codexbar_store::settings::AccountRecord> = records.iter().filter(usable).filter(owns).collect();
+    let managed = |record: &&&codexbar_store::settings::AccountRecord| crate::managed::Managed::of(record).is_some();
+    owners
         .iter()
-        .filter(usable)
-        .find(|record| &record.id == id)
-        .or_else(|| {
-            let owner = owned
-                .iter()
-                .find(|(_, account)| *account == id)
-                .and_then(|(key, _)| key.split('#').next())?;
-            records.iter().filter(usable).find(|record| record.id == owner)
-        })
+        .filter(|record| record.enabled)
+        .find(managed)
+        .or_else(|| owners.iter().find(|record| record.enabled))
+        .or(owners.first())
+        .copied()
 }
 
 /// The record a failure row's help goes by (#337), from the record Settings would open and whether the failure named
 /// it; `None` when no help is right. CodexBar's own sign-in signs in one record, so a record the target only fell back
-/// to gets it when it is its provider's only enabled record. When other enabled records use their CLI's sign-in, help
-/// goes by the provider's own method (`Some(None)`); when they are all CodexBar's, which one failed is unknown.
+/// to gets it only from Copilot's shared adapter (the one that also serves CodexBar-signed accounts; every other
+/// provider's have adapters of their own, whose failures name them) and only as Copilot's only enabled record. When
+/// other enabled records use their CLI's sign-in, help goes by the provider's own method (`Some(None)`); when they
+/// are all CodexBar's, which one failed is unknown.
 fn help_record(
     record: Option<codexbar_store::settings::AccountRecord>,
     named: bool,
@@ -274,7 +283,7 @@ fn help_record(
         .iter()
         .filter(|other| other.enabled && other.provider == guess.provider)
         .collect();
-    if enabled.len() == 1 {
+    if enabled.len() == 1 && guess.provider == codexbar_store::settings::names::COPILOT {
         Some(record)
     } else if enabled.iter().all(|other| managed(other)) {
         None
@@ -955,6 +964,10 @@ impl Dashboard {
     /// Under the row's message (#337): what happened when a CLI's sign-in didn't sign in, with a link to get the CLI
     /// when it isn't installed.
     fn sign_in_note(&self, failure: &Failure, cx: &Context<Self>) -> Option<gpui_kit::AnyElement> {
+        // Only under a sign-in failure: a note left from an earlier attempt never shows under another kind.
+        if !failure.sign_in {
+            return None;
+        }
         let suffix = failure.element_suffix();
         let error = match self.cli_sign_ins.get(&suffix)? {
             CliSignIn::Failed(error) => error,
