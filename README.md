@@ -35,7 +35,10 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 - **Alerts** when an account nears or hits its limit
 - **Groups and ordering** by urgency or by hand
 - **Fix sign-ins from the dashboard**: a provider whose key or sign-in no longer works shows **Open settings**,
-  which lands on that account in Settings
+  which lands on that account in Settings. A signed-out account also offers its sign-in right there: CodexBar's own
+  (**Sign in…**, **Connect Antigravity…**), or its CLI's (`gh auth login`, `codex login`, `claude auth login`,
+  `grok login`) run in a console window for you, with a link to the GitHub CLI's instructions, and **Use CodexBar's
+  sign-in…** where CodexBar can sign the account in instead. Nothing starts without a click
 - **System, light and dark appearance**, following Windows high contrast
 - **Remembers its window**: the display, position, size and maximized state come back after a restart, with a
   visible fallback when that display is gone. Starting CodexBar shows the window; only a start with Windows stays in

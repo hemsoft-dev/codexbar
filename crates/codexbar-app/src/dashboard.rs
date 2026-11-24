@@ -127,12 +127,32 @@ struct Failure {
     account: Option<String>,
     /// That account's label, to tell sibling failures apart.
     label: Option<String>,
+    /// The dashboard account that failed, when the adapter reported it by itself among others (Copilot's one adapter
+    /// serves every Copilot account): what finds the failed account's own record for Settings and sign-in (#337).
+    outcome: Option<String>,
     message: String,
     /// The sign-in or key is the problem, so the row offers Settings beside Retry (#188).
     sign_in: bool,
 }
 
+/// What tells one failure row from every other (#337): one adapter (Copilot's) can report several failed accounts in
+/// the same refresh, all under the same provider and adapter account.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FailureKey {
+    provider: &'static str,
+    account: Option<String>,
+    outcome: Option<String>,
+}
+
 impl Failure {
+    fn key(&self) -> FailureKey {
+        FailureKey {
+            provider: self.provider,
+            account: self.account.clone(),
+            outcome: self.outcome.clone(),
+        }
+    }
+
     /// "OpenRouter · Team" for one labelled account of several, else the provider name.
     fn name(&self) -> String {
         match &self.label {
@@ -151,12 +171,35 @@ impl Failure {
     }
 }
 
+/// A CLI's sign-in started from a failure row (#337).
+#[derive(Clone, Debug, PartialEq)]
+enum CliSignIn {
+    Running,
+    Failed(codexbar_providers::cli_sign_in::CliSignInError),
+    /// CodexBar's own sign-in stopped before it could open (it couldn't make the account's folder, say): its message,
+    /// which would otherwise show only in Settings.
+    Notice(SharedString),
+}
+
+/// What a failure row says about its sign-in (#337), under the provider's own message.
+fn note(suffix: &str, text: SharedString, cx: &gpui_kit::App) -> gpui_kit::AnyElement {
+    div()
+        .id(SharedString::from(format!("cli-note-{suffix}")))
+        .role(Role::Note)
+        .test_support()
+        .aria_label(text.clone())
+        .text_color(cx.theme().warning)
+        .child(text)
+        .into_any_element()
+}
+
 /// Where Settings opens for a failure (#188): the failed provider's group on the Accounts page (its index in the
 /// catalog) and the account record to edit, when one is known. An adapter for one configured account names it,
 /// by the record's id or by the dashboard account the record owns (a Codex or Claude account CodexBar signed in
 /// reports under its identity, a Copilot one under its username); `owned` maps record ids to those. A
 /// provider-wide failure (OpenCode's cookie adapter, which covers Go and Zen) goes to its first enabled record,
-/// then any record, then the provider's first group with none.
+/// then any record, then the provider's first group with none. One account failing in an adapter that serves several
+/// (Copilot's) is found by the account it reported (#337), and never falls back to a record that owns another.
 fn settings_target(
     failure: &Failure,
     owned: &HashMap<String, String>,
@@ -166,25 +209,17 @@ fn settings_target(
     let group_of = |provider: &str| providers.iter().position(|info| info.id.eq_ignore_ascii_case(provider));
     let hub = SettingsHub::global(cx);
     let records = hub.settings().accounts();
-    let named = failure.account.as_ref().and_then(|id| {
-        records.iter().find(|record| &record.id == id).or_else(|| {
-            // A Copilot organization card is owned under "<record id>#org".
-            let owner = owned
-                .iter()
-                .find(|(_, account)| *account == id)
-                .and_then(|(key, _)| key.split('#').next())?;
-            records.iter().find(|record| record.id == owner)
-        })
-    });
-    if let Some(record) = named {
+    if let Some(record) = named_record(failure, owned, hub) {
         return group_of(&record.provider).map(|group| (group, Some(record.clone())));
     }
     let kind = Provider::from_display_name(failure.provider)?;
     let of_kind = |provider: &str| {
         group_of(provider).is_some_and(|group| crate::brand::from_settings_name(providers[group].id) == Some(kind))
     };
-    let siblings: Vec<&codexbar_store::settings::AccountRecord> =
-        records.iter().filter(|record| of_kind(&record.provider)).collect();
+    let siblings: Vec<&codexbar_store::settings::AccountRecord> = records
+        .iter()
+        .filter(|record| of_kind(&record.provider) && !owns_another(failure, owned, record))
+        .collect();
     match siblings.iter().find(|record| record.enabled).or(siblings.first()) {
         Some(record) => group_of(&record.provider).map(|group| (group, Some((*record).clone()))),
         None => providers
@@ -192,6 +227,99 @@ fn settings_target(
             .position(|info| crate::brand::from_settings_name(info.id) == Some(kind))
             .map(|group| (group, None)),
     }
+}
+
+/// The record a failure names: by the adapter's configured account (its record id, or the dashboard account a record
+/// owns), else by the account that failed (#337). A Copilot organization card is owned under "<record id>#org".
+fn named_record<'a>(
+    failure: &Failure,
+    owned: &HashMap<String, String>,
+    hub: &'a SettingsHub,
+) -> Option<&'a codexbar_store::settings::AccountRecord> {
+    let records = hub.settings().accounts();
+    // An adapter serves its record whether or not it's enabled; an account that failed in a shared adapter belongs to
+    // an enabled record only (a disabled one can remember the same user).
+    let (id, any) = match (&failure.account, &failure.outcome) {
+        (Some(id), _) => (id, true),
+        (None, Some(id)) => (id, false),
+        (None, None) => return None,
+    };
+    // Only the failed provider's records: another provider's record can carry the same id.
+    let kind = Provider::from_display_name(failure.provider);
+    let usable = |record: &&codexbar_store::settings::AccountRecord| {
+        (any || record.enabled) && kind.is_none_or(|kind| record_kind(record) == Some(kind))
+    };
+    // An adapter's account is its record's id; an account a shared adapter reported is a dashboard id, which only
+    // ownership ties to a record (a custom record id can equal another user's dashboard id).
+    if let Some(record) = records.iter().filter(usable).find(|record| any && &record.id == id) {
+        return Some(record);
+    }
+    // The records owning it, in settings order (a Copilot organization card is owned under "<record id>#org"). Two can
+    // own one account (an OAuth and a Command line record for the same user). The adapter reads CodexBar's own token
+    // when the record has one and the CLI's otherwise, so a signed-in record with CodexBar's sign-in comes first, then
+    // an enabled one without it, then any enabled one.
+    let owns = |record: &&codexbar_store::settings::AccountRecord| {
+        owned.get(&record.id) == Some(id) || owned.get(&format!("{}#org", record.id)) == Some(id)
+    };
+    let owners: Vec<&codexbar_store::settings::AccountRecord> = records.iter().filter(usable).filter(owns).collect();
+    let managed = |record: &codexbar_store::settings::AccountRecord| crate::managed::Managed::of(record);
+    let signed_in = |record: &&&codexbar_store::settings::AccountRecord| {
+        record.enabled && managed(record).is_some_and(|kind| kind.signed_in(hub, record))
+    };
+    owners
+        .iter()
+        .find(signed_in)
+        .or_else(|| owners.iter().find(|record| record.enabled && managed(record).is_none()))
+        .or_else(|| owners.iter().find(|record| record.enabled))
+        .or(owners.first())
+        .copied()
+}
+
+/// The provider a settings record is for, by its catalog entry.
+fn record_kind(record: &codexbar_store::settings::AccountRecord) -> Option<Provider> {
+    crate::catalog::PROVIDERS
+        .iter()
+        .find(|info| info.id.eq_ignore_ascii_case(&record.provider))
+        .and_then(|info| crate::brand::from_settings_name(info.id))
+}
+
+/// The record a failure row's help goes by (#337), from the record Settings would open and whether the failure named
+/// it; `None` when no help is right. CodexBar's own sign-in signs in one record, so a record the target only fell back
+/// to gets it only from Copilot's shared adapter (the one that also serves CodexBar-signed accounts; every other
+/// provider's have adapters of their own, whose failures name them) and only as Copilot's only enabled record. When
+/// other enabled records use their CLI's or app's sign-in, help goes by the first of them (a Cursor app account keeps
+/// its switch); when they are all CodexBar's, which one failed is unknown.
+fn help_record(
+    record: Option<codexbar_store::settings::AccountRecord>,
+    named: bool,
+    records: &[codexbar_store::settings::AccountRecord],
+) -> Option<Option<codexbar_store::settings::AccountRecord>> {
+    let managed = |record: &codexbar_store::settings::AccountRecord| crate::managed::Managed::of(record).is_some();
+    let Some(guess) = record.as_ref().filter(|record| !named && managed(record)) else {
+        return Some(record);
+    };
+    let enabled: Vec<&codexbar_store::settings::AccountRecord> = records
+        .iter()
+        .filter(|other| other.enabled && other.provider == guess.provider)
+        .collect();
+    if enabled.len() == 1 && guess.provider == codexbar_store::settings::names::COPILOT {
+        return Some(record);
+    }
+    let other = enabled.into_iter().find(|other| !managed(other))?;
+    Some(Some(other.clone()))
+}
+
+/// True when `record` owns a dashboard account other than the one that failed (#337): a failure of one Copilot user
+/// never lands on another user's record.
+fn owns_another(
+    failure: &Failure,
+    owned: &HashMap<String, String>,
+    record: &codexbar_store::settings::AccountRecord,
+) -> bool {
+    failure
+        .outcome
+        .as_ref()
+        .is_some_and(|outcome| owned.get(&record.id).is_some_and(|account| account != outcome))
 }
 
 /// Whether one of `adapters` serves `account`: an adapter for one configured account by that account's id, a
@@ -255,6 +383,9 @@ pub struct Dashboard {
     /// The dashboard account each configured record owns, by record id (#85); a record that disappears takes its
     /// account's history, snapshot and preferences with it.
     owned_ids: HashMap<String, String>,
+    /// A CLI's sign-in started from a failure row (#337), by the row's element suffix: running, or how it ended when
+    /// it didn't sign in. A successful one fetches the provider again and leaves no entry.
+    cli_sign_ins: HashMap<String, CliSignIn>,
     /// Removed accounts, with whether their history is deleted on disk yet. A refresh that started before the removal
     /// can still write them back, and a failed rewrite needs another try, so each refresh checks them again.
     forgotten: HashMap<String, bool>,
@@ -523,6 +654,7 @@ impl Dashboard {
             layout: crate::prefs_hub::PrefsHub::layout(cx),
             ranked_with: Default::default(),
             owned_ids: crate::providers::owned_account_ids(SettingsHub::global(cx)),
+            cli_sign_ins: HashMap::new(),
             forgotten: HashMap::new(),
             #[cfg(windows)]
             widgets_written: None,
@@ -734,17 +866,9 @@ impl Dashboard {
     /// A failure row's Open settings (#188): shows Settings on the Accounts page at the failed provider's group and,
     /// for an account whose key or cookie is entered there, opens its dialog (Add account… when the provider has no
     /// record yet). Accounts CodexBar signs in itself land on their row, where Sign in… is.
-    pub fn open_settings_for(
-        &mut self,
-        provider: &'static str,
-        account: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn open_settings_for(&mut self, key: &FailureKey, window: &mut Window, cx: &mut Context<Self>) {
         let target = self
-            .failures
-            .iter()
-            .find(|failure| failure.provider == provider && failure.account == account)
+            .failure(key)
             .and_then(|failure| settings_target(failure, &self.owned_ids, cx));
         self.settings_start = Some(gpui_kit::component::setting::SelectIndex {
             page_ix: crate::settings_view::ACCOUNTS_PAGE,
@@ -763,6 +887,237 @@ impl Dashboard {
         if info.secret.is_some() && !managed {
             crate::settings_view::open_account_dialog(info.id, record, window, cx);
         }
+    }
+
+    /// The account a row's "Use CodexBar's sign-in" moves: the one its help picked, not Settings' first guess.
+    fn switch_record(&self, failure: &Failure, cx: &gpui_kit::App) -> Option<codexbar_store::settings::AccountRecord> {
+        match self.sign_in_help(failure, cx)? {
+            crate::sign_in_help::Help::Switch(record) => Some(record),
+            crate::sign_in_help::Help::Cli { switch, .. } => switch,
+            crate::sign_in_help::Help::Managed { .. } => None,
+        }
+    }
+
+    /// The record a failure row's "Use CodexBar's sign-in" would open, for the headless UI tests.
+    #[cfg(test)]
+    pub fn switch_target_record(
+        &self,
+        provider: &'static str,
+        account: Option<String>,
+        cx: &gpui_kit::App,
+    ) -> Option<String> {
+        self.failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .and_then(|failure| self.switch_record(failure, cx))
+            .map(|record| record.id)
+    }
+
+    /// The failure a row's button belongs to.
+    fn failure(&self, key: &FailureKey) -> Option<&Failure> {
+        self.failures.iter().find(|failure| failure.key() == *key)
+    }
+
+    /// What a failure row offers beyond Open settings and Retry (#337), for a sign-in failure.
+    fn sign_in_help(&self, failure: &Failure, cx: &gpui_kit::App) -> Option<crate::sign_in_help::Help> {
+        if !failure.sign_in {
+            return None;
+        }
+        let (group, record) = settings_target(failure, &self.owned_ids, cx)?;
+        // CodexBar's own sign-in only for the account's own record (`help_record`): a record the target fell back to
+        // (an OAuth record beside a GitHub CLI user, an OpenCode OAuth record beside the cookie) is a guess.
+        let hub = SettingsHub::global(cx);
+        let named = named_record(failure, &self.owned_ids, hub).is_some();
+        let record = help_record(record, named, hub.settings().accounts())?;
+        crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref())
+    }
+
+    /// The row's sign-in buttons (#337), before Open settings: CodexBar's own sign-in; or the CLI's sign-in, its
+    /// instructions and CodexBar's sign-in instead; or just the switch.
+    fn sign_in_controls(&self, failure: &Failure, cx: &Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        use crate::sign_in_help::Help;
+        let Some(help) = self.sign_in_help(failure, cx) else {
+            return Vec::new();
+        };
+        let suffix = failure.element_suffix();
+        let key = failure.key();
+        let switch = |record_held: bool| {
+            record_held.then(|| {
+                let key = key.clone();
+                Button::new(SharedString::from(format!("switch-sign-in-{suffix}")))
+                    .label("Use CodexBar's sign-in…")
+                    .accessibility_label(format!("Use CodexBar's sign-in for {}", failure.name()))
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, window, cx| this.switch_sign_in(&key, window, cx)))
+                    .into_any_element()
+            })
+        };
+        match help {
+            Help::Managed { kind, .. } => {
+                let key = key.clone();
+                vec![
+                    Button::new(SharedString::from(format!("sign-in-{suffix}")))
+                        .label(crate::sign_in_help::managed_label(kind))
+                        .accessibility_label(format!("Sign in to {}", failure.name()))
+                        .small()
+                        .primary()
+                        .on_click(cx.listener(move |this, _, window, cx| this.sign_in_from_failure(&key, window, cx)))
+                        .into_any_element(),
+                ]
+            }
+            Help::Cli { cli, switch: record } => {
+                let running = self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running);
+                let sign_in = {
+                    let key = key.clone();
+                    Button::new(SharedString::from(format!("cli-sign-in-{suffix}")))
+                        .label(if running {
+                            format!("Waiting for {}…", cli.name())
+                        } else {
+                            format!("Sign in with {}…", cli.name())
+                        })
+                        .accessibility_label(format!("Sign in to {} with {}", failure.name(), cli.name()))
+                        .small()
+                        .primary()
+                        // A second click while it runs is ignored (`sign_in_with_cli`).
+                        .loading(running)
+                        .on_click(cx.listener(move |this, _, _, cx| this.sign_in_with_cli(&key, cx)))
+                        .into_any_element()
+                };
+                let docs = cli.docs().map(|url| {
+                    Button::new(SharedString::from(format!("cli-docs-{suffix}")))
+                        .label("How to sign in")
+                        .accessibility_label(format!("How to sign in to {}", cli.name()))
+                        .small()
+                        .ghost()
+                        .on_click(move |_, _, cx| cx.open_url(url))
+                        .into_any_element()
+                });
+                std::iter::once(sign_in)
+                    .chain(docs)
+                    .chain(switch(record.is_some()))
+                    .collect()
+            }
+            Help::Switch(_) => switch(true).into_iter().collect(),
+        }
+    }
+
+    /// Under the row's message (#337): what happened when a CLI's sign-in didn't sign in, with a link to get the CLI
+    /// when it isn't installed.
+    fn sign_in_note(&self, failure: &Failure, cx: &Context<Self>) -> Option<gpui_kit::AnyElement> {
+        // Only under a sign-in failure: a note left from an earlier attempt never shows under another kind.
+        if !failure.sign_in {
+            return None;
+        }
+        let suffix = failure.element_suffix();
+        let error = match self.cli_sign_ins.get(&suffix)? {
+            CliSignIn::Failed(error) => error,
+            CliSignIn::Notice(notice) => return Some(note(&suffix, notice.clone(), cx)),
+            CliSignIn::Running => return None,
+        };
+        let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
+            return None;
+        };
+        let text = crate::sign_in_help::cli_failure(cli, error);
+        let install = cli
+            .install()
+            .filter(|_| *error == codexbar_providers::cli_sign_in::CliSignInError::NotInstalled);
+        Some(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(note(&suffix, text.into(), cx))
+                .children(install.map(|url| {
+                    Button::new(SharedString::from(format!("cli-install-{suffix}")))
+                        .label(format!("Get {}", cli.name().trim_start_matches("the ")))
+                        .small()
+                        .ghost()
+                        .on_click(move |_, _, cx| cx.open_url(url))
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// A failure row's sign-in (#337): CodexBar's own for an account it signs in, which refreshes once it succeeds,
+    /// as from Settings.
+    pub fn sign_in_from_failure(&mut self, key: &FailureKey, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(failure) = self.failure(key) else {
+            return;
+        };
+        let suffix = failure.element_suffix();
+        let Some(crate::sign_in_help::Help::Managed { kind, record }) = self.sign_in_help(failure, cx) else {
+            return;
+        };
+        let before = SettingsHub::global(cx).notice();
+        kind.sign_in(&record, window, cx);
+        // A sign-in that stops before its dialog opens says why in Settings; show that on the row too.
+        let after = SettingsHub::global(cx).notice();
+        match after.filter(|after| Some(after) != before.as_ref()) {
+            Some(notice) => self.cli_sign_ins.insert(suffix, CliSignIn::Notice(notice)),
+            None => self.cli_sign_ins.remove(&suffix),
+        };
+        cx.notify();
+    }
+
+    /// A failure row's CLI sign-in (#337): runs the CLI's own sign-in in its console window, then fetches the provider
+    /// again when it signed in, or says what happened on the row.
+    pub fn sign_in_with_cli(&mut self, key: &FailureKey, cx: &mut Context<Self>) {
+        let Some(failure) = self.failure(key) else {
+            return;
+        };
+        let suffix = failure.element_suffix();
+        let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
+            return;
+        };
+        if self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running) {
+            return;
+        }
+        self.cli_sign_ins.insert(suffix.clone(), CliSignIn::Running);
+        cx.notify();
+        let service = crate::sign_in_help::service(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { service.sign_in(cli) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.cli_sign_ins.remove(&suffix);
+                        // Every provider: a CLI signed in under a new identity can be read by an adapter rebuilt
+                        // under that identity, which a retry of the old one would miss.
+                        SettingsHub::request_refresh(cx);
+                    }
+                    Err(error) => {
+                        this.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// A failure row's "Use CodexBar's sign-in" (#337): Settings on the account, with its dialog open, where choosing
+    /// CodexBar's sign-in applies the same rules as any other change of method.
+    pub fn switch_sign_in(&mut self, key: &FailureKey, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(record) = self.failure(key).and_then(|failure| self.switch_record(failure, cx)) else {
+            return;
+        };
+        let Some(group) = crate::catalog::PROVIDERS
+            .iter()
+            .position(|info| info.id.eq_ignore_ascii_case(&record.provider))
+        else {
+            return;
+        };
+        self.settings_start = Some(gpui_kit::component::setting::SelectIndex {
+            page_ix: crate::settings_view::ACCOUNTS_PAGE,
+            group_ix: Some(group),
+        });
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        self.view = DashboardView::Settings;
+        cx.notify();
+        crate::settings_view::open_account_dialog(crate::catalog::PROVIDERS[group].id, Some(record), window, cx);
     }
 
     fn fetch(&mut self, only: Option<(&'static str, Option<String>)>, cx: &mut Context<Self>) {
@@ -969,6 +1324,7 @@ impl Dashboard {
                                     provider,
                                     account: account_id.clone(),
                                     label,
+                                    outcome: Some(account.as_str().to_owned()),
                                     message,
                                     sign_in: error.needs_sign_in(),
                                 });
@@ -999,6 +1355,7 @@ impl Dashboard {
                         provider,
                         account: account_id.clone(),
                         label: account_label.clone(),
+                        outcome: None,
                         message,
                         sign_in: error.needs_sign_in(),
                     });
@@ -2439,24 +2796,24 @@ impl Dashboard {
                 )
                 .child(div().font_semibold().child(failure.name()))
                 .child(
-                    div()
+                    v_flex()
                         .flex_1()
                         .min_w_0()
+                        .gap_1()
                         .text_color(cx.theme().muted_foreground)
-                        .child(failure.message.clone()),
+                        .child(failure.message.clone())
+                        .children(self.sign_in_note(failure, cx)),
                 )
+                .children(self.sign_in_controls(failure, cx))
                 .when(failure.sign_in, |this| {
-                    let provider = failure.provider;
-                    let account = failure.account.clone();
+                    let key = failure.key();
                     this.child(
                         Button::new(SharedString::from(format!("fix-{}", failure.element_suffix())))
                             .label("Open settings")
                             .accessibility_label(format!("Open settings for {}", failure.name()))
                             .small()
                             .outline()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_settings_for(provider, account.clone(), window, cx)
-                            })),
+                            .on_click(cx.listener(move |this, _, window, cx| this.open_settings_for(&key, window, cx))),
                     )
                 })
                 .child({

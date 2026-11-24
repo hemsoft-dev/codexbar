@@ -95,6 +95,9 @@ impl LoginWindow {
     pub fn open(config: &Path) -> Result<Self, ClaudeCliError> {
         let mut command = claude(config)?;
         command.args(["auth", "login", "--claudeai"]);
+        // CodexBar's working folder, which the terminal (macOS and Linux) otherwise wouldn't start in: a relative
+        // program or `CLAUDE_CONFIG_DIR` then resolves where CodexBar reads the sign-in (#337).
+        crate::platform::in_working_folder(&mut command);
         let process = crate::contained::spawn_console(&mut command).map_err(|err| match err.kind() {
             std::io::ErrorKind::NotFound => ClaudeCliError::NotInstalled,
             _ => ClaudeCliError::Failed,

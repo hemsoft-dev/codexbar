@@ -37,11 +37,11 @@ const ORG_NOT_FOUND: &str = "GitHub has no such organization, or this account ca
                              organization's name in Settings > Accounts, and that this account is an owner or billing \
                              manager there.";
 /// The hint for an account CodexBar signed in.
-pub const MANAGED_LOGIN: &str = "Sign in again in Settings > Accounts.";
+pub const MANAGED_LOGIN: &str = "Sign in again.";
 const HOST: &str = "github.com";
 const GH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-const GH_MISSING: &str = "Install the GitHub CLI and run `gh auth login`.";
-const GH_LOGIN: &str = "Run `gh auth login` for this account.";
+const GH_MISSING: &str = "Install the GitHub CLI and sign in to it.";
+const GH_LOGIN: &str = "Sign in to the GitHub CLI for this account.";
 
 /// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)").
 pub fn parse_gh_accounts(status: &str) -> Vec<String> {

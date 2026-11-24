@@ -18,7 +18,7 @@ static PLAN_BACKOFF: Mutex<Vec<(PathBuf, String, DateTime<Utc>)>> = Mutex::new(V
 const USAGE_ENDPOINT: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 const SIGN_IN_HINT: &str = "Sign in to Cursor, then refresh CodexBar.";
 /// The hint for a sign-in CodexBar made (#81).
-pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again in Settings > Accounts.";
+pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again.";
 
 #[cfg(windows)]
 pub fn default_auth_path() -> PathBuf {

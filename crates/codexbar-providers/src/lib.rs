@@ -5,6 +5,7 @@ pub mod balance;
 pub mod browser_session;
 pub mod claude;
 pub mod claude_cli;
+pub mod cli_sign_in;
 pub mod codex;
 pub mod codex_app_server;
 mod command;

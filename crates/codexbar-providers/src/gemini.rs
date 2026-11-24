@@ -10,8 +10,7 @@ use crate::gemini_apps::{self, AppsSession};
 use crate::gemini_coding::{self, CodingError};
 use crate::{AccountOutcome, CommandRunner, HttpClient, ProviderError, UsageProvider};
 
-const SETUP_HINT: &str =
-    "Connect Antigravity in Settings > Accounts. New Gemini Apps website sign-in is unavailable here.";
+const SETUP_HINT: &str = "Connect Antigravity. New Gemini Apps website sign-in is unavailable here.";
 
 pub struct GeminiProvider<H: HttpClient> {
     http: H,
@@ -27,7 +26,7 @@ fn coding_error(error: &CodingError) -> ProviderError {
     match error {
         // Shown as signed out, never as a failed read, so the row points at the Settings sign-in (#282).
         CodingError::SignedOut => ProviderError::NotSignedIn {
-            hint: "Sign in to the Antigravity CLI from Settings > Accounts.",
+            hint: "Sign in to the Antigravity CLI.",
         },
         _ => ProviderError::Refused {
             reason: error.message(),
@@ -242,10 +241,7 @@ mod tests {
             panic!("a signed-out CLI has no usage to show");
         };
         assert!(error.needs_sign_in());
-        assert_eq!(
-            error.to_string(),
-            "Not signed in. Sign in to the Antigravity CLI from Settings > Accounts."
-        );
+        assert_eq!(error.to_string(), "Not signed in. Sign in to the Antigravity CLI.");
     }
 
     #[test]
