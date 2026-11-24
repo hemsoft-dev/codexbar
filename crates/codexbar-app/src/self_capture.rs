@@ -90,13 +90,16 @@ pub fn prefs_dir() -> Option<PathBuf> {
 }
 
 /// True when `dir` is a real settings folder, however it is spelled: the one this process uses, or the profile's own
-/// `.codexbar` when `CODEXBAR_SETTINGS_DIR` points this process elsewhere. A folder that doesn't exist yet can't be
-/// either.
+/// `.codexbar` when `CODEXBAR_SETTINGS_DIR` points this process elsewhere, even before either exists.
 fn is_settings_dir(dir: &std::path::Path) -> bool {
-    let same = |settings: &std::path::Path| match (std::fs::canonicalize(dir), std::fs::canonicalize(settings)) {
-        (Ok(dir), Ok(settings)) => dir == settings,
-        _ => dir == settings,
+    // A folder that doesn't exist yet can't be canonicalized; compare it as an absolute path instead, so a relative
+    // spelling of a profile not created yet still matches.
+    let full = |path: &std::path::Path| {
+        std::fs::canonicalize(path)
+            .or_else(|_| std::path::absolute(path))
+            .unwrap_or_else(|_| path.to_owned())
     };
+    let same = |settings: &std::path::Path| full(dir) == full(settings);
     let profile = codexbar_core::home_dir().map(|home| home.join(".codexbar"));
     same(&codexbar_store::settings::Settings::default_dir()) || profile.is_some_and(|profile| same(&profile))
 }
