@@ -837,6 +837,11 @@ impl Dashboard {
             return None;
         }
         let (group, record) = settings_target(failure, &self.owned_ids, cx)?;
+        // CodexBar's own sign-in only for the account's own record: one the failure names. A record the target fell
+        // back to (an OAuth record beside a GitHub CLI user, an OpenCode OAuth record beside the cookie) is a guess,
+        // and its sign-in would sign in something else; help then goes by the provider's own method.
+        let named = named_record(failure, &self.owned_ids, SettingsHub::global(cx).settings().accounts()).is_some();
+        let record = record.filter(|record| named || crate::managed::Managed::of(record).is_none());
         crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref())
     }
 

@@ -166,7 +166,8 @@ fn args(cli: Cli) -> &'static [&'static str] {
 }
 
 /// The profile the CLI signs in, as the variables naming it: the folder its provider reads (`CODEX_HOME`, or
-/// `~/.codex`; `GROK_HOME`, or `~/.grok`), and the GitHub CLI's `GH_CONFIG_DIR` when CodexBar runs with one.
+/// `~/.codex`; `GROK_HOME`, or `~/.grok`), and the GitHub CLI's `GH_CONFIG_DIR` and `XDG_CONFIG_HOME` when CodexBar
+/// runs with them.
 fn profile(cli: Cli) -> Vec<(&'static str, std::ffi::OsString)> {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
     let home = |name: &'static str, folder: &str| {
@@ -175,9 +176,10 @@ fn profile(cli: Cli) -> Vec<(&'static str, std::ffi::OsString)> {
             .map(|value| (name, value))
     };
     match cli {
-        Cli::GitHub => set("GH_CONFIG_DIR")
-            .map(|value| ("GH_CONFIG_DIR", value))
+        // The GitHub CLI finds its profile through GH_CONFIG_DIR, then XDG_CONFIG_HOME.
+        Cli::GitHub => ["GH_CONFIG_DIR", "XDG_CONFIG_HOME"]
             .into_iter()
+            .filter_map(|name| set(name).map(|value| (name, value)))
             .collect(),
         Cli::Codex => home("CODEX_HOME", ".codex").into_iter().collect(),
         Cli::Grok => home("GROK_HOME", ".grok").into_iter().collect(),

@@ -1860,6 +1860,65 @@ fn two_failing_copilot_users_each_sign_in_their_own_account(cx: &mut TestAppCont
     );
 }
 
+// SFL on #340: CodexBar's own sign-in only for a record the failure names. A GitHub CLI user the Command line record
+// discovered fails beside an OAuth record that was never signed in, which owns nothing: the row runs the GitHub CLI's
+// sign-in, not the OAuth record's.
+#[gpui_kit::test]
+fn a_discovered_github_cli_user_never_gets_an_oauth_record_s_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-copilot-discovered",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-oauth", "providerId": "Copilot", "displayLabel": "New", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let _dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "cli-sign-in-Copilot-bob"),
+        "Bob signs the GitHub CLI in"
+    );
+    assert!(
+        !visible(cx, handle, "sign-in-Copilot-bob"),
+        "not the unrelated OAuth record's sign-in"
+    );
+}
+
+// SFL on #340: an expired OpenCode cookie (the provider-wide adapter) beside an OpenCode OAuth record gets no OAuth
+// sign-in; Open settings stays its fix.
+#[gpui_kit::test]
+fn an_expired_opencode_cookie_never_starts_another_record_s_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-opencode-cookie",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "oc-oauth", "providerId": "OpenCodeGo", "displayLabel": "Console", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "oc-cookie", "providerId": "OpenCodeGo", "displayLabel": "Cookie", "enabled": true,
+              "authenticationMethod": "BrowserSession" } ] }"#,
+    );
+    let cookie = FakeProvider::new(Provider::OpenCode, "opencode", None).failing_with(ProviderError::Expired {
+        hint: "Update the dashboard auth cookie.",
+    });
+    let _dashboard = open_live(cx, &settings, vec![cookie]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "fix-OpenCode Go + Zen"), "Open settings stays");
+    assert!(
+        !visible(cx, handle, "sign-in-OpenCode Go + Zen"),
+        "no OAuth for the Console record"
+    );
+}
+
 #[gpui_kit::test]
 fn a_network_failure_offers_no_sign_in(cx: &mut TestAppContext) {
     let settings = TempSettings::new("failure-network-no-sign-in", "{}");
