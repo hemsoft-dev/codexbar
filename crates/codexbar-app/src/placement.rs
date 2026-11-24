@@ -269,9 +269,6 @@ pub fn settle(window: &Window, restored: Option<&Restored>, cx: &App) {
     };
     cx.foreground_executor()
         .spawn(async move {
-            use windows::Win32::Graphics::Gdi::{
-                MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MonitorFromRect, MonitorFromWindow,
-            };
             use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, SW_HIDE};
             let rect = |edges: Edges| RECT {
                 left: edges.left,
@@ -280,20 +277,13 @@ pub fn settle(window: &Window, restored: Option<&Restored>, cx: &App) {
                 bottom: edges.bottom,
             };
             // The saved bounds, unless most of them lie on another display: Windows would move the window there and
-            // scale it to that display, which is what settling undoes. Then just the saved size, where it is.
-            let saved = rect(settled.at_saved);
-            // SAFETY: plain monitor lookups for this window's handle and a rectangle on the stack.
-            let (on, home) = unsafe {
-                (
-                    MonitorFromRect(&saved, MONITOR_DEFAULTTONULL),
-                    MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
-                )
-            };
-            let target = if on.is_invalid() || on == home {
-                Some(saved)
-            } else {
-                settled.in_place.map(rect)
-            };
+            // scale it to that display, which is what settling undoes. Then just the saved size where it is, if that
+            // stays on this display; else the window is left as it is.
+            let target = [Some(settled.at_saved), settled.in_place]
+                .into_iter()
+                .flatten()
+                .find(|edges| stays_on_its_display(hwnd, *edges))
+                .map(rect);
             let Some(target) = target else {
                 return;
             };
@@ -317,6 +307,70 @@ pub fn settle(window: &Window, restored: Option<&Restored>, cx: &App) {
             let _ = unsafe { SetWindowPlacement(hwnd, &placement) };
         })
         .detach();
+}
+
+/// True when a window at `normal` (a normal rectangle, so in workspace coordinates) would lie mostly on the display it
+/// is on now, or on none: Windows moves a window to the display it overlaps most, and scales it to that display.
+#[cfg(windows)]
+fn stays_on_its_display(hwnd: windows::Win32::Foundation::HWND, normal: Edges) -> bool {
+    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITOR_DEFAULTTOPRIMARY, MONITORINFO,
+        MonitorFromPoint, MonitorFromRect, MonitorFromWindow,
+    };
+    // Workspace coordinates are screen coordinates less the primary display's taskbar when it is docked on the left or
+    // at the top; `MonitorFromRect` takes screen coordinates.
+    let mut primary = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: plain monitor lookups; `primary` is a properly sized MONITORINFO on the stack.
+    let offset = if unsafe {
+        GetMonitorInfoW(
+            MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY),
+            &mut primary,
+        )
+    }
+    .as_bool()
+    {
+        workspace_offset(
+            Edges {
+                left: primary.rcMonitor.left,
+                top: primary.rcMonitor.top,
+                right: primary.rcMonitor.right,
+                bottom: primary.rcMonitor.bottom,
+            },
+            Edges {
+                left: primary.rcWork.left,
+                top: primary.rcWork.top,
+                right: primary.rcWork.right,
+                bottom: primary.rcWork.bottom,
+            },
+        )
+    } else {
+        (0, 0)
+    };
+    let screen = RECT {
+        left: normal.left + offset.0,
+        top: normal.top + offset.1,
+        right: normal.right + offset.0,
+        bottom: normal.bottom + offset.1,
+    };
+    // SAFETY: plain monitor lookups for this window's handle and a rectangle on the stack.
+    let (on, home) = unsafe {
+        (
+            MonitorFromRect(&screen, MONITOR_DEFAULTTONULL),
+            MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+        )
+    };
+    on.is_invalid() || on == home
+}
+
+/// What turns workspace coordinates into screen coordinates: how far the primary display's work area starts from the
+/// display's own corner (its taskbar's width when docked on the left, its height when at the top).
+#[cfg(any(windows, test))]
+pub fn workspace_offset(primary: Edges, work: Edges) -> (i32, i32) {
+    (work.left - primary.left, work.top - primary.top)
 }
 
 /// Other platforms place the window in one step.
@@ -583,6 +637,25 @@ mod tests {
                 }),
             })
         );
+    }
+
+    #[test]
+    fn a_taskbar_docked_on_the_left_or_top_offsets_workspace_coordinates() {
+        let primary = Edges {
+            left: 0,
+            top: 0,
+            right: 3440,
+            bottom: 1440,
+        };
+        let bottom_taskbar = Edges {
+            bottom: 1392,
+            ..primary
+        };
+        let left_taskbar = Edges { left: 62, ..primary };
+        let top_taskbar = Edges { top: 48, ..primary };
+        assert_eq!(workspace_offset(primary, bottom_taskbar), (0, 0));
+        assert_eq!(workspace_offset(primary, left_taskbar), (62, 0));
+        assert_eq!(workspace_offset(primary, top_taskbar), (0, 48));
     }
 
     // Only the origin is off: the saved bounds come back, and there is no size to correct in place.

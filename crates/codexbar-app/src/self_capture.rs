@@ -79,7 +79,14 @@ pub fn prefs_dir() -> Option<PathBuf> {
         }
         return Some(dir);
     }
-    std::env::var_os("CODEXBAR_CAPTURE_DIR").map(|dir| PathBuf::from(dir).join("prefs"))
+    let dir = std::env::var_os("CODEXBAR_CAPTURE_DIR").map(|dir| PathBuf::from(dir).join("prefs"))?;
+    if is_settings_dir(&dir) {
+        eprintln!(
+            "codexbar: CODEXBAR_CAPTURE_DIR's prefs folder can't be the settings folder; the demo keeps its preferences in memory"
+        );
+        return None;
+    }
+    Some(dir)
 }
 
 /// True when `dir` is a real settings folder, however it is spelled: the one this process uses, or the profile's own
