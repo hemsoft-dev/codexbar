@@ -94,10 +94,13 @@ pub fn prefs_dir() -> Option<PathBuf> {
 fn is_settings_dir(dir: &std::path::Path) -> bool {
     // A folder that doesn't exist yet can't be canonicalized; compare it as an absolute path instead, so a relative
     // spelling of a profile not created yet still matches.
+    // Windows paths are compared without regard to case, as the file system treats them.
     let full = |path: &std::path::Path| {
-        std::fs::canonicalize(path)
+        let full = std::fs::canonicalize(path)
             .or_else(|_| std::path::absolute(path))
-            .unwrap_or_else(|_| path.to_owned())
+            .unwrap_or_else(|_| path.to_owned());
+        let text = full.to_string_lossy().into_owned();
+        if cfg!(windows) { text.to_lowercase() } else { text }
     };
     let same = |settings: &std::path::Path| full(dir) == full(settings);
     let profile = codexbar_core::home_dir().map(|home| home.join(".codexbar"));

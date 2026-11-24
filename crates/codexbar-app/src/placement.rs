@@ -28,7 +28,8 @@ pub struct Display {
     pub id: DisplayId,
     /// The platform's stable identifier, when it has one; what a saved placement names.
     pub uuid: Option<String>,
-    /// The part not covered by the taskbar or dock, where a window is placed.
+    /// The part not covered by the taskbar or dock, where a window is placed, in the coordinates the window's saved
+    /// bounds use (see `work_area`).
     pub work_area: Bounds<Pixels>,
 }
 
@@ -40,10 +41,24 @@ pub fn displays(cx: &App) -> (Vec<Display>, Option<DisplayId>) {
         .map(|display| Display {
             id: display.id(),
             uuid: display.uuid().ok().map(|uuid| uuid.to_string()),
-            work_area: display.visible_bounds(),
+            work_area: work_area(display.bounds(), display.visible_bounds(), cfg!(windows)),
         })
         .collect();
     (displays, cx.primary_display().map(|display| display.id()))
+}
+
+/// A display's work area in the coordinates a window's saved bounds use. On Windows those are the window's normal
+/// (restore) bounds, in workspace coordinates: screen coordinates less the display's work-area offset, so the work
+/// area starts at the display's own corner however the taskbar is docked (#336). Elsewhere, screen coordinates.
+pub fn work_area(display: Bounds<Pixels>, visible: Bounds<Pixels>, workspace: bool) -> Bounds<Pixels> {
+    if workspace {
+        Bounds {
+            origin: display.origin,
+            size: visible.size,
+        }
+    } else {
+        visible
+    }
 }
 
 /// What the window reports now: its normal (restore) bounds in logical pixels, its display, and whether it is
@@ -638,6 +653,25 @@ mod tests {
                 }),
             })
         );
+    }
+
+    // A 100px taskbar along the top of a 1920×1080 display: saved bounds are in workspace coordinates, where the work
+    // area starts at the display's corner, so a window saved at y=30 (y=130 on screen) is on it.
+    #[test]
+    fn a_top_taskbar_doesn_t_push_a_saved_window_off_its_work_area() {
+        let display_bounds = content(0., 0., 1920., 1080.);
+        let visible = content(0., 100., 1920., 980.);
+        let workspace = work_area(display_bounds, visible, true);
+        assert_eq!(workspace, content(0., 0., 1920., 980.));
+        assert_eq!(work_area(display_bounds, visible, false), visible);
+        let top_taskbar = vec![Display {
+            id: DisplayId::new(1),
+            uuid: Some("primary".to_owned()),
+            work_area: workspace,
+        }];
+        let placement = saved("primary", 200., 30., 1440., 900.);
+        let restored = restore(Some(&placement), &top_taskbar, Some(DisplayId::new(1))).unwrap();
+        assert_eq!(windowed(&restored).origin, point(px(200.), px(30.)));
     }
 
     #[test]

@@ -1213,6 +1213,12 @@ impl Dashboard {
         }
     }
 
+    /// `note_placement` for the headless tests, which can't hide a real window.
+    #[cfg(test)]
+    pub fn note_placement_for_test(&mut self, seen: codexbar_store::prefs::WindowPlacement, cx: &mut Context<Self>) {
+        self.note_placement(seen, cx);
+    }
+
     /// Whether the window placement is saved: always for live data; for the demo only when a capture build gave it a
     /// preferences folder of its own (#336), never into memory.
     fn saves_placement(&self, cx: &gpui_kit::App) -> bool {
