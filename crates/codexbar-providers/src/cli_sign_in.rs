@@ -93,7 +93,7 @@ impl SignInWindow {
             return open_claude();
         }
         let program = program(cli).ok_or(CliSignInError::NotInstalled)?;
-        let mut command = command_for(cli, &program, profile(cli));
+        let mut command = command_for(cli, crate::platform::command(&program), profile(cli));
         crate::contained::spawn_console(&mut command)
             .map(|process| Self(Window::Console(process)))
             .map_err(start_error)
@@ -136,9 +136,8 @@ fn open_claude() -> Result<SignInWindow, CliSignInError> {
         })
 }
 
-/// `cli`'s sign-in command for `program`, set up to sign in `profile`.
-fn command_for(cli: Cli, program: &std::path::Path, profile: Vec<(&'static str, std::ffi::OsString)>) -> Command {
-    let mut command = crate::platform::command(program);
+/// `cli`'s sign-in command, from `command` (`platform::command` for the CLI's program), set up to sign in `profile`.
+fn command_for(cli: Cli, mut command: Command, profile: Vec<(&'static str, std::ffi::OsString)>) -> Command {
     command.args(args(cli));
     // CodexBar's working folder, which the terminal (macOS and Linux) otherwise wouldn't start in: a relative program
     // or profile path then resolves where CodexBar's refresh resolves it.
@@ -369,7 +368,8 @@ mod tests {
     #[test]
     fn the_github_cli_sign_in_runs_in_codexbar_s_folder_with_its_profile_and_no_token() {
         let profile = vec![("GH_CONFIG_DIR", std::ffi::OsString::from("gh-profile"))];
-        let command = command_for(Cli::GitHub, std::path::Path::new("gh"), profile);
+        // A plain command, never `platform::command`, which reads the host's PATH and home folder.
+        let command = command_for(Cli::GitHub, Command::new("gh"), profile);
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             ["auth", "login", "--web", "--hostname", "github.com"]
@@ -392,13 +392,9 @@ mod tests {
 
     #[test]
     fn the_codex_sign_in_keeps_the_environment_s_tokens() {
-        let command = command_for(Cli::Codex, std::path::Path::new("codex"), Vec::new());
+        let command = command_for(Cli::Codex, Command::new("codex"), Vec::new());
         assert_eq!(command.get_args().collect::<Vec<_>>(), ["login"]);
-        // Nothing set or removed, apart from the PATH `platform::command` gives a CLI on macOS and Linux.
-        assert!(
-            command.get_envs().all(|(name, _)| name == "PATH"),
-            "nothing set or removed"
-        );
+        assert!(command.get_envs().next().is_none(), "nothing set or removed");
     }
 
     #[test]
