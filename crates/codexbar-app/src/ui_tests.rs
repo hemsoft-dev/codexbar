@@ -1734,9 +1734,11 @@ fn a_cursor_app_account_can_move_to_codexbar_s_sign_in(cx: &mut TestAppContext) 
     );
 }
 
-/// Copilot's one adapter for every account, as in production: Alice signed in through CodexBar, Bob failing on the
-/// GitHub CLI.
-struct CopilotUsers;
+/// Copilot's one adapter for every account, as in production: Alice signed in through CodexBar (or failing too, with
+/// `alice_fails`), Bob failing on the GitHub CLI.
+struct CopilotUsers {
+    alice_fails: bool,
+}
 
 impl UsageProvider for CopilotUsers {
     fn name(&self) -> &'static str {
@@ -1751,13 +1753,22 @@ impl UsageProvider for CopilotUsers {
         &self,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        let alice = codexbar_providers::copilot::account_id("alice");
         Ok(vec![
-            codexbar_providers::AccountOutcome::Fresh(AccountSnapshot::new(
-                codexbar_providers::copilot::account_id("alice"),
-                Provider::Copilot,
-                Vec::new(),
-                now,
-            )),
+            if self.alice_fails {
+                codexbar_providers::AccountOutcome::Failed {
+                    account: alice,
+                    label: Some("alice".into()),
+                    error: ProviderError::NotSignedIn { hint: "Sign in again." },
+                }
+            } else {
+                codexbar_providers::AccountOutcome::Fresh(AccountSnapshot::new(
+                    alice,
+                    Provider::Copilot,
+                    Vec::new(),
+                    now,
+                ))
+            },
             codexbar_providers::AccountOutcome::Failed {
                 account: codexbar_providers::copilot::account_id("bob"),
                 label: Some("bob".into()),
@@ -1774,6 +1785,7 @@ fn bob_fails_beside_alice(
     cx: &mut TestAppContext,
     name: &str,
     bob: &str,
+    alice_fails: bool,
 ) -> (Entity<Dashboard>, AnyWindowHandle, TempSettings) {
     let settings = TempSettings::new(
         name,
@@ -1785,7 +1797,11 @@ fn bob_fails_beside_alice(
                   "authenticationMethod": "CommandLine"{bob} }} ] }}"#
         ),
     );
-    let dashboard = open_live_fixed(cx, &settings, vec![Arc::new(CopilotUsers) as Arc<dyn UsageProvider>]);
+    let dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails }) as Arc<dyn UsageProvider>],
+    );
     cx.run_until_parked();
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
@@ -1798,7 +1814,7 @@ fn bob_fails_beside_alice(
 #[gpui_kit::test]
 fn one_copilot_user_failing_gets_its_own_record_s_sign_in(cx: &mut TestAppContext) {
     let (dashboard, handle, _settings) =
-        bob_fails_beside_alice(cx, "failure-copilot-bob", r#", "externalAccountId": "bob""#);
+        bob_fails_beside_alice(cx, "failure-copilot-bob", r#", "externalAccountId": "bob""#, false);
     assert!(
         visible(cx, handle, "cli-sign-in-Copilot-bob"),
         "Bob signs the GitHub CLI in"
@@ -1813,13 +1829,34 @@ fn one_copilot_user_failing_gets_its_own_record_s_sign_in(cx: &mut TestAppContex
 
 #[gpui_kit::test]
 fn a_failed_copilot_user_no_record_names_skips_records_owning_others(cx: &mut TestAppContext) {
-    let (dashboard, handle, _settings) = bob_fails_beside_alice(cx, "failure-copilot-unnamed", "");
+    let (dashboard, handle, _settings) = bob_fails_beside_alice(cx, "failure-copilot-unnamed", "", false);
     assert!(visible(cx, handle, "cli-sign-in-Copilot-bob"));
     let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
     assert_eq!(
         target.as_deref(),
         Some("cp-bob"),
         "not Alice's, which owns her own account"
+    );
+}
+
+// Codex on #340: with Alice and Bob both failing in one refresh, each row's buttons act on their own account.
+#[gpui_kit::test]
+fn two_failing_copilot_users_each_sign_in_their_own_account(cx: &mut TestAppContext) {
+    let cli = Arc::new(FakeCliSignIn::default());
+    cx.update(|cx| crate::sign_in_help::init_with(cx, cli.clone()));
+    let (_dashboard, handle, _settings) =
+        bob_fails_beside_alice(cx, "failure-copilot-both", r#", "externalAccountId": "bob""#, true);
+    assert!(visible(cx, handle, "sign-in-Copilot-alice"), "Alice's CodexBar sign-in");
+    assert!(
+        visible(cx, handle, "cli-sign-in-Copilot-bob"),
+        "Bob's GitHub CLI sign-in"
+    );
+    click(cx, handle, "cli-sign-in-Copilot-bob");
+    cx.run_until_parked();
+    assert_eq!(
+        *cli.runs.lock().unwrap(),
+        vec![codexbar_providers::cli_sign_in::Cli::GitHub],
+        "Bob's button ran Bob's sign-in, not Alice's"
     );
 }
 
