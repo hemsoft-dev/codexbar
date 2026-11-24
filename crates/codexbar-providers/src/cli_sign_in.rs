@@ -100,6 +100,11 @@ impl SignInWindow {
         let program = program(cli).ok_or(CliSignInError::NotInstalled)?;
         let mut command = crate::platform::command(&program);
         command.args(args(cli));
+        // The profile CodexBar reads, set on the command itself: a console started through a terminal (macOS and
+        // Linux) gets only what is set here, and would otherwise sign in whatever profile the terminal points at.
+        for (name, value) in profile(cli) {
+            command.env(name, value);
+        }
         if cli == Cli::GitHub {
             // A token in CodexBar's environment would make `gh` act as that token instead of signing in.
             for name in [
@@ -160,6 +165,27 @@ fn args(cli: Cli) -> &'static [&'static str] {
     }
 }
 
+/// The profile the CLI signs in, as the variables naming it: the folder its provider reads (`CODEX_HOME`, or
+/// `~/.codex`; `GROK_HOME`, or `~/.grok`), and the GitHub CLI's `GH_CONFIG_DIR` when CodexBar runs with one.
+fn profile(cli: Cli) -> Vec<(&'static str, std::ffi::OsString)> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    let home = |name: &'static str, folder: &str| {
+        set(name)
+            .or_else(|| crate::platform::home_dir().map(|home| home.join(folder).into_os_string()))
+            .map(|value| (name, value))
+    };
+    match cli {
+        Cli::GitHub => set("GH_CONFIG_DIR")
+            .map(|value| ("GH_CONFIG_DIR", value))
+            .into_iter()
+            .collect(),
+        Cli::Codex => home("CODEX_HOME", ".codex").into_iter().collect(),
+        Cli::Grok => home("GROK_HOME", ".grok").into_iter().collect(),
+        // Claude Code's folder is set by `claude_cli`.
+        Cli::Claude => Vec::new(),
+    }
+}
+
 /// Where the CLI is, found the way its provider finds it for refreshes.
 fn program(cli: Cli) -> Option<PathBuf> {
     match cli {
@@ -190,6 +216,20 @@ mod tests {
         for cli in [Cli::Codex, Cli::Claude, Cli::Grok] {
             assert_eq!((cli.docs(), cli.install()), (None, None));
         }
+    }
+
+    #[test]
+    fn the_codex_and_grok_sign_ins_name_the_folder_codexbar_reads() {
+        let names = |cli| profile(cli).into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+        assert_eq!(names(Cli::Codex), ["CODEX_HOME"]);
+        assert_eq!(names(Cli::Grok), ["GROK_HOME"]);
+        assert!(names(Cli::Claude).is_empty(), "claude_cli sets Claude Code's folder");
+        let codex = profile(Cli::Codex).remove(0).1;
+        assert_eq!(
+            std::path::Path::new(&codex).join("auth.json"),
+            crate::codex::default_auth_path(),
+            "the same auth.json the Codex provider reads"
+        );
     }
 
     #[test]

@@ -159,6 +159,21 @@ impl Failure {
 enum CliSignIn {
     Running,
     Failed(codexbar_providers::cli_sign_in::CliSignInError),
+    /// CodexBar's own sign-in stopped before it could open (it couldn't make the account's folder, say): its message,
+    /// which would otherwise show only in Settings.
+    Notice(SharedString),
+}
+
+/// What a failure row says about its sign-in (#337), under the provider's own message.
+fn note(suffix: &str, text: SharedString, cx: &gpui_kit::App) -> gpui_kit::AnyElement {
+    div()
+        .id(SharedString::from(format!("cli-note-{suffix}")))
+        .role(Role::Note)
+        .test_support()
+        .aria_label(text.clone())
+        .text_color(cx.theme().warning)
+        .child(text)
+        .into_any_element()
 }
 
 /// Where Settings opens for a failure (#188): the failed provider's group on the Accounts page (its index in the
@@ -892,13 +907,15 @@ impl Dashboard {
     /// when it isn't installed.
     fn sign_in_note(&self, failure: &Failure, cx: &Context<Self>) -> Option<gpui_kit::AnyElement> {
         let suffix = failure.element_suffix();
-        let Some(CliSignIn::Failed(error)) = self.cli_sign_ins.get(&suffix) else {
-            return None;
+        let error = match self.cli_sign_ins.get(&suffix)? {
+            CliSignIn::Failed(error) => error,
+            CliSignIn::Notice(notice) => return Some(note(&suffix, notice.clone(), cx)),
+            CliSignIn::Running => return None,
         };
         let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
             return None;
         };
-        let note = crate::sign_in_help::cli_failure(cli, error);
+        let text = crate::sign_in_help::cli_failure(cli, error);
         let install = cli
             .install()
             .filter(|_| *error == codexbar_providers::cli_sign_in::CliSignInError::NotInstalled);
@@ -906,15 +923,7 @@ impl Dashboard {
             h_flex()
                 .gap_2()
                 .items_center()
-                .child(
-                    div()
-                        .id(SharedString::from(format!("cli-note-{suffix}")))
-                        .role(Role::Note)
-                        .test_support()
-                        .aria_label(note.clone())
-                        .text_color(cx.theme().warning)
-                        .child(note),
-                )
+                .child(note(&suffix, text.into(), cx))
                 .children(install.map(|url| {
                     Button::new(SharedString::from(format!("cli-install-{suffix}")))
                         .label(format!("Get {}", cli.name().trim_start_matches("the ")))
@@ -940,9 +949,24 @@ impl Dashboard {
             .iter()
             .find(|failure| failure.provider == provider && failure.account == account)
             .and_then(|failure| self.sign_in_help(failure, cx));
-        if let Some(crate::sign_in_help::Help::Managed { kind, record }) = help {
-            kind.sign_in(&record, window, cx);
-        }
+        let Some(crate::sign_in_help::Help::Managed { kind, record }) = help else {
+            return;
+        };
+        let suffix = self
+            .failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .map(Failure::element_suffix)
+            .unwrap_or_default();
+        let before = SettingsHub::global(cx).notice();
+        kind.sign_in(&record, window, cx);
+        // A sign-in that stops before its dialog opens says why in Settings; show that on the row too.
+        let after = SettingsHub::global(cx).notice();
+        match after.filter(|after| Some(after) != before.as_ref()) {
+            Some(notice) => self.cli_sign_ins.insert(suffix, CliSignIn::Notice(notice)),
+            None => self.cli_sign_ins.remove(&suffix),
+        };
+        cx.notify();
     }
 
     /// A failure row's CLI sign-in (#337): runs the CLI's own sign-in in its console window, then fetches the provider
@@ -974,7 +998,9 @@ impl Dashboard {
                 match result {
                     Ok(()) => {
                         this.cli_sign_ins.remove(&suffix);
-                        this.retry(provider, account, cx);
+                        // Every provider: a CLI signed in under a new identity can be read by an adapter rebuilt
+                        // under that identity, which a retry of the old one would miss.
+                        SettingsHub::request_refresh(cx);
                     }
                     Err(error) => {
                         this.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));

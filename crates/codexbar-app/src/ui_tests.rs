@@ -1675,6 +1675,35 @@ fn an_account_codexbar_signs_in_starts_that_sign_in_from_its_row(cx: &mut TestAp
     );
 }
 
+// SFL on #340: a CodexBar sign-in that stops before its dialog (its folder can't be made) said why only in Settings.
+#[gpui_kit::test]
+fn a_codexbar_sign_in_that_cannot_start_says_why_on_its_row(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-managed-cannot-start",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cx-1", "providerId": "Codex", "displayLabel": "Personal", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    // A file where the account's Codex folder would go.
+    std::fs::write(settings.0.join("codex"), "not a folder").unwrap();
+    let codex = FakeProvider::for_account(Provider::Codex, "cx-1", None)
+        .failing_with(ProviderError::NotSignedIn { hint: "Sign in again." });
+    let _dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "sign-in-ChatGPT · Codex-cx-1");
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(!exists(cx, handle, "sign-in-status"), "no sign-in dialog opened");
+    let note = label(cx, handle, "cli-note-ChatGPT · Codex-cx-1").unwrap_or_default();
+    assert!(
+        note.starts_with("Couldn't create the account's Codex folder"),
+        "the row says why: {note}"
+    );
+}
+
 #[gpui_kit::test]
 fn a_cursor_app_account_can_move_to_codexbar_s_sign_in(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
