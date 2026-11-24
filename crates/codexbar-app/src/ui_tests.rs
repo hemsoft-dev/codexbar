@@ -2102,6 +2102,32 @@ fn a_cursor_app_account_reported_by_its_identity_keeps_its_switch(cx: &mut TestA
     assert!(visible(cx, handle, "account-save"), "the app account's dialog");
 }
 
+// SFL round 6 on #340: a Copilot record whose custom id equals Bob's dashboard account (but that owns Alice's) never
+// takes Bob's failure.
+#[gpui_kit::test]
+fn a_record_whose_id_equals_a_user_s_account_never_takes_its_failure(cx: &mut TestAppContext) {
+    let bob = codexbar_providers::copilot::account_id("bob");
+    let settings = TempSettings::new(
+        "failure-copilot-custom-id",
+        &format!(
+            r#"{{ "accountConfigurationVersion": 1, "accounts": [
+                {{ "id": "{bob}", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+                  "authenticationMethod": "OAuth", "externalAccountId": "alice" }},
+                {{ "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+                  "authenticationMethod": "CommandLine" }} ] }}"#,
+            bob = bob.as_str()
+        ),
+    );
+    let dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
+    );
+    cx.run_until_parked();
+    let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
+    assert_eq!(target.as_deref(), Some("cp-cli"), "not Alice's record, whatever its id");
+}
+
 // SFL on #340: another provider's record whose id happens to equal Bob's Copilot account never takes his failure.
 #[gpui_kit::test]
 fn another_provider_s_record_never_takes_a_copilot_failure(cx: &mut TestAppContext) {

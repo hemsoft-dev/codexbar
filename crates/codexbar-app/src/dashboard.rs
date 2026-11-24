@@ -249,7 +249,9 @@ fn named_record<'a>(
     let usable = |record: &&codexbar_store::settings::AccountRecord| {
         (any || record.enabled) && kind.is_none_or(|kind| record_kind(record) == Some(kind))
     };
-    if let Some(record) = records.iter().filter(usable).find(|record| &record.id == id) {
+    // An adapter's account is its record's id; an account a shared adapter reported is a dashboard id, which only
+    // ownership ties to a record (a custom record id can equal another user's dashboard id).
+    if let Some(record) = records.iter().filter(usable).find(|record| any && &record.id == id) {
         return Some(record);
     }
     // The records owning it, in settings order (a Copilot organization card is owned under "<record id>#org"). Two can
