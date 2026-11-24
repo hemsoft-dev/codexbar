@@ -38,6 +38,7 @@ mod ring_size;
 mod self_capture;
 mod settings_hub;
 mod settings_view;
+mod sign_in_help;
 mod smooth_plot;
 mod spend_view;
 mod status;
@@ -222,6 +223,7 @@ fn main() {
         claude_sign_in::init(cx);
         cursor_sign_in::init(cx);
         github_sign_in::init(cx);
+        sign_in_help::init(cx);
         opencode_sign_in::init(cx);
         gemini_sign_in::init(cx);
         gemini_sign_in::clean_up(cx);

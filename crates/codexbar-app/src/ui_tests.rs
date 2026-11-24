@@ -1297,6 +1297,10 @@ fn open_live_factory(
         if cx.try_global::<crate::grok_sign_in::Service>().is_none() {
             crate::grok_sign_in::init_with(cx, Arc::new(grok_fixture::FakeGrok::default()));
         }
+        // Never a real CLI's sign-in window (#337).
+        if cx.try_global::<crate::sign_in_help::Service>().is_none() {
+            crate::sign_in_help::init_with(cx, Arc::new(FakeCliSignIn::default()));
+        }
     });
     let mut dashboard = None;
     cx.open_window(size(px(1440.), px(960.)), |window, cx| {
@@ -1508,6 +1512,210 @@ fn a_failure_reported_under_the_identity_a_record_holds_targets_that_record(cx: 
         Some("cx-2"),
         "the failed account's own record, not the first"
     );
+}
+
+// Sign-in help on a failure row (#337): the sign-in itself, not just a way to Settings.
+
+/// A CLI's sign-in that never opens a window: it answers with `result` and records which CLI was asked.
+#[derive(Default)]
+struct FakeCliSignIn {
+    result: Mutex<Option<codexbar_providers::cli_sign_in::CliSignInError>>,
+    runs: Mutex<Vec<codexbar_providers::cli_sign_in::Cli>>,
+}
+
+impl FakeCliSignIn {
+    fn failing(error: codexbar_providers::cli_sign_in::CliSignInError) -> Arc<Self> {
+        let fake = Self::default();
+        *fake.result.lock().unwrap() = Some(error);
+        Arc::new(fake)
+    }
+}
+
+impl crate::sign_in_help::CliSignIn for FakeCliSignIn {
+    fn sign_in(
+        &self,
+        cli: codexbar_providers::cli_sign_in::Cli,
+    ) -> Result<(), codexbar_providers::cli_sign_in::CliSignInError> {
+        self.runs.lock().unwrap().push(cli);
+        match self.result.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A Copilot account on the GitHub CLI's own sign-in (Command line), signed out.
+fn signed_out_copilot(
+    cx: &mut TestAppContext,
+    name: &str,
+    cli: Arc<FakeCliSignIn>,
+) -> (Arc<FakeProvider>, AnyWindowHandle, TempSettings) {
+    let settings = TempSettings::new(
+        name,
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "octocat" } ] }"#,
+    );
+    cx.update(|cx| crate::sign_in_help::init_with(cx, cli));
+    let copilot = FakeProvider::for_account(Provider::Copilot, "cp-1", None).failing_with(ProviderError::NotSignedIn {
+        hint: "Sign in to the GitHub CLI for this account.",
+    });
+    let _dashboard = open_live(cx, &settings, vec![copilot.clone()]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    (copilot, handle, settings)
+}
+
+#[gpui_kit::test]
+fn a_github_cli_account_signs_in_from_its_failure_row_and_fetches_again(cx: &mut TestAppContext) {
+    let cli = Arc::new(FakeCliSignIn::default());
+    let (copilot, handle, _settings) = signed_out_copilot(cx, "failure-cli-sign-in", cli.clone());
+    assert_eq!(
+        label(cx, handle, "cli-sign-in-Copilot-cp-1").as_deref(),
+        Some("Sign in to Copilot · Team with the GitHub CLI")
+    );
+    assert!(
+        visible(cx, handle, "cli-docs-Copilot-cp-1"),
+        "the GitHub CLI's own instructions"
+    );
+    assert!(
+        visible(cx, handle, "switch-sign-in-Copilot-cp-1"),
+        "CodexBar's sign-in instead"
+    );
+    assert!(visible(cx, handle, "fix-Copilot-cp-1") && visible(cx, handle, "retry-Copilot-cp-1"));
+    assert!(cli.runs.lock().unwrap().is_empty(), "nothing starts without a click");
+
+    // The user signs the GitHub CLI in; the account is fetched again and its row goes.
+    copilot.set(Some(0.3));
+    let calls = copilot.calls.load(std::sync::atomic::Ordering::SeqCst);
+    click(cx, handle, "cli-sign-in-Copilot-cp-1");
+    cx.run_until_parked();
+    assert_eq!(
+        *cli.runs.lock().unwrap(),
+        vec![codexbar_providers::cli_sign_in::Cli::GitHub]
+    );
+    assert!(
+        copilot.calls.load(std::sync::atomic::Ordering::SeqCst) > calls,
+        "fetched again"
+    );
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        !visible(cx, handle, "cli-sign-in-Copilot-cp-1"),
+        "the failure row is gone"
+    );
+}
+
+#[gpui_kit::test]
+fn a_missing_github_cli_says_so_and_links_to_it(cx: &mut TestAppContext) {
+    let cli = FakeCliSignIn::failing(codexbar_providers::cli_sign_in::CliSignInError::NotInstalled);
+    let (_copilot, handle, _settings) = signed_out_copilot(cx, "failure-cli-missing", cli);
+    click(cx, handle, "cli-sign-in-Copilot-cp-1");
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(
+        label(cx, handle, "cli-note-Copilot-cp-1").as_deref(),
+        Some("The GitHub CLI isn't installed.")
+    );
+    assert!(visible(cx, handle, "cli-install-Copilot-cp-1"));
+    assert!(
+        visible(cx, handle, "cli-sign-in-Copilot-cp-1"),
+        "the row stays, to try again"
+    );
+}
+
+#[gpui_kit::test]
+fn an_unfinished_cli_sign_in_says_what_to_run(cx: &mut TestAppContext) {
+    let cli = FakeCliSignIn::failing(codexbar_providers::cli_sign_in::CliSignInError::Failed);
+    let (_copilot, handle, _settings) = signed_out_copilot(cx, "failure-cli-cancelled", cli);
+    click(cx, handle, "cli-sign-in-Copilot-cp-1");
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(
+        label(cx, handle, "cli-note-Copilot-cp-1").as_deref(),
+        Some(
+            "The GitHub CLI didn't finish signing in. Try again, or run `gh auth login --web --hostname github.com` \
+             in a terminal."
+        )
+    );
+    assert!(!visible(cx, handle, "cli-install-Copilot-cp-1"), "it is installed");
+}
+
+#[gpui_kit::test]
+fn an_account_codexbar_signs_in_starts_that_sign_in_from_its_row(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-managed-sign-in",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cx-1", "providerId": "Codex", "displayLabel": "Personal", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let codex = FakeProvider::for_account(Provider::Codex, "cx-1", None)
+        .failing_with(ProviderError::NotSignedIn { hint: "Sign in again." });
+    let _dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "sign-in-ChatGPT · Codex-cx-1"));
+    assert!(
+        !visible(cx, handle, "cli-sign-in-ChatGPT · Codex-cx-1"),
+        "no CLI for CodexBar's own sign-in"
+    );
+    assert!(!visible(cx, handle, "switch-sign-in-ChatGPT · Codex-cx-1"));
+    click(cx, handle, "sign-in-ChatGPT · Codex-cx-1");
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        exists(cx, handle, "sign-in-status"),
+        "the Codex sign-in started, without Settings"
+    );
+}
+
+#[gpui_kit::test]
+fn a_cursor_app_account_can_move_to_codexbar_s_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-switch-sign-in",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cu-1", "providerId": "Cursor", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "Automatic" } ] }"#,
+    );
+    let cursor = FakeProvider::for_account(Provider::Cursor, "cu-1", None).failing_with(ProviderError::NotSignedIn {
+        hint: "Sign in to the Cursor app.",
+    });
+    let dashboard = open_live(cx, &settings, vec![cursor]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        !visible(cx, handle, "cli-sign-in-Cursor-cu-1"),
+        "CodexBar can't start the Cursor app's sign-in"
+    );
+    click(cx, handle, "switch-sign-in-Cursor-cu-1");
+    assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Settings);
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "account-save"),
+        "the account's dialog, to choose OAuth"
+    );
+}
+
+#[gpui_kit::test]
+fn a_network_failure_offers_no_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("failure-network-no-sign-in", "{}");
+    let copilot = FakeProvider::new(Provider::Copilot, "copilot-1", None);
+    let _dashboard = open_live(cx, &settings, vec![copilot]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "retry-Copilot"));
+    assert!(!visible(cx, handle, "cli-sign-in-Copilot") && !visible(cx, handle, "sign-in-Copilot"));
 }
 
 #[gpui_kit::test]

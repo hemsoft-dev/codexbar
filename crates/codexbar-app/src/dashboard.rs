@@ -151,6 +151,13 @@ impl Failure {
     }
 }
 
+/// A CLI's sign-in started from a failure row (#337).
+#[derive(Clone, Debug, PartialEq)]
+enum CliSignIn {
+    Running,
+    Failed(codexbar_providers::cli_sign_in::CliSignInError),
+}
+
 /// Where Settings opens for a failure (#188): the failed provider's group on the Accounts page (its index in the
 /// catalog) and the account record to edit, when one is known. An adapter for one configured account names it,
 /// by the record's id or by the dashboard account the record owns (a Codex or Claude account CodexBar signed in
@@ -255,6 +262,9 @@ pub struct Dashboard {
     /// The dashboard account each configured record owns, by record id (#85); a record that disappears takes its
     /// account's history, snapshot and preferences with it.
     owned_ids: HashMap<String, String>,
+    /// A CLI's sign-in started from a failure row (#337), by the row's element suffix: running, or how it ended when
+    /// it didn't sign in. A successful one fetches the provider again and leaves no entry.
+    cli_sign_ins: HashMap<String, CliSignIn>,
     /// Removed accounts, with whether their history is deleted on disk yet. A refresh that started before the removal
     /// can still write them back, and a failed rewrite needs another try, so each refresh checks them again.
     forgotten: HashMap<String, bool>,
@@ -523,6 +533,7 @@ impl Dashboard {
             layout: crate::prefs_hub::PrefsHub::layout(cx),
             ranked_with: Default::default(),
             owned_ids: crate::providers::owned_account_ids(SettingsHub::global(cx)),
+            cli_sign_ins: HashMap::new(),
             forgotten: HashMap::new(),
             #[cfg(windows)]
             widgets_written: None,
@@ -763,6 +774,217 @@ impl Dashboard {
         if info.secret.is_some() && !managed {
             crate::settings_view::open_account_dialog(info.id, record, window, cx);
         }
+    }
+
+    /// What a failure row offers beyond Open settings and Retry (#337), for a sign-in failure.
+    fn sign_in_help(&self, failure: &Failure, cx: &gpui_kit::App) -> Option<crate::sign_in_help::Help> {
+        if !failure.sign_in {
+            return None;
+        }
+        let (group, record) = settings_target(failure, &self.owned_ids, cx)?;
+        crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref())
+    }
+
+    /// The row's sign-in buttons (#337), before Open settings: CodexBar's own sign-in; or the CLI's sign-in, its
+    /// instructions and CodexBar's sign-in instead; or just the switch.
+    fn sign_in_controls(&self, failure: &Failure, cx: &Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        use crate::sign_in_help::Help;
+        let Some(help) = self.sign_in_help(failure, cx) else {
+            return Vec::new();
+        };
+        let suffix = failure.element_suffix();
+        let provider = failure.provider;
+        let account = failure.account.clone();
+        let switch = |record_held: bool| {
+            record_held.then(|| {
+                let account = account.clone();
+                Button::new(SharedString::from(format!("switch-sign-in-{suffix}")))
+                    .label("Use CodexBar's sign-in…")
+                    .accessibility_label(format!("Use CodexBar's sign-in for {}", failure.name()))
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.switch_sign_in(provider, account.clone(), window, cx)
+                    }))
+                    .into_any_element()
+            })
+        };
+        match help {
+            Help::Managed { kind, .. } => {
+                let account = account.clone();
+                vec![
+                    Button::new(SharedString::from(format!("sign-in-{suffix}")))
+                        .label(crate::sign_in_help::managed_label(kind))
+                        .accessibility_label(format!("Sign in to {}", failure.name()))
+                        .small()
+                        .primary()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.sign_in_from_failure(provider, account.clone(), window, cx)
+                        }))
+                        .into_any_element(),
+                ]
+            }
+            Help::Cli { cli, switch: record } => {
+                let running = self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running);
+                let sign_in = {
+                    let account = account.clone();
+                    Button::new(SharedString::from(format!("cli-sign-in-{suffix}")))
+                        .label(if running {
+                            format!("Waiting for {}…", cli.name())
+                        } else {
+                            format!("Sign in with {}…", cli.name())
+                        })
+                        .accessibility_label(format!("Sign in to {} with {}", failure.name(), cli.name()))
+                        .small()
+                        .primary()
+                        // A second click while it runs is ignored (`sign_in_with_cli`).
+                        .loading(running)
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.sign_in_with_cli(provider, account.clone(), cx)),
+                        )
+                        .into_any_element()
+                };
+                let docs = cli.docs().map(|url| {
+                    Button::new(SharedString::from(format!("cli-docs-{suffix}")))
+                        .label("How to sign in")
+                        .accessibility_label(format!("How to sign in to {}", cli.name()))
+                        .small()
+                        .ghost()
+                        .on_click(move |_, _, cx| cx.open_url(url))
+                        .into_any_element()
+                });
+                std::iter::once(sign_in)
+                    .chain(docs)
+                    .chain(switch(record.is_some()))
+                    .collect()
+            }
+            Help::Switch(_) => switch(true).into_iter().collect(),
+        }
+    }
+
+    /// Under the row's message (#337): what happened when a CLI's sign-in didn't sign in, with a link to get the CLI
+    /// when it isn't installed.
+    fn sign_in_note(&self, failure: &Failure, cx: &Context<Self>) -> Option<gpui_kit::AnyElement> {
+        let suffix = failure.element_suffix();
+        let Some(CliSignIn::Failed(error)) = self.cli_sign_ins.get(&suffix) else {
+            return None;
+        };
+        let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
+            return None;
+        };
+        let note = crate::sign_in_help::cli_failure(cli, error);
+        let install = cli
+            .install()
+            .filter(|_| *error == codexbar_providers::cli_sign_in::CliSignInError::NotInstalled);
+        Some(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .id(SharedString::from(format!("cli-note-{suffix}")))
+                        .role(Role::Note)
+                        .test_support()
+                        .aria_label(note.clone())
+                        .text_color(cx.theme().warning)
+                        .child(note),
+                )
+                .children(install.map(|url| {
+                    Button::new(SharedString::from(format!("cli-install-{suffix}")))
+                        .label(format!("Get {}", cli.name().trim_start_matches("the ")))
+                        .small()
+                        .ghost()
+                        .on_click(move |_, _, cx| cx.open_url(url))
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// A failure row's sign-in (#337): CodexBar's own for an account it signs in, which refreshes once it succeeds,
+    /// as from Settings.
+    pub fn sign_in_from_failure(
+        &mut self,
+        provider: &'static str,
+        account: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let help = self
+            .failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .and_then(|failure| self.sign_in_help(failure, cx));
+        if let Some(crate::sign_in_help::Help::Managed { kind, record }) = help {
+            kind.sign_in(&record, window, cx);
+        }
+    }
+
+    /// A failure row's CLI sign-in (#337): runs the CLI's own sign-in in its console window, then fetches the provider
+    /// again when it signed in, or says what happened on the row.
+    pub fn sign_in_with_cli(&mut self, provider: &'static str, account: Option<String>, cx: &mut Context<Self>) {
+        let Some(failure) = self
+            .failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+        else {
+            return;
+        };
+        let suffix = failure.element_suffix();
+        let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
+            return;
+        };
+        if self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running) {
+            return;
+        }
+        self.cli_sign_ins.insert(suffix.clone(), CliSignIn::Running);
+        cx.notify();
+        let service = crate::sign_in_help::service(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { service.sign_in(cli) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        this.cli_sign_ins.remove(&suffix);
+                        this.retry(provider, account, cx);
+                    }
+                    Err(error) => {
+                        this.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// A failure row's "Use CodexBar's sign-in" (#337): Settings on the account, with its dialog open, where choosing
+    /// CodexBar's sign-in applies the same rules as any other change of method.
+    pub fn switch_sign_in(
+        &mut self,
+        provider: &'static str,
+        account: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self
+            .failures
+            .iter()
+            .find(|failure| failure.provider == provider && failure.account == account)
+            .and_then(|failure| settings_target(failure, &self.owned_ids, cx));
+        let Some((group, Some(record))) = target else {
+            return;
+        };
+        self.settings_start = Some(gpui_kit::component::setting::SelectIndex {
+            page_ix: crate::settings_view::ACCOUNTS_PAGE,
+            group_ix: Some(group),
+        });
+        self.settings_generation = self.settings_generation.wrapping_add(1);
+        self.view = DashboardView::Settings;
+        cx.notify();
+        crate::settings_view::open_account_dialog(crate::catalog::PROVIDERS[group].id, Some(record), window, cx);
     }
 
     fn fetch(&mut self, only: Option<(&'static str, Option<String>)>, cx: &mut Context<Self>) {
@@ -2439,12 +2661,15 @@ impl Dashboard {
                 )
                 .child(div().font_semibold().child(failure.name()))
                 .child(
-                    div()
+                    v_flex()
                         .flex_1()
                         .min_w_0()
+                        .gap_1()
                         .text_color(cx.theme().muted_foreground)
-                        .child(failure.message.clone()),
+                        .child(failure.message.clone())
+                        .children(self.sign_in_note(failure, cx)),
                 )
+                .children(self.sign_in_controls(failure, cx))
                 .when(failure.sign_in, |this| {
                     let provider = failure.provider;
                     let account = failure.account.clone();

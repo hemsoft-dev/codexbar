@@ -26,7 +26,7 @@ const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const SIGN_IN_HINT: &str = "Run `claude` and sign in with your Claude account.";
 const EXPIRED_HINT: &str = "Open Claude Code once to renew the sign-in.";
 /// The hint for a sign-in CodexBar made (#80).
-pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again in Settings > Accounts.";
+pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again.";
 /// The account of a sign-in whose Claude account can't be read.
 const LEGACY_ID: &str = "claude";
 /// A sign-in is renewed when its token expires within this long.

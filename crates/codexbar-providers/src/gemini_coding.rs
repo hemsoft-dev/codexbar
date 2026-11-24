@@ -180,7 +180,7 @@ impl CodingError {
     pub fn message(&self) -> &'static str {
         match self {
             Self::NotInstalled => "Coding quotas need the Antigravity CLI (agy), signed in.",
-            Self::SignedOut => "The Antigravity CLI is signed out. Sign in again from Settings > Accounts.",
+            Self::SignedOut => "The Antigravity CLI is signed out. Sign in to it again.",
             Self::TooOld => {
                 "Coding quotas need Antigravity CLI 1.4.10 or newer for a browser-free usage check. Update agy."
             }

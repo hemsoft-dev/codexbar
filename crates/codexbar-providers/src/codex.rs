@@ -21,7 +21,7 @@ use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 const SIGN_IN_HINT: &str = "Run `codex` and sign in with ChatGPT.";
 /// The hint for a Codex home CodexBar signed in (#78).
-pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again in Settings > Accounts.";
+pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again.";
 /// The account of a sign-in whose user can't be read (no ID token).
 const LEGACY_ID: &str = "codex-chatgpt";
 /// A sign-in is renewed when its access token expires within this long.
