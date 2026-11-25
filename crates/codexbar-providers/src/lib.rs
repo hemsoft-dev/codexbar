@@ -80,6 +80,13 @@ pub trait UsageProvider: Send + Sync {
         None
     }
 
+    /// The settings record this adapter was built for, when it reports under another id (a Codex or Claude adapter
+    /// reports under its sign-in's identity, which a signed-out sibling record can remember too). Lets the dashboard
+    /// tell whose sign-in failed (#341).
+    fn settings_record(&self) -> Option<&str> {
+        None
+    }
+
     /// The one account this adapter's sign-in belongs to right now, when it can tell without fetching (Cursor, #81).
     /// Lets saved results of another account be set aside at startup.
     fn signed_in_account(&self) -> Option<AccountId> {

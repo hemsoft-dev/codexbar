@@ -21,6 +21,8 @@ pub struct SettingsHub {
     revision: u64,
     /// Bumped when something outside the settings file changed what providers return (a sign-in, #78).
     refresh_requests: u64,
+    /// Bumped whenever an error is set, so the same error set again counts as new (#341).
+    errors: u64,
     /// Reads an environment variable; tests supply their own values so they never depend on the host's (#186).
     environment: EnvLookup,
 }
@@ -72,6 +74,7 @@ impl SettingsHub {
             error,
             revision: 0,
             refresh_requests: 0,
+            errors: 0,
             environment: Arc::new(|name| std::env::var(name).ok()),
         });
     }
@@ -154,6 +157,7 @@ impl SettingsHub {
                 }
                 Err(err) => {
                     hub.error = Some(err.to_string().into());
+                    hub.errors += 1;
                     if let Ok(fresh) = Settings::load(&hub.dir) {
                         hub.settings = fresh;
                     }
@@ -166,8 +170,16 @@ impl SettingsHub {
     }
 
     pub fn set_error(cx: &mut App, error: Option<SharedString>) {
-        cx.update_global(|hub: &mut Self, _| hub.error = error);
+        cx.update_global(|hub: &mut Self, _| {
+            hub.errors += u64::from(error.is_some());
+            hub.error = error;
+        });
         cx.refresh_windows();
+    }
+
+    /// Changes whenever an error is set, even one with the same message as before.
+    pub fn errors(cx: &App) -> u64 {
+        Self::global(cx).errors
     }
 
     /// The account record that stands for a provider when it has none yet (legacy single-account behavior).

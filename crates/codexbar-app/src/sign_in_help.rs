@@ -47,7 +47,8 @@ pub fn help(info: &ProviderInfo, record: Option<&AccountRecord>) -> Option<Help>
         (names::COPILOT, AuthMethod::Automatic | AuthMethod::CommandLine) => Some(Cli::GitHub),
         (names::CODEX, AuthMethod::Automatic) => Some(Cli::Codex),
         (names::CLAUDE, AuthMethod::Automatic | AuthMethod::OAuth) => Some(Cli::Claude),
-        (names::GROK, AuthMethod::Automatic) => Some(Cli::Grok),
+        // X Subscription reads the Grok CLI's own sign-in, whose failures fail its row (#341).
+        (names::GROK | names::X_SUBSCRIPTION, AuthMethod::Automatic) => Some(Cli::Grok),
         _ => None,
     };
     match (cli, switch) {
@@ -195,6 +196,18 @@ mod tests {
                 "{provider} {method:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_x_subscription_runs_the_grok_cli_s_sign_in_with_no_switch() {
+        let x = record(names::X_SUBSCRIPTION, AuthMethod::Automatic);
+        assert_eq!(
+            help(crate::catalog::info(names::X_SUBSCRIPTION), Some(&x)),
+            Some(Help::Cli {
+                cli: Cli::Grok,
+                switch: None,
+            })
+        );
     }
 
     #[test]

@@ -22,6 +22,10 @@ const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 const SIGN_IN_HINT: &str = "Sign in to the Codex CLI with ChatGPT.";
 /// The hint for a Codex home CodexBar signed in (#78).
 pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again.";
+/// The hint for the Codex CLI's own home when its config keeps the sign-in in the system's credential store, where
+/// `codex login` leaves no `auth.json` for CodexBar to read (#341).
+pub const KEYRING_HINT: &str = "The Codex CLI keeps its sign-in in the system's credential store, which CodexBar can't \
+     read. Set cli_auth_credentials_store = \"file\" in the Codex CLI's config.toml, then sign in again.";
 /// The account of a sign-in whose user can't be read (no ID token).
 const LEGACY_ID: &str = "codex-chatgpt";
 /// A sign-in is renewed when its access token expires within this long.
@@ -95,6 +99,33 @@ pub fn default_auth_path() -> PathBuf {
         .or_else(|| crate::platform::home_dir().map(|home| home.join(".codex")))
         .unwrap_or_else(|| PathBuf::from(".codex"));
     home.join("auth.json")
+}
+
+/// True when the `config.toml` beside `auth_path` sets `cli_auth_credentials_store` to `keyring`, or to `auto`, which
+/// uses the system's credential store where there is one: the Codex CLI then signs in without writing `auth.json`
+/// (https://developers.openai.com/codex/auth).
+fn keeps_sign_in_elsewhere(auth_path: &Path) -> bool {
+    auth_path
+        .parent()
+        .and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok())
+        .and_then(|config| credentials_store(&config))
+        .is_some_and(|store| store == "keyring" || store == "auto")
+}
+
+/// The top-level `cli_auth_credentials_store` value in a Codex `config.toml`, without its quotes.
+fn credentials_store(config: &str) -> Option<String> {
+    config
+        .lines()
+        .map(str::trim)
+        // Keys after the first table header belong to that table.
+        .take_while(|line| !line.starts_with('['))
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "cli_auth_credentials_store").then(|| {
+                let value = value.split('#').next().unwrap_or_default().trim();
+                value.trim_matches(|c| c == '"' || c == '\'').to_owned()
+            })
+        })
 }
 
 /// Reads the access token (and account id, when present) from a Codex `auth.json`.
@@ -349,6 +380,10 @@ impl<H: HttpClient> CodexProvider<H> {
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 read_credentials(&self.auth_path).map_err(|_| not_signed_in)
             }
+            // The Codex CLI's own home, set to keep its sign-in out of `auth.json`: signing in again wouldn't help.
+            Err(_) if self.hint == SIGN_IN_HINT && keeps_sign_in_elsewhere(&self.auth_path) => {
+                Err(ProviderError::NotSignedIn { hint: KEYRING_HINT })
+            }
             Err(_) => Err(not_signed_in),
         }
     }
@@ -476,6 +511,10 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
 
     fn account_label(&self) -> Option<&str> {
         self.account.as_ref().map(|(_, label)| label.as_str())
+    }
+
+    fn settings_record(&self) -> Option<&str> {
+        self.record_id.as_deref()
     }
 
     /// The home's sign-in; a configured account that is signed out still holds the identity it was signed in to, so
@@ -829,6 +868,75 @@ mod tests {
         let file = auth_file(r#"{"tokens":{"access_token":"tok"}}"#);
         let provider = CodexProvider::new(FakeHttp::status(503, ""), file.path().to_path_buf());
         assert_eq!(provider.fetch(now()), Err(ProviderError::Http { status: 503 }));
+    }
+
+    #[test]
+    fn the_credentials_store_is_read_from_the_config_s_top_level_only() {
+        assert_eq!(
+            credentials_store("model = \"o3\"\ncli_auth_credentials_store = \"keyring\" # OS store\n").as_deref(),
+            Some("keyring")
+        );
+        assert_eq!(
+            credentials_store("cli_auth_credentials_store='auto'").as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            credentials_store("[profiles.work]\ncli_auth_credentials_store = \"keyring\"\n"),
+            None
+        );
+        assert_eq!(credentials_store("model = \"o3\"\n"), None);
+    }
+
+    // SFL on #340: with the Codex CLI set to keep its sign-in in the keyring, `codex login` succeeded and the row still
+    // said to sign in.
+    #[test]
+    fn a_cli_home_that_keeps_its_sign_in_in_the_keyring_says_so_and_how_to_change_it() {
+        let home = std::env::temp_dir().join(format!("codexbar-codex-keyring-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let auth = home.join("auth.json");
+        let error = |provider: &CodexProvider<FakeHttp>| provider.fetch_outcomes(now()).err();
+        let provider = CodexProvider::new(FakeHttp::status(200, FIXTURE), auth.clone());
+        assert_eq!(
+            error(&provider),
+            Some(ProviderError::NotSignedIn { hint: SIGN_IN_HINT }),
+            "no config: the usual sign-in"
+        );
+        for store in ["keyring", "auto"] {
+            std::fs::write(
+                home.join("config.toml"),
+                format!("cli_auth_credentials_store = \"{store}\"\n"),
+            )
+            .unwrap();
+            assert_eq!(
+                error(&provider),
+                Some(ProviderError::NotSignedIn { hint: KEYRING_HINT }),
+                "{store}"
+            );
+        }
+        // A home CodexBar signed in writes its own config, which keeps the sign-in in auth.json.
+        let managed = CodexProvider::new(FakeHttp::status(200, FIXTURE), auth).managed();
+        assert_eq!(
+            error(&managed),
+            Some(ProviderError::NotSignedIn {
+                hint: MANAGED_SIGN_IN_HINT
+            })
+        );
+        std::fs::write(home.join("config.toml"), "cli_auth_credentials_store = \"file\"\n").unwrap();
+        assert_eq!(
+            error(&provider),
+            Some(ProviderError::NotSignedIn { hint: SIGN_IN_HINT })
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_adapter_names_the_settings_record_it_was_built_for() {
+        let provider = CodexProvider::new(FakeHttp::status(200, FIXTURE), PathBuf::from("auth.json"));
+        assert_eq!(provider.settings_record(), None);
+        assert_eq!(
+            provider.with_subscription_record("cx-1").settings_record(),
+            Some("cx-1")
+        );
     }
 
     #[test]

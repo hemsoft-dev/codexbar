@@ -1173,6 +1173,10 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
         self.account.as_ref().map(|(_, label)| label.as_str())
     }
 
+    fn settings_record(&self) -> Option<&str> {
+        self.record_id.as_deref()
+    }
+
     /// The folder's signed-in account; a configured one that is signed out still holds the identity it had.
     fn signed_in_account(&self) -> Option<AccountId> {
         let current = self
@@ -1547,6 +1551,7 @@ mod tests {
             Some("automatic-original")
         );
         provider.record_id = Some("automatic-current".into());
+        assert_eq!(provider.settings_record(), Some("automatic-current"));
         let cached = provider.fetch(now() + Duration::minutes(5)).unwrap();
         assert_eq!(cached[0].id().as_str(), "claude");
         assert_eq!(cached[0].subscription_record(), Some("automatic-current"));

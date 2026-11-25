@@ -34,6 +34,14 @@ impl ProviderError {
     /// The sign-in or key is the problem (missing, expired, or rejected by the provider), so the fix is in Settings
     /// rather than a retry (#188). A 403 isn't one: providers use it for refusals that no key fixes (Claude's
     /// organization policy, Copilot's enterprise billing permission), and an expired token is reported as `Expired`.
+    /// The sign-in hint of a missing or rejected sign-in, which says which sign-in failed (#341).
+    pub fn hint(&self) -> Option<&'static str> {
+        match self {
+            Self::NotSignedIn { hint } | Self::Expired { hint } => Some(hint),
+            _ => None,
+        }
+    }
+
     pub fn needs_sign_in(&self) -> bool {
         matches!(
             self,
@@ -61,3 +69,16 @@ impl fmt::Display for ProviderError {
 }
 
 impl std::error::Error for ProviderError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_missing_or_rejected_sign_in_has_a_hint() {
+        assert_eq!(ProviderError::NotSignedIn { hint: "Sign in." }.hint(), Some("Sign in."));
+        assert_eq!(ProviderError::Expired { hint: "Again." }.hint(), Some("Again."));
+        assert_eq!(ProviderError::Http { status: 401 }.hint(), None);
+        assert_eq!(ProviderError::Network.hint(), None);
+    }
+}
