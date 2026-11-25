@@ -233,10 +233,11 @@ fn token_key(token: &str) -> u64 {
     hasher.finish()
 }
 
-/// The retry time still ahead for `key`, if GitHub limited its rate.
+/// The retry time still ahead for `key`, if GitHub limited its rate. Only `key`'s own wait is dropped once `now` is past
+/// it: another token's is judged by its own caller's clock (#343).
 fn backed_off(key: u64, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let mut backoff = BACKOFF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    backoff.retain(|(_, until)| *until > now);
+    backoff.retain(|(known, until)| *known != key || *until > now);
     backoff.iter().find(|(known, _)| *known == key).map(|(_, until)| *until)
 }
 
@@ -2362,6 +2363,28 @@ mod tests {
             panic!("the organization is still read")
         };
         assert!(org.primary().is_some());
+    }
+
+    // #343: a check of one token with a later clock dropped every other token's wait, so
+    // `a_rate_limited_seat_count_holds_back_the_budget_request` failed beside
+    // `a_rate_limited_token_waits_for_githubs_retry_time_across_refreshes`.
+    #[test]
+    fn one_token_s_later_check_keeps_another_token_s_wait() {
+        let (waiting, later) = (token_key("gho_backoff_waiting"), token_key("gho_backoff_later"));
+        let retry_at = now() + chrono::Duration::minutes(10);
+        let _ = back_off(waiting, retry_at);
+        assert_eq!(backed_off(later, now() + chrono::Duration::minutes(31)), None);
+        assert_eq!(
+            backed_off(waiting, now()),
+            Some(retry_at),
+            "still waiting by its own clock"
+        );
+        assert_eq!(
+            backed_off(waiting, retry_at),
+            None,
+            "its own wait ends at its retry time"
+        );
+        assert_eq!(backed_off(waiting, now()), None, "and is forgotten");
     }
 
     #[test]
