@@ -2348,6 +2348,35 @@ fn an_organization_card_read_with_the_github_cli_s_token_offers_its_sign_in(cx: 
     );
 }
 
+// SFL on #342: a row left from before its record was switched off (no refresh yet) offers no sign-in for it, nor for
+// a sibling that remembers the same identity.
+#[gpui_kit::test]
+fn a_row_left_from_a_switched_off_record_offers_no_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-codex-disabled-record",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cx-cli", "providerId": "Codex", "displayLabel": "CLI", "enabled": false,
+              "authenticationMethod": "Automatic" },
+            { "id": "cx-oauth", "providerId": "Codex", "displayLabel": "Mine", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "codex-shared" } ] }"#,
+    );
+    let codex =
+        FakeProvider::for_record(Provider::Codex, "codex-shared", "cx-cli").failing_with(ProviderError::Expired {
+            hint: "Sign in to the Codex CLI with ChatGPT.",
+        });
+    let _dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "retry-ChatGPT · Codex-codex-shared"),
+        "the row is there"
+    );
+    assert!(!visible(cx, handle, "cli-sign-in-ChatGPT · Codex-codex-shared"));
+    assert!(!visible(cx, handle, "sign-in-ChatGPT · Codex-codex-shared"));
+}
+
 // SFL on #342: an adapter's record id is looked up among its own provider's records only.
 #[gpui_kit::test]
 fn an_adapter_s_record_id_never_resolves_to_another_provider_s_record(cx: &mut TestAppContext) {

@@ -125,10 +125,16 @@ fn credentials_store(config: &str) -> Option<String> {
         if open.is_none() && line.starts_with('#') {
             continue;
         }
-        let delimiter = open.or_else(|| ["\"\"\"", "'''"].into_iter().find(|delim| line.contains(delim)));
         let inside = open.is_some();
+        // Outside a string, a trailing comment's quotes open none either.
+        let code = if inside {
+            line
+        } else {
+            line.split('#').next().unwrap_or_default()
+        };
+        let delimiter = open.or_else(|| ["\"\"\"", "'''"].into_iter().find(|delim| code.contains(delim)));
         // A line that opens or closes a multi-line string toggles it when the delimiter appears an odd number of times.
-        if delimiter.is_some_and(|delim| line.matches(delim).count() % 2 == 1) {
+        if delimiter.is_some_and(|delim| code.matches(delim).count() % 2 == 1) {
             open = if inside { None } else { delimiter };
         }
         if inside {
@@ -935,9 +941,11 @@ mod tests {
         assert_eq!(credentials_store(literal).as_deref(), Some("auto"));
         let one_line = "notes = \"\"\"[x]\"\"\"\ncli_auth_credentials_store = \"keyring\"\n";
         assert_eq!(credentials_store(one_line).as_deref(), Some("keyring"));
-        // SFL on #342: a comment's quotes open no string.
+        // SFL on #342: a comment's quotes open no string, on its own line or after a setting.
         let comment = "# use ''' for raw text\ncli_auth_credentials_store = \"keyring\"\n";
         assert_eq!(credentials_store(comment).as_deref(), Some("keyring"));
+        let trailing = "model = \"o3\" # not '''\ncli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(trailing).as_deref(), Some("keyring"));
     }
 
     // SFL on #340: with the Codex CLI set to keep its sign-in in the keyring, `codex login` succeeded and the row still

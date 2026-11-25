@@ -289,6 +289,17 @@ fn failed_record<'a>(
         .map(|record| billing_credential(failure, owned, hub, record))
 }
 
+/// True when the adapter that failed was built for a record that is now off or gone (#341): its row is left from
+/// before the change, until the next refresh, and a sign-in from it would be for an account that no longer runs.
+fn stale(failure: &Failure, hub: &SettingsHub) -> bool {
+    failure.record.as_ref().is_some_and(|id| {
+        !hub.settings()
+            .accounts()
+            .iter()
+            .any(|record| &record.id == id && record.enabled)
+    })
+}
+
 /// True when CodexBar's GitHub sign-in for a Copilot `record` would be refused (#341): another Copilot record names the
 /// same user, and one GitHub user can be added to Copilot once. Signing it in again from the row can't succeed;
 /// Settings can remove the duplicate. GitHub Billing records are one per billing owner instead, so one user can sign
@@ -1085,6 +1096,7 @@ impl Dashboard {
             !unknown_owner(failure, &self.owned_ids, hub)
                 && failure.hint != Some(codexbar_providers::gemini_apps::SIGN_IN_HINT)
                 && !sign_in_refused(record.as_ref(), hub)
+                && !stale(failure, hub)
         })
     }
 
@@ -1287,6 +1299,13 @@ impl Dashboard {
         }
     }
 
+    /// CLI sign-in `attempt` signed in: its row waits no longer, unless a later attempt took its place (#341).
+    fn forget_cli_attempt(&mut self, suffix: &str, attempt: u64) {
+        if self.cli_sign_ins.get(suffix) == Some(&CliSignIn::Running(attempt)) {
+            self.cli_sign_ins.remove(suffix);
+        }
+    }
+
     /// Forgets what rows that are gone said about their sign-ins, and the CLI sign-ins they were waiting on (#341): an
     /// account that recovered (a Retry, a sign-in outside CodexBar) would otherwise show an old note, or a late result,
     /// at its next failure.
@@ -1321,7 +1340,7 @@ impl Dashboard {
             let _ = this.update(cx, |this, cx| {
                 match result {
                     Ok(()) => {
-                        this.cli_sign_ins.remove(&suffix);
+                        this.forget_cli_attempt(&suffix, attempt);
                         // Every provider: a CLI signed in under a new identity can be read by an adapter rebuilt
                         // under that identity, which a retry of the old one would miss.
                         SettingsHub::request_refresh(cx);
