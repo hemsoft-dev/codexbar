@@ -2674,6 +2674,104 @@ fn discovery_doesn_t_keep_a_switched_off_codexbar_sign_in(cx: &mut TestAppContex
     assert!(ids(cx, &dashboard).contains(&bob));
 }
 
+/// Copilot's one adapter when only Bob is read, failing as a whole: its last good rows stay, marked failed.
+fn copilot_down() -> Arc<dyn UsageProvider> {
+    FakeProvider::new(Provider::Copilot, "copilot-bob", None).failing_with(ProviderError::Http { status: 503 })
+        as Arc<dyn UsageProvider>
+}
+
+// SFL round 5 on #344: Alice's CodexBar sign-in switched off while a refresh runs doesn't come back with that refresh's
+// results, though a discovery record is on, nor stay when the next refresh fails as a whole and keeps the last rows.
+#[gpui_kit::test]
+fn a_codexbar_sign_in_switched_off_during_a_refresh_stays_gone(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-oauth-off-in-flight",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    // While Alice's record is on, Copilot reads her (failing); after, the GitHub CLI's Bob only, and Copilot is down.
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: true });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on { users.clone() } else { copilot_down() }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            settings.upsert(codexbar_store::settings::AccountRecord {
+                enabled: false,
+                ..record
+            })
+        })
+    })
+    .unwrap();
+    assert!(!ids(cx, &dashboard).contains(&alice), "gone at once");
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "the running refresh doesn't bring her back"
+    );
+    assert!(!visible(cx, handle, "retry-Copilot-alice"));
+}
+
+// SFL round 5 on #344: a user the GitHub CLI shows through discovery stays when an unrelated setting is saved, though a
+// switched-off CodexBar sign-in names them too. Only the change that switches a sign-in off takes its rows away.
+#[gpui_kit::test]
+fn an_unrelated_settings_change_keeps_a_discovered_user(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-discovered-unrelated-change",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": false,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
+    );
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "the GitHub CLI's Alice, through discovery"
+    );
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let record = settings.accounts().iter().find(|a| a.id == "cp-cli").cloned().unwrap();
+            settings.upsert(codexbar_store::settings::AccountRecord {
+                label: "Everyone".into(),
+                ..record
+            })
+        })
+    })
+    .unwrap();
+    assert!(ids(cx, &dashboard).contains(&alice), "an unrelated change keeps her");
+    cx.run_until_parked();
+    assert!(ids(cx, &dashboard).contains(&alice));
+}
+
 // SFL on #344: a Copilot user switched off while a refresh runs doesn't come back with its results, nor does their
 // usage row stay.
 #[gpui_kit::test]
