@@ -2618,6 +2618,62 @@ fn a_failed_copilot_keeps_its_placeholder(cx: &mut TestAppContext) {
     assert_eq!(ids(cx, &dashboard), vec!["pending:copilot"], "still there, unavailable");
 }
 
+// SFL round 4 on #344: GitHub CLI discovery reads the GitHub CLI's users, not CodexBar's own sign-ins. Switching off
+// Alice's CodexBar sign-in takes her rows away though a discovery record is on; Bob, whom discovery reads, stays.
+#[gpui_kit::test]
+fn discovery_doesn_t_keep_a_switched_off_codexbar_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-discovery-oauth-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: true }) as Arc<dyn UsageProvider>],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    let render = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    render(cx);
+    assert!(visible(cx, handle, "retry-Copilot-alice"));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            settings.upsert(codexbar_store::settings::AccountRecord {
+                enabled: false,
+                ..record
+            })
+        })
+    })
+    .unwrap();
+    render(cx);
+    let (alice, bob) = ["alice", "bob"]
+        .map(|user| codexbar_providers::copilot::account_id(user).as_str().to_owned())
+        .into();
+    assert!(
+        !visible(cx, handle, "retry-Copilot-alice"),
+        "Alice's failure row goes at once"
+    );
+    assert!(!ids(cx, &dashboard).contains(&alice), "with her usage row");
+    assert!(
+        visible(cx, handle, "retry-Copilot-bob"),
+        "Bob, a GitHub CLI user, stays"
+    );
+    assert!(ids(cx, &dashboard).contains(&bob));
+}
+
 // SFL on #344: a Copilot user switched off while a refresh runs doesn't come back with its results, nor does their
 // usage row stay.
 #[gpui_kit::test]

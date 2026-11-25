@@ -319,6 +319,28 @@ fn unread(provider: Option<Provider>, account: &str, hub: &SettingsHub) -> bool 
     !discovered && !named.iter().any(|read| read == account)
 }
 
+/// True when `account` of `provider` goes with a settings change (SFL round 4 on #344): Copilot no longer reads it
+/// (`unread`), or only a switched-off CodexBar sign-in names it. GitHub CLI discovery reads the GitHub CLI's own users,
+/// not CodexBar's sign-ins, so it doesn't stand in for that record. A result that still reports the user, because the
+/// GitHub CLI is signed in to them too, shows them again.
+fn dropped(provider: Option<Provider>, account: &str, hub: &SettingsHub) -> bool {
+    use codexbar_providers::copilot::account_id;
+    let switched_off_sign_in = |record: &codexbar_store::settings::AccountRecord| {
+        !record.enabled
+            && record.provider == codexbar_store::settings::names::COPILOT
+            && crate::github_sign_in::is_managed(record)
+            && record
+                .external_id
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|user| account_id(user).as_str() == account)
+    };
+    unread(provider, account, hub)
+        || (provider == Some(Provider::Copilot)
+            && hub.settings().accounts().iter().any(switched_off_sign_in)
+            && !copilot_reads(hub).0.iter().any(|read| read == account))
+}
+
 /// What Copilot's one adapter reads under the current settings: the accounts its enabled records name (each user's,
 /// and the organization card a user's record bills, as `providers::copilot` sets it up), and whether a record discovers
 /// every GitHub CLI user besides.
@@ -518,14 +540,19 @@ fn owns_another(
 }
 
 /// Whether `account` stays after a settings change that leaves `adapters` (#192): one of them serves it, and it isn't a
-/// Copilot account Copilot no longer reads, whose shared adapter stays (#343).
+/// Copilot account that change took away, though Copilot's shared adapter stays (`dropped`, #343).
 fn keeps_account(adapters: &[(&'static str, Option<String>)], account: &AccountSnapshot, hub: &SettingsHub) -> bool {
-    covered_by(adapters, account) && !unread(Some(account.provider()), account.id().as_str(), hub)
+    covered_by(adapters, account) && !dropped(Some(account.provider()), account.id().as_str(), hub)
 }
 
-/// `keeps_account` for a failure row: an adapter that serves it is still configured, and its account is still read.
+/// `keeps_account` for a failure row: an adapter that serves it is still configured, and its account wasn't taken away.
 fn keeps_failure(adapters: &[(&'static str, Option<String>)], failure: &Failure, hub: &SettingsHub) -> bool {
-    adapters.contains(&(failure.provider, failure.account.clone())) && !unserved(failure, hub)
+    let provider = Provider::from_display_name(failure.provider);
+    adapters.contains(&(failure.provider, failure.account.clone()))
+        && !failure
+            .outcome
+            .as_deref()
+            .is_some_and(|account| dropped(provider, account, hub))
 }
 
 /// Whether one of `adapters` serves `account`: an adapter for one configured account by that account's id, a
@@ -900,11 +927,12 @@ impl Dashboard {
                 ring_saves,
             ],
         };
-        dashboard.configured = dashboard.configured_adapters(cx).unwrap_or_default();
+        let configured = dashboard.configured_adapters(cx);
         // Live data only: the demo has no adapters, nor settings to read them from.
-        dashboard.copilot_read = (dashboard.configured_adapters(cx))
+        dashboard.copilot_read = (configured.as_ref())
             .map(|_| copilot_reads(SettingsHub::global(cx)))
             .unwrap_or_default();
+        dashboard.configured = configured.unwrap_or_default();
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
         }
@@ -1804,8 +1832,8 @@ impl Dashboard {
             .filter(|account| enabled.contains(&account.provider().display_name()))
             .filter(|account| !disabled.iter().any(|id| id == account.id().as_str()))
             // A Copilot user switched off shares Copilot's one adapter with the others, which this check can't see
-            // (#343, SFL round 3 on #344).
-            .filter(|account| !unread(Some(account.provider()), account.id().as_str(), hub))
+            // (#343, SFL rounds 3 and 4 on #344).
+            .filter(|account| !dropped(Some(account.provider()), account.id().as_str(), hub))
             .filter(|account| {
                 // With several adapters for one provider (Codex accounts, #78), any of them may hold the account.
                 let mut current = signed_in
