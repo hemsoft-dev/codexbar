@@ -137,9 +137,13 @@ pub fn cli() -> String {
 
 /// The Grok CLI where it is installed (its installer's `~/.grok/bin`, then PATH), `None` when it isn't.
 pub fn find_cli() -> Option<PathBuf> {
-    crate::platform::home_dir()
-        .and_then(|home| crate::platform::program_in(&home.join(".grok").join("bin"), "grok"))
-        .or_else(|| crate::platform::find_program("grok"))
+    find_cli_in(crate::platform::home_dir().as_deref(), &crate::platform::find_program)
+}
+
+/// `find_cli` with the home folder and the PATH lookup (`platform::find_program`) given, so a test reads neither (#343).
+pub(crate) fn find_cli_in(home: Option<&Path>, find: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    home.and_then(|home| crate::platform::program_in(&home.join(".grok").join("bin"), "grok"))
+        .or_else(|| find("grok"))
 }
 
 /// When each home last asked the CLI to renew; process-wide, as providers are rebuilt every refresh.

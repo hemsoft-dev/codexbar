@@ -296,6 +296,61 @@ fn stale(failure: &Failure, hub: &SettingsHub) -> bool {
     })
 }
 
+/// True when a Copilot account that failed in Copilot's shared adapter is no longer one Copilot reads (#343): its
+/// user's record, or the record billing its organization card, was switched off or removed. Copilot's one adapter
+/// outlives that change, so neither `stale` nor the adapters a settings change leaves can tell; the row is left from
+/// before it. A user's account keeps showing while a Copilot record discovers every GitHub CLI user.
+fn unserved(failure: &Failure, hub: &SettingsHub) -> bool {
+    failure
+        .outcome
+        .as_deref()
+        .is_some_and(|account| unread(Provider::from_display_name(failure.provider), account, hub))
+}
+
+/// True when `account` of `provider` is a Copilot account Copilot no longer reads (`unserved`): its usage row goes with
+/// its failure row (SFL on #344). Copilot's placeholder (`pending:copilot`) stands for the provider, not an account, and
+/// stays until its first result.
+fn unread(provider: Option<Provider>, account: &str, hub: &SettingsHub) -> bool {
+    if provider != Some(Provider::Copilot) || account.starts_with(PLACEHOLDER_PREFIX) {
+        return false;
+    }
+    let (named, discovers) = copilot_reads(hub);
+    let discovered = discovers && !codexbar_providers::copilot::is_org_account(account);
+    !discovered && !named.iter().any(|read| read == account)
+}
+
+/// What Copilot's one adapter reads under the current settings: the accounts its enabled records name (each user's,
+/// and the organization card a user's record bills, as `providers::copilot` sets it up), and whether a record discovers
+/// every GitHub CLI user besides.
+fn copilot_reads(hub: &SettingsHub) -> (Vec<String>, bool) {
+    use codexbar_providers::copilot::{account_id, org_account_id};
+    fn set(value: &Option<String>) -> Option<&str> {
+        value.as_deref().map(str::trim).filter(|value| !value.is_empty())
+    }
+    let mut named = Vec::new();
+    for record in crate::providers::enabled_accounts(hub, codexbar_store::settings::names::COPILOT) {
+        if let Some(user) = set(&record.external_id) {
+            named.push(account_id(user).as_str().to_owned());
+            named.extend(set(&record.copilot_organization).map(|org| org_account_id(org).as_str().to_owned()));
+        }
+    }
+    (named, crate::providers::copilot_discovers_all(hub))
+}
+
+/// The accounts `before`'s records named that `now`'s don't (SFL rounds 4 and 5 on #344): the Copilot users and
+/// organization cards a settings change took away, a CodexBar sign-in switched off among them. Their rows go once, with
+/// that change. Discovery reads the GitHub CLI's own users, not CodexBar's sign-ins, so it can't tell whether it still
+/// shows such a user; when it is on, the change refreshes and a user the GitHub CLI is signed in to comes back.
+fn lost_reads(before: &(Vec<String>, bool), now: &(Vec<String>, bool)) -> Vec<String> {
+    before.0.iter().filter(|read| !now.0.contains(read)).cloned().collect()
+}
+
+/// True when `now` reads an account `before` didn't (Codex on #344): a Copilot user switched on again, whose rows a
+/// switch-off took away, though Copilot's one adapter stayed.
+fn reads_more(before: &(Vec<String>, bool), now: &(Vec<String>, bool)) -> bool {
+    (now.1 && !before.1) || now.0.iter().any(|read| !before.0.contains(read))
+}
+
 /// True when CodexBar's GitHub sign-in for a Copilot `record` would be refused (#341): another Copilot record names the
 /// same user, and one GitHub user can be added to Copilot once. Signing it in again from the row can't succeed;
 /// Settings can remove the duplicate. GitHub Billing records are one per billing owner instead, so one user can sign
@@ -470,6 +525,31 @@ fn owns_another(
         .is_some_and(|outcome| owned.get(&record.id).is_some_and(|account| account != outcome))
 }
 
+/// Whether `account` stays after a settings change that leaves `adapters` (#192): one of them serves it, and it isn't a
+/// Copilot account Copilot no longer reads (`unread`) or that the change took away (`lost`, from `lost_reads`), though
+/// Copilot's shared adapter stays (#343).
+fn keeps_account(
+    adapters: &[(&'static str, Option<String>)],
+    account: &AccountSnapshot,
+    lost: &[String],
+    hub: &SettingsHub,
+) -> bool {
+    let id = account.id().as_str();
+    covered_by(adapters, account) && !unread(Some(account.provider()), id, hub) && !lost.iter().any(|lost| lost == id)
+}
+
+/// `keeps_account` for a failure row: an adapter that serves it is still configured, and its account wasn't taken away.
+fn keeps_failure(
+    adapters: &[(&'static str, Option<String>)],
+    failure: &Failure,
+    lost: &[String],
+    hub: &SettingsHub,
+) -> bool {
+    adapters.contains(&(failure.provider, failure.account.clone()))
+        && !unserved(failure, hub)
+        && !failure.outcome.as_ref().is_some_and(|account| lost.contains(account))
+}
+
 /// Whether one of `adapters` serves `account`: an adapter for one configured account by that account's id, a
 /// provider-wide adapter by the provider's name (the same rule `apply_results` uses to tell what a fetch reported).
 fn covered_by(adapters: &[(&'static str, Option<String>)], account: &AccountSnapshot) -> bool {
@@ -518,6 +598,9 @@ pub struct Dashboard {
     refresh_requests: u64,
     /// The last CLI sign-in attempt started from a row (#341).
     cli_attempts: u64,
+    /// The CLIs whose sign-in console is open, whichever row started it (#343): one profile each, signed in once at a
+    /// time.
+    cli_running: std::collections::HashSet<codexbar_providers::cli_sign_in::Cli>,
     /// The settings revision the shown accounts were fetched under, or `None` when they came from a fetch that
     /// settings changed during; failed notifications are only resent from accounts that are current.
     accounts_revision: Option<u64>,
@@ -553,6 +636,12 @@ pub struct Dashboard {
     /// The adapters the settings produced when they last changed, as (provider name, account id) pairs (#192): a
     /// settings change that adds one fetches it at once, and one that drops one takes its rows off the screen.
     configured: Vec<(&'static str, Option<String>)>,
+    /// What Copilot's one adapter read when the settings last changed (`copilot_reads`): an account it reads again is
+    /// fetched at once, as a new adapter is (Codex on #344).
+    copilot_read: (Vec<String>, bool),
+    /// What Copilot read when the running live fetch started: an account a settings change took away meanwhile doesn't
+    /// come back with its results (SFL round 5 on #344).
+    refresh_read: (Vec<String>, bool),
     /// The window placement last saved (#194), and one seen since that is saved once it stays the same for a tick,
     /// so a drag or resize is written once it ends rather than at every step.
     placement: Option<codexbar_store::prefs::WindowPlacement>,
@@ -804,6 +893,7 @@ impl Dashboard {
             refresh_revision: 0,
             refresh_requests: 0,
             cli_attempts: 0,
+            cli_running: std::collections::HashSet::new(),
             accounts_revision: None,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
@@ -818,6 +908,8 @@ impl Dashboard {
             settings_start: None,
             settings_generation: 0,
             configured: Vec::new(),
+            copilot_read: Default::default(),
+            refresh_read: Default::default(),
             placement: crate::prefs_hub::PrefsHub::window_placement(cx),
             placement_pending: None,
             #[cfg(windows)]
@@ -834,7 +926,12 @@ impl Dashboard {
                 ring_saves,
             ],
         };
-        dashboard.configured = dashboard.configured_adapters(cx).unwrap_or_default();
+        let configured = dashboard.configured_adapters(cx);
+        // Live data only: the demo has no adapters, nor settings to read them from.
+        dashboard.copilot_read = (configured.as_ref())
+            .map(|_| copilot_reads(SettingsHub::global(cx)))
+            .unwrap_or_default();
+        dashboard.configured = configured.unwrap_or_default();
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
         }
@@ -902,6 +999,12 @@ impl Dashboard {
     #[cfg(test)]
     pub fn failed_providers(&self) -> Vec<&'static str> {
         self.failures.iter().map(|failure| failure.provider).collect()
+    }
+
+    /// Whether `cli`'s sign-in console is open, for the headless UI tests.
+    #[cfg(test)]
+    pub fn cli_signing_in(&self, cli: codexbar_providers::cli_sign_in::Cli) -> bool {
+        self.cli_running.contains(&cli)
     }
 
     /// The visible view, for the headless UI tests.
@@ -1087,7 +1190,8 @@ impl Dashboard {
         let excluded = |other: &codexbar_store::settings::AccountRecord| owns_another(failure, &self.owned_ids, other);
         let record = help_record(record, named, hub.settings().accounts(), &excluded)?;
         // None for a failure whose sign-in can't be told, that no sign-in here renews (an expired Gemini Apps website
-        // session, which Connect Antigravity… wouldn't renew), or whose sign-in would be refused (#341).
+        // session, which Connect Antigravity… wouldn't renew), or whose sign-in would be refused (#341). A Copilot
+        // account switched off has no row to ask (`unserved`, #343).
         crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref()).filter(|_| {
             !unknown_owner(failure, &self.owned_ids, hub)
                 && failure.hint != Some(codexbar_providers::gemini_apps::SIGN_IN_HINT)
@@ -1131,7 +1235,7 @@ impl Dashboard {
                 ]
             }
             Help::Cli { cli, switch: record } => {
-                let running = matches!(self.cli_sign_ins.get(&suffix), Some(CliSignIn::Running(_)));
+                let running = self.waits_for(&suffix, cli);
                 let sign_in = {
                     let key = key.clone();
                     Button::new(SharedString::from(format!("cli-sign-in-{suffix}")))
@@ -1295,10 +1399,17 @@ impl Dashboard {
 
     /// Forgets what rows that are gone said about their sign-ins, and the CLI sign-ins they were waiting on (#341): an
     /// account that recovered (a Retry, a sign-in outside CodexBar) would otherwise show an old note, or a late result,
-    /// at its next failure.
+    /// at its next failure. The CLI itself stays busy until it ends (`cli_running`, #343).
     fn forget_recovered_sign_ins(&mut self) {
         let rows: Vec<String> = self.failures.iter().map(Failure::element_suffix).collect();
         self.cli_sign_ins.retain(|suffix, _| rows.contains(suffix));
+    }
+
+    /// Whether the row with buttons ending in `suffix` waits for `cli`'s sign-in: its own, or another row's (#343). A CLI
+    /// signs in one profile (`CODEX_HOME`, `GROK_HOME`, the GitHub CLI's folder), so a second console for it, from a
+    /// row that came back under another id or from another of its accounts, would sign in the same profile at once.
+    fn waits_for(&self, suffix: &str, cli: codexbar_providers::cli_sign_in::Cli) -> bool {
+        matches!(self.cli_sign_ins.get(suffix), Some(CliSignIn::Running(_))) || self.cli_running.contains(&cli)
     }
 
     /// A failure row's CLI sign-in (#337): runs the CLI's own sign-in in its console window, then fetches the provider
@@ -1311,12 +1422,13 @@ impl Dashboard {
         let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
             return;
         };
-        if matches!(self.cli_sign_ins.get(&suffix), Some(CliSignIn::Running(_))) {
+        if self.waits_for(&suffix, cli) {
             return;
         }
         self.cli_attempts += 1;
         let attempt = self.cli_attempts;
         self.cli_sign_ins.insert(suffix.clone(), CliSignIn::Running(attempt));
+        self.cli_running.insert(cli);
         cx.notify();
         let service = crate::sign_in_help::service(cx);
         cx.spawn(async move |this, cx| {
@@ -1325,6 +1437,8 @@ impl Dashboard {
                 .spawn(async move { service.sign_in(cli) })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                // Its console has closed: the CLI can sign in again, from any row.
+                this.cli_running.remove(&cli);
                 match result {
                     Ok(()) => {
                         this.forget_cli_attempt(&suffix, attempt);
@@ -1398,6 +1512,7 @@ impl Dashboard {
             });
         }
         self.refresh_revision = SettingsHub::revision(cx);
+        self.refresh_read = copilot_reads(SettingsHub::global(cx));
         self.loading = true;
         self.fetch_partial = only.is_some();
         self.show_placeholders(&providers, cx);
@@ -1609,12 +1724,32 @@ impl Dashboard {
                 }
             }
         }
+        // A Copilot account no enabled record reads any more never shows, whatever a result reported (SFL on #344): a
+        // refresh that started before its user was switched off, or a failed adapter keeping its last good rows. Its
+        // usage row goes below, once a removed account's returning history is deleted again.
+        self.failures
+            .retain(|failure| !unserved(failure, SettingsHub::global(cx)));
         self.loading = false;
         self.forget_recovered_sign_ins();
         // A retry of one provider doesn't count as a refresh: the next full refresh keeps its schedule.
         if !self.fetch_partial {
             self.last_refresh = Some(Utc::now());
         }
+        // A fetch that started before an account was removed still returns it, and recorded its history: take it out
+        // again (#85), before any filter below drops it unseen (a removed account's adapter gone, SFL round 3 on #344).
+        if !self.forgotten.is_empty() {
+            let returned: Vec<String> = accounts
+                .iter()
+                .map(|account| account.id().as_str().to_owned())
+                .filter(|id| self.forgotten.contains_key(id))
+                .collect();
+            for id in &returned {
+                self.forgotten.insert(id.clone(), false);
+            }
+            accounts.retain(|account| !self.forgotten.contains_key(account.id().as_str()));
+            self.delete_forgotten_history(cx);
+        }
+        accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), SettingsHub::global(cx)));
         // Placeholders that a result replaced (or that left with their provider) are gone.
         self.placeholders
             .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
@@ -1628,9 +1763,11 @@ impl Dashboard {
             // An account switched off (or a provider, or a record removed) while the fetch ran must not come back
             // with the fetch's results, not even until the next refresh replaces them (#192).
             if let Some(adapters) = self.configured_adapters(cx) {
-                accounts.retain(|account| covered_by(&adapters, account));
+                // ... nor a Copilot account taken away, which discovery would otherwise let through (SFL round 5).
+                let lost = lost_reads(&self.refresh_read, &copilot_reads(SettingsHub::global(cx)));
+                accounts.retain(|account| keeps_account(&adapters, account, &lost, SettingsHub::global(cx)));
                 self.failures
-                    .retain(|failure| adapters.contains(&(failure.provider, failure.account.clone())));
+                    .retain(|failure| keeps_failure(&adapters, failure, &lost, SettingsHub::global(cx)));
                 self.states
                     .retain(|id, _| accounts.iter().any(|account| account.id().as_str() == id));
                 self.placeholders
@@ -1639,20 +1776,6 @@ impl Dashboard {
             // Run again under the current settings, so a crossed condition is still noticed even with automatic
             // refresh off.
             self.refresh_queued = true;
-        }
-        // A fetch that started before an account was removed still returns it, and recorded its history: take it out
-        // again (#85).
-        if !self.forgotten.is_empty() {
-            let returned: Vec<String> = accounts
-                .iter()
-                .map(|account| account.id().as_str().to_owned())
-                .filter(|id| self.forgotten.contains_key(id))
-                .collect();
-            for id in &returned {
-                self.forgotten.insert(id.clone(), false);
-            }
-            accounts.retain(|account| !self.forgotten.contains_key(account.id().as_str()));
-            self.delete_forgotten_history(cx);
         }
         self.set_accounts(accounts, cx);
         self.save_snapshots(cx);
@@ -1710,6 +1833,9 @@ impl Dashboard {
             .into_iter()
             .filter(|account| enabled.contains(&account.provider().display_name()))
             .filter(|account| !disabled.iter().any(|id| id == account.id().as_str()))
+            // A Copilot user switched off shares Copilot's one adapter with the others, which this check can't see
+            // (#343, SFL round 3 on #344).
+            .filter(|account| !unread(Some(account.provider()), account.id().as_str(), hub))
             .filter(|account| {
                 // With several adapters for one provider (Codex accounts, #78), any of them may hold the account.
                 let mut current = signed_in
@@ -1852,25 +1978,50 @@ impl Dashboard {
         let Some(adapters) = self.configured_adapters(cx) else {
             return;
         };
-        let added = adapters.iter().any(|adapter| !self.configured.contains(adapter));
+        let (added, lost) = self.adds_accounts(&adapters, cx);
         self.configured = adapters.clone();
-        self.drop_unconfigured_accounts(&adapters, cx);
+        self.drop_unconfigured_accounts(&adapters, &lost, cx);
         if added {
             self.refresh(cx);
         }
     }
 
-    /// Drops the rows and failure banners none of `adapters` serves.
-    fn drop_unconfigured_accounts(&mut self, adapters: &[(&'static str, Option<String>)], cx: &mut Context<Self>) {
+    /// Whether the settings now produce an adapter `configured` didn't have, or Copilot's one adapter now reads an
+    /// account it didn't (a Copilot user switched on again, Codex on #344), or may through discovery once a named one is
+    /// gone (`lost_reads`); with the accounts the change took from Copilot. Remembers what Copilot reads.
+    fn adds_accounts(
+        &mut self,
+        adapters: &[(&'static str, Option<String>)],
+        cx: &gpui_kit::App,
+    ) -> (bool, Vec<String>) {
+        let reads = copilot_reads(SettingsHub::global(cx));
+        let more = reads_more(&self.copilot_read, &reads);
+        let lost = lost_reads(&self.copilot_read, &reads);
+        let rediscover = reads.1 && !lost.is_empty();
+        self.copilot_read = reads;
+        let added = more || rediscover || adapters.iter().any(|adapter| !self.configured.contains(adapter));
+        (added, lost)
+    }
+
+    /// Drops the rows and failure banners none of `adapters` serves, and those of the Copilot accounts the change took
+    /// away (`lost`).
+    fn drop_unconfigured_accounts(
+        &mut self,
+        adapters: &[(&'static str, Option<String>)],
+        lost: &[String],
+        cx: &mut Context<Self>,
+    ) {
         let before = self.accounts.len() + self.failures.len();
+        let hub = SettingsHub::global(cx);
+        // A Copilot account switched off goes too, though Copilot's one adapter stays (#343).
         self.failures
-            .retain(|failure| adapters.contains(&(failure.provider, failure.account.clone())));
+            .retain(|failure| keeps_failure(adapters, failure, lost, hub));
         // A row switched off forgets what it said about its sign-in, so switching it on again starts afresh (#341).
         self.forget_recovered_sign_ins();
         let accounts: Vec<AccountSnapshot> = self
             .accounts
             .iter()
-            .filter(|account| covered_by(adapters, account))
+            .filter(|account| keeps_account(adapters, account, lost, hub))
             .cloned()
             .collect();
         if before == accounts.len() + self.failures.len() {

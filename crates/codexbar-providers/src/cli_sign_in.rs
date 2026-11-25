@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// A CLI whose own sign-in an account can use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cli {
     /// `gh auth login --web`: Copilot's Automatic and Command line methods read the GitHub CLI's accounts.
     GitHub,
@@ -92,7 +92,12 @@ impl SignInWindow {
         if cli == Cli::Claude {
             return open_claude();
         }
-        let base = program(cli).map(crate::platform::command);
+        let base = program(
+            cli,
+            crate::platform::home_dir().as_deref(),
+            &crate::platform::find_program,
+        )
+        .map(crate::platform::command);
         open_with(cli, base, profile(cli), crate::contained::spawn_console)
     }
     /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success.
@@ -281,15 +286,16 @@ fn profile_in(
     }
 }
 
-/// Where the CLI is, found the way its provider finds it for refreshes.
-fn program(cli: Cli) -> Option<PathBuf> {
+/// Where the CLI is, found the way its provider finds it for refreshes, with the home folder and the PATH lookup
+/// (`platform::find_program`) given, so a test reads neither (#343).
+fn program(cli: Cli, home: Option<&std::path::Path>, find: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
     match cli {
-        Cli::GitHub => crate::platform::find_program("gh"),
-        Cli::Codex => crate::platform::find_program("codex"),
-        Cli::Claude => crate::platform::find_program("claude"),
+        Cli::GitHub => find("gh"),
+        Cli::Codex => find("codex"),
+        Cli::Claude => find("claude"),
         // Not `grok::cli`, whose fallback to a bare `grok` a terminal (macOS and Linux) would start and only then find
         // missing, reporting a sign-in that didn't finish rather than a CLI that isn't installed (#341).
-        Cli::Grok => crate::grok::find_cli(),
+        Cli::Grok => crate::grok::find_cli_in(home, find),
     }
 }
 
@@ -455,6 +461,37 @@ mod tests {
         });
         assert!(matches!(result, Err(CliSignInError::NotInstalled)));
         assert!(!started, "nothing to start");
+    }
+
+    // SFL on #342 (#343): a bare `grok` for a missing Grok CLI would start in a terminal and only then fail, as a
+    // sign-in that didn't finish.
+    #[test]
+    fn a_missing_cli_is_found_nowhere_rather_than_by_its_bare_name() {
+        let home = std::env::temp_dir().join(format!("codexbar-cli-program-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let nowhere = |_: &str| None;
+        for cli in [Cli::GitHub, Cli::Codex, Cli::Claude, Cli::Grok] {
+            assert_eq!(program(cli, Some(&home), &nowhere), None, "{cli:?}");
+        }
+        assert_eq!(program(Cli::Grok, None, &nowhere), None, "no home folder");
+        // Found on PATH, or in its installer's own folder first.
+        let on_path = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
+        assert_eq!(
+            program(Cli::Grok, Some(&home), &on_path),
+            Some(PathBuf::from("/bin/grok"))
+        );
+        let bin = home.join(".grok").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let installed = bin.join(&crate::platform::program_names("grok")[0]);
+        std::fs::write(&installed, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(program(Cli::Grok, Some(&home), &on_path), Some(installed));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
