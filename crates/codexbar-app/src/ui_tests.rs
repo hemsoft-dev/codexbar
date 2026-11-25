@@ -1743,19 +1743,19 @@ fn managed_codex_sign_in_open(
     cx: &mut TestAppContext,
     name: &str,
     fake: FakeCodexSignIn,
-) -> (AnyWindowHandle, TempSettings) {
+) -> (Entity<Dashboard>, AnyWindowHandle, TempSettings) {
     let settings = TempSettings::new(name, MANAGED_CODEX);
     cx.update(|cx| crate::codex_sign_in::init_with(cx, Arc::new(fake)));
     let codex = FakeProvider::for_account(Provider::Codex, "cx-1", None)
         .failing_with(ProviderError::NotSignedIn { hint: "Sign in again." });
-    let _dashboard = open_live(cx, &settings, vec![codex]);
+    let dashboard = open_live(cx, &settings, vec![codex]);
     cx.run_until_parked();
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     click(cx, handle, "sign-in-ChatGPT · Codex-cx-1");
     cx.run_until_parked();
-    (handle, settings)
+    (dashboard, handle, settings)
 }
 
 /// One tick of the dashboard's clock, then a frame.
@@ -1769,13 +1769,18 @@ fn tick(cx: &mut TestAppContext, handle: AnyWindowHandle) {
 // SFL on #340 (#337's criteria): cancelling CodexBar's own sign-in left the row as it was, saying nothing.
 #[gpui_kit::test]
 fn a_cancelled_codexbar_sign_in_says_so_on_its_row(cx: &mut TestAppContext) {
-    let (handle, _settings) = managed_codex_sign_in_open(cx, "failure-managed-cancel", FakeCodexSignIn::default());
+    let (dashboard, handle, _settings) =
+        managed_codex_sign_in_open(cx, "failure-managed-cancel", FakeCodexSignIn::default());
     assert!(exists(cx, handle, "sign-in-status"), "the dialog waits for the browser");
     tick(cx, handle);
     assert!(
         !exists(cx, handle, "cli-note-ChatGPT · Codex-cx-1"),
         "nothing to say while the dialog is open"
     );
+    // SFL on #342: a refresh the dashboard asks for itself meanwhile (another row's CLI sign-in finishing) isn't this
+    // sign-in succeeding.
+    dashboard.update(cx, |dashboard, cx| dashboard.request_refresh(cx));
+    cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         gpui_kit::component::WindowExt::close_dialog(window, cx);
     })
@@ -1800,7 +1805,7 @@ fn a_cancelled_codexbar_sign_in_says_so_on_its_row(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_codexbar_sign_in_that_signs_in_leaves_no_note(cx: &mut TestAppContext) {
     let fake = FakeCodexSignIn::new(Outcome::SignsIn("user-1", "one@example.com"));
-    let (handle, _settings) = managed_codex_sign_in_open(cx, "failure-managed-signs-in", fake);
+    let (_dashboard, handle, _settings) = managed_codex_sign_in_open(cx, "failure-managed-signs-in", fake);
     tick(cx, handle);
     assert!(!exists(cx, handle, "sign-in-status"), "the dialog closed on success");
     assert!(
@@ -1896,7 +1901,7 @@ fn an_expired_gemini_apps_session_offers_only_settings(cx: &mut TestAppContext) 
     assert!(!visible(cx, handle, "sign-in-Gemini-gm-1"), "no Connect Antigravity…");
     assert!(
         visible(cx, handle, "fix-Gemini-gm-1"),
-        "Open settings, where the session is renewed"
+        "Open settings, where the session can be forgotten"
     );
 }
 
@@ -2258,6 +2263,32 @@ fn an_organization_card_two_users_bill_offers_no_one_s_sign_in(cx: &mut TestAppC
     );
     assert!(!visible(cx, handle, "sign-in-Copilot-acme") && !visible(cx, handle, "cli-sign-in-Copilot-acme"));
     assert!(visible(cx, handle, "fix-Copilot-acme"), "Open settings stays");
+}
+
+// SFL on #342: Copilot reads an organization with a token CodexBar signed in for its billing user before the GitHub
+// CLI's, so the card's failure is that sign-in's even when only the Command line record sets the organization.
+#[gpui_kit::test]
+fn an_organization_card_read_with_codexbar_s_token_offers_that_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-copilot-org-token",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-oauth", "providerId": "Copilot", "displayLabel": "OAuth", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "CLI", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "Alice", "copilotOrganization": "acme" } ] }"#,
+    );
+    let store = MemoryCredentialStore::default();
+    codexbar_store::credentials::write_long(&store, "cp-oauth", "gho_test_token").unwrap();
+    let _dashboard = open_live_dyn(cx, &settings, vec![Arc::new(OrgFails) as Arc<dyn UsageProvider>], store);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "sign-in-Copilot-acme"),
+        "CodexBar's sign-in, whose token failed"
+    );
+    assert!(!visible(cx, handle, "cli-sign-in-Copilot-acme"), "not the GitHub CLI's");
 }
 
 #[gpui_kit::test]

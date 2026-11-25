@@ -287,14 +287,10 @@ fn program(cli: Cli) -> Option<PathBuf> {
         Cli::GitHub => crate::platform::find_program("gh"),
         Cli::Codex => crate::platform::find_program("codex"),
         Cli::Claude => crate::platform::find_program("claude"),
-        Cli::Grok => installed(PathBuf::from(crate::grok::cli())),
+        // Not `grok::cli`, whose fallback to a bare `grok` a terminal (macOS and Linux) would start and only then find
+        // missing, reporting a sign-in that didn't finish rather than a CLI that isn't installed (#341).
+        Cli::Grok => crate::grok::find_cli(),
     }
-}
-
-/// `program` when it was found: `grok::cli` falls back to a bare `grok`, which a terminal (macOS and Linux) would start
-/// and only then find missing, reporting a sign-in that didn't finish rather than a CLI that isn't installed (#341).
-fn installed(program: PathBuf) -> Option<PathBuf> {
-    (program.components().count() > 1).then_some(program)
 }
 
 #[cfg(test)]
@@ -439,13 +435,6 @@ mod tests {
         assert!(codex.is_dir() && grok.is_dir());
         assert!(!gh.exists(), "the GitHub CLI makes its own folder");
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_bare_program_name_is_a_cli_that_wasn_t_found() {
-        assert_eq!(installed(PathBuf::from("grok")), None);
-        let found = std::env::temp_dir().join("grok");
-        assert_eq!(installed(found.clone()), Some(found));
     }
 
     #[test]

@@ -132,13 +132,14 @@ impl LoginWindow {
 
 /// The Grok CLI: where its installer puts it, or on PATH.
 pub fn cli() -> String {
-    let installed = crate::platform::home_dir()
+    find_cli().map_or_else(|| "grok".to_owned(), |path| path.to_string_lossy().into_owned())
+}
+
+/// The Grok CLI where it is installed (its installer's `~/.grok/bin`, then PATH), `None` when it isn't.
+pub fn find_cli() -> Option<PathBuf> {
+    crate::platform::home_dir()
         .and_then(|home| crate::platform::program_in(&home.join(".grok").join("bin"), "grok"))
-        .or_else(|| crate::platform::find_program("grok"));
-    match installed {
-        Some(path) => path.to_string_lossy().into_owned(),
-        None => "grok".to_owned(),
-    }
+        .or_else(|| crate::platform::find_program("grok"))
 }
 
 /// When each home last asked the CLI to renew; process-wide, as providers are rebuilt every refresh.

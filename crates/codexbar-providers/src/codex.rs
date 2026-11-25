@@ -26,6 +26,10 @@ pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again.";
 /// `codex login` leaves no `auth.json` for CodexBar to read (#341).
 pub const KEYRING_HINT: &str = "The Codex CLI keeps its sign-in in the system's credential store, which CodexBar can't \
      read. Set cli_auth_credentials_store = \"file\" in the Codex CLI's config.toml, then sign in again.";
+/// The hint for the Codex CLI's own home when its config lets it choose: it keeps the sign-in in the system's
+/// credential store where it can, else in `auth.json` (#341).
+pub const AUTO_HINT: &str = "Sign in to the Codex CLI with ChatGPT. Its config.toml sets cli_auth_credentials_store = \
+     \"auto\", which can keep the sign-in where CodexBar can't read it: if signing in doesn't help, set it to \"file\".";
 /// The account of a sign-in whose user can't be read (no ID token).
 const LEGACY_ID: &str = "codex-chatgpt";
 /// A sign-in is renewed when its access token expires within this long.
@@ -101,18 +105,18 @@ pub fn default_auth_path() -> PathBuf {
     home.join("auth.json")
 }
 
-/// True when the `config.toml` beside `auth_path` sets `cli_auth_credentials_store` to `keyring`, or to `auto`, which
-/// uses the system's credential store where there is one: the Codex CLI then signs in without writing `auth.json`
+/// The `cli_auth_credentials_store` the `config.toml` beside `auth_path` sets: `keyring` keeps the sign-in in the
+/// system's credential store, never `auth.json`; `auto` does where it can, else falls back to the file
 /// (https://developers.openai.com/codex/auth).
-fn keeps_sign_in_elsewhere(auth_path: &Path) -> bool {
+fn configured_store(auth_path: &Path) -> Option<String> {
     auth_path
         .parent()
         .and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok())
         .and_then(|config| credentials_store(&config))
-        .is_some_and(|store| store == "keyring" || store == "auto")
 }
 
-/// The top-level `cli_auth_credentials_store` value in a Codex `config.toml`, without its quotes.
+/// The top-level `cli_auth_credentials_store` value in a Codex `config.toml`, without its quotes. A quoted key is the
+/// same key in TOML.
 fn credentials_store(config: &str) -> Option<String> {
     config
         .lines()
@@ -121,7 +125,8 @@ fn credentials_store(config: &str) -> Option<String> {
         .take_while(|line| !line.starts_with('['))
         .find_map(|line| {
             let (key, value) = line.split_once('=')?;
-            (key.trim() == "cli_auth_credentials_store").then(|| {
+            let key = key.trim().trim_matches(|c| c == '"' || c == '\'');
+            (key == "cli_auth_credentials_store").then(|| {
                 let value = value.split('#').next().unwrap_or_default().trim();
                 value.trim_matches(|c| c == '"' || c == '\'').to_owned()
             })
@@ -380,12 +385,22 @@ impl<H: HttpClient> CodexProvider<H> {
                 std::thread::sleep(std::time::Duration::from_millis(150));
                 read_credentials(&self.auth_path).map_err(|_| not_signed_in)
             }
-            // The Codex CLI's own home, set to keep its sign-in out of `auth.json`: signing in again wouldn't help.
-            Err(_) if self.hint == SIGN_IN_HINT && keeps_sign_in_elsewhere(&self.auth_path) => {
-                Err(ProviderError::NotSignedIn { hint: KEYRING_HINT })
-            }
-            Err(_) => Err(not_signed_in),
+            Err(_) => Err(self.missing()),
         }
+    }
+
+    /// No sign-in in the home. The Codex CLI's own home can be set to keep its sign-in out of `auth.json`, where
+    /// signing in again alone wouldn't help, and says so (#341); a home CodexBar signed in always uses the file.
+    fn missing(&self) -> ProviderError {
+        let store = (self.hint == SIGN_IN_HINT)
+            .then(|| configured_store(&self.auth_path))
+            .flatten();
+        let hint = match store.as_deref() {
+            Some("keyring") => KEYRING_HINT,
+            Some("auto") => AUTO_HINT,
+            _ => self.hint,
+        };
+        ProviderError::NotSignedIn { hint }
     }
 
     /// Tries a renewal, at most once per home in [`RENEW_BACKOFF`]. True when Codex renewed the sign-in.
@@ -885,6 +900,11 @@ mod tests {
             None
         );
         assert_eq!(credentials_store("model = \"o3\"\n"), None);
+        // SFL on #342: a quoted key is the same key.
+        assert_eq!(
+            credentials_store("\"cli_auth_credentials_store\" = \"keyring\"").as_deref(),
+            Some("keyring")
+        );
     }
 
     // SFL on #340: with the Codex CLI set to keep its sign-in in the keyring, `codex login` succeeded and the row still
@@ -901,17 +921,14 @@ mod tests {
             Some(ProviderError::NotSignedIn { hint: SIGN_IN_HINT }),
             "no config: the usual sign-in"
         );
-        for store in ["keyring", "auto"] {
+        // `auto` can still write auth.json (no credential store to use), so it only says what to try.
+        for (store, hint) in [("keyring", KEYRING_HINT), ("auto", AUTO_HINT)] {
             std::fs::write(
                 home.join("config.toml"),
                 format!("cli_auth_credentials_store = \"{store}\"\n"),
             )
             .unwrap();
-            assert_eq!(
-                error(&provider),
-                Some(ProviderError::NotSignedIn { hint: KEYRING_HINT }),
-                "{store}"
-            );
+            assert_eq!(error(&provider), Some(ProviderError::NotSignedIn { hint }), "{store}");
         }
         // A home CodexBar signed in writes its own config, which keeps the sign-in in auth.json.
         let managed = CodexProvider::new(FakeHttp::status(200, FIXTURE), auth).managed();
