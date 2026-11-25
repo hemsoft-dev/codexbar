@@ -121,6 +121,10 @@ fn configured_store(auth_path: &Path) -> Option<String> {
 fn credentials_store(config: &str) -> Option<String> {
     let mut open: Option<&str> = None;
     for line in config.lines().map(str::trim) {
+        // A comment line is never a string's start, whatever quotes it holds.
+        if open.is_none() && line.starts_with('#') {
+            continue;
+        }
         let delimiter = open.or_else(|| ["\"\"\"", "'''"].into_iter().find(|delim| line.contains(delim)));
         let inside = open.is_some();
         // A line that opens or closes a multi-line string toggles it when the delimiter appears an odd number of times.
@@ -931,6 +935,9 @@ mod tests {
         assert_eq!(credentials_store(literal).as_deref(), Some("auto"));
         let one_line = "notes = \"\"\"[x]\"\"\"\ncli_auth_credentials_store = \"keyring\"\n";
         assert_eq!(credentials_store(one_line).as_deref(), Some("keyring"));
+        // SFL on #342: a comment's quotes open no string.
+        let comment = "# use ''' for raw text\ncli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(comment).as_deref(), Some("keyring"));
     }
 
     // SFL on #340: with the Codex CLI set to keep its sign-in in the keyring, `codex login` succeeded and the row still

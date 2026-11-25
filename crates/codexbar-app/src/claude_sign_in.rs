@@ -270,7 +270,7 @@ fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) -> Result<(), Sh
         })
         .map_err(|err| SharedString::from(format!("The sign-in couldn't be saved: {err}")))?;
     }
-    SettingsHub::request_refresh(cx);
+    SettingsHub::signed_in(cx, record_id);
     Ok(())
 }
 

@@ -1777,9 +1777,10 @@ fn a_cancelled_codexbar_sign_in_says_so_on_its_row(cx: &mut TestAppContext) {
         !exists(cx, handle, "cli-note-ChatGPT · Codex-cx-1"),
         "nothing to say while the dialog is open"
     );
-    // SFL on #342: a refresh the dashboard asks for itself meanwhile (another row's CLI sign-in finishing) isn't this
-    // sign-in succeeding.
-    dashboard.update(cx, |dashboard, cx| dashboard.request_refresh(cx));
+    // SFL on #342: a refresh someone else asks for meanwhile (another row's CLI sign-in finishing, another account signed
+    // out in Settings) isn't this sign-in succeeding.
+    let _ = &dashboard;
+    cx.update(SettingsHub::request_refresh);
     cx.run_until_parked();
     cx.update_window(handle, |_, window, cx| {
         gpui_kit::component::WindowExt::close_dialog(window, cx);
@@ -2318,6 +2319,33 @@ fn a_github_billing_record_beside_another_for_the_same_user_keeps_its_sign_in(cx
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     assert!(visible(cx, handle, "sign-in-GitHub Billing-gb-1"), "CodexBar's sign-in");
+}
+
+// SFL on #342: a signed-out OAuth record keeps its username and organization, so it still bills the card, but Copilot
+// reads the card with the GitHub CLI's token; the row runs the GitHub CLI's sign-in, through the record discovering
+// every GitHub CLI user.
+#[gpui_kit::test]
+fn an_organization_card_read_with_the_github_cli_s_token_offers_its_sign_in(cx: &mut TestAppContext) {
+    let cli = Arc::new(FakeCliSignIn::default());
+    cx.update(|cx| crate::sign_in_help::init_with(cx, cli.clone()));
+    let (handle, _settings) = acme_fails(
+        cx,
+        "failure-copilot-org-cli",
+        r#"{ "id": "cp-oauth", "providerId": "Copilot", "displayLabel": "OAuth", "enabled": true,
+             "authenticationMethod": "OAuth", "externalAccountId": "alice", "copilotOrganization": "acme" },
+           { "id": "cp-all", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+             "authenticationMethod": "CommandLine" }"#,
+    );
+    assert!(
+        !visible(cx, handle, "sign-in-Copilot-acme"),
+        "not the signed-out OAuth record's"
+    );
+    click(cx, handle, "cli-sign-in-Copilot-acme");
+    cx.run_until_parked();
+    assert_eq!(
+        *cli.runs.lock().unwrap(),
+        vec![codexbar_providers::cli_sign_in::Cli::GitHub]
+    );
 }
 
 // SFL on #342: an adapter's record id is looked up among its own provider's records only.

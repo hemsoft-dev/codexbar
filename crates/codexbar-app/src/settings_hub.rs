@@ -23,6 +23,8 @@ pub struct SettingsHub {
     refresh_requests: u64,
     /// Bumped whenever an error is set, so the same error set again counts as new (#341).
     errors: u64,
+    /// Each record's successful CodexBar sign-ins, so a failure row can tell its own sign-in from another's (#341).
+    sign_ins: std::collections::HashMap<String, u64>,
     /// Reads an environment variable; tests supply their own values so they never depend on the host's (#186).
     environment: EnvLookup,
 }
@@ -75,6 +77,7 @@ impl SettingsHub {
             revision: 0,
             refresh_requests: 0,
             errors: 0,
+            sign_ins: Default::default(),
             environment: Arc::new(|name| std::env::var(name).ok()),
         });
     }
@@ -91,6 +94,17 @@ impl SettingsHub {
     pub fn request_refresh(cx: &mut App) {
         cx.update_global(|hub: &mut Self, _| hub.refresh_requests += 1);
         cx.refresh_windows();
+    }
+
+    /// A CodexBar sign-in for `record_id` succeeded: counts it, and asks the dashboard to fetch it.
+    pub fn signed_in(cx: &mut App, record_id: &str) {
+        cx.update_global(|hub: &mut Self, _| *hub.sign_ins.entry(record_id.to_owned()).or_default() += 1);
+        Self::request_refresh(cx);
+    }
+
+    /// How many times a CodexBar sign-in for `record_id` has succeeded.
+    pub fn sign_ins(cx: &App, record_id: &str) -> u64 {
+        Self::global(cx).sign_ins.get(record_id).copied().unwrap_or_default()
     }
 
     /// Changes whenever a refresh is requested.

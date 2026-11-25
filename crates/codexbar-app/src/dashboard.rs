@@ -180,37 +180,43 @@ impl Failure {
 /// A CLI's sign-in started from a failure row (#337).
 #[derive(Clone, Debug, PartialEq)]
 enum CliSignIn {
-    Running,
+    /// Its console is open; the attempt's number, so a result that arrives late is told from a later attempt's (#341).
+    Running(u64),
     Failed(codexbar_providers::cli_sign_in::CliSignInError),
     /// CodexBar's own sign-in stopped before it could open (it couldn't make the account's folder, say): its message,
     /// which would otherwise show only in Settings.
     Notice(SharedString),
-    /// CodexBar's own sign-in is open in its dialog (#341), started when Settings had set `errors` errors and been asked
-    /// for `refreshes` refreshes, `own` of them by the dashboard itself: a sign-in that succeeds asks for one more.
+    /// CodexBar's own sign-in for `record` is open in its dialog (#341), started when Settings had set `errors` errors
+    /// and the record had signed in `sign_ins` times: a sign-in that succeeds counts one more.
     Dialog {
         errors: u64,
-        refreshes: u64,
-        own: u64,
+        record: String,
+        sign_ins: u64,
     },
 }
 
-/// Settings' error and refresh counts and the dashboard's own refreshes, when a CodexBar sign-in started or now.
-type SignInCounts = (u64, u64, u64);
+/// Settings' error count and the record's successful sign-ins, when a CodexBar sign-in started or now.
+type SignInCounts = (u64, u64);
 
 /// What a failure row says when CodexBar's own sign-in closed without signing in (#337): cancelled, or closed after
 /// its dialog said what went wrong.
 pub(crate) const SIGN_IN_CLOSED: &str = "The sign-in was closed before it finished.";
 
-/// What a managed sign-in's dialog came to once it closed (#341): `None` when it signed in, which asked for a
-/// refresh, else the row's note. An error Settings set meanwhile says more than that it closed.
+/// What a managed sign-in's dialog came to once it closed (#341): `None` when its record signed in, else the row's
+/// note. Only that record's sign-in counts: another account's sign-in or sign-out meanwhile isn't this one. An error
+/// Settings set meanwhile says more than that it closed.
 fn closed_sign_in(started: SignInCounts, now: SignInCounts, notice: Option<SharedString>) -> Option<CliSignIn> {
-    let ((errors, refreshes, own), (errors_now, refreshes_now, own_now)) = (started, now);
-    // Only a refresh the dashboard didn't ask for itself: another row's CLI sign-in finishing meanwhile isn't this one.
-    if refreshes_now - refreshes > own_now - own {
+    let ((errors, sign_ins), (errors_now, sign_ins_now)) = (started, now);
+    if sign_ins_now != sign_ins {
         return None;
     }
     let notice = notice.filter(|_| errors_now != errors);
     Some(CliSignIn::Notice(notice.unwrap_or_else(|| SIGN_IN_CLOSED.into())))
+}
+
+/// Settings' error count and `record`'s successful CodexBar sign-ins, which a sign-in's outcome is read against (#341).
+fn sign_in_counts(record: &str, cx: &gpui_kit::App) -> SignInCounts {
+    (SettingsHub::errors(cx), SettingsHub::sign_ins(cx, record))
 }
 
 /// What a failure row says about its sign-in (#337), under the provider's own message.
@@ -308,7 +314,8 @@ fn sign_in_refused(record: Option<&codexbar_store::settings::AccountRecord>, hub
 
 /// For a Copilot organization card `record` bills (#341): the record whose token the card was read with. Copilot uses
 /// a token CodexBar signed in for that user before the GitHub CLI's, so a signed-in CodexBar record for the same user
-/// is the one whose sign-in failed, though only the other sets the organization.
+/// is the one whose sign-in failed, though only the other sets the organization. Without one, the GitHub CLI's token
+/// failed, which a Command line record naming the user, or one discovering every GitHub CLI user, reads.
 fn billing_credential<'a>(
     failure: &Failure,
     owned: &HashMap<String, String>,
@@ -317,18 +324,30 @@ fn billing_credential<'a>(
 ) -> &'a codexbar_store::settings::AccountRecord {
     let bills = failure.outcome.is_some() && owned.get(&format!("{}#org", record.id)) == failure.outcome.as_ref();
     let user = record.external_id.as_deref().map(str::trim).unwrap_or_default();
-    hub.settings()
+    let siblings: Vec<&codexbar_store::settings::AccountRecord> = hub
+        .settings()
         .accounts()
         .iter()
         .filter(|_| bills)
         .filter(|other| other.enabled && other.provider == record.provider)
-        .filter(|other| {
-            other
-                .external_id
-                .as_deref()
-                .is_some_and(|id| id.trim().eq_ignore_ascii_case(user))
+        .collect();
+    fn named(record: &codexbar_store::settings::AccountRecord) -> &str {
+        record.external_id.as_deref().map(str::trim).unwrap_or_default()
+    }
+    let cli = |other: &&&codexbar_store::settings::AccountRecord| crate::managed::Managed::of(other).is_none();
+    siblings
+        .iter()
+        .find(|other| {
+            named(other).eq_ignore_ascii_case(user)
+                && crate::managed::Managed::of(other).is_some_and(|kind| kind.signed_in(hub, other))
         })
-        .find(|other| crate::managed::Managed::of(other).is_some_and(|kind| kind.signed_in(hub, other)))
+        .or_else(|| {
+            siblings
+                .iter()
+                .find(|other| cli(other) && named(other).eq_ignore_ascii_case(user))
+        })
+        .or_else(|| siblings.iter().find(|other| cli(other) && named(other).is_empty()))
+        .copied()
         .unwrap_or(record)
 }
 
@@ -490,9 +509,8 @@ pub struct Dashboard {
     refresh_revision: u64,
     /// The last refresh request from Settings that was acted on.
     refresh_requests: u64,
-    /// Refreshes the dashboard asked for itself (a CLI sign-in, a Keychain change), which no CodexBar sign-in made
-    /// (#341).
-    own_refreshes: u64,
+    /// The last CLI sign-in attempt started from a row (#341).
+    cli_attempts: u64,
     /// The settings revision the shown accounts were fetched under, or `None` when they came from a fetch that
     /// settings changed during; failed notifications are only resent from accounts that are current.
     accounts_revision: Option<u64>,
@@ -632,7 +650,7 @@ impl Dashboard {
                     let changes = codexbar_providers::claude::keychain_changes();
                     if changes != keychain_changes {
                         keychain_changes = changes;
-                        this.request_refresh(cx);
+                        SettingsHub::request_refresh(cx);
                     }
                     // Windows' animation setting, system appearance and high contrast can change while CodexBar
                     // runs (#92); gpui-kit reads the animation setting only at start.
@@ -778,7 +796,7 @@ impl Dashboard {
             published_tooltip: None,
             refresh_revision: 0,
             refresh_requests: 0,
-            own_refreshes: 0,
+            cli_attempts: 0,
             accounts_revision: None,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
@@ -1105,7 +1123,7 @@ impl Dashboard {
                 ]
             }
             Help::Cli { cli, switch: record } => {
-                let running = self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running);
+                let running = matches!(self.cli_sign_ins.get(&suffix), Some(CliSignIn::Running(_)));
                 let sign_in = {
                     let key = key.clone();
                     Button::new(SharedString::from(format!("cli-sign-in-{suffix}")))
@@ -1151,7 +1169,7 @@ impl Dashboard {
         let error = match self.cli_sign_ins.get(&suffix)? {
             CliSignIn::Failed(error) => error,
             CliSignIn::Notice(notice) => return Some(note(&suffix, notice.clone(), cx)),
-            CliSignIn::Running | CliSignIn::Dialog { .. } => return None,
+            CliSignIn::Running(_) | CliSignIn::Dialog { .. } => return None,
         };
         let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
             return None;
@@ -1188,22 +1206,33 @@ impl Dashboard {
         };
         // Another row's dialog, if one was waiting, has closed: this one could only be clicked once it had (#341).
         self.settle_sign_in_dialogs(Some(false), cx);
-        let started = self.sign_in_counts(cx);
+        let started = sign_in_counts(&record, cx);
         kind.sign_in(&record, window, cx);
         let open = window.has_active_dialog(cx);
-        self.note_managed_start(suffix, started, open, cx);
+        self.note_managed_start(suffix, record, started, open, cx);
     }
 
     /// After CodexBar's own sign-in started from a row (#337): one that stopped before its dialog opened says why
     /// (Settings set an error, even one it set before, #341); one open in its dialog is watched until it closes.
-    fn note_managed_start(&mut self, suffix: String, started: SignInCounts, open: bool, cx: &mut Context<Self>) {
-        let (errors, refreshes, own) = started;
+    fn note_managed_start(
+        &mut self,
+        suffix: String,
+        record: String,
+        started: SignInCounts,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let (errors, sign_ins) = started;
         let failed = SettingsHub::global(cx)
             .notice()
             .filter(|_| SettingsHub::errors(cx) != errors);
         let state = match (failed, open) {
             (Some(notice), _) => Some(CliSignIn::Notice(notice)),
-            (None, true) => Some(CliSignIn::Dialog { errors, refreshes, own }),
+            (None, true) => Some(CliSignIn::Dialog {
+                errors,
+                record,
+                sign_ins,
+            }),
             (None, false) => None,
         };
         match state {
@@ -1220,15 +1249,18 @@ impl Dashboard {
         if open != Some(false) {
             return;
         }
-        let now = self.sign_in_counts(cx);
         let notice = SettingsHub::global(cx).notice();
         let closed: Vec<(String, Option<CliSignIn>)> = self
             .cli_sign_ins
             .iter()
             .filter_map(|(suffix, state)| match state {
-                CliSignIn::Dialog { errors, refreshes, own } => Some((
+                CliSignIn::Dialog {
+                    errors,
+                    record,
+                    sign_ins,
+                } => Some((
                     suffix.clone(),
-                    closed_sign_in((*errors, *refreshes, *own), now, notice.clone()),
+                    closed_sign_in((*errors, *sign_ins), sign_in_counts(record, cx), notice.clone()),
                 )),
                 _ => None,
             })
@@ -1242,38 +1274,25 @@ impl Dashboard {
         }
     }
 
-    /// A CLI sign-in that didn't sign in, said on its row (#337); a row that recovered meanwhile (a Retry) keeps no note
-    /// to show at its next failure (#341).
-    fn note_cli_failure(&mut self, suffix: String, error: codexbar_providers::cli_sign_in::CliSignInError) {
-        if self.failures.iter().any(|failure| failure.element_suffix() == suffix) {
+    /// CLI sign-in `attempt` didn't sign in: said on its row (#337), unless the row recovered since (a Retry), which
+    /// forgot the attempt, or a later attempt took its place (#341).
+    fn note_cli_failure(
+        &mut self,
+        suffix: String,
+        attempt: u64,
+        error: codexbar_providers::cli_sign_in::CliSignInError,
+    ) {
+        if self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running(attempt)) {
             self.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));
-        } else {
-            self.cli_sign_ins.remove(&suffix);
         }
     }
 
-    /// Settings' error and refresh counts with the dashboard's own refreshes, which a CodexBar sign-in's outcome is read
-    /// against (#341).
-    fn sign_in_counts(&self, cx: &gpui_kit::App) -> SignInCounts {
-        (
-            SettingsHub::errors(cx),
-            SettingsHub::refresh_requests(cx),
-            self.own_refreshes,
-        )
-    }
-
-    /// Asks for a refresh on the dashboard's own account, counted apart from a CodexBar sign-in's (#341).
-    pub(crate) fn request_refresh(&mut self, cx: &mut Context<Self>) {
-        self.own_refreshes += 1;
-        SettingsHub::request_refresh(cx);
-    }
-
-    /// Forgets what rows that are gone said about their sign-ins (#341): an account that recovered (a Retry, a sign-in
-    /// outside CodexBar) would otherwise show an old note at its next failure. A CLI sign-in still running stays.
+    /// Forgets what rows that are gone said about their sign-ins, and the CLI sign-ins they were waiting on (#341): an
+    /// account that recovered (a Retry, a sign-in outside CodexBar) would otherwise show an old note, or a late result,
+    /// at its next failure.
     fn forget_recovered_sign_ins(&mut self) {
         let rows: Vec<String> = self.failures.iter().map(Failure::element_suffix).collect();
-        self.cli_sign_ins
-            .retain(|suffix, state| *state == CliSignIn::Running || rows.contains(suffix));
+        self.cli_sign_ins.retain(|suffix, _| rows.contains(suffix));
     }
 
     /// A failure row's CLI sign-in (#337): runs the CLI's own sign-in in its console window, then fetches the provider
@@ -1286,10 +1305,12 @@ impl Dashboard {
         let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
             return;
         };
-        if self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running) {
+        if matches!(self.cli_sign_ins.get(&suffix), Some(CliSignIn::Running(_))) {
             return;
         }
-        self.cli_sign_ins.insert(suffix.clone(), CliSignIn::Running);
+        self.cli_attempts += 1;
+        let attempt = self.cli_attempts;
+        self.cli_sign_ins.insert(suffix.clone(), CliSignIn::Running(attempt));
         cx.notify();
         let service = crate::sign_in_help::service(cx);
         cx.spawn(async move |this, cx| {
@@ -1303,9 +1324,9 @@ impl Dashboard {
                         this.cli_sign_ins.remove(&suffix);
                         // Every provider: a CLI signed in under a new identity can be read by an adapter rebuilt
                         // under that identity, which a retry of the old one would miss.
-                        this.request_refresh(cx);
+                        SettingsHub::request_refresh(cx);
                     }
-                    Err(error) => this.note_cli_failure(suffix, error),
+                    Err(error) => this.note_cli_failure(suffix, attempt, error),
                 }
                 cx.notify();
             });

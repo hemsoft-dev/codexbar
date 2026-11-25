@@ -343,7 +343,7 @@ fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) -> Result<(), Sh
         .map_err(|err| SharedString::from(format!("The sign-in couldn't be saved: {err}")))?;
     }
     // The dashboard fetches the new sign-in now rather than at the next scheduled refresh.
-    SettingsHub::request_refresh(cx);
+    SettingsHub::signed_in(cx, record_id);
     Ok(())
 }
 
