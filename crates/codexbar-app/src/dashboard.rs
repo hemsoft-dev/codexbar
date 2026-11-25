@@ -186,10 +186,9 @@ enum CliSignIn {
     /// CodexBar's own sign-in stopped before it could open (it couldn't make the account's folder, say): its message,
     /// which would otherwise show only in Settings.
     Notice(SharedString),
-    /// CodexBar's own sign-in for `record` is open in its dialog (#341), started when Settings had set `errors` errors
-    /// and the record had signed in `sign_ins` times: a sign-in that succeeds counts one more.
+    /// CodexBar's own sign-in for `record` is open in its dialog (#341), started when the record had signed in
+    /// `sign_ins` times: a sign-in that succeeds counts one more.
     Dialog {
-        errors: u64,
         record: String,
         sign_ins: u64,
     },
@@ -203,15 +202,10 @@ type SignInCounts = (u64, u64);
 pub(crate) const SIGN_IN_CLOSED: &str = "The sign-in was closed before it finished.";
 
 /// What a managed sign-in's dialog came to once it closed (#341): `None` when its record signed in, else the row's
-/// note. Only that record's sign-in counts: another account's sign-in or sign-out meanwhile isn't this one. An error
-/// Settings set meanwhile says more than that it closed.
-fn closed_sign_in(started: SignInCounts, now: SignInCounts, notice: Option<SharedString>) -> Option<CliSignIn> {
-    let ((errors, sign_ins), (errors_now, sign_ins_now)) = (started, now);
-    if sign_ins_now != sign_ins {
-        return None;
-    }
-    let notice = notice.filter(|_| errors_now != errors);
-    Some(CliSignIn::Notice(notice.unwrap_or_else(|| SIGN_IN_CLOSED.into())))
+/// note. Only that record's sign-in counts: another account's sign-in or sign-out meanwhile isn't this one. What went
+/// wrong inside the dialog, the dialog said; an error Settings holds may be another account's, so it isn't repeated.
+fn closed_sign_in(sign_ins: u64, sign_ins_now: u64) -> Option<CliSignIn> {
+    (sign_ins_now == sign_ins).then(|| CliSignIn::Notice(SIGN_IN_CLOSED.into()))
 }
 
 /// Settings' error count and `record`'s successful CodexBar sign-ins, which a sign-in's outcome is read against (#341).
@@ -1242,11 +1236,7 @@ impl Dashboard {
             .filter(|_| SettingsHub::errors(cx) != errors);
         let state = match (failed, open) {
             (Some(notice), _) => Some(CliSignIn::Notice(notice)),
-            (None, true) => Some(CliSignIn::Dialog {
-                errors,
-                record,
-                sign_ins,
-            }),
+            (None, true) => Some(CliSignIn::Dialog { record, sign_ins }),
             (None, false) => None,
         };
         match state {
@@ -1263,18 +1253,13 @@ impl Dashboard {
         if open != Some(false) {
             return;
         }
-        let notice = SettingsHub::global(cx).notice();
         let closed: Vec<(String, Option<CliSignIn>)> = self
             .cli_sign_ins
             .iter()
             .filter_map(|(suffix, state)| match state {
-                CliSignIn::Dialog {
-                    errors,
-                    record,
-                    sign_ins,
-                } => Some((
+                CliSignIn::Dialog { record, sign_ins } => Some((
                     suffix.clone(),
-                    closed_sign_in((*errors, *sign_ins), sign_in_counts(record, cx), notice.clone()),
+                    closed_sign_in(*sign_ins, SettingsHub::sign_ins(cx, record)),
                 )),
                 _ => None,
             })
@@ -1880,6 +1865,8 @@ impl Dashboard {
         let before = self.accounts.len() + self.failures.len();
         self.failures
             .retain(|failure| adapters.contains(&(failure.provider, failure.account.clone())));
+        // A row switched off forgets what it said about its sign-in, so switching it on again starts afresh (#341).
+        self.forget_recovered_sign_ins();
         let accounts: Vec<AccountSnapshot> = self
             .accounts
             .iter()

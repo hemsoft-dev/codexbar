@@ -121,25 +121,20 @@ fn configured_store(auth_path: &Path) -> Option<String> {
 fn credentials_store(config: &str) -> Option<String> {
     let mut open: Option<&str> = None;
     for line in config.lines().map(str::trim) {
-        // A comment line is never a string's start, whatever quotes it holds.
-        if open.is_none() && line.starts_with('#') {
-            continue;
-        }
-        let inside = open.is_some();
-        // Outside a string, a trailing comment's quotes open none either.
-        let code = if inside {
-            line
-        } else {
-            line.split('#').next().unwrap_or_default()
+        // Inside a multi-line string, its first closing delimiter ends it; the rest of the line is outside.
+        let line = match open {
+            Some(delim) => match line.find(delim) {
+                // `open` is set again below, from what follows.
+                Some(at) => line[at + delim.len()..].trim(),
+                None => continue,
+            },
+            None => line,
         };
-        let delimiter = open.or_else(|| ["\"\"\"", "'''"].into_iter().find(|delim| code.contains(delim)));
-        // A line that opens or closes a multi-line string toggles it when the delimiter appears an odd number of times.
-        if delimiter.is_some_and(|delim| code.matches(delim).count() % 2 == 1) {
-            open = if inside { None } else { delimiter };
-        }
-        if inside {
-            continue;
-        }
+        // A comment, whole line or trailing, is never a string's start, whatever quotes it holds.
+        let code = line.split('#').next().unwrap_or_default();
+        open = ["\"\"\"", "'''"]
+            .into_iter()
+            .find(|delim| code.matches(delim).count() % 2 == 1);
         // Keys after the first table header belong to that table.
         if line.starts_with('[') {
             return None;
@@ -946,6 +941,9 @@ mod tests {
         assert_eq!(credentials_store(comment).as_deref(), Some("keyring"));
         let trailing = "model = \"o3\" # not '''\ncli_auth_credentials_store = \"keyring\"\n";
         assert_eq!(credentials_store(trailing).as_deref(), Some("keyring"));
+        // SFL on #342: a comment after a closing delimiter opens no string again.
+        let closing = "notes = \"\"\"\ntext\n\"\"\" # use \"\"\" for text\ncli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(closing).as_deref(), Some("keyring"));
     }
 
     // SFL on #340: with the Codex CLI set to keep its sign-in in the keyring, `codex login` succeeded and the row still
