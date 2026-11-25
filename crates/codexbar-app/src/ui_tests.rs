@@ -2377,6 +2377,34 @@ fn a_row_left_from_a_switched_off_record_offers_no_sign_in(cx: &mut TestAppConte
     assert!(!visible(cx, handle, "sign-in-ChatGPT · Codex-codex-shared"));
 }
 
+// Codex on #342: Codex on with no account configured runs on its implicit record, which isn't in the settings file;
+// its row keeps the Codex CLI's sign-in.
+#[gpui_kit::test]
+fn the_implicit_codex_account_keeps_its_cli_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-codex-implicit",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [] }"#,
+    );
+    let implicit: &'static str = Box::leak(
+        SettingsHub::implicit_account(codexbar_store::settings::names::CODEX)
+            .id
+            .into_boxed_str(),
+    );
+    let codex =
+        FakeProvider::for_record(Provider::Codex, "codex-identity", implicit).failing_with(ProviderError::Expired {
+            hint: "Sign in to the Codex CLI with ChatGPT.",
+        });
+    let _dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        visible(cx, handle, "cli-sign-in-ChatGPT · Codex-codex-identity"),
+        "the Codex CLI's sign-in"
+    );
+}
+
 // SFL on #342: an adapter's record id is looked up among its own provider's records only.
 #[gpui_kit::test]
 fn an_adapter_s_record_id_never_resolves_to_another_provider_s_record(cx: &mut TestAppContext) {

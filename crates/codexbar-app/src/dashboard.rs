@@ -290,13 +290,15 @@ fn failed_record<'a>(
 }
 
 /// True when the adapter that failed was built for a record that is now off or gone (#341): its row is left from
-/// before the change, until the next refresh, and a sign-in from it would be for an account that no longer runs.
+/// before the change, until the next refresh, and a sign-in from it would be for an account that no longer runs. The
+/// records adapters are built for include a provider's implicit one when it is on with none configured.
 fn stale(failure: &Failure, hub: &SettingsHub) -> bool {
     failure.record.as_ref().is_some_and(|id| {
-        !hub.settings()
-            .accounts()
-            .iter()
-            .any(|record| &record.id == id && record.enabled)
+        !crate::catalog::PROVIDERS.iter().any(|info| {
+            crate::providers::enabled_accounts(hub, info.id)
+                .iter()
+                .any(|record| &record.id == id)
+        })
     })
 }
 
