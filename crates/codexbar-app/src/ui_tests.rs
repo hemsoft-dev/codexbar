@@ -2388,10 +2388,11 @@ fn switch_bob(cx: &mut TestAppContext, on: bool) {
     .unwrap();
 }
 
-// SFL on #342 (#343): Copilot's one adapter outlives a switched-off user, whose row is left until the next refresh. It
-// offers no sign-in: not the GitHub CLI's, which help would fall back to, nor a switch.
+// SFL on #342 (#343): Copilot's one adapter outlives a switched-off user. A result that still reports them (a refresh
+// that started before the switch, SFL on #344) shows no row for them, so nothing offers the GitHub CLI's sign-in, which
+// help would fall back to, or a switch.
 #[gpui_kit::test]
-fn a_row_left_from_a_switched_off_copilot_user_offers_no_sign_in(cx: &mut TestAppContext) {
+fn a_switched_off_copilot_user_gets_no_row_or_sign_in(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
         "failure-copilot-bob-off",
         r#"{ "accountConfigurationVersion": 1, "accounts": [
@@ -2409,12 +2410,18 @@ fn a_row_left_from_a_switched_off_copilot_user_offers_no_sign_in(cx: &mut TestAp
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
-    assert!(visible(cx, handle, "retry-Copilot-bob"), "the row is there");
+    assert!(!visible(cx, handle, "retry-Copilot-bob"), "no failure row");
     assert!(!visible(cx, handle, "cli-sign-in-Copilot-bob"), "no GitHub CLI sign-in");
     assert!(!visible(cx, handle, "sign-in-Copilot-bob"));
     assert!(!visible(cx, handle, "switch-sign-in-Copilot-bob"));
     let switch = cx.update(|cx| dashboard.read(cx).switch_target_record("Copilot", None, cx));
     assert_eq!(switch, None);
+    let ids = ids(cx, &dashboard);
+    assert!(
+        !ids.contains(&codexbar_providers::copilot::account_id("bob").as_str().to_owned()),
+        "no usage row"
+    );
+    assert!(ids.contains(&codexbar_providers::copilot::account_id("alice").as_str().to_owned()));
 }
 
 // SFL on #342 (#343): switching a Copilot user off drops their row at once, with what it said about its sign-in, so
@@ -2443,6 +2450,8 @@ fn a_switched_off_copilot_user_s_row_goes_and_returns_without_its_old_note(cx: &
     render(cx);
     assert!(!visible(cx, handle, "retry-Copilot-bob"), "the row goes at once");
     assert!(!visible(cx, handle, "cli-note-Copilot-bob"));
+    let bob = codexbar_providers::copilot::account_id("bob").as_str().to_owned();
+    assert!(!ids(cx, &dashboard).contains(&bob), "with its usage row (SFL on #344)");
     switch_bob(cx, true);
     refresh(cx, &dashboard);
     render(cx);
@@ -2450,10 +2459,17 @@ fn a_switched_off_copilot_user_s_row_goes_and_returns_without_its_old_note(cx: &
     assert!(!visible(cx, handle, "cli-note-Copilot-bob"), "without the old note");
 }
 
-// SFL on #342 (#343): a row switched off and on while its CLI sign-in runs keeps waiting for that sign-in, whose console
-// is still open, rather than let the returned row start a second one of the same profile.
+/// Clicks `id` without letting anything it starts run yet: a CLI sign-in's console stays open.
+fn click_unparked(cx: &mut TestAppContext, handle: AnyWindowHandle, id: &'static str) {
+    let id: gpui_kit::ElementId = id.into();
+    cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+}
+
+// SFL on #342 (#343): a row switched off and on while its CLI sign-in runs leaves the CLI busy, so the row that comes
+// back can't start a second sign-in of the same profile; the first one's late failure leaves no note.
 #[gpui_kit::test]
-fn a_row_switched_off_and_on_keeps_waiting_for_its_running_cli_sign_in(cx: &mut TestAppContext) {
+fn a_row_switched_off_and_on_leaves_its_cli_sign_in_running(cx: &mut TestAppContext) {
+    use codexbar_providers::cli_sign_in::Cli;
     let cli = FakeCliSignIn::failing(codexbar_providers::cli_sign_in::CliSignInError::Failed);
     cx.update(|cx| crate::sign_in_help::init_with(cx, cli.clone()));
     let (dashboard, handle, _settings) = bob_fails_beside_alice(
@@ -2462,24 +2478,88 @@ fn a_row_switched_off_and_on_keeps_waiting_for_its_running_cli_sign_in(cx: &mut 
         r#", "externalAccountId": "bob""#,
         false,
     );
-    let waiting = |cx: &mut TestAppContext| cx.update(|cx| dashboard.read(cx).cli_sign_in_waiting("Copilot-bob"));
-    // Clicked, and not yet run: the CLI's console is open.
-    let id: gpui_kit::ElementId = "cli-sign-in-Copilot-bob".into();
-    cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
-    assert!(waiting(cx));
+    let busy = |cx: &mut TestAppContext| cx.update(|cx| dashboard.read(cx).cli_signing_in(Cli::GitHub));
+    click_unparked(cx, handle, "cli-sign-in-Copilot-bob");
+    assert!(busy(cx));
     switch_bob(cx, false);
-    assert!(waiting(cx), "switched off, its CLI still runs");
     switch_bob(cx, true);
-    assert!(waiting(cx), "switched on again, the row waits for it");
-    // It ends while the row is gone: nothing waits, and no note is left for the row's next failure.
+    assert!(busy(cx), "switched off and on, its console is still open");
+    // It ends while the row is gone: the CLI is free, and no note is left for the row's next failure.
     cx.run_until_parked();
-    assert!(!waiting(cx));
+    assert!(!busy(cx));
     assert_eq!(cli.runs.lock().unwrap().len(), 1, "one sign-in");
     refresh(cx, &dashboard);
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     assert!(visible(cx, handle, "retry-Copilot-bob"));
     assert!(!visible(cx, handle, "cli-note-Copilot-bob"));
+}
+
+// SFL on #344: a CLI signs in one profile, so while one row's sign-in runs, another row of the same CLI (a row that came
+// back under another id, or another of its users) waits for it instead of opening a second console.
+#[gpui_kit::test]
+fn a_cli_signs_in_from_one_row_at_a_time(cx: &mut TestAppContext) {
+    let cli = Arc::new(FakeCliSignIn::default());
+    cx.update(|cx| crate::sign_in_help::init_with(cx, cli.clone()));
+    let settings = TempSettings::new(
+        "failure-copilot-one-cli",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-bob", "providerId": "Copilot", "displayLabel": "Bob", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "bob" } ] }"#,
+    );
+    let _dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: true }) as Arc<dyn UsageProvider>],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click_unparked(cx, handle, "cli-sign-in-Copilot-alice");
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click_unparked(cx, handle, "cli-sign-in-Copilot-bob");
+    cx.run_until_parked();
+    assert_eq!(
+        *cli.runs.lock().unwrap(),
+        vec![codexbar_providers::cli_sign_in::Cli::GitHub],
+        "Bob's click waited for Alice's sign-in"
+    );
+    // Once it ended, the CLI signs in again from any row.
+    click(cx, handle, "cli-sign-in-Copilot-bob");
+    assert_eq!(cli.runs.lock().unwrap().len(), 2);
+}
+
+// SFL on #344: a Copilot user switched off while a refresh runs doesn't come back with its results, nor does their
+// usage row stay.
+#[gpui_kit::test]
+fn a_copilot_user_switched_off_during_a_refresh_stays_gone(cx: &mut TestAppContext) {
+    let (dashboard, handle, _settings) = bob_fails_beside_alice(
+        cx,
+        "failure-copilot-bob-in-flight",
+        r#", "externalAccountId": "bob""#,
+        false,
+    );
+    let bob = codexbar_providers::copilot::account_id("bob");
+    assert!(ids(cx, &dashboard).contains(&bob.as_str().to_owned()));
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    switch_bob(cx, false);
+    assert!(!ids(cx, &dashboard).contains(&bob.as_str().to_owned()), "gone at once");
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        !ids(cx, &dashboard).contains(&bob.as_str().to_owned()),
+        "the running refresh doesn't bring the row back"
+    );
+    assert!(!visible(cx, handle, "retry-Copilot-bob"), "nor its failure");
+    assert!(
+        ids(cx, &dashboard).contains(&codexbar_providers::copilot::account_id("alice").as_str().to_owned()),
+        "Alice stays"
+    );
 }
 
 // Codex on #342: Codex on with no account configured runs on its implicit record, which isn't in the settings file;

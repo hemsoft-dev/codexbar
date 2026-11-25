@@ -233,11 +233,13 @@ fn token_key(token: &str) -> u64 {
     hasher.finish()
 }
 
-/// The retry time still ahead for `key`, if GitHub limited its rate. Only `key`'s own wait is dropped once `now` is past
-/// it: another token's is judged by its own caller's clock (#343).
+/// The retry time still ahead for `key`, if GitHub limited its rate. `key`'s own wait is dropped once `now` is past it;
+/// another token's is judged by its own caller's clock (#343), and dropped only a day past it, so a token that was
+/// rotated or removed doesn't stay (SFL on #344).
 fn backed_off(key: u64, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let mut backoff = BACKOFF.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    backoff.retain(|(known, until)| *known != key || *until > now);
+    let retired = now - chrono::Duration::days(1);
+    backoff.retain(|(known, until)| *until > if *known == key { now } else { retired });
     backoff.iter().find(|(known, _)| *known == key).map(|(_, until)| *until)
 }
 
@@ -2394,6 +2396,20 @@ mod tests {
             "its own wait ends at its retry time"
         );
         assert_eq!(backed_off(waiting, now()), None, "and is forgotten");
+        // SFL on #344: a token rotated or removed while it waited is forgotten a day past its retry time. Its waits are
+        // in the past, so this test's checks (at `now()`) never reach another test's.
+        let (recent, retired) = (token_key("gho_backoff_recent"), token_key("gho_backoff_retired"));
+        let (recently, long_ago) = (now() - chrono::Duration::hours(23), now() - chrono::Duration::hours(25));
+        let _ = back_off(recent, recently);
+        let _ = back_off(retired, long_ago);
+        let _ = backed_off(later, now());
+        let before = |at: DateTime<Utc>| at - chrono::Duration::hours(1);
+        assert_eq!(
+            backed_off(recent, before(recently)),
+            Some(recently),
+            "kept within the day"
+        );
+        assert_eq!(backed_off(retired, before(long_ago)), None, "dropped after it");
     }
 
     #[test]

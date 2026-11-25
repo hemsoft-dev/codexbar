@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// A CLI whose own sign-in an account can use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cli {
     /// `gh auth login --web`: Copilot's Automatic and Command line methods read the GitHub CLI's accounts.
     GitHub,
@@ -92,7 +92,12 @@ impl SignInWindow {
         if cli == Cli::Claude {
             return open_claude();
         }
-        let base = program(cli).map(crate::platform::command);
+        let base = program(
+            cli,
+            crate::platform::home_dir().as_deref(),
+            &crate::platform::find_program,
+        )
+        .map(crate::platform::command);
         open_with(cli, base, profile(cli), crate::contained::spawn_console)
     }
     /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success.
@@ -281,17 +286,9 @@ fn profile_in(
     }
 }
 
-/// Where the CLI is, found the way its provider finds it for refreshes.
-fn program(cli: Cli) -> Option<PathBuf> {
-    program_in(
-        cli,
-        crate::platform::home_dir().as_deref(),
-        &crate::platform::find_program,
-    )
-}
-
-/// `program` with the home folder and the PATH lookup (`platform::find_program`) given (#343).
-fn program_in(cli: Cli, home: Option<&std::path::Path>, find: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+/// Where the CLI is, found the way its provider finds it for refreshes, with the home folder and the PATH lookup
+/// (`platform::find_program`) given, so a test reads neither (#343).
+fn program(cli: Cli, home: Option<&std::path::Path>, find: &dyn Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
     match cli {
         Cli::GitHub => find("gh"),
         Cli::Codex => find("codex"),
@@ -475,13 +472,13 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let nowhere = |_: &str| None;
         for cli in [Cli::GitHub, Cli::Codex, Cli::Claude, Cli::Grok] {
-            assert_eq!(program_in(cli, Some(&home), &nowhere), None, "{cli:?}");
+            assert_eq!(program(cli, Some(&home), &nowhere), None, "{cli:?}");
         }
-        assert_eq!(program_in(Cli::Grok, None, &nowhere), None, "no home folder");
+        assert_eq!(program(Cli::Grok, None, &nowhere), None, "no home folder");
         // Found on PATH, or in its installer's own folder first.
         let on_path = |name: &str| Some(PathBuf::from(format!("/bin/{name}")));
         assert_eq!(
-            program_in(Cli::Grok, Some(&home), &on_path),
+            program(Cli::Grok, Some(&home), &on_path),
             Some(PathBuf::from("/bin/grok"))
         );
         let bin = home.join(".grok").join("bin");
@@ -493,7 +490,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        assert_eq!(program_in(Cli::Grok, Some(&home), &on_path), Some(installed));
+        assert_eq!(program(Cli::Grok, Some(&home), &on_path), Some(installed));
         let _ = std::fs::remove_dir_all(&home);
     }
 

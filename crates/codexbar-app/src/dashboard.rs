@@ -301,13 +301,18 @@ fn stale(failure: &Failure, hub: &SettingsHub) -> bool {
 /// outlives that change, so neither `stale` nor the adapters a settings change leaves can tell; the row is left from
 /// before it. A user's account keeps showing while a Copilot record discovers every GitHub CLI user.
 fn unserved(failure: &Failure, hub: &SettingsHub) -> bool {
-    let Some(account) = failure
+    failure
         .outcome
         .as_deref()
-        .filter(|_| Provider::from_display_name(failure.provider) == Some(Provider::Copilot))
-    else {
+        .is_some_and(|account| unread(Provider::from_display_name(failure.provider), account, hub))
+}
+
+/// True when `account` of `provider` is a Copilot account Copilot no longer reads (`unserved`): its usage row goes with
+/// its failure row (SFL on #344).
+fn unread(provider: Option<Provider>, account: &str, hub: &SettingsHub) -> bool {
+    if provider != Some(Provider::Copilot) {
         return false;
-    };
+    }
     use codexbar_providers::copilot::{account_id, is_org_account, org_account_id};
     fn set(value: &Option<String>) -> Option<&str> {
         value.as_deref().map(str::trim).filter(|value| !value.is_empty())
@@ -500,6 +505,17 @@ fn owns_another(
         .is_some_and(|outcome| owned.get(&record.id).is_some_and(|account| account != outcome))
 }
 
+/// Whether `account` stays after a settings change that leaves `adapters` (#192): one of them serves it, and it isn't a
+/// Copilot account Copilot no longer reads, whose shared adapter stays (#343).
+fn keeps_account(adapters: &[(&'static str, Option<String>)], account: &AccountSnapshot, hub: &SettingsHub) -> bool {
+    covered_by(adapters, account) && !unread(Some(account.provider()), account.id().as_str(), hub)
+}
+
+/// `keeps_account` for a failure row: an adapter that serves it is still configured, and its account is still read.
+fn keeps_failure(adapters: &[(&'static str, Option<String>)], failure: &Failure, hub: &SettingsHub) -> bool {
+    adapters.contains(&(failure.provider, failure.account.clone())) && !unserved(failure, hub)
+}
+
 /// Whether one of `adapters` serves `account`: an adapter for one configured account by that account's id, a
 /// provider-wide adapter by the provider's name (the same rule `apply_results` uses to tell what a fetch reported).
 fn covered_by(adapters: &[(&'static str, Option<String>)], account: &AccountSnapshot) -> bool {
@@ -548,6 +564,9 @@ pub struct Dashboard {
     refresh_requests: u64,
     /// The last CLI sign-in attempt started from a row (#341).
     cli_attempts: u64,
+    /// The CLIs whose sign-in console is open, whichever row started it (#343): one profile each, signed in once at a
+    /// time.
+    cli_running: std::collections::HashSet<codexbar_providers::cli_sign_in::Cli>,
     /// The settings revision the shown accounts were fetched under, or `None` when they came from a fetch that
     /// settings changed during; failed notifications are only resent from accounts that are current.
     accounts_revision: Option<u64>,
@@ -834,6 +853,7 @@ impl Dashboard {
             refresh_revision: 0,
             refresh_requests: 0,
             cli_attempts: 0,
+            cli_running: std::collections::HashSet::new(),
             accounts_revision: None,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
@@ -934,10 +954,10 @@ impl Dashboard {
         self.failures.iter().map(|failure| failure.provider).collect()
     }
 
-    /// Whether the row with buttons ending in `suffix` waits for its CLI's sign-in, for the headless UI tests.
+    /// Whether `cli`'s sign-in console is open, for the headless UI tests.
     #[cfg(test)]
-    pub fn cli_sign_in_waiting(&self, suffix: &str) -> bool {
-        matches!(self.cli_sign_ins.get(suffix), Some(CliSignIn::Running(_)))
+    pub fn cli_signing_in(&self, cli: codexbar_providers::cli_sign_in::Cli) -> bool {
+        self.cli_running.contains(&cli)
     }
 
     /// The visible view, for the headless UI tests.
@@ -1123,14 +1143,13 @@ impl Dashboard {
         let excluded = |other: &codexbar_store::settings::AccountRecord| owns_another(failure, &self.owned_ids, other);
         let record = help_record(record, named, hub.settings().accounts(), &excluded)?;
         // None for a failure whose sign-in can't be told, that no sign-in here renews (an expired Gemini Apps website
-        // session, which Connect Antigravity… wouldn't renew), or whose sign-in would be refused (#341), or for an
-        // account switched off since (#343).
+        // session, which Connect Antigravity… wouldn't renew), or whose sign-in would be refused (#341). A Copilot
+        // account switched off has no row to ask (`unserved`, #343).
         crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref()).filter(|_| {
             !unknown_owner(failure, &self.owned_ids, hub)
                 && failure.hint != Some(codexbar_providers::gemini_apps::SIGN_IN_HINT)
                 && !sign_in_refused(record.as_ref(), hub)
                 && !stale(failure, hub)
-                && !unserved(failure, hub)
         })
     }
 
@@ -1169,7 +1188,7 @@ impl Dashboard {
                 ]
             }
             Help::Cli { cli, switch: record } => {
-                let running = matches!(self.cli_sign_ins.get(&suffix), Some(CliSignIn::Running(_)));
+                let running = self.waits_for(&suffix, cli);
                 let sign_in = {
                     let key = key.clone();
                     Button::new(SharedString::from(format!("cli-sign-in-{suffix}")))
@@ -1321,8 +1340,6 @@ impl Dashboard {
     ) {
         if self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running(attempt)) {
             self.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));
-            // A row gone meanwhile (recovered, or switched off, #343) gets no note to show at a later failure.
-            self.forget_recovered_sign_ins();
         }
     }
 
@@ -1333,14 +1350,19 @@ impl Dashboard {
         }
     }
 
-    /// Forgets what rows that are gone said about their sign-ins (#341): an account that recovered (a Retry, a sign-in
-    /// outside CodexBar) would otherwise show an old note at its next failure. A CLI sign-in still running is kept
-    /// (#343): its console is still open, and a row that returns (switched off and on again) waits for it rather than
-    /// start a second sign-in of the same profile. Its result settles it (`note_cli_failure`, `forget_cli_attempt`).
+    /// Forgets what rows that are gone said about their sign-ins, and the CLI sign-ins they were waiting on (#341): an
+    /// account that recovered (a Retry, a sign-in outside CodexBar) would otherwise show an old note, or a late result,
+    /// at its next failure. The CLI itself stays busy until it ends (`cli_running`, #343).
     fn forget_recovered_sign_ins(&mut self) {
         let rows: Vec<String> = self.failures.iter().map(Failure::element_suffix).collect();
-        self.cli_sign_ins
-            .retain(|suffix, state| rows.contains(suffix) || matches!(state, CliSignIn::Running(_)));
+        self.cli_sign_ins.retain(|suffix, _| rows.contains(suffix));
+    }
+
+    /// Whether the row with buttons ending in `suffix` waits for `cli`'s sign-in: its own, or another row's (#343). A CLI
+    /// signs in one profile (`CODEX_HOME`, `GROK_HOME`, the GitHub CLI's folder), so a second console for it, from a
+    /// row that came back under another id or from another of its accounts, would sign in the same profile at once.
+    fn waits_for(&self, suffix: &str, cli: codexbar_providers::cli_sign_in::Cli) -> bool {
+        matches!(self.cli_sign_ins.get(suffix), Some(CliSignIn::Running(_))) || self.cli_running.contains(&cli)
     }
 
     /// A failure row's CLI sign-in (#337): runs the CLI's own sign-in in its console window, then fetches the provider
@@ -1353,12 +1375,13 @@ impl Dashboard {
         let Some(crate::sign_in_help::Help::Cli { cli, .. }) = self.sign_in_help(failure, cx) else {
             return;
         };
-        if matches!(self.cli_sign_ins.get(&suffix), Some(CliSignIn::Running(_))) {
+        if self.waits_for(&suffix, cli) {
             return;
         }
         self.cli_attempts += 1;
         let attempt = self.cli_attempts;
         self.cli_sign_ins.insert(suffix.clone(), CliSignIn::Running(attempt));
+        self.cli_running.insert(cli);
         cx.notify();
         let service = crate::sign_in_help::service(cx);
         cx.spawn(async move |this, cx| {
@@ -1367,6 +1390,8 @@ impl Dashboard {
                 .spawn(async move { service.sign_in(cli) })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                // Its console has closed: the CLI can sign in again, from any row.
+                this.cli_running.remove(&cli);
                 match result {
                     Ok(()) => {
                         this.forget_cli_attempt(&suffix, attempt);
@@ -1651,6 +1676,11 @@ impl Dashboard {
                 }
             }
         }
+        // A Copilot account no enabled record reads any more never shows, whatever a result reported (SFL on #344): a
+        // refresh that started before its user was switched off, or a failed adapter keeping its last good rows.
+        let hub = SettingsHub::global(cx);
+        accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), hub));
+        self.failures.retain(|failure| !unserved(failure, hub));
         self.loading = false;
         self.forget_recovered_sign_ins();
         // A retry of one provider doesn't count as a refresh: the next full refresh keeps its schedule.
@@ -1907,15 +1937,13 @@ impl Dashboard {
         let before = self.accounts.len() + self.failures.len();
         let hub = SettingsHub::global(cx);
         // A Copilot account switched off goes too, though Copilot's one adapter stays (#343).
-        self.failures.retain(|failure| {
-            adapters.contains(&(failure.provider, failure.account.clone())) && !unserved(failure, hub)
-        });
+        self.failures.retain(|failure| keeps_failure(adapters, failure, hub));
         // A row switched off forgets what it said about its sign-in, so switching it on again starts afresh (#341).
         self.forget_recovered_sign_ins();
         let accounts: Vec<AccountSnapshot> = self
             .accounts
             .iter()
-            .filter(|account| covered_by(adapters, account))
+            .filter(|account| keeps_account(adapters, account, hub))
             .cloned()
             .collect();
         if before == accounts.len() + self.failures.len() {
