@@ -308,9 +308,10 @@ fn unserved(failure: &Failure, hub: &SettingsHub) -> bool {
 }
 
 /// True when `account` of `provider` is a Copilot account Copilot no longer reads (`unserved`): its usage row goes with
-/// its failure row (SFL on #344).
+/// its failure row (SFL on #344). Copilot's placeholder (`pending:copilot`) stands for the provider, not an account, and
+/// stays until its first result.
 fn unread(provider: Option<Provider>, account: &str, hub: &SettingsHub) -> bool {
-    if provider != Some(Provider::Copilot) {
+    if provider != Some(Provider::Copilot) || account.starts_with(PLACEHOLDER_PREFIX) {
         return false;
     }
     let (named, discovers) = copilot_reads(hub);
@@ -1696,10 +1697,10 @@ impl Dashboard {
             }
         }
         // A Copilot account no enabled record reads any more never shows, whatever a result reported (SFL on #344): a
-        // refresh that started before its user was switched off, or a failed adapter keeping its last good rows.
-        let hub = SettingsHub::global(cx);
-        accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), hub));
-        self.failures.retain(|failure| !unserved(failure, hub));
+        // refresh that started before its user was switched off, or a failed adapter keeping its last good rows. Its
+        // usage row goes below, once a removed account's returning history is deleted again.
+        self.failures
+            .retain(|failure| !unserved(failure, SettingsHub::global(cx)));
         self.loading = false;
         self.forget_recovered_sign_ins();
         // A retry of one provider doesn't count as a refresh: the next full refresh keeps its schedule.
@@ -1745,6 +1746,10 @@ impl Dashboard {
             accounts.retain(|account| !self.forgotten.contains_key(account.id().as_str()));
             self.delete_forgotten_history(cx);
         }
+        let hub = SettingsHub::global(cx);
+        accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), hub));
+        self.placeholders
+            .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
         self.set_accounts(accounts, cx);
         self.save_snapshots(cx);
         if std::mem::take(&mut self.refresh_queued) {

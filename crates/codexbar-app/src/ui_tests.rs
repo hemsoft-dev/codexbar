@@ -2536,6 +2536,64 @@ fn a_cli_signs_in_from_one_row_at_a_time(cx: &mut TestAppContext) {
     assert_eq!(cli.runs.lock().unwrap().len(), 2);
 }
 
+// SFL round 2 on #344: a named Copilot user removed while a refresh runs has their history deleted, and the refresh's
+// fresh usage for them is taken out of history again rather than dropped from the screen first.
+#[gpui_kit::test]
+fn a_copilot_user_removed_during_a_refresh_keeps_their_history_deleted(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-remove-in-flight",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-bob", "providerId": "Copilot", "displayLabel": "Bob", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "bob" } ] }"#,
+    );
+    // Copilot's adapter keeps answering for Bob, like a fetch that started before he was removed.
+    let alice = FakeProvider::new(Provider::Copilot, "copilot-alice", Some(0.3));
+    let bob = FakeProvider::new(Provider::Copilot, "copilot-bob", Some(0.5));
+    let dashboard = open_live(cx, &settings, vec![alice, bob]);
+    cx.run_until_parked();
+    assert_eq!(history_points(cx, &dashboard, "copilot-bob", "weekly"), 1);
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.remove("cp-bob");
+            Ok(())
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!ids(cx, &dashboard).contains(&"copilot-bob".to_owned()));
+    assert_eq!(
+        history_points(cx, &dashboard, "copilot-bob", "weekly"),
+        0,
+        "the refresh's samples are deleted again"
+    );
+    assert_eq!(
+        history_points(cx, &dashboard, "copilot-alice", "weekly"),
+        1,
+        "Alice's are kept (the same usage again records nothing new)"
+    );
+}
+
+// SFL round 2 on #344: a named Copilot account's placeholder stays when Copilot fails as a whole before its first
+// result; it stands for the provider, not an account Copilot stopped reading.
+#[gpui_kit::test]
+fn a_failed_copilot_keeps_its_placeholder(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-placeholder-failed",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-bob", "providerId": "Copilot", "displayLabel": "Bob", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "bob" } ] }"#,
+    );
+    let copilot =
+        FakeProvider::new(Provider::Copilot, "copilot-bob", None).failing_with(ProviderError::Http { status: 503 });
+    let dashboard = open_live(cx, &settings, vec![copilot]);
+    assert_eq!(ids(cx, &dashboard), vec!["pending:copilot"]);
+    cx.run_until_parked();
+    assert_eq!(ids(cx, &dashboard), vec!["pending:copilot"], "still there, unavailable");
+}
+
 // SFL on #344: a Copilot user switched off while a refresh runs doesn't come back with its results, nor does their
 // usage row stay.
 #[gpui_kit::test]
