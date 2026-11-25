@@ -313,22 +313,33 @@ fn unread(provider: Option<Provider>, account: &str, hub: &SettingsHub) -> bool 
     if provider != Some(Provider::Copilot) {
         return false;
     }
-    use codexbar_providers::copilot::{account_id, is_org_account, org_account_id};
+    let (named, discovers) = copilot_reads(hub);
+    let discovered = discovers && !codexbar_providers::copilot::is_org_account(account);
+    !discovered && !named.iter().any(|read| read == account)
+}
+
+/// What Copilot's one adapter reads under the current settings: the accounts its enabled records name (each user's,
+/// and the organization card a user's record bills, as `providers::copilot` sets it up), and whether a record discovers
+/// every GitHub CLI user besides.
+fn copilot_reads(hub: &SettingsHub) -> (Vec<String>, bool) {
+    use codexbar_providers::copilot::{account_id, org_account_id};
     fn set(value: &Option<String>) -> Option<&str> {
         value.as_deref().map(str::trim).filter(|value| !value.is_empty())
     }
-    // A record reads its user's account, and the organization card it bills (`providers::copilot`).
-    let reads = |record: &codexbar_store::settings::AccountRecord| {
-        let user = set(&record.external_id);
-        let org = set(&record.copilot_organization).filter(|_| user.is_some());
-        user.is_some_and(|user| account_id(user).as_str() == account)
-            || org.is_some_and(|org| org_account_id(org).as_str() == account)
-    };
-    let discovered = !is_org_account(account) && crate::providers::copilot_discovers_all(hub);
-    !discovered
-        && !crate::providers::enabled_accounts(hub, codexbar_store::settings::names::COPILOT)
-            .iter()
-            .any(reads)
+    let mut named = Vec::new();
+    for record in crate::providers::enabled_accounts(hub, codexbar_store::settings::names::COPILOT) {
+        if let Some(user) = set(&record.external_id) {
+            named.push(account_id(user).as_str().to_owned());
+            named.extend(set(&record.copilot_organization).map(|org| org_account_id(org).as_str().to_owned()));
+        }
+    }
+    (named, crate::providers::copilot_discovers_all(hub))
+}
+
+/// True when `now` reads an account `before` didn't (Codex on #344): a Copilot user switched on again, whose rows a
+/// switch-off took away, though Copilot's one adapter stayed.
+fn reads_more(before: &(Vec<String>, bool), now: &(Vec<String>, bool)) -> bool {
+    (now.1 && !before.1) || now.0.iter().any(|read| !before.0.contains(read))
 }
 
 /// True when CodexBar's GitHub sign-in for a Copilot `record` would be refused (#341): another Copilot record names the
@@ -602,6 +613,9 @@ pub struct Dashboard {
     /// The adapters the settings produced when they last changed, as (provider name, account id) pairs (#192): a
     /// settings change that adds one fetches it at once, and one that drops one takes its rows off the screen.
     configured: Vec<(&'static str, Option<String>)>,
+    /// What Copilot's one adapter read when the settings last changed (`copilot_reads`): an account it reads again is
+    /// fetched at once, as a new adapter is (Codex on #344).
+    copilot_read: (Vec<String>, bool),
     /// The window placement last saved (#194), and one seen since that is saved once it stays the same for a tick,
     /// so a drag or resize is written once it ends rather than at every step.
     placement: Option<codexbar_store::prefs::WindowPlacement>,
@@ -868,6 +882,7 @@ impl Dashboard {
             settings_start: None,
             settings_generation: 0,
             configured: Vec::new(),
+            copilot_read: Default::default(),
             placement: crate::prefs_hub::PrefsHub::window_placement(cx),
             placement_pending: None,
             #[cfg(windows)]
@@ -885,6 +900,10 @@ impl Dashboard {
             ],
         };
         dashboard.configured = dashboard.configured_adapters(cx).unwrap_or_default();
+        // Live data only: the demo has no adapters, nor settings to read them from.
+        dashboard.copilot_read = (dashboard.configured_adapters(cx))
+            .map(|_| copilot_reads(SettingsHub::global(cx)))
+            .unwrap_or_default();
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
         }
@@ -1924,12 +1943,21 @@ impl Dashboard {
         let Some(adapters) = self.configured_adapters(cx) else {
             return;
         };
-        let added = adapters.iter().any(|adapter| !self.configured.contains(adapter));
+        let added = self.adds_accounts(&adapters, cx);
         self.configured = adapters.clone();
         self.drop_unconfigured_accounts(&adapters, cx);
         if added {
             self.refresh(cx);
         }
+    }
+
+    /// Whether the settings now produce an adapter `configured` didn't have, or Copilot's one adapter now reads an
+    /// account it didn't (a Copilot user switched on again, Codex on #344); remembers what Copilot reads.
+    fn adds_accounts(&mut self, adapters: &[(&'static str, Option<String>)], cx: &gpui_kit::App) -> bool {
+        let reads = copilot_reads(SettingsHub::global(cx));
+        let more = reads_more(&self.copilot_read, &reads);
+        self.copilot_read = reads;
+        more || adapters.iter().any(|adapter| !self.configured.contains(adapter))
     }
 
     /// Drops the rows and failure banners none of `adapters` serves.

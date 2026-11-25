@@ -2452,10 +2452,13 @@ fn a_switched_off_copilot_user_s_row_goes_and_returns_without_its_old_note(cx: &
     assert!(!visible(cx, handle, "cli-note-Copilot-bob"));
     let bob = codexbar_providers::copilot::account_id("bob").as_str().to_owned();
     assert!(!ids(cx, &dashboard).contains(&bob), "with its usage row (SFL on #344)");
+    // Codex on #344: switched on again, Bob is fetched at once, though Copilot's one adapter never went away (no
+    // Refresh, no automatic refresh needed).
     switch_bob(cx, true);
-    refresh(cx, &dashboard);
+    cx.run_until_parked();
     render(cx);
-    assert!(visible(cx, handle, "retry-Copilot-bob"), "back with the next refresh");
+    assert!(visible(cx, handle, "retry-Copilot-bob"), "back at once");
+    assert!(ids(cx, &dashboard).contains(&bob));
     assert!(!visible(cx, handle, "cli-note-Copilot-bob"), "without the old note");
 }
 
