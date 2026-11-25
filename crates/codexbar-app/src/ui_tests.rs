@@ -2266,9 +2266,11 @@ fn an_organization_card_two_users_bill_offers_no_one_s_sign_in(cx: &mut TestAppC
 }
 
 // SFL on #342: Copilot reads an organization with a token CodexBar signed in for its billing user before the GitHub
-// CLI's, so the card's failure is that sign-in's even when only the Command line record sets the organization.
+// CLI's, so the card's failure is that sign-in's even when only the Command line record sets the organization. The
+// GitHub CLI's sign-in wouldn't fix it, and CodexBar's is refused while another record names the same user, so the
+// row offers neither; Open settings goes to the OAuth record.
 #[gpui_kit::test]
-fn an_organization_card_read_with_codexbar_s_token_offers_that_sign_in(cx: &mut TestAppContext) {
+fn an_organization_card_read_with_codexbar_s_token_offers_no_sign_in_that_cannot_fix_it(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
         "failure-copilot-org-token",
         r#"{ "accountConfigurationVersion": 1, "accounts": [
@@ -2279,16 +2281,43 @@ fn an_organization_card_read_with_codexbar_s_token_offers_that_sign_in(cx: &mut 
     );
     let store = MemoryCredentialStore::default();
     codexbar_store::credentials::write_long(&store, "cp-oauth", "gho_test_token").unwrap();
-    let _dashboard = open_live_dyn(cx, &settings, vec![Arc::new(OrgFails) as Arc<dyn UsageProvider>], store);
+    let dashboard = open_live_dyn(cx, &settings, vec![Arc::new(OrgFails) as Arc<dyn UsageProvider>], store);
     cx.run_until_parked();
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
-    assert!(
-        visible(cx, handle, "sign-in-Copilot-acme"),
-        "CodexBar's sign-in, whose token failed"
-    );
     assert!(!visible(cx, handle, "cli-sign-in-Copilot-acme"), "not the GitHub CLI's");
+    assert!(
+        !visible(cx, handle, "sign-in-Copilot-acme"),
+        "CodexBar's would be refused"
+    );
+    assert!(visible(cx, handle, "fix-Copilot-acme"), "Open settings stays");
+    let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
+    assert_eq!(target.as_deref(), Some("cp-oauth"), "the record whose token failed");
+}
+
+// SFL on #342: an adapter's record id is looked up among its own provider's records only.
+#[gpui_kit::test]
+fn an_adapter_s_record_id_never_resolves_to_another_provider_s_record(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-record-other-provider",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "shared-id", "providerId": "OpenRouter", "displayLabel": "Key", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    let codex = FakeProvider::for_record(Provider::Codex, "codex-implicit", "shared-id").failing_with(
+        ProviderError::NotSignedIn {
+            hint: "Sign in to the Codex CLI with ChatGPT.",
+        },
+    );
+    let dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+    let target = cx.update(|cx| {
+        dashboard
+            .read(cx)
+            .settings_target_record("ChatGPT · Codex", Some("codex-implicit".into()), cx)
+    });
+    assert_ne!(target.as_deref(), Some("shared-id"), "not the OpenRouter record");
 }
 
 #[gpui_kit::test]
@@ -2381,13 +2410,22 @@ fn bob_owned_twice(
     (dashboard, handle, settings)
 }
 
-// SFL on #340: Copilot reads CodexBar's own token for Bob when his OAuth record has one, so his row signs that record
-// in, whichever record the ownership map lists first.
+// SFL on #340: Copilot reads CodexBar's own token for Bob when his OAuth record has one, so his row's failure is that
+// record's, whichever record the ownership map lists first. SFL on #342: CodexBar's GitHub sign-in refuses a user
+// another record already names, so the row offers no sign-in that would be refused; Open settings opens the OAuth
+// record.
 #[gpui_kit::test]
-fn a_user_two_records_own_gets_the_sign_in_copilot_reads(cx: &mut TestAppContext) {
+fn a_user_two_records_own_gets_no_sign_in_that_would_be_refused(cx: &mut TestAppContext) {
     let (dashboard, handle, _settings) = bob_owned_twice(cx, "failure-copilot-shared-identity", true);
-    assert!(visible(cx, handle, "sign-in-Copilot-bob"), "the OAuth record's sign-in");
-    assert!(!visible(cx, handle, "cli-sign-in-Copilot-bob"));
+    assert!(
+        !visible(cx, handle, "sign-in-Copilot-bob"),
+        "CodexBar's would be refused"
+    );
+    assert!(
+        !visible(cx, handle, "cli-sign-in-Copilot-bob"),
+        "the GitHub CLI's isn't what failed"
+    );
+    assert!(visible(cx, handle, "fix-Copilot-bob"), "Open settings stays");
     let target = cx.update(|cx| dashboard.read(cx).settings_target_record("Copilot", None, cx));
     assert_eq!(target.as_deref(), Some("cp-oauth"));
 }

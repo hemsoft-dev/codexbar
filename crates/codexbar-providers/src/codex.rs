@@ -116,21 +116,39 @@ fn configured_store(auth_path: &Path) -> Option<String> {
 }
 
 /// The top-level `cli_auth_credentials_store` value in a Codex `config.toml`, without its quotes. A quoted key is the
-/// same key in TOML.
+/// same key in TOML, and the lines of a multi-line string (`"""` or `'''`, as in `developer_instructions`) are text,
+/// never keys or table headers.
 fn credentials_store(config: &str) -> Option<String> {
-    config
-        .lines()
-        .map(str::trim)
+    let mut open: Option<&str> = None;
+    for line in config.lines().map(str::trim) {
+        let delimiter = open.or_else(|| ["\"\"\"", "'''"].into_iter().find(|delim| line.contains(delim)));
+        let inside = open.is_some();
+        // A line that opens or closes a multi-line string toggles it when the delimiter appears an odd number of times.
+        if delimiter.is_some_and(|delim| line.matches(delim).count() % 2 == 1) {
+            open = if inside { None } else { delimiter };
+        }
+        if inside {
+            continue;
+        }
         // Keys after the first table header belong to that table.
-        .take_while(|line| !line.starts_with('['))
-        .find_map(|line| {
-            let (key, value) = line.split_once('=')?;
-            let key = key.trim().trim_matches(|c| c == '"' || c == '\'');
-            (key == "cli_auth_credentials_store").then(|| {
-                let value = value.split('#').next().unwrap_or_default().trim();
-                value.trim_matches(|c| c == '"' || c == '\'').to_owned()
-            })
-        })
+        if line.starts_with('[') {
+            return None;
+        }
+        if let Some(value) = store_value(line) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// The value of `line` when it assigns `cli_auth_credentials_store`, without its quotes or a trailing comment.
+fn store_value(line: &str) -> Option<String> {
+    let (key, value) = line.split_once('=')?;
+    let key = key.trim().trim_matches(|c| c == '"' || c == '\'');
+    (key == "cli_auth_credentials_store").then(|| {
+        let value = value.split('#').next().unwrap_or_default().trim();
+        value.trim_matches(|c| c == '"' || c == '\'').to_owned()
+    })
 }
 
 /// Reads the access token (and account id, when present) from a Codex `auth.json`.
@@ -905,6 +923,14 @@ mod tests {
             credentials_store("\"cli_auth_credentials_store\" = \"keyring\"").as_deref(),
             Some("keyring")
         );
+        // SFL on #342: a multi-line string's lines are text, not a table header or a key.
+        let instructions = "developer_instructions = \"\"\"\n[Be brief]\ncli_auth_credentials_store = \"file\"\n\"\"\"\n\
+                            cli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(instructions).as_deref(), Some("keyring"));
+        let literal = "notes = '''\n[x]\n'''\ncli_auth_credentials_store = 'auto'\n";
+        assert_eq!(credentials_store(literal).as_deref(), Some("auto"));
+        let one_line = "notes = \"\"\"[x]\"\"\"\ncli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(one_line).as_deref(), Some("keyring"));
     }
 
     // SFL on #340: with the Codex CLI set to keep its sign-in in the keyring, `codex login` succeeded and the row still

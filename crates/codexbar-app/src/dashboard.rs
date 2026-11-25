@@ -273,9 +273,33 @@ fn failed_record<'a>(
     failure
         .record
         .as_ref()
-        .and_then(|id| records.iter().find(|record| &record.id == id))
+        // Only the failed provider's record: an implicit record's id can be another provider's explicit one.
+        .and_then(|id| {
+            records
+                .iter()
+                .find(|record| &record.id == id && record_kind(record) == Provider::from_display_name(failure.provider))
+        })
         .or_else(|| named_record(failure, owned, hub))
         .map(|record| billing_credential(failure, owned, hub, record))
+}
+
+/// True when CodexBar's GitHub sign-in for `record` would be refused (#341): another Copilot record names the same
+/// user, and one GitHub user can be added once. Signing it in again from the row can't succeed; Settings can remove
+/// the duplicate.
+fn sign_in_refused(record: Option<&codexbar_store::settings::AccountRecord>, hub: &SettingsHub) -> bool {
+    let Some(record) = record.filter(|record| crate::github_sign_in::is_managed(record)) else {
+        return false;
+    };
+    let user = record.external_id.as_deref().map(str::trim).unwrap_or_default();
+    !user.is_empty()
+        && hub.settings().accounts().iter().any(|other| {
+            other.id != record.id
+                && other.provider == record.provider
+                && other
+                    .external_id
+                    .as_deref()
+                    .is_some_and(|id| id.trim().eq_ignore_ascii_case(user))
+        })
 }
 
 /// For a Copilot organization card `record` bills (#341): the record whose token the card was read with. Copilot uses
@@ -1033,11 +1057,12 @@ impl Dashboard {
         let named = failed_record(failure, &self.owned_ids, hub).is_some();
         let excluded = |other: &codexbar_store::settings::AccountRecord| owns_another(failure, &self.owned_ids, other);
         let record = help_record(record, named, hub.settings().accounts(), &excluded)?;
-        // None for a failure whose sign-in can't be told, or that no sign-in here renews (an expired Gemini Apps website
-        // session, which Connect Antigravity… wouldn't renew, #341).
+        // None for a failure whose sign-in can't be told, that no sign-in here renews (an expired Gemini Apps website
+        // session, which Connect Antigravity… wouldn't renew), or whose sign-in would be refused (#341).
         crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref()).filter(|_| {
             !unknown_owner(failure, &self.owned_ids, hub)
                 && failure.hint != Some(codexbar_providers::gemini_apps::SIGN_IN_HINT)
+                && !sign_in_refused(record.as_ref(), hub)
         })
     }
 
@@ -1157,6 +1182,8 @@ impl Dashboard {
         let Some(crate::sign_in_help::Help::Managed { kind, record }) = self.sign_in_help(failure, cx) else {
             return;
         };
+        // Another row's dialog, if one was waiting, has closed: this one could only be clicked once it had (#341).
+        self.settle_sign_in_dialogs(Some(false), cx);
         let started = self.sign_in_counts(cx);
         kind.sign_in(&record, window, cx);
         let open = window.has_active_dialog(cx);
@@ -1208,6 +1235,16 @@ impl Dashboard {
                 None => self.cli_sign_ins.remove(&suffix),
             };
             cx.notify();
+        }
+    }
+
+    /// A CLI sign-in that didn't sign in, said on its row (#337); a row that recovered meanwhile (a Retry) keeps no note
+    /// to show at its next failure (#341).
+    fn note_cli_failure(&mut self, suffix: String, error: codexbar_providers::cli_sign_in::CliSignInError) {
+        if self.failures.iter().any(|failure| failure.element_suffix() == suffix) {
+            self.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));
+        } else {
+            self.cli_sign_ins.remove(&suffix);
         }
     }
 
@@ -1264,9 +1301,7 @@ impl Dashboard {
                         // under that identity, which a retry of the old one would miss.
                         this.request_refresh(cx);
                     }
-                    Err(error) => {
-                        this.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));
-                    }
+                    Err(error) => this.note_cli_failure(suffix, error),
                 }
                 cx.notify();
             });
