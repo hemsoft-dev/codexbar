@@ -115,45 +115,18 @@ fn configured_store(auth_path: &Path) -> Option<String> {
         .and_then(|config| credentials_store(&config))
 }
 
-/// The top-level `cli_auth_credentials_store` value in a Codex `config.toml`, without its quotes. A quoted key is the
-/// same key in TOML, and the lines of a multi-line string (`"""` or `'''`, as in `developer_instructions`) are text,
-/// never keys or table headers.
-fn credentials_store(config: &str) -> Option<String> {
-    let mut open: Option<&str> = None;
-    for line in config.lines().map(str::trim) {
-        // Inside a multi-line string, its first closing delimiter ends it; the rest of the line is outside.
-        let line = match open {
-            Some(delim) => match line.find(delim) {
-                // `open` is set again below, from what follows.
-                Some(at) => line[at + delim.len()..].trim(),
-                None => continue,
-            },
-            None => line,
-        };
-        // A comment, whole line or trailing, is never a string's start, whatever quotes it holds.
-        let code = line.split('#').next().unwrap_or_default();
-        open = ["\"\"\"", "'''"]
-            .into_iter()
-            .find(|delim| code.matches(delim).count() % 2 == 1);
-        // Keys after the first table header belong to that table.
-        if line.starts_with('[') {
-            return None;
-        }
-        if let Some(value) = store_value(line) {
-            return Some(value);
-        }
-    }
-    None
+/// The settings of a Codex `config.toml` CodexBar reads: only its top level, so a profile's own
+/// `cli_auth_credentials_store` (under `[profiles.<name>]`) isn't the CLI's.
+#[derive(serde::Deserialize)]
+struct CodexConfig {
+    cli_auth_credentials_store: Option<String>,
 }
 
-/// The value of `line` when it assigns `cli_auth_credentials_store`, without its quotes or a trailing comment.
-fn store_value(line: &str) -> Option<String> {
-    let (key, value) = line.split_once('=')?;
-    let key = key.trim().trim_matches(|c| c == '"' || c == '\'');
-    (key == "cli_auth_credentials_store").then(|| {
-        let value = value.split('#').next().unwrap_or_default().trim();
-        value.trim_matches(|c| c == '"' || c == '\'').to_owned()
-    })
+/// The top-level `cli_auth_credentials_store` value in a Codex `config.toml`, read with a TOML parser (#343): strings,
+/// comments and quoted keys are TOML's, whatever delimiters they hold. A config the Codex CLI itself couldn't read
+/// sets nothing.
+fn credentials_store(config: &str) -> Option<String> {
+    toml::from_str::<CodexConfig>(config).ok()?.cli_auth_credentials_store
 }
 
 /// Reads the access token (and account id, when present) from a Codex `auth.json`.
@@ -944,6 +917,16 @@ mod tests {
         // SFL on #342: a comment after a closing delimiter opens no string again.
         let closing = "notes = \"\"\"\ntext\n\"\"\" # use \"\"\" for text\ncli_auth_credentials_store = \"keyring\"\n";
         assert_eq!(credentials_store(closing).as_deref(), Some("keyring"));
+        // SFL on #342 (#343): a single-line string's delimiters are its text, and a `#` in a one-line `"""` string is
+        // no comment.
+        let apostrophes = "notes = \"don't use ''' here\"\ncli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(apostrophes).as_deref(), Some("keyring"));
+        let quotes = "notes = 'say \"\"\" once'\ncli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(quotes).as_deref(), Some("keyring"));
+        let hash = "notes = \"\"\"issue #1\"\"\"\ncli_auth_credentials_store = \"keyring\"\n";
+        assert_eq!(credentials_store(hash).as_deref(), Some("keyring"));
+        // A config the Codex CLI couldn't read either sets nothing.
+        assert_eq!(credentials_store("cli_auth_credentials_store = keyring\n"), None);
     }
 
     // SFL on #340: with the Codex CLI set to keep its sign-in in the keyring, `codex login` succeeded and the row still
