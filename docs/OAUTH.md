@@ -41,8 +41,13 @@ and keeps writing its own credential file; CodexBar only reads it.
   user and workspace is its own dashboard account, so signing a home in to
   another identity never inherits the previous one's history. An account with
   the Automatic method reads the Codex CLI's own `~/.codex` (or `CODEX_HOME`),
-  the import and fallback path. The app-server process tree runs in a Windows
-  job that ends with each session.
+  the import and fallback path. That home's `auth.json` must exist: when its
+  `config.toml` sets `cli_auth_credentials_store` to `keyring`, the Codex CLI
+  keeps the sign-in in the system's credential store instead, and the
+  account's row says to set it to `file` and sign in again (#341). With `auto`
+  it uses that store where it can and the file otherwise, so the row asks for a
+  sign-in and to set `file` if that doesn't help. The
+  app-server process tree runs in a Windows job that ends with each session.
 
 - **GitHub Billing (#104).** A GitHub Billing account signs in the same way
   as a Copilot account, with its own token kept under its own account, so it

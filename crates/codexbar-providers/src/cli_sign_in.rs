@@ -287,8 +287,9 @@ fn program(cli: Cli) -> Option<PathBuf> {
         Cli::GitHub => crate::platform::find_program("gh"),
         Cli::Codex => crate::platform::find_program("codex"),
         Cli::Claude => crate::platform::find_program("claude"),
-        // `grok::cli` falls back to a bare `grok`, which fails to start as NotFound when it isn't installed.
-        Cli::Grok => Some(PathBuf::from(crate::grok::cli())),
+        // Not `grok::cli`, whose fallback to a bare `grok` a terminal (macOS and Linux) would start and only then find
+        // missing, reporting a sign-in that didn't finish rather than a CLI that isn't installed (#341).
+        Cli::Grok => crate::grok::find_cli(),
     }
 }
 

@@ -463,7 +463,7 @@ fn remember(record_id: &str, account: &GhAccount, cx: &mut App) -> Result<(), Sh
         };
         return Err(format!("The sign-in couldn't be saved: {err}").into());
     }
-    SettingsHub::request_refresh(cx);
+    SettingsHub::signed_in(cx, record_id);
     Ok(())
 }
 

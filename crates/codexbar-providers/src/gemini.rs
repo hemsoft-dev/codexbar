@@ -34,6 +34,15 @@ fn coding_error(error: &CodingError) -> ProviderError {
     }
 }
 
+/// The account's failure when the coding quotas failed too: the website's, unless the Antigravity CLI is signed out,
+/// which its row can sign in again where nothing in CodexBar renews an expired website session (#341).
+fn failure(apps: Option<ProviderError>, coding: ProviderError) -> ProviderError {
+    match apps {
+        Some(apps) if !matches!(coding, ProviderError::NotSignedIn { .. }) => apps,
+        _ => coding,
+    }
+}
+
 impl<H: HttpClient> GeminiProvider<H> {
     /// `apps` is the account's saved Gemini Apps session, if it has one.
     pub fn new(http: H, apps: Option<AppsSession>, account: impl Into<String>, label: impl Into<String>) -> Self {
@@ -117,7 +126,7 @@ impl<H: HttpClient> GeminiProvider<H> {
             }
             Some(Err(error)) => {
                 messages.push(format!("Coding quotas: {error}"));
-                first_error.get_or_insert_with(|| coding_error(error));
+                first_error = Some(failure(first_error.take(), coding_error(error)));
             }
             None => {}
         }
@@ -167,6 +176,20 @@ impl<H: HttpClient> UsageProvider for GeminiProvider<H> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // SFL on #342: an expired website session beside a signed-out Antigravity CLI reported the website, whose row
+    // offers nothing, and hid Connect Antigravity…, which restores the coding quotas.
+    #[test]
+    fn a_signed_out_antigravity_cli_outranks_an_expired_website_session() {
+        let website = || ProviderError::Expired {
+            hint: crate::gemini_apps::SIGN_IN_HINT,
+        };
+        let signed_out = coding_error(&CodingError::SignedOut);
+        assert_eq!(failure(Some(website()), signed_out.clone()), signed_out);
+        let refused = ProviderError::Refused { reason: "no quota" };
+        assert_eq!(failure(Some(website()), refused.clone()), website());
+        assert_eq!(failure(None, refused.clone()), refused);
+    }
 
     struct Offline;
 

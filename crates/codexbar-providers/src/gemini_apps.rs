@@ -21,7 +21,10 @@ const RPC_ID: &str = "jSf9Qc";
 const SESSION_KIND: &str = "gemini-apps-session-v1";
 pub const SESSION_COOKIE: &str = "__Secure-1PSID";
 pub const ROTATING_COOKIE: &str = "__Secure-1PSIDTS";
-const SIGN_IN_HINT: &str = "Sign in to Gemini Apps again in CodexBar settings.";
+/// The hint for a saved Gemini Apps website session that no longer works. CodexBar can't sign the website in again;
+/// Settings can only forget the session (#341).
+pub const SIGN_IN_HINT: &str = "The saved Gemini Apps website session can't be renewed in CodexBar. Forget it in \
+     CodexBar settings to stop reading it.";
 
 /// A Gemini Apps website session: the two cookie values CodexBar keeps, nothing else.
 #[derive(Clone, PartialEq, Eq)]

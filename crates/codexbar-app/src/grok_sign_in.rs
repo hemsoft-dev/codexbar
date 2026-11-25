@@ -310,7 +310,7 @@ fn remember(record_id: &str, temporary: &Path, subject: &str, cx: &mut App) -> R
         return Err(format!("The sign-in couldn't be saved: {err}"));
     }
     let _ = std::fs::remove_dir_all(&previous);
-    SettingsHub::request_refresh(cx);
+    SettingsHub::signed_in(cx, record_id);
     Ok(())
 }
 

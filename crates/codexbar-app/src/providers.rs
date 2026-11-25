@@ -22,7 +22,7 @@ use codexbar_store::settings::{AccountRecord, names};
 use crate::settings_hub::SettingsHub;
 
 /// Enabled accounts for a provider, or its implicit legacy account when it has no records and is switched on.
-fn enabled_accounts(hub: &SettingsHub, provider: &str) -> Vec<AccountRecord> {
+pub(crate) fn enabled_accounts(hub: &SettingsHub, provider: &str) -> Vec<AccountRecord> {
     let settings = hub.settings();
     if !settings.is_enabled(provider) {
         return Vec::new();

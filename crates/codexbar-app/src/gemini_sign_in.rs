@@ -259,7 +259,7 @@ fn connect(record_id: &str, cx: &mut App) -> Result<(), SharedString> {
     record.gemini_coding = true;
     SettingsHub::update(cx, |settings| settings.upsert(record))
         .map_err(|error| SharedString::from(error.to_string()))?;
-    SettingsHub::request_refresh(cx);
+    SettingsHub::signed_in(cx, record_id);
     Ok(())
 }
 

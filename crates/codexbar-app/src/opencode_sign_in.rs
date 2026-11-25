@@ -364,7 +364,7 @@ fn remember(record_id: &str, credential: &ConsoleCredential, cx: &mut App) -> Re
         });
         return Err(format!("The sign-in couldn't be saved: {err}").into());
     }
-    SettingsHub::request_refresh(cx);
+    SettingsHub::signed_in(cx, record_id);
     Ok(())
 }
 

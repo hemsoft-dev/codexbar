@@ -48,6 +48,22 @@ pub(crate) struct Contained {
     pub child: Child,
     #[cfg(windows)]
     _job: Option<job::Job>,
+    /// The terminal's script folder (macOS and Linux), which the waiter deletes when the CLI finishes. A waiter that
+    /// was stopped (a timeout, a cancel) never gets to, so the folder goes once the waiter has ended (#341).
+    #[cfg(not(windows))]
+    folder: Option<std::path::PathBuf>,
+}
+
+#[cfg(not(windows))]
+impl Drop for Contained {
+    fn drop(&mut self) {
+        // Only once the waiter is gone: a running one still waits for the status file in it.
+        if let Some(folder) = &self.folder
+            && matches!(self.child.try_wait(), Ok(Some(_)))
+        {
+            let _ = std::fs::remove_dir_all(folder);
+        }
+    }
 }
 
 impl Contained {
@@ -88,12 +104,11 @@ fn spawn_with(command: &mut Command, launch: Launch) -> std::io::Result<Containe
     }
     #[cfg(not(windows))]
     {
-        let child = if launch == Launch::Console {
-            terminal::spawn(command)?
-        } else {
-            command.spawn()?
-        };
-        Ok(Contained { child })
+        if launch == Launch::Console {
+            return terminal::spawn(command);
+        }
+        let child = command.spawn()?;
+        Ok(Contained { child, folder: None })
     }
     #[cfg(windows)]
     {
@@ -120,7 +135,7 @@ mod terminal {
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Command, Stdio};
 
     /// `text` in single quotes for `sh`, byte for byte: a Unix path need not be UTF-8.
     pub(super) fn quote(text: &OsStr) -> Vec<u8> {
@@ -200,7 +215,8 @@ else exit 127; fi"#
         }
     }
 
-    pub(super) fn spawn(command: &Command) -> std::io::Result<Child> {
+    /// Starts `command` in a terminal: the waiting child, with the script folder it deletes when the CLI finishes.
+    pub(super) fn spawn(command: &Command) -> std::io::Result<super::Contained> {
         let mut name = [0u8; 8];
         getrandom::fill(&mut name).map_err(|_| std::io::Error::other("no random name for the script folder"))?;
         let suffix: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -229,6 +245,10 @@ else exit 127; fi"#
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
+            .map(|child| super::Contained {
+                child,
+                folder: Some(dir.clone()),
+            })
     }
 }
 
@@ -240,6 +260,35 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::terminal::{quote, script};
+
+    // SFL on #340: a timed-out sign-in killed its waiter before the waiter deleted the script folder.
+    #[test]
+    fn a_stopped_waiter_s_script_folder_goes_once_the_waiter_has_ended() {
+        let root = std::env::temp_dir().join(format!("codexbar-terminal-drop-{}", std::process::id()));
+        let (running, stopped) = (root.join("running"), root.join("stopped"));
+        std::fs::create_dir_all(&running).unwrap();
+        std::fs::create_dir_all(&stopped).unwrap();
+        let sleeper = || Command::new("/bin/sh").args(["-c", "sleep 30"]).spawn().unwrap();
+
+        let mut ended = super::Contained {
+            child: sleeper(),
+            folder: Some(stopped.clone()),
+        };
+        let _ = ended.child.kill();
+        let _ = ended.child.wait();
+        drop(ended);
+        assert!(!stopped.exists(), "the stopped waiter's folder is deleted");
+
+        let waiting = super::Contained {
+            child: sleeper(),
+            folder: Some(running.clone()),
+        };
+        let pid = waiting.child.id().to_string();
+        drop(waiting);
+        assert!(running.exists(), "a waiter still running keeps its folder");
+        let _ = Command::new("kill").arg(&pid).status();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn the_terminal_script_runs_the_command_as_configured() {
