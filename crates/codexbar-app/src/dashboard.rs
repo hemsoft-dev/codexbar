@@ -283,11 +283,15 @@ fn failed_record<'a>(
         .map(|record| billing_credential(failure, owned, hub, record))
 }
 
-/// True when CodexBar's GitHub sign-in for `record` would be refused (#341): another Copilot record names the same
-/// user, and one GitHub user can be added once. Signing it in again from the row can't succeed; Settings can remove
-/// the duplicate.
+/// True when CodexBar's GitHub sign-in for a Copilot `record` would be refused (#341): another Copilot record names the
+/// same user, and one GitHub user can be added to Copilot once. Signing it in again from the row can't succeed;
+/// Settings can remove the duplicate. GitHub Billing records are one per billing owner instead, so one user can sign
+/// several in.
 fn sign_in_refused(record: Option<&codexbar_store::settings::AccountRecord>, hub: &SettingsHub) -> bool {
-    let Some(record) = record.filter(|record| crate::github_sign_in::is_managed(record)) else {
+    let copilot = |record: &&codexbar_store::settings::AccountRecord| {
+        crate::github_sign_in::is_managed(record) && !crate::github_sign_in::is_billing(record)
+    };
+    let Some(record) = record.filter(copilot) else {
         return false;
     };
     let user = record.external_id.as_deref().map(str::trim).unwrap_or_default();

@@ -2296,6 +2296,30 @@ fn an_organization_card_read_with_codexbar_s_token_offers_no_sign_in_that_cannot
     assert_eq!(target.as_deref(), Some("cp-oauth"), "the record whose token failed");
 }
 
+// Codex on #342: one GitHub user can sign several GitHub Billing records in, one per organization, so an expired one
+// keeps its sign-in.
+#[gpui_kit::test]
+fn a_github_billing_record_beside_another_for_the_same_user_keeps_its_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-billing-same-user",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gb-1", "providerId": "GitHubBilling", "displayLabel": "Acme", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice", "githubBillingOrganization": "acme" },
+            { "id": "gb-2", "providerId": "GitHubBilling", "displayLabel": "Beta", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice", "githubBillingOrganization": "beta" } ] }"#,
+    );
+    let billing =
+        FakeProvider::for_account(Provider::GitHubBilling, "gb-1", None).failing_with(ProviderError::Expired {
+            hint: "Sign in to GitHub Billing in CodexBar settings.",
+        });
+    let _dashboard = open_live(cx, &settings, vec![billing]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "sign-in-GitHub Billing-gb-1"), "CodexBar's sign-in");
+}
+
 // SFL on #342: an adapter's record id is looked up among its own provider's records only.
 #[gpui_kit::test]
 fn an_adapter_s_record_id_never_resolves_to_another_provider_s_record(cx: &mut TestAppContext) {
