@@ -104,13 +104,11 @@ fn spawn_with(command: &mut Command, launch: Launch) -> std::io::Result<Containe
     }
     #[cfg(not(windows))]
     {
-        let (child, folder) = if launch == Launch::Console {
-            let (child, folder) = terminal::spawn(command)?;
-            (child, Some(folder))
-        } else {
-            (command.spawn()?, None)
-        };
-        Ok(Contained { child, folder })
+        if launch == Launch::Console {
+            return terminal::spawn(command);
+        }
+        let child = command.spawn()?;
+        Ok(Contained { child, folder: None })
     }
     #[cfg(windows)]
     {
@@ -137,7 +135,7 @@ mod terminal {
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Command, Stdio};
 
     /// `text` in single quotes for `sh`, byte for byte: a Unix path need not be UTF-8.
     pub(super) fn quote(text: &OsStr) -> Vec<u8> {
@@ -217,8 +215,8 @@ else exit 127; fi"#
         }
     }
 
-    /// Starts `command` in a terminal: the waiting child, and the script folder it deletes when the CLI finishes.
-    pub(super) fn spawn(command: &Command) -> std::io::Result<(Child, std::path::PathBuf)> {
+    /// Starts `command` in a terminal: the waiting child, with the script folder it deletes when the CLI finishes.
+    pub(super) fn spawn(command: &Command) -> std::io::Result<super::Contained> {
         let mut name = [0u8; 8];
         getrandom::fill(&mut name).map_err(|_| std::io::Error::other("no random name for the script folder"))?;
         let suffix: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -247,7 +245,10 @@ else exit 127; fi"#
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map(|child| (child, dir.clone()))
+            .map(|child| super::Contained {
+                child,
+                folder: Some(dir.clone()),
+            })
     }
 }
 
