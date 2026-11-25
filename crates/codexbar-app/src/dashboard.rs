@@ -1707,6 +1707,21 @@ impl Dashboard {
         if !self.fetch_partial {
             self.last_refresh = Some(Utc::now());
         }
+        // A fetch that started before an account was removed still returns it, and recorded its history: take it out
+        // again (#85), before any filter below drops it unseen (a removed account's adapter gone, SFL round 3 on #344).
+        if !self.forgotten.is_empty() {
+            let returned: Vec<String> = accounts
+                .iter()
+                .map(|account| account.id().as_str().to_owned())
+                .filter(|id| self.forgotten.contains_key(id))
+                .collect();
+            for id in &returned {
+                self.forgotten.insert(id.clone(), false);
+            }
+            accounts.retain(|account| !self.forgotten.contains_key(account.id().as_str()));
+            self.delete_forgotten_history(cx);
+        }
+        accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), SettingsHub::global(cx)));
         // Placeholders that a result replaced (or that left with their provider) are gone.
         self.placeholders
             .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
@@ -1732,24 +1747,6 @@ impl Dashboard {
             // refresh off.
             self.refresh_queued = true;
         }
-        // A fetch that started before an account was removed still returns it, and recorded its history: take it out
-        // again (#85).
-        if !self.forgotten.is_empty() {
-            let returned: Vec<String> = accounts
-                .iter()
-                .map(|account| account.id().as_str().to_owned())
-                .filter(|id| self.forgotten.contains_key(id))
-                .collect();
-            for id in &returned {
-                self.forgotten.insert(id.clone(), false);
-            }
-            accounts.retain(|account| !self.forgotten.contains_key(account.id().as_str()));
-            self.delete_forgotten_history(cx);
-        }
-        let hub = SettingsHub::global(cx);
-        accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), hub));
-        self.placeholders
-            .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
         self.set_accounts(accounts, cx);
         self.save_snapshots(cx);
         if std::mem::take(&mut self.refresh_queued) {
@@ -1806,6 +1803,9 @@ impl Dashboard {
             .into_iter()
             .filter(|account| enabled.contains(&account.provider().display_name()))
             .filter(|account| !disabled.iter().any(|id| id == account.id().as_str()))
+            // A Copilot user switched off shares Copilot's one adapter with the others, which this check can't see
+            // (#343, SFL round 3 on #344).
+            .filter(|account| !unread(Some(account.provider()), account.id().as_str(), hub))
             .filter(|account| {
                 // With several adapters for one provider (Codex accounts, #78), any of them may hold the account.
                 let mut current = signed_in

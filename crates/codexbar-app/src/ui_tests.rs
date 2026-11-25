@@ -1361,6 +1361,30 @@ fn restored_snapshots_show_before_the_first_fetch(cx: &mut TestAppContext) {
     assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Fresh);
 }
 
+// SFL round 3 on #344: a Copilot user switched off while CodexBar was closed doesn't show their saved usage at start,
+// though another Copilot user keeps Copilot's one adapter.
+#[gpui_kit::test]
+fn a_switched_off_copilot_user_s_saved_usage_isn_t_restored(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "lifecycle-restore-copilot-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-bob", "providerId": "Copilot", "displayLabel": "Bob", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "bob" } ] }"#,
+    );
+    let saved = ["copilot-alice", "copilot-bob"]
+        .map(|id| AccountSnapshot::new(AccountId::new(id), Provider::Copilot, Vec::new(), chrono::Utc::now()));
+    codexbar_store::snapshots::save_snapshots(&settings.0, &saved).unwrap();
+    let copilot = FakeProvider::new(Provider::Copilot, "copilot-alice", Some(0.4));
+    let dashboard = open_live(cx, &settings, vec![copilot]);
+    assert_eq!(
+        ids(cx, &dashboard),
+        vec!["copilot-alice"],
+        "Alice's only, before the first fetch"
+    );
+}
+
 #[gpui_kit::test]
 fn configured_providers_show_a_placeholder_until_their_first_result(cx: &mut TestAppContext) {
     let settings = TempSettings::new("lifecycle-placeholder", "{}");
@@ -8134,6 +8158,9 @@ fn removing_a_greptile_account_during_a_refresh_keeps_it_gone(cx: &mut TestAppCo
         ids(cx, &dashboard).is_empty(),
         "the pending refresh's result doesn't restore it"
     );
+    // SFL round 3 on #344: the removal took the adapter away too, so the pending refresh's samples, recorded after the
+    // removal deleted the history, are deleted again before its result is dropped.
+    assert_eq!(history_points(cx, &dashboard, "gr-1", "weekly"), 0, "nor its history");
     refresh(cx, &dashboard);
     assert!(ids(cx, &dashboard).is_empty(), "nor does the next refresh");
     let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
