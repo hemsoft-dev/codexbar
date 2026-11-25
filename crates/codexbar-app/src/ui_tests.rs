@@ -2377,6 +2377,111 @@ fn a_row_left_from_a_switched_off_record_offers_no_sign_in(cx: &mut TestAppConte
     assert!(!visible(cx, handle, "sign-in-ChatGPT · Codex-codex-shared"));
 }
 
+/// Switches Bob's Copilot record (`bob_fails_beside_alice`) on or off, as Settings does.
+fn switch_bob(cx: &mut TestAppContext, on: bool) {
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let record = settings.accounts().iter().find(|a| a.id == "cp-bob").cloned().unwrap();
+            settings.upsert(codexbar_store::settings::AccountRecord { enabled: on, ..record })
+        })
+    })
+    .unwrap();
+}
+
+// SFL on #342 (#343): Copilot's one adapter outlives a switched-off user, whose row is left until the next refresh. It
+// offers no sign-in: not the GitHub CLI's, which help would fall back to, nor a switch.
+#[gpui_kit::test]
+fn a_row_left_from_a_switched_off_copilot_user_offers_no_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "failure-copilot-bob-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-bob", "providerId": "Copilot", "displayLabel": "Bob", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "bob" } ] }"#,
+    );
+    let dashboard = open_live_fixed(
+        cx,
+        &settings,
+        vec![Arc::new(CopilotUsers { alice_fails: false }) as Arc<dyn UsageProvider>],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "retry-Copilot-bob"), "the row is there");
+    assert!(!visible(cx, handle, "cli-sign-in-Copilot-bob"), "no GitHub CLI sign-in");
+    assert!(!visible(cx, handle, "sign-in-Copilot-bob"));
+    assert!(!visible(cx, handle, "switch-sign-in-Copilot-bob"));
+    let switch = cx.update(|cx| dashboard.read(cx).switch_target_record("Copilot", None, cx));
+    assert_eq!(switch, None);
+}
+
+// SFL on #342 (#343): switching a Copilot user off drops their row at once, with what it said about its sign-in, so
+// switching them on again starts without the old note.
+#[gpui_kit::test]
+fn a_switched_off_copilot_user_s_row_goes_and_returns_without_its_old_note(cx: &mut TestAppContext) {
+    let cli = FakeCliSignIn::failing(codexbar_providers::cli_sign_in::CliSignInError::Failed);
+    cx.update(|cx| crate::sign_in_help::init_with(cx, cli.clone()));
+    let (dashboard, handle, _settings) = bob_fails_beside_alice(
+        cx,
+        "failure-copilot-bob-toggle",
+        r#", "externalAccountId": "bob""#,
+        false,
+    );
+    let render = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    click(cx, handle, "cli-sign-in-Copilot-bob");
+    render(cx);
+    assert!(
+        visible(cx, handle, "cli-note-Copilot-bob"),
+        "the failed sign-in says so"
+    );
+    switch_bob(cx, false);
+    render(cx);
+    assert!(!visible(cx, handle, "retry-Copilot-bob"), "the row goes at once");
+    assert!(!visible(cx, handle, "cli-note-Copilot-bob"));
+    switch_bob(cx, true);
+    refresh(cx, &dashboard);
+    render(cx);
+    assert!(visible(cx, handle, "retry-Copilot-bob"), "back with the next refresh");
+    assert!(!visible(cx, handle, "cli-note-Copilot-bob"), "without the old note");
+}
+
+// SFL on #342 (#343): a row switched off and on while its CLI sign-in runs keeps waiting for that sign-in, whose console
+// is still open, rather than let the returned row start a second one of the same profile.
+#[gpui_kit::test]
+fn a_row_switched_off_and_on_keeps_waiting_for_its_running_cli_sign_in(cx: &mut TestAppContext) {
+    let cli = FakeCliSignIn::failing(codexbar_providers::cli_sign_in::CliSignInError::Failed);
+    cx.update(|cx| crate::sign_in_help::init_with(cx, cli.clone()));
+    let (dashboard, handle, _settings) = bob_fails_beside_alice(
+        cx,
+        "failure-copilot-bob-running",
+        r#", "externalAccountId": "bob""#,
+        false,
+    );
+    let waiting = |cx: &mut TestAppContext| cx.update(|cx| dashboard.read(cx).cli_sign_in_waiting("Copilot-bob"));
+    // Clicked, and not yet run: the CLI's console is open.
+    let id: gpui_kit::ElementId = "cli-sign-in-Copilot-bob".into();
+    cx.update_window(handle, |_, window, cx| window.click(id, cx)).unwrap();
+    assert!(waiting(cx));
+    switch_bob(cx, false);
+    assert!(waiting(cx), "switched off, its CLI still runs");
+    switch_bob(cx, true);
+    assert!(waiting(cx), "switched on again, the row waits for it");
+    // It ends while the row is gone: nothing waits, and no note is left for the row's next failure.
+    cx.run_until_parked();
+    assert!(!waiting(cx));
+    assert_eq!(cli.runs.lock().unwrap().len(), 1, "one sign-in");
+    refresh(cx, &dashboard);
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(cx, handle, "retry-Copilot-bob"));
+    assert!(!visible(cx, handle, "cli-note-Copilot-bob"));
+}
+
 // Codex on #342: Codex on with no account configured runs on its implicit record, which isn't in the settings file;
 // its row keeps the Codex CLI's sign-in.
 #[gpui_kit::test]

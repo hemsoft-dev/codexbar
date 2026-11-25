@@ -296,6 +296,36 @@ fn stale(failure: &Failure, hub: &SettingsHub) -> bool {
     })
 }
 
+/// True when a Copilot account that failed in Copilot's shared adapter is no longer one Copilot reads (#343): its
+/// user's record, or the record billing its organization card, was switched off or removed. Copilot's one adapter
+/// outlives that change, so neither `stale` nor the adapters a settings change leaves can tell; the row is left from
+/// before it. A user's account keeps showing while a Copilot record discovers every GitHub CLI user.
+fn unserved(failure: &Failure, hub: &SettingsHub) -> bool {
+    let Some(account) = failure
+        .outcome
+        .as_deref()
+        .filter(|_| Provider::from_display_name(failure.provider) == Some(Provider::Copilot))
+    else {
+        return false;
+    };
+    use codexbar_providers::copilot::{account_id, is_org_account, org_account_id};
+    fn set(value: &Option<String>) -> Option<&str> {
+        value.as_deref().map(str::trim).filter(|value| !value.is_empty())
+    }
+    // A record reads its user's account, and the organization card it bills (`providers::copilot`).
+    let reads = |record: &codexbar_store::settings::AccountRecord| {
+        let user = set(&record.external_id);
+        let org = set(&record.copilot_organization).filter(|_| user.is_some());
+        user.is_some_and(|user| account_id(user).as_str() == account)
+            || org.is_some_and(|org| org_account_id(org).as_str() == account)
+    };
+    let discovered = !is_org_account(account) && crate::providers::copilot_discovers_all(hub);
+    !discovered
+        && !crate::providers::enabled_accounts(hub, codexbar_store::settings::names::COPILOT)
+            .iter()
+            .any(reads)
+}
+
 /// True when CodexBar's GitHub sign-in for a Copilot `record` would be refused (#341): another Copilot record names the
 /// same user, and one GitHub user can be added to Copilot once. Signing it in again from the row can't succeed;
 /// Settings can remove the duplicate. GitHub Billing records are one per billing owner instead, so one user can sign
@@ -904,6 +934,12 @@ impl Dashboard {
         self.failures.iter().map(|failure| failure.provider).collect()
     }
 
+    /// Whether the row with buttons ending in `suffix` waits for its CLI's sign-in, for the headless UI tests.
+    #[cfg(test)]
+    pub fn cli_sign_in_waiting(&self, suffix: &str) -> bool {
+        matches!(self.cli_sign_ins.get(suffix), Some(CliSignIn::Running(_)))
+    }
+
     /// The visible view, for the headless UI tests.
     #[cfg(test)]
     pub fn view(&self) -> DashboardView {
@@ -1087,12 +1123,14 @@ impl Dashboard {
         let excluded = |other: &codexbar_store::settings::AccountRecord| owns_another(failure, &self.owned_ids, other);
         let record = help_record(record, named, hub.settings().accounts(), &excluded)?;
         // None for a failure whose sign-in can't be told, that no sign-in here renews (an expired Gemini Apps website
-        // session, which Connect Antigravity… wouldn't renew), or whose sign-in would be refused (#341).
+        // session, which Connect Antigravity… wouldn't renew), or whose sign-in would be refused (#341), or for an
+        // account switched off since (#343).
         crate::sign_in_help::help(&crate::catalog::PROVIDERS[group], record.as_ref()).filter(|_| {
             !unknown_owner(failure, &self.owned_ids, hub)
                 && failure.hint != Some(codexbar_providers::gemini_apps::SIGN_IN_HINT)
                 && !sign_in_refused(record.as_ref(), hub)
                 && !stale(failure, hub)
+                && !unserved(failure, hub)
         })
     }
 
@@ -1283,6 +1321,8 @@ impl Dashboard {
     ) {
         if self.cli_sign_ins.get(&suffix) == Some(&CliSignIn::Running(attempt)) {
             self.cli_sign_ins.insert(suffix, CliSignIn::Failed(error));
+            // A row gone meanwhile (recovered, or switched off, #343) gets no note to show at a later failure.
+            self.forget_recovered_sign_ins();
         }
     }
 
@@ -1293,12 +1333,14 @@ impl Dashboard {
         }
     }
 
-    /// Forgets what rows that are gone said about their sign-ins, and the CLI sign-ins they were waiting on (#341): an
-    /// account that recovered (a Retry, a sign-in outside CodexBar) would otherwise show an old note, or a late result,
-    /// at its next failure.
+    /// Forgets what rows that are gone said about their sign-ins (#341): an account that recovered (a Retry, a sign-in
+    /// outside CodexBar) would otherwise show an old note at its next failure. A CLI sign-in still running is kept
+    /// (#343): its console is still open, and a row that returns (switched off and on again) waits for it rather than
+    /// start a second sign-in of the same profile. Its result settles it (`note_cli_failure`, `forget_cli_attempt`).
     fn forget_recovered_sign_ins(&mut self) {
         let rows: Vec<String> = self.failures.iter().map(Failure::element_suffix).collect();
-        self.cli_sign_ins.retain(|suffix, _| rows.contains(suffix));
+        self.cli_sign_ins
+            .retain(|suffix, state| rows.contains(suffix) || matches!(state, CliSignIn::Running(_)));
     }
 
     /// A failure row's CLI sign-in (#337): runs the CLI's own sign-in in its console window, then fetches the provider
@@ -1863,8 +1905,11 @@ impl Dashboard {
     /// Drops the rows and failure banners none of `adapters` serves.
     fn drop_unconfigured_accounts(&mut self, adapters: &[(&'static str, Option<String>)], cx: &mut Context<Self>) {
         let before = self.accounts.len() + self.failures.len();
-        self.failures
-            .retain(|failure| adapters.contains(&(failure.provider, failure.account.clone())));
+        let hub = SettingsHub::global(cx);
+        // A Copilot account switched off goes too, though Copilot's one adapter stays (#343).
+        self.failures.retain(|failure| {
+            adapters.contains(&(failure.provider, failure.account.clone())) && !unserved(failure, hub)
+        });
         // A row switched off forgets what it said about its sign-in, so switching it on again starts afresh (#341).
         self.forget_recovered_sign_ins();
         let accounts: Vec<AccountSnapshot> = self

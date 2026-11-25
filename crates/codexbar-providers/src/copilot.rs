@@ -273,7 +273,14 @@ fn rate_limited_until(response: &crate::HttpResponse, now: DateTime<Utc>) -> Opt
 /// The organization's dashboard account. Users are `copilot-<user>`; organizations use another prefix, so a user
 /// named like `org-acme` never shares an id with the organization `acme`.
 pub fn org_account_id(organization: &str) -> AccountId {
-    AccountId::new(format!("copilotorg-{}", organization.to_lowercase()))
+    AccountId::new(format!("{ORG_PREFIX}{}", organization.to_lowercase()))
+}
+
+const ORG_PREFIX: &str = "copilotorg-";
+
+/// True when `account` is an organization's dashboard account (`org_account_id`), not a user's.
+pub fn is_org_account(account: &str) -> bool {
+    account.starts_with(ORG_PREFIX)
 }
 
 /// AI credits each Copilot Enterprise seat gets in this month.
@@ -1983,6 +1990,8 @@ mod tests {
     fn organization_ids_never_collide_with_user_ids() {
         assert_ne!(org_account_id("acme").as_str(), account_id("org-acme").as_str());
         assert_eq!(org_account_id("Acme-Eng").as_str(), "copilotorg-acme-eng");
+        assert!(is_org_account(org_account_id("acme").as_str()));
+        assert!(!is_org_account(account_id("copilotorg").as_str()));
     }
 
     #[test]
