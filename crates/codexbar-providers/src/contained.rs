@@ -205,7 +205,9 @@ mod terminal {
             script.push(b' ');
             script.extend(quote(procs));
         };
-        script.extend_from_slice(b"; }\nsettle() { /bin/sh -c '");
+        // Run without the mark the script exports, which the settling shell would otherwise find itself by and wait on
+        // for the whole 3 s (SFL round 6 on #347).
+        script.extend_from_slice(b"; }\nsettle() { CODEXBAR_SIGN_IN= /bin/sh -c '");
         script.extend_from_slice(SETTLE);
         settle_args(&mut script, b"-");
         script.extend_from_slice(b"; }\ntrap 'settle; publish 129; exit 129' HUP INT TERM\n/bin/sh -c '");
@@ -471,16 +473,23 @@ mod tests {
         assert!(text.ends_with("publish \"$code\"\n"));
         // A test's watchdog reads no process environments unless the test names its own fixture folder (Codex on #347).
         assert!(text.contains(" '/nonexistent/codexbar-test-proc' &\n"));
+        // The hang-up trap settles without the mark, which would find the settling shell itself (SFL round 6 on #347).
+        assert!(text.contains("\nsettle() { CODEXBAR_SIGN_IN= /bin/sh -c '"));
         assert_eq!(quote(OsStr::new("a'b")), br"'a'\''b'");
         // A path that isn't UTF-8 keeps its bytes.
         use std::os::unix::ffi::OsStrExt as _;
         assert_eq!(quote(OsStr::from_bytes(b"/tmp/\xff")), b"'/tmp/\xff'");
     }
 
+    /// A new folder of the test's own, which the scripts the tests run live in: one already there, which another user
+    /// could have made and filled, fails the test rather than being used (SFL round 6 on #347).
     fn folder(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("codexbar-terminal-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let dir = std::env::temp_dir().join(format!("codexbar-terminal-{name}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
         dir
     }
 
@@ -577,7 +586,19 @@ echo $p > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#,
                 .unwrap()
                 .success()
         );
+        let hung_up = Instant::now();
         shell.wait().unwrap();
+        // About the survivor's 2 s: it was seen and waited for, and the wait ended with it rather than after the 3 s
+        // a settling shell waiting on itself would take (SFL round 6 on #347).
+        let settled = hung_up.elapsed();
+        assert!(
+            settled >= Duration::from_millis(1500),
+            "waited for the survivor: {settled:?}"
+        );
+        assert!(
+            settled < Duration::from_millis(2900),
+            "ended with the survivor: {settled:?}"
+        );
         let state = Command::new("ps")
             .args(["-o", "stat=", "-p", &survivor])
             .output()
