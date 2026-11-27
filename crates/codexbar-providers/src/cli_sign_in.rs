@@ -100,7 +100,8 @@ impl SignInWindow {
         .map(crate::platform::command);
         open_with(cli, base, profile(cli), crate::contained::spawn_console)
     }
-    /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success.
+    /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success. A sign-in stopped by
+    /// the timeout or `cancel` returns once its CLI has stopped (`Contained::close_console`), so a retry can't overlap it.
     pub fn finish(
         self,
         timeout: std::time::Duration,
@@ -115,8 +116,8 @@ impl SignInWindow {
                         .try_wait()
                         .map(|status| status.map(|status| status.success())),
                     Ask::Stop => {
-                        let _ = process.child.kill();
-                        process.child.wait().map(|_| None)
+                        process.close_console();
+                        Ok(None)
                     }
                 },
                 timeout,
@@ -510,6 +511,142 @@ mod tests {
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
         });
         assert!(matches!(result, Err(CliSignInError::Start(_))));
+    }
+
+    /// What `stop` found when `finish` returned.
+    #[cfg(unix)]
+    #[derive(Debug, PartialEq)]
+    struct Stopped {
+        /// The process whose id the CLI left in `$PID_FILE` still ran.
+        running: bool,
+        /// A process the CLI started got the terminate signal (it writes `$SIGNALLED`).
+        signalled: bool,
+    }
+
+    /// Whether process `pid` runs: a zombie has ended, though its parent hasn't reaped it yet. `ps` failing other than
+    /// by finding no such process fails the test rather than counting as an ended process (SFL round 3 on #347).
+    #[cfg(unix)]
+    fn runs(pid: &str) -> bool {
+        let out = Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .expect("ps runs");
+        let state = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() || out.stderr.is_empty(),
+            "ps failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.status.success() && !state.trim().is_empty() && !state.contains('Z')
+    }
+
+    /// Starts `script` as the CLI through the real waiter and terminal script (run by `sh`, no window), cancels it once
+    /// it has left a process id in `$PID_FILE`, and says what `finish` left behind.
+    #[cfg(unix)]
+    fn stop(name: &str, script: &str) -> Stopped {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let dir = std::env::temp_dir().join(format!("codexbar-cli-stop-{name}-{}-{nanos}", std::process::id()));
+        // A folder of this test's own: one already there, which another user could have made, fails the test.
+        std::fs::create_dir(&dir).unwrap();
+        let (pid_file, signalled) = (dir.join("cli"), dir.join("signalled"));
+        let mut base = Command::new("/bin/sh");
+        base.args(["-c", script])
+            .env("PID_FILE", &pid_file)
+            .env("SIGNALLED", &signalled);
+        let window = open_with(
+            Cli::Codex,
+            Some(base),
+            Vec::new(),
+            crate::contained::spawn_console_without_terminal,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        // A whole process id: the scripts write it beside the file and rename it into place.
+        let pid = loop {
+            let read = std::fs::read_to_string(&pid_file).unwrap_or_default();
+            if read.trim().parse::<u32>().is_ok() {
+                break read.trim().to_owned();
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "the CLI started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        assert_eq!(
+            window.finish(std::time::Duration::from_secs(60), &cancel),
+            Err(CliSignInError::Failed)
+        );
+        // The CLI may have left a later process id (`a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits`).
+        let pid = std::fs::read_to_string(&pid_file).map_or(pid, |read| read.trim().to_owned());
+        let stopped = Stopped {
+            running: runs(&pid),
+            signalled: signalled.exists(),
+        };
+        if stopped.running {
+            let _ = Command::new("kill").args(["-KILL", &pid]).status();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        stopped
+    }
+
+    // SFL on #344 (#345): on macOS and Linux a timed-out or cancelled sign-in stopped only the terminal's waiter, and
+    // the CLI ran on for up to a second, until the script's watchdog stopped it. A retry in that time signed the same
+    // profile in twice.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_returns_once_its_cli_has_stopped() {
+        // A CLI that waits, as a sign-in does for the browser.
+        let cli = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
+        assert_eq!(
+            stop("cli", cli),
+            Stopped {
+                running: false,
+                signalled: false
+            },
+            "the CLI has stopped when finish returns"
+        );
+    }
+
+    // SFL rounds 1 and 2 on #347: what the CLI started runs on when the CLI stops: the CLI itself, when a wrapper it
+    // was found as exits on the signal without passing it on, or the browser the CLI opened. `finish` waits for it, a
+    // few seconds at most, and never signals it: a browser's windows are the user's.
+    // SFL round 4 on #347: a wrapper that starts the CLI just as it exits on the signal leaves it to another parent before
+    // the watchdog has seen it. The watchdog still waits for it, on Linux, where it follows the script's session; macOS
+    // follows the process tree.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits() {
+        let wrapper = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
+trap '( sleep 2.5 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exit 0' TERM
+while :; do sleep 0.1; done"#;
+        assert_eq!(
+            stop("late", wrapper),
+            Stopped {
+                running: false,
+                signalled: false
+            },
+            "the process the wrapper started as it exited ended before finish returned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_waits_for_what_its_cli_started_without_signalling_it() {
+        // A process that ends on its own 2.5 s after it starts, and says so if it is signalled first.
+        let started = r#"( trap 'echo > "$SIGNALLED"; exit 1' TERM; sleep 2.5 & wait ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
+        assert_eq!(
+            stop("started", started),
+            Stopped {
+                running: false,
+                signalled: false
+            },
+            "it ended on its own before finish returned"
+        );
     }
 
     #[test]
