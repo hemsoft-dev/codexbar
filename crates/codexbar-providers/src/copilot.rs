@@ -42,13 +42,52 @@ const HOST: &str = "github.com";
 const GH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const GH_MISSING: &str = "Install the GitHub CLI and sign in to it.";
 const GH_LOGIN: &str = "Sign in to the GitHub CLI for this account.";
+/// How a seatless account's row begins, before the organizations whose AI credits it shows.
+pub const NO_SEAT_NOTE: &str = "No Copilot seat on this account.";
 
-/// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)").
+/// Whether a seatless account's note (`NO_SEAT_NOTE`, then "It shows acme and globex's AI credits." and "acme's AI
+/// credits couldn't be read with it.") names only organizations in `orgs`; `None` for any other note. The names aren't
+/// parsed out of the note, since an organization's configured text can hold periods and spaces itself (SFL rounds 4
+/// and 5 on #351): each sentence's list must be made of `orgs` joined by " and ". The note's own words are matched as
+/// sentences, not removed wherever they occur, so an organization named "AI" or "credits" can't take them away (Codex
+/// on #351).
+pub fn seatless_note_names_only(message: &str, orgs: &[String]) -> Option<bool> {
+    let mut rest = message.strip_prefix(NO_SEAT_NOTE)?.trim_start();
+    while !rest.is_empty() {
+        let sentence = match rest.strip_prefix("It shows ") {
+            Some(shown) => shown.split_once("'s AI credits."),
+            None => rest.split_once("'s AI credits couldn't be read with it."),
+        };
+        let Some((list, after)) = sentence else {
+            return Some(false);
+        };
+        if !names_only(list, orgs) {
+            return Some(false);
+        }
+        rest = after.trim_start();
+    }
+    Some(true)
+}
+
+/// Whether `list` is one or more of `orgs` joined by " and ".
+fn names_only(list: &str, orgs: &[String]) -> bool {
+    orgs.iter().filter(|org| !org.is_empty()).any(|org| {
+        list == org.as_str()
+            || list
+                .strip_prefix(org.as_str())
+                .and_then(|rest| rest.strip_prefix(" and "))
+                .is_some_and(|rest| names_only(rest, orgs))
+    })
+}
+
+/// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
+/// login failed ("X Failed to log in to github.com account old-user (keyring)"): their own fetch reports that, as with
+/// `--json` output (#350).
 pub fn parse_gh_accounts(status: &str) -> Vec<String> {
     let mut accounts = Vec::new();
     for line in status.lines() {
         let line = line.trim();
-        if !line.to_lowercase().contains("logged in to github.com") {
+        if !names_a_login(line) {
             continue;
         }
         let name = ["account ", " as "].iter().find_map(|marker| {
@@ -62,6 +101,20 @@ pub fn parse_gh_accounts(status: &str) -> Vec<String> {
         }
     }
     accounts
+}
+
+/// What a `gh` command that couldn't run means for Copilot: no GitHub CLI to sign in to, or no answer from it.
+fn gh_error(error: CommandError) -> ProviderError {
+    match error {
+        CommandError::NotFound => ProviderError::NotSignedIn { hint: GH_MISSING },
+        CommandError::TimedOut | CommandError::Failed => ProviderError::Network,
+    }
+}
+
+/// Whether a `gh auth status` line names a github.com login, signed in or failed.
+fn names_a_login(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.contains("logged in to github.com") || lower.contains("log in to github.com account")
 }
 
 /// Maps a `copilot_internal/user` response to one account. Unlimited and absent quotas are not limits, so they
@@ -563,11 +616,11 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
     }
 
     fn gh(&self, args: &[&str]) -> Result<String, ProviderError> {
-        match self.commands.run("gh", args, GH_TIMEOUT) {
-            Ok(output) if output.success => Ok(format!("{}\n{}", output.stdout, output.stderr)),
-            Ok(_) => Err(ProviderError::NotSignedIn { hint: GH_LOGIN }),
-            Err(CommandError::NotFound) => Err(ProviderError::NotSignedIn { hint: GH_MISSING }),
-            Err(CommandError::TimedOut | CommandError::Failed) => Err(ProviderError::Network),
+        let output = self.commands.run("gh", args, GH_TIMEOUT).map_err(gh_error)?;
+        if output.success {
+            Ok(format!("{}\n{}", output.stdout, output.stderr))
+        } else {
+            Err(ProviderError::NotSignedIn { hint: GH_LOGIN })
         }
     }
 
@@ -1024,8 +1077,23 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             Err(err @ ProviderError::NotSignedIn { hint: GH_MISSING }) => return Err(err),
             Err(_) => {}
         }
-        self.gh(&["auth", "status", "--hostname", HOST])
-            .map(|status| parse_gh_accounts(&status))
+        self.plain_cli_accounts()
+    }
+
+    /// The users plain `gh auth status` lists. A GitHub CLI without `--json` exits nonzero when any of its logins
+    /// failed, one expired among valid ones too. The users it lists are still read, each reporting its own failure,
+    /// rather than Copilot failing as a whole and dropping users whose login works (#350).
+    fn plain_cli_accounts(&self) -> Result<Vec<String>, ProviderError> {
+        let output = self
+            .commands
+            .run("gh", &["auth", "status", "--hostname", HOST], GH_TIMEOUT)
+            .map_err(gh_error)?;
+        let accounts = parse_gh_accounts(&format!("{}\n{}", output.stdout, output.stderr));
+        if output.success || !accounts.is_empty() {
+            Ok(accounts)
+        } else {
+            Err(ProviderError::NotSignedIn { hint: GH_LOGIN })
+        }
     }
 }
 
@@ -1056,6 +1124,17 @@ fn encode(value: &str) -> String {
 impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
     fn name(&self) -> &'static str {
         "Copilot"
+    }
+
+    /// The users CodexBar signed in, whose saved token this adapter fetches with, and those whose token couldn't be
+    /// read, which it reports as failures: none of them is read through the GitHub CLI.
+    fn own_sign_ins(&self) -> Vec<String> {
+        self.logins
+            .iter()
+            .map(|login| login.username.as_str())
+            .chain(self.unreadable.iter().map(String::as_str))
+            .map(|user| account_id(user).as_str().to_owned())
+            .collect()
     }
 
     /// Every signed-in account. One failing account doesn't hide the others; the call fails only if all do.
@@ -1182,7 +1261,7 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                     }
                     let seatless = error == (ProviderError::Unexpected { detail: NO_SEAT });
                     if seatless && !(shown.is_empty() && unread.is_empty()) {
-                        let mut message = "No Copilot seat on this account.".to_owned();
+                        let mut message = NO_SEAT_NOTE.to_owned();
                         if !shown.is_empty() {
                             message.push_str(&format!(" It shows {}'s AI credits.", shown.join(" and ")));
                         }
@@ -1282,6 +1361,138 @@ mod tests {
             ["octocat"]
         );
         assert!(parse_gh_accounts("You are not logged into any GitHub hosts.").is_empty());
+        // #350: a login that failed is listed too, for its own fetch to report.
+        assert_eq!(
+            parse_gh_accounts(&format!(
+                "{STATUS}  X Failed to log in to github.com account old-user (keyring)\n  - The token in keyring is invalid.\n"
+            )),
+            ["HemSoft", "fhemmerrelias", "old-user"]
+        );
+    }
+
+    // SFL rounds 3 to 5 on #351: the dashboard tells whether a seatless note names only organizations still billed.
+    #[test]
+    fn a_seatless_note_names_only_its_organizations() {
+        let orgs = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<String>>();
+        let both = "No Copilot seat on this account. It shows acme-biz and acme-two's AI credits.";
+        assert_eq!(
+            seatless_note_names_only(both, &orgs(&["acme-biz", "acme-two"])),
+            Some(true)
+        );
+        assert_eq!(seatless_note_names_only(both, &orgs(&["acme-biz"])), Some(false));
+        let mixed = "No Copilot seat on this account. It shows acme's AI credits. globex's AI credits couldn't be read with it.";
+        assert_eq!(seatless_note_names_only(mixed, &orgs(&["acme", "globex"])), Some(true));
+        assert_eq!(seatless_note_names_only(mixed, &orgs(&["acme"])), Some(false));
+        assert_eq!(seatless_note_names_only("Usage is delayed by up to an hour", &[]), None);
+        // An organization's text with periods and spaces of its own, as a pasted URL or name has.
+        let odd = "No Copilot seat on this account. Acme Inc. (EU)'s AI credits couldn't be read with it.";
+        assert_eq!(seatless_note_names_only(odd, &orgs(&["Acme Inc. (EU)"])), Some(true));
+        assert_eq!(seatless_note_names_only(odd, &orgs(&["Acme"])), Some(false));
+        let url = "No Copilot seat on this account. https://github.com/acme.inc's AI credits couldn't be read with it.";
+        assert_eq!(
+            seatless_note_names_only(url, &orgs(&["https://github.com/acme.inc"])),
+            Some(true)
+        );
+        // Codex on #351: an organization named after the note's own words doesn't take them away.
+        let words = "No Copilot seat on this account. It shows credits's AI credits.";
+        assert_eq!(seatless_note_names_only(words, &orgs(&["credits"])), Some(true));
+        assert_eq!(seatless_note_names_only(words, &orgs(&["AI"])), Some(false));
+        let ai = "No Copilot seat on this account. AI's AI credits couldn't be read with it.";
+        assert_eq!(seatless_note_names_only(ai, &orgs(&["AI"])), Some(true));
+        assert_eq!(seatless_note_names_only(ai, &orgs(&["credits"])), Some(false));
+        // A name holding " and " itself.
+        let joined = "No Copilot seat on this account. It shows Acme and Sons and globex's AI credits.";
+        assert_eq!(
+            seatless_note_names_only(joined, &orgs(&["Acme and Sons", "globex"])),
+            Some(true)
+        );
+        assert_eq!(
+            seatless_note_names_only(joined, &orgs(&["Acme", "globex"])),
+            Some(false)
+        );
+    }
+
+    // SFL round 5 on #351: the users Copilot fetches with CodexBar's sign-in, or reports a failure for, as built.
+    #[test]
+    fn copilot_reports_the_users_it_fetches_with_codexbar_s_sign_in() {
+        let provider = CopilotProvider::new(
+            FakeHttp {
+                by_token: HashMap::new(),
+                seen: Mutex::default(),
+            },
+            FakeGh { tokens: HashMap::new() },
+        )
+        .with_login("HemSoft", "gho_own")
+        .with_unreadable_login("Locked");
+        assert_eq!(provider.own_sign_ins(), ["copilot-hemsoft", "copilot-locked"]);
+    }
+
+    // #350: a GitHub CLI without `--json` exits nonzero when one of its logins expired. The users whose login works are
+    // still read, and the expired one fails on its own, rather than Copilot failing as a whole, not signed in.
+    #[test]
+    fn an_older_github_cli_with_one_expired_login_still_reads_the_others() {
+        struct OlderGh;
+        impl CommandRunner for OlderGh {
+            fn run(&self, _: &str, args: &[&str], _: StdDuration) -> Result<CommandOutput, CommandError> {
+                let output = |success, stdout: &str, stderr: &str| {
+                    Ok(CommandOutput {
+                        success,
+                        stdout: stdout.into(),
+                        stderr: stderr.into(),
+                    })
+                };
+                match args {
+                    [.., "--json", "hosts"] => output(false, "", "unknown flag: --json"),
+                    ["auth", "status", ..] => output(
+                        false,
+                        "github.com\n  \u{2713} Logged in to github.com account HemSoft (keyring)\n",
+                        "  X Failed to log in to github.com account old-user (keyring)\n",
+                    ),
+                    ["auth", "token", "--user", "HemSoft", ..] => output(true, "gho_hem\n", ""),
+                    ["auth", "token", "--user", "old-user", ..] => output(true, "gho_old\n", ""),
+                    _ => Err(CommandError::Failed),
+                }
+            }
+        }
+        let http = FakeHttp {
+            by_token: HashMap::from([
+                ("token gho_hem".into(), ok(USER)),
+                ("token gho_old".into(), HttpResponse::new(401, "{}")),
+            ]),
+            seen: Mutex::default(),
+        };
+        let outcomes = CopilotProvider::new(http, OlderGh).fetch_outcomes(now()).unwrap();
+        assert!(
+            outcomes.iter().any(
+                |outcome| matches!(outcome, AccountOutcome::Fresh(account) if account.id() == &account_id("HemSoft"))
+            ),
+            "the valid login is read"
+        );
+        assert!(
+            outcomes.iter().any(
+                |outcome| matches!(outcome, AccountOutcome::Failed { account, .. } if account == &account_id("old-user"))
+            ),
+            "the expired one fails on its own"
+        );
+        // With no login listed at all, it is still not signed in.
+        struct SignedOutGh;
+        impl CommandRunner for SignedOutGh {
+            fn run(&self, _: &str, _: &[&str], _: StdDuration) -> Result<CommandOutput, CommandError> {
+                Ok(CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "You are not logged into any GitHub hosts.".into(),
+                })
+            }
+        }
+        let http = FakeHttp {
+            by_token: HashMap::new(),
+            seen: Mutex::default(),
+        };
+        assert_eq!(
+            CopilotProvider::new(http, SignedOutGh).fetch_outcomes(now()).err(),
+            Some(ProviderError::NotSignedIn { hint: GH_LOGIN })
+        );
     }
 
     #[test]

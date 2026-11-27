@@ -2829,8 +2829,21 @@ fn a_switched_off_redundant_copilot_record_keeps_its_user_s_row(cx: &mut TestApp
 }
 
 /// Alice's last good row from Copilot under `records` (with a discovery record), then GitHub rate-limiting Copilot as a
-/// whole once `change` has switched off or removed every record naming her: whether her row is still shown.
+/// whole once `change` has switched off or removed every record naming her: whether her row is still shown. A CodexBar
+/// sign-in among the records, `cp-alice`, has a saved token.
 fn alice_kept_after(cx: &mut TestAppContext, name: &str, records: &str, change: fn(&mut TestAppContext)) -> bool {
+    alice_kept_after_with(cx, name, records, true, change)
+}
+
+/// `alice_kept_after`, with `cp-alice`'s token saved only when `signed_in`: a CodexBar sign-in without one reads
+/// nothing of its own (#350).
+fn alice_kept_after_with(
+    cx: &mut TestAppContext,
+    name: &str,
+    records: &str,
+    signed_in: bool,
+    change: fn(&mut TestAppContext),
+) -> bool {
     let settings = TempSettings::new(
         name,
         &format!(
@@ -2846,14 +2859,26 @@ fn alice_kept_after(cx: &mut TestAppContext, name: &str, records: &str, change: 
             .accounts()
             .iter()
             .any(|record| record.enabled && record.external_id.as_deref() == Some("alice"));
-        vec![if alice_named {
+        // Copilot's adapter fetches Alice with her CodexBar sign-in while that record is on and has a token.
+        let signed_in_on =
+            signed_in
+                && hub.settings().accounts().iter().any(|record| {
+                    record.id == "cp-alice" && record.enabled && crate::github_sign_in::is_managed(record)
+                });
+        vec![if alice_named && signed_in_on {
+            SignedInAs::alice(users.clone())
+        } else if alice_named {
             users.clone()
         } else {
             FakeProvider::new(Provider::Copilot, "copilot-alice", None)
                 .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
         }]
     });
-    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    let store = MemoryCredentialStore::default();
+    if signed_in {
+        codexbar_store::credentials::write_long(&store, "cp-alice", "gho_alice").unwrap();
+    }
+    let dashboard = open_live_factory(cx, &settings, factory, store);
     cx.run_until_parked();
     let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
     assert!(ids(cx, &dashboard).contains(&alice));
@@ -3244,6 +3269,842 @@ fn a_restored_row_a_switched_off_billing_record_may_have_filled_goes_with_its_la
     assert!(
         !ids(cx, &dashboard).contains(&alice),
         "not one discovery is known to read"
+    );
+}
+
+// #350: Alice's row came from discovery. Her record then gets an enterprise's billing, and is switched off while the
+// fetch that change started still runs: that fetch read her row with the billing, so it isn't the row discovery stands
+// in for. Her last good row from discovery stays instead, through the rate-limited refresh that follows.
+#[gpui_kit::test]
+fn a_kept_row_keeps_its_last_good_usage_past_a_billed_fetch_from_before_the_change(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-billed-in-flight",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    // The billed fetch's row says so, so the test tells it from her last good row (SFL round 1 on #351).
+    let billed: Arc<dyn UsageProvider> = Arc::new(AliceNoted {
+        note: Some("Shows Acme's AI credits."),
+    });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let record = hub
+            .settings()
+            .accounts()
+            .iter()
+            .find(|record| record.id == "cp-alice")
+            .cloned()
+            .unwrap();
+        vec![match (record.enabled, record.copilot_enterprise.is_some()) {
+            (true, true) => billed.clone(),
+            (true, false) => users.clone(),
+            (false, _) => FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>,
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            record.copilot_organization = Some("acme".into());
+            record.copilot_enterprise = Some("acme-ent".into());
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "her last good row stays through the rate-limited refresh"
+    );
+    assert!(!alice_notes(cx, &dashboard, "Acme"), "not the billed fetch's row");
+}
+
+// #350: a record for Alice added while discovery is on, and switched off before its first result came, found no row of
+// hers to keep. Its late result, read the way discovery does, stays, but marked as kept: when the GitHub CLI then reads
+// no one, her row goes.
+#[gpui_kit::test]
+fn a_record_switched_off_before_its_first_result_leaves_its_user_marked(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-first-result-after-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on {
+            users.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::NotSignedIn {
+                hint: "Sign in to the GitHub CLI.",
+            }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(!ids(cx, &dashboard).contains(&alice), "no one signed in yet");
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings.accounts().iter().find(|a| a.id == "cp-cli").cloned().unwrap();
+            record.id = "cp-alice".into();
+            record.label = "Alice".into();
+            record.external_id = Some("alice".into());
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "no one signed in, so no one discovered"
+    );
+}
+
+// #350: Alice's row, saved with a note that it wasn't read the way discovery reads it (a CodexBar sign-in for her read
+// it, removed before this start), goes when her Command line record is switched off, though discovery is on and no
+// record left says how her row was read.
+#[gpui_kit::test]
+fn a_restored_row_read_by_a_sign_in_removed_before_the_start_goes_with_its_last_record(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-restored-removed-oauth",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice-cli", "providerId": "Copilot", "displayLabel": "Alice (CLI)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now());
+    codexbar_store::snapshots::save_discovered_snapshots(&settings.0, &[saved], &[]).unwrap();
+    let limited =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::Http { status: 429 });
+    let dashboard = open_live_fixed(cx, &settings, vec![limited as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    let alice = alice.as_str().to_owned();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "restored, through a rate-limited start"
+    );
+    switch_off(cx, "cp-alice-cli");
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "its saved note says discovery didn't read it"
+    );
+}
+
+// #350: a Copilot row discovery read is saved with a note saying so, for the next start.
+#[gpui_kit::test]
+fn a_discovered_row_is_saved_as_one(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-discovered-saved",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let _dashboard = open_live_fixed(cx, &settings, vec![users]);
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert_eq!(
+        codexbar_store::snapshots::load_discovered(&settings.0),
+        Some(vec![alice])
+    );
+}
+
+// #350: a CodexBar sign-in for Alice with no saved token reads nothing of its own: Copilot reads her through the GitHub
+// CLI, as discovery does. Switching that record off keeps her row while discovery is on.
+#[gpui_kit::test]
+fn switching_off_a_codexbar_sign_in_without_a_token_keeps_its_user_s_row(cx: &mut TestAppContext) {
+    let records = r#"{ "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+          "authenticationMethod": "OAuth", "externalAccountId": "alice" }"#;
+    let kept = alice_kept_after_with(cx, "copilot-tokenless-sign-in-off", records, false, |cx| {
+        switch_off(cx, "cp-alice")
+    });
+    assert!(kept, "discovery reads the same row for her");
+}
+
+/// Copilot reading Alice without a seat of her own: her row says it shows Acme's AI credits, as a record billing that
+/// organization on its own makes it.
+struct SeatlessAlice;
+
+impl UsageProvider for SeatlessAlice {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        Ok(vec![codexbar_providers::AccountOutcome::Fresh(
+            AccountSnapshot::new(
+                codexbar_providers::copilot::account_id("alice"),
+                Provider::Copilot,
+                Vec::new(),
+                now,
+            )
+            .with_label("alice")
+            .with_message("No Copilot seat on this account. It shows acme's AI credits."),
+        )])
+    }
+}
+
+// #350: Alice has no seat, so her row says it shows the organization's credits her record bills on its own. Switching
+// that record off takes the row away, though discovery is on: discovery reports her missing seat instead.
+#[gpui_kit::test]
+fn switching_off_a_business_billing_record_drops_a_seatless_user_s_row(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-business-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> = Arc::new(SeatlessAlice);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on {
+            seatless.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    switch_off(cx, "cp-alice");
+    refresh(cx, &dashboard);
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "the organization's note doesn't outlive its record"
+    );
+}
+
+/// Copilot reading Alice with usage of her own and, when `note` is set, the note an enterprise's billing adds.
+struct AliceNoted {
+    note: Option<&'static str>,
+}
+
+impl UsageProvider for AliceNoted {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        let alice = AccountSnapshot::new(
+            codexbar_providers::copilot::account_id("alice"),
+            Provider::Copilot,
+            vec![codexbar_core::Metric::Activity {
+                label: "Premium requests".into(),
+                count: 3,
+            }],
+            now,
+        )
+        .with_label("alice");
+        Ok(vec![codexbar_providers::AccountOutcome::Fresh(match self.note {
+            Some(note) => alice.with_message(note),
+            None => alice,
+        })])
+    }
+}
+
+/// `AliceNoted` once, then GitHub rate-limiting Copilot: counts the fetches themselves, not the factory's calls, which
+/// also list the configured adapters.
+struct NotedOnce {
+    fetches: std::sync::atomic::AtomicUsize,
+    first: AliceNoted,
+}
+
+impl UsageProvider for NotedOnce {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        if self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            self.first.fetch_outcomes(now)
+        } else {
+            Err(ProviderError::Http { status: 429 })
+        }
+    }
+}
+
+/// Whether Alice's shown row carries a note mentioning `text`.
+fn alice_notes(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>, text: &str) -> bool {
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    cx.update(|cx| {
+        dashboard
+            .read(cx)
+            .account(&alice)
+            .is_some_and(|row| row.messages().iter().any(|message| message.contains(text)))
+    })
+}
+
+// SFL round 1 on #351: Alice kept for discovery after her record was switched off is no longer kept once that record
+// is switched on again, here with an enterprise's billing. An unrelated change while its fetch runs doesn't swap her
+// billed row for the older one, and a rate-limited refresh after keeps the billed row.
+#[gpui_kit::test]
+fn a_user_switched_on_again_keeps_their_billed_row_past_an_unrelated_change(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-user-back-on",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let billed = Arc::new(NotedOnce {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+        first: AliceNoted {
+            note: Some("Shows Acme's AI credits."),
+        },
+    });
+    let billed_fetches = billed.clone();
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let record = hub
+            .settings()
+            .accounts()
+            .iter()
+            .find(|record| record.id == "cp-alice")
+            .cloned()
+            .unwrap();
+        let limited = || {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        };
+        vec![match (record.enabled, record.copilot_enterprise.is_some()) {
+            (false, _) => limited(),
+            (true, false) => users.clone(),
+            // Her first billed fetch, then GitHub rate-limits Copilot.
+            (true, true) => billed.clone() as Arc<dyn UsageProvider>,
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(ids(cx, &dashboard).contains(&alice), "kept for discovery");
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            record.enabled = true;
+            record.copilot_organization = Some("acme".into());
+            record.copilot_enterprise = Some("acme-ent".into());
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    // An unrelated change while that fetch runs.
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings.accounts().iter().find(|a| a.id == "cp-cli").cloned().unwrap();
+            record.label = "Every GitHub CLI user".into();
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        alice_notes(cx, &dashboard, "Acme"),
+        "her billed row stays through the rate-limited refresh"
+    );
+    assert_eq!(billed_fetches.fetches.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+// SFL round 1 on #351: Alice has no seat, and one of her two records bills an organization on its own, which fills her
+// row with its credits. Switching that record off takes the row away though the other record still names her: her next
+// fetch reports the missing seat, and would otherwise keep the old row with the organization's note.
+#[gpui_kit::test]
+fn switching_off_a_seatless_user_s_billing_record_drops_its_note_beside_another_record(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-two-records",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-alice-2", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> = Arc::new(SeatlessAlice);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let billing_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if billing_on {
+            seatless.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    assert!(alice_notes(cx, &dashboard, "acme's AI credits"));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(
+        !alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the organization's note doesn't outlive its record"
+    );
+}
+
+// SFL round 1 on #351: a row saved by an older build, which doesn't say how it was read, while Alice's CodexBar sign-in
+// is on but has no token: it may have had one when the row was saved. Switching that sign-in off takes the row away,
+// though discovery is on.
+#[gpui_kit::test]
+fn an_older_build_s_row_a_signed_out_codexbar_sign_in_may_have_read_goes_with_it(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-legacy-signed-out-oauth",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now());
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    let limited =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::Http { status: 429 });
+    let dashboard = open_live_fixed(cx, &settings, vec![limited as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    let alice = alice.as_str().to_owned();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "restored, through a rate-limited start"
+    );
+    switch_off(cx, "cp-alice");
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "not one discovery is known to read"
+    );
+}
+
+// SFL round 2 on #351: as `switching_off_a_seatless_user_s_billing_record_drops_its_note_beside_another_record`, with
+// the billing record switched off while a refresh runs: that refresh's late result doesn't bring the note back.
+#[gpui_kit::test]
+fn a_refresh_from_before_a_seatless_user_s_billing_went_doesn_t_bring_its_note_back(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-in-flight",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-alice-2", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> = Arc::new(SeatlessAlice);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let billing_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if billing_on {
+            seatless.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    assert!(alice_notes(cx, &dashboard, "acme's AI credits"));
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(
+        !alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the late result doesn't bring the organization's note back"
+    );
+}
+
+// SFL round 2 on #351: Alice is billed for two organizations on their own, and her seatless row shows both. Switching
+// one of those records off takes the row away, though the other still bills her: its note names the switched-off one.
+#[gpui_kit::test]
+fn switching_off_one_of_a_seatless_user_s_organizations_drops_its_note(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-two-orgs",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-alice-globex", "providerId": "Copilot", "displayLabel": "Alice (Globex)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "globex" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> = SeatlessNoted::new(
+        "No Copilot seat on this account. It shows acme and globex's AI credits.",
+        false,
+    );
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let both_on = hub.settings().accounts().iter().all(|record| record.enabled);
+        vec![if both_on {
+            seatless.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    assert!(alice_notes(cx, &dashboard, "AI credits"));
+    switch_off(cx, "cp-alice-globex");
+    cx.run_until_parked();
+    assert!(
+        !alice_notes(cx, &dashboard, "AI credits"),
+        "the note naming the switched-off organization goes"
+    );
+}
+
+// SFL round 2 on #351: a Copilot row saved as not read the way discovery reads it (a CodexBar sign-in read it), whose
+// record is gone by the next start, isn't restored: only discovery could show it, and it doesn't read it that way.
+#[gpui_kit::test]
+fn a_saved_row_no_record_or_discovery_reads_isn_t_restored(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-restored-unread",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let bob = codexbar_providers::copilot::account_id("bob");
+    let saved = [
+        AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now()),
+        AccountSnapshot::new(bob.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now()),
+    ];
+    codexbar_store::snapshots::save_discovered_snapshots(&settings.0, &saved, &[bob.as_str().to_owned()]).unwrap();
+    let signed_out =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::NotSignedIn {
+            hint: "Sign in to the GitHub CLI.",
+        });
+    let dashboard = open_live_fixed(cx, &settings, vec![signed_out as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    let shown = ids(cx, &dashboard);
+    assert!(
+        !shown.contains(&alice.as_str().to_owned()),
+        "the removed sign-in's row isn't restored"
+    );
+    assert!(shown.contains(&bob.as_str().to_owned()), "the row discovery read is");
+}
+
+/// Copilot reading Alice without a seat, her row saying `note`; with `once`, GitHub rate-limits Copilot after the first
+/// fetch.
+struct SeatlessNoted {
+    note: &'static str,
+    once: bool,
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+impl SeatlessNoted {
+    fn new(note: &'static str, once: bool) -> Arc<Self> {
+        Arc::new(Self {
+            note,
+            once,
+            fetches: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+impl UsageProvider for SeatlessNoted {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        if self.once && self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+            return Err(ProviderError::Http { status: 429 });
+        }
+        Ok(vec![codexbar_providers::AccountOutcome::Fresh(
+            AccountSnapshot::new(
+                codexbar_providers::copilot::account_id("alice"),
+                Provider::Copilot,
+                Vec::new(),
+                now,
+            )
+            .with_label("alice")
+            .with_message(self.note),
+        )])
+    }
+}
+
+// SFL round 3 on #351: Alice's seatless row shows Acme's credits. A second organization's billing record added for her
+// and switched off again before any fetch shows it leaves that row: it names only Acme, still billed, so it stays
+// through the rate-limited refreshes.
+#[gpui_kit::test]
+fn a_seatless_row_stays_when_another_organization_s_billing_comes_and_goes(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-org-added-and-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> =
+        SeatlessNoted::new("No Copilot seat on this account. It shows acme's AI credits.", true);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_: &SettingsHub| vec![seatless.clone()]);
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    assert!(alice_notes(cx, &dashboard, "acme's AI credits"));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            record.id = "cp-alice-globex".into();
+            record.label = "Alice (Globex)".into();
+            record.copilot_organization = Some("globex".into());
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    switch_off(cx, "cp-alice-globex");
+    cx.run_until_parked();
+    assert!(
+        alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the row naming only Acme stays"
+    );
+}
+
+// SFL round 3 on #351: Alice's seatless row, saved while a record billed Acme on its own, isn't restored once that
+// record is switched off before the next start, though another record still names her: its note names that billing.
+#[gpui_kit::test]
+fn a_saved_seatless_row_isn_t_restored_once_its_billing_is_off(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-restored-seatless-billing-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-alice-2", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now())
+        .with_message("No Copilot seat on this account. It shows acme's AI credits.");
+    codexbar_store::snapshots::save_discovered_snapshots(&settings.0, &[saved], &[]).unwrap();
+    let limited =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::Http { status: 429 });
+    let dashboard = open_live_fixed(cx, &settings, vec![limited as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    assert!(
+        !alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the switched-off billing's note isn't restored"
+    );
+}
+
+/// Copilot's adapter, `inner`, built to fetch Alice with her CodexBar sign-in (`own_sign_ins`).
+struct SignedInAs {
+    inner: Arc<dyn UsageProvider>,
+}
+
+impl SignedInAs {
+    fn alice(inner: Arc<dyn UsageProvider>) -> Arc<dyn UsageProvider> {
+        Arc::new(Self { inner })
+    }
+}
+
+impl UsageProvider for SignedInAs {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        self.inner.fetch(now)
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        self.inner.fetch_outcomes(now)
+    }
+
+    fn own_sign_ins(&self) -> Vec<String> {
+        vec![codexbar_providers::copilot::account_id("alice").as_str().to_owned()]
+    }
+}
+
+/// Alice on a CodexBar sign-in (`cp-alice`, its token saved when `token`) with a discovery record; Copilot's adapter
+/// fetches her with that sign-in when `adapter_signed_in`. Then her sign-in is switched off and GitHub rate-limits
+/// Copilot: whether her row is still shown.
+fn alice_kept_after_sign_in_off(cx: &mut TestAppContext, name: &str, token: bool, adapter_signed_in: bool) -> bool {
+    let settings = TempSettings::new(
+        name,
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![match (alice_on, adapter_signed_in) {
+            (true, true) => SignedInAs::alice(users.clone()),
+            (true, false) => users.clone(),
+            (false, _) => FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>,
+        }]
+    });
+    let store = MemoryCredentialStore::default();
+    if token {
+        codexbar_store::credentials::write_long(&store, "cp-alice", "gho_alice").unwrap();
+    }
+    let dashboard = open_live_factory(cx, &settings, factory, store);
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    ids(cx, &dashboard).contains(&alice)
+}
+
+// SFL rounds 4 and 5 on #351: how a refresh read Alice is what its adapter was built to fetch her with, not what the
+// credential store says before or after. Built with her CodexBar sign-in, her row goes with it, though the token was
+// removed by the time the dashboard could have looked.
+#[gpui_kit::test]
+fn a_row_the_adapter_fetched_with_codexbar_s_sign_in_goes_with_it(cx: &mut TestAppContext) {
+    let kept = alice_kept_after_sign_in_off(cx, "copilot-adapter-signed-in", false, true);
+    assert!(!kept, "the sign-in's usage doesn't stay for discovery");
+}
+
+// SFL round 5 on #351: and an adapter that reads Alice through the GitHub CLI, her token gone before it was built,
+// leaves a row discovery reads the same way, which stays for discovery though the token is saved again.
+#[gpui_kit::test]
+fn a_row_the_adapter_read_through_the_github_cli_stays_for_discovery(cx: &mut TestAppContext) {
+    let kept = alice_kept_after_sign_in_off(cx, "copilot-adapter-through-cli", true, false);
+    assert!(kept, "discovery reads the same row for her");
+}
+
+// SFL round 4 on #351: Alice stayed for discovery after her record was switched off, and a rate-limited refresh hasn't
+// read her again; that is saved with her row.
+#[gpui_kit::test]
+fn a_kept_user_is_saved_as_kept(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-saved",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on {
+            users.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    switch_off(cx, "cp-alice");
+    // Saved with the change itself, before its refresh lands: quitting then keeps it (SFL round 5 on #351).
+    assert_eq!(
+        codexbar_store::snapshots::load_kept(&settings.0),
+        std::slice::from_ref(&alice)
+    );
+    cx.run_until_parked();
+    assert!(ids(cx, &dashboard).contains(&alice), "kept for discovery");
+    assert_eq!(codexbar_store::snapshots::load_kept(&settings.0), [alice]);
+}
+
+// SFL round 4 on #351: a row saved as kept for discovery is still kept after a restart, so it goes when the startup
+// refresh finds the GitHub CLI signed in to no one.
+#[gpui_kit::test]
+fn a_row_saved_as_kept_goes_when_the_github_cli_reads_no_one_after_a_restart(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-across-restart",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now());
+    let ids_saved = [alice.as_str().to_owned()];
+    codexbar_store::snapshots::save_copilot_snapshots(&settings.0, &[saved], &ids_saved, &ids_saved).unwrap();
+    let signed_out =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::NotSignedIn {
+            hint: "Sign in to the GitHub CLI.",
+        });
+    let dashboard = open_live_fixed(cx, &settings, vec![signed_out as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    assert!(
+        !ids(cx, &dashboard).contains(&alice.as_str().to_owned()),
+        "no one signed in, so no one discovered"
     );
 }
 

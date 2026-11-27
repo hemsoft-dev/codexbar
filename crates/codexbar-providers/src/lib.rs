@@ -87,6 +87,13 @@ pub trait UsageProvider: Send + Sync {
         None
     }
 
+    /// The dashboard ids of the users this adapter fetches with CodexBar's own sign-in rather than a CLI's, or reports
+    /// a failure for, as built (Copilot, SFL round 5 on #351). Lets the dashboard tell how each of its rows was read
+    /// without reading those sign-ins again.
+    fn own_sign_ins(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The one account this adapter's sign-in belongs to right now, when it can tell without fetching (Cursor, #81).
     /// Lets saved results of another account be set aside at startup.
     fn signed_in_account(&self) -> Option<AccountId> {
