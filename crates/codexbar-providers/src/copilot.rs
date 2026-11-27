@@ -45,21 +45,26 @@ const GH_LOGIN: &str = "Sign in to the GitHub CLI for this account.";
 /// How a seatless account's row begins, before the organizations whose AI credits it shows.
 pub const NO_SEAT_NOTE: &str = "No Copilot seat on this account.";
 
-/// The organizations a seatless account's note names (`NO_SEAT_NOTE`, then "It shows acme and globex's AI credits."
-/// and "acme's AI credits couldn't be read with it."), or `None` for any other note.
-pub fn seatless_note_orgs(message: &str) -> Option<Vec<String>> {
-    let rest = message.strip_prefix(NO_SEAT_NOTE)?;
-    let mut orgs = Vec::new();
-    let mut pieces: Vec<&str> = rest.split("'s AI credits").collect();
-    pieces.pop();
-    // Each list runs from the last sentence end (". ") before its "'s AI credits": an organization a URL was pasted
-    // for can hold periods itself (SFL round 4 on #351).
-    for piece in pieces {
-        let list = piece.rsplit(". ").next().unwrap_or(piece).trim();
-        let list = list.strip_prefix("It shows ").unwrap_or(list);
-        orgs.extend(list.split(" and ").map(str::to_owned));
+/// Whether a seatless account's note (`NO_SEAT_NOTE`, then "It shows acme and globex's AI credits." and "acme's AI
+/// credits couldn't be read with it.") names only organizations in `orgs`; `None` for any other note. The names aren't
+/// parsed out of the note: an organization's configured text can hold periods and spaces itself (SFL rounds 4 and 5
+/// on #351). What is left once `orgs`, longest first, and the note's own words are taken out must be nothing.
+pub fn seatless_note_names_only(message: &str, orgs: &[String]) -> Option<bool> {
+    let mut rest = message.strip_prefix(NO_SEAT_NOTE)?.to_owned();
+    let mut orgs: Vec<&String> = orgs.iter().filter(|org| !org.is_empty()).collect();
+    orgs.sort_by_key(|org| std::cmp::Reverse(org.len()));
+    for org in orgs {
+        rest = rest.replace(org.as_str(), "");
     }
-    Some(orgs)
+    for words in [
+        "'s AI credits couldn't be read with it.",
+        "'s AI credits.",
+        "It shows ",
+        " and ",
+    ] {
+        rest = rest.replace(words, "");
+    }
+    Some(rest.trim().is_empty())
 }
 
 /// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
@@ -1108,6 +1113,17 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
         "Copilot"
     }
 
+    /// The users CodexBar signed in, whose saved token this adapter fetches with, and those whose token couldn't be
+    /// read, which it reports as failures: none of them is read through the GitHub CLI.
+    fn own_sign_ins(&self) -> Vec<String> {
+        self.logins
+            .iter()
+            .map(|login| login.username.as_str())
+            .chain(self.unreadable.iter().map(String::as_str))
+            .map(|user| account_id(user).as_str().to_owned())
+            .collect()
+    }
+
     /// Every signed-in account. One failing account doesn't hide the others; the call fails only if all do.
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
         let mut first_error = None;
@@ -1341,27 +1357,44 @@ mod tests {
         );
     }
 
-    // SFL round 3 on #351: the dashboard reads which organizations a seatless note names.
+    // SFL rounds 3 to 5 on #351: the dashboard tells whether a seatless note names only organizations still billed.
     #[test]
-    fn a_seatless_note_names_its_organizations() {
+    fn a_seatless_note_names_only_its_organizations() {
+        let orgs = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect::<Vec<String>>();
+        let both = "No Copilot seat on this account. It shows acme-biz and acme-two's AI credits.";
         assert_eq!(
-            seatless_note_orgs("No Copilot seat on this account. It shows acme-biz and acme-two's AI credits."),
-            Some(vec!["acme-biz".to_owned(), "acme-two".to_owned()])
+            seatless_note_names_only(both, &orgs(&["acme-biz", "acme-two"])),
+            Some(true)
         );
+        assert_eq!(seatless_note_names_only(both, &orgs(&["acme-biz"])), Some(false));
+        let mixed = "No Copilot seat on this account. It shows acme's AI credits. globex's AI credits couldn't be read with it.";
+        assert_eq!(seatless_note_names_only(mixed, &orgs(&["acme", "globex"])), Some(true));
+        assert_eq!(seatless_note_names_only(mixed, &orgs(&["acme"])), Some(false));
+        assert_eq!(seatless_note_names_only("Usage is delayed by up to an hour", &[]), None);
+        // An organization's text with periods and spaces of its own, as a pasted URL or name has.
+        let odd = "No Copilot seat on this account. Acme Inc. (EU)'s AI credits couldn't be read with it.";
+        assert_eq!(seatless_note_names_only(odd, &orgs(&["Acme Inc. (EU)"])), Some(true));
+        assert_eq!(seatless_note_names_only(odd, &orgs(&["Acme"])), Some(false));
+        let url = "No Copilot seat on this account. https://github.com/acme.inc's AI credits couldn't be read with it.";
         assert_eq!(
-            seatless_note_orgs(
-                "No Copilot seat on this account. It shows acme's AI credits. globex's AI credits couldn't be read with it."
-            ),
-            Some(vec!["acme".to_owned(), "globex".to_owned()])
+            seatless_note_names_only(url, &orgs(&["https://github.com/acme.inc"])),
+            Some(true)
         );
-        assert_eq!(seatless_note_orgs("Usage is delayed by up to an hour"), None);
-        // SFL round 4 on #351: an organization pasted as a URL keeps its periods.
-        assert_eq!(
-            seatless_note_orgs(
-                "No Copilot seat on this account. https://github.com/acme.inc's AI credits couldn't be read with it."
-            ),
-            Some(vec!["https://github.com/acme.inc".to_owned()])
-        );
+    }
+
+    // SFL round 5 on #351: the users Copilot fetches with CodexBar's sign-in, or reports a failure for, as built.
+    #[test]
+    fn copilot_reports_the_users_it_fetches_with_codexbar_s_sign_in() {
+        let provider = CopilotProvider::new(
+            FakeHttp {
+                by_token: HashMap::new(),
+                seen: Mutex::default(),
+            },
+            FakeGh { tokens: HashMap::new() },
+        )
+        .with_login("HemSoft", "gho_own")
+        .with_unreadable_login("Locked");
+        assert_eq!(provider.own_sign_ins(), ["copilot-hemsoft", "copilot-locked"]);
     }
 
     // #350: a GitHub CLI without `--json` exits nonzero when one of its logins expired. The users whose login works are

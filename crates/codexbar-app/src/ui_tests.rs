@@ -2859,7 +2859,15 @@ fn alice_kept_after_with(
             .accounts()
             .iter()
             .any(|record| record.enabled && record.external_id.as_deref() == Some("alice"));
-        vec![if alice_named {
+        // Copilot's adapter fetches Alice with her CodexBar sign-in while that record is on and has a token.
+        let signed_in_on =
+            signed_in
+                && hub.settings().accounts().iter().any(|record| {
+                    record.id == "cp-alice" && record.enabled && crate::github_sign_in::is_managed(record)
+                });
+        vec![if alice_named && signed_in_on {
+            SignedInAs::alice(users.clone())
+        } else if alice_named {
             users.clone()
         } else {
             FakeProvider::new(Provider::Copilot, "copilot-alice", None)
@@ -3944,35 +3952,44 @@ fn a_saved_seatless_row_isn_t_restored_once_its_billing_is_off(cx: &mut TestAppC
     );
 }
 
-/// A credential store whose one token, `cp-alice`'s, is there for its first read only: removed from outside while a
-/// refresh starts.
-#[derive(Default)]
-struct RemovedAfterFirstRead {
-    reads: std::sync::atomic::AtomicUsize,
+/// Copilot's adapter, `inner`, built to fetch Alice with her CodexBar sign-in (`own_sign_ins`).
+struct SignedInAs {
+    inner: Arc<dyn UsageProvider>,
 }
 
-impl CredentialStore for RemovedAfterFirstRead {
-    fn read(&self, account_id: &str) -> Result<Option<String>, CredentialError> {
-        let first = account_id == "cp-alice" && self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
-        Ok(first.then(|| "gho_alice".to_owned()))
-    }
-
-    fn write(&self, _: &str, _: &str) -> Result<(), CredentialError> {
-        Ok(())
-    }
-
-    fn delete(&self, _: &str) -> Result<(), CredentialError> {
-        Ok(())
+impl SignedInAs {
+    fn alice(inner: Arc<dyn UsageProvider>) -> Arc<dyn UsageProvider> {
+        Arc::new(Self { inner })
     }
 }
 
-// SFL round 4 on #351: the adapters read Alice's CodexBar token as a refresh starts, and it is gone by the time the
-// dashboard notes how that refresh reads her. Either read finding it counts, so her row isn't taken for one discovery
-// reads, and switching her sign-in off takes it away though discovery is on.
-#[gpui_kit::test]
-fn a_token_removed_as_a_refresh_starts_still_counts_as_signed_in(cx: &mut TestAppContext) {
+impl UsageProvider for SignedInAs {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        self.inner.fetch(now)
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        self.inner.fetch_outcomes(now)
+    }
+
+    fn own_sign_ins(&self) -> Vec<String> {
+        vec![codexbar_providers::copilot::account_id("alice").as_str().to_owned()]
+    }
+}
+
+/// Alice on a CodexBar sign-in (`cp-alice`, its token saved when `token`) with a discovery record; Copilot's adapter
+/// fetches her with that sign-in when `adapter_signed_in`. Then her sign-in is switched off and GitHub rate-limits
+/// Copilot: whether her row is still shown.
+fn alice_kept_after_sign_in_off(cx: &mut TestAppContext, name: &str, token: bool, adapter_signed_in: bool) -> bool {
     let settings = TempSettings::new(
-        "copilot-token-removed-at-start",
+        name,
         r#"{ "accountConfigurationVersion": 1, "accounts": [
             { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
               "authenticationMethod": "OAuth", "externalAccountId": "alice" },
@@ -3986,23 +4003,41 @@ fn a_token_removed_as_a_refresh_starts_still_counts_as_signed_in(cx: &mut TestAp
             .accounts()
             .iter()
             .any(|record| record.id == "cp-alice" && record.enabled);
-        vec![if alice_on {
-            users.clone()
-        } else {
-            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
-                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        vec![match (alice_on, adapter_signed_in) {
+            (true, true) => SignedInAs::alice(users.clone()),
+            (true, false) => users.clone(),
+            (false, _) => FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>,
         }]
     });
-    let dashboard = open_live_factory(cx, &settings, factory, RemovedAfterFirstRead::default());
+    let store = MemoryCredentialStore::default();
+    if token {
+        codexbar_store::credentials::write_long(&store, "cp-alice", "gho_alice").unwrap();
+    }
+    let dashboard = open_live_factory(cx, &settings, factory, store);
     cx.run_until_parked();
     let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
     assert!(ids(cx, &dashboard).contains(&alice));
     switch_off(cx, "cp-alice");
     cx.run_until_parked();
-    assert!(
-        !ids(cx, &dashboard).contains(&alice),
-        "the sign-in's usage doesn't stay for discovery"
-    );
+    ids(cx, &dashboard).contains(&alice)
+}
+
+// SFL rounds 4 and 5 on #351: how a refresh read Alice is what its adapter was built to fetch her with, not what the
+// credential store says before or after. Built with her CodexBar sign-in, her row goes with it, though the token was
+// removed by the time the dashboard could have looked.
+#[gpui_kit::test]
+fn a_row_the_adapter_fetched_with_codexbar_s_sign_in_goes_with_it(cx: &mut TestAppContext) {
+    let kept = alice_kept_after_sign_in_off(cx, "copilot-adapter-signed-in", false, true);
+    assert!(!kept, "the sign-in's usage doesn't stay for discovery");
+}
+
+// SFL round 5 on #351: and an adapter that reads Alice through the GitHub CLI, her token gone before it was built,
+// leaves a row discovery reads the same way, which stays for discovery though the token is saved again.
+#[gpui_kit::test]
+fn a_row_the_adapter_read_through_the_github_cli_stays_for_discovery(cx: &mut TestAppContext) {
+    let kept = alice_kept_after_sign_in_off(cx, "copilot-adapter-through-cli", true, false);
+    assert!(kept, "discovery reads the same row for her");
 }
 
 // SFL round 4 on #351: Alice stayed for discovery after her record was switched off, and a rate-limited refresh hasn't
@@ -4035,6 +4070,11 @@ fn a_kept_user_is_saved_as_kept(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
     switch_off(cx, "cp-alice");
+    // Saved with the change itself, before its refresh lands: quitting then keeps it (SFL round 5 on #351).
+    assert_eq!(
+        codexbar_store::snapshots::load_kept(&settings.0),
+        std::slice::from_ref(&alice)
+    );
     cx.run_until_parked();
     assert!(ids(cx, &dashboard).contains(&alice), "kept for discovery");
     assert_eq!(codexbar_store::snapshots::load_kept(&settings.0), [alice]);

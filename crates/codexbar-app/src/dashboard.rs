@@ -336,9 +336,9 @@ struct CopilotReads {
     /// organizations' credits instead (#350). One user can be billed for several (SFL round 2 on #351).
     org_billed: Vec<(String, String)>,
     /// The users among `named` a CodexBar sign-in names. Copilot fetches them with CodexBar's token, though a Command
-    /// line record names them too, so their row isn't one discovery reads (SFL on #348). Under the settings a fetch
-    /// starts with (`fetch_reads`), a sign-in without a saved token doesn't count: Copilot reads that user through the
-    /// GitHub CLI, as discovery does (#350).
+    /// line record names them too, so their row isn't one discovery reads (SFL on #348). For a fetch, these are the
+    /// users its adapter was built to fetch with CodexBar's sign-in (`with_own_sign_ins`): a sign-in without a saved
+    /// token reads nothing of its own, and Copilot reads that user through the GitHub CLI, as discovery does (#350).
     signed_in: Vec<String>,
     /// Whether a record discovers every GitHub CLI user besides.
     discovers: bool,
@@ -372,29 +372,21 @@ impl CopilotReads {
 }
 
 /// What Copilot's one adapter reads under the current settings. A CodexBar sign-in counts as one whether or not it has
-/// a saved token: only what a fetch reads (`fetch_reads`) needs to tell, and reading the token costs a credential
-/// lookup.
+/// a saved token: only a fetch needs to tell (`with_own_sign_ins`).
 fn copilot_reads(hub: &SettingsHub) -> CopilotReads {
     reads_with(hub, crate::github_sign_in::is_managed)
 }
 
-/// `copilot_reads` for a fetch starting now, or rows restored from one: a CodexBar sign-in with no saved token reads
-/// nothing of its own, so Copilot reads its user through the GitHub CLI, as discovery does (#350). A token that
-/// couldn't be read still counts: Copilot reports that user's failure rather than reading them through the CLI.
-fn fetch_reads(hub: &SettingsHub) -> CopilotReads {
-    reads_with(hub, |record| {
-        crate::github_sign_in::is_managed(record) && !matches!(crate::github_sign_in::token(hub, record), Ok(None))
-    })
-}
-
-/// `reads`, with every user `earlier` counted as signed in counted so too: when the two disagree on a CodexBar sign-in,
-/// its row isn't taken for one discovery reads (SFL round 4 on #351).
-fn with_sign_ins(mut reads: CopilotReads, earlier: CopilotReads) -> CopilotReads {
-    for user in earlier.signed_in {
-        if !reads.signed_in.contains(&user) {
-            reads.signed_in.push(user);
-        }
-    }
+/// `reads` for a fetch whose adapters fetch `own` (their `own_sign_ins`) with CodexBar's sign-in: those users are the
+/// signed-in ones, and a CodexBar sign-in's user its adapter reads through the GitHub CLI, as one without a saved token,
+/// is read the way discovery reads it (#350). Asking the adapters, not the credential store again, can't disagree with
+/// what they fetch with (SFL rounds 4 and 5 on #351).
+fn with_own_sign_ins(mut reads: CopilotReads, own: Vec<String>) -> CopilotReads {
+    let records: Vec<String> = std::mem::take(&mut reads.signed_in);
+    reads
+        .through_cli
+        .extend(records.into_iter().filter(|user| !own.contains(user)));
+    reads.signed_in = own;
     reads
 }
 
@@ -755,20 +747,18 @@ fn stale_seatless(now: &CopilotReads, shown: &[AccountSnapshot]) -> Vec<String> 
 /// Whether `row` is a seatless Copilot row whose note names an organization `reads` doesn't bill its user on.
 fn stale_billing_note(row: &AccountSnapshot, reads: &CopilotReads) -> bool {
     let user = row.id().as_str();
-    let billed = |org: &String| {
-        reads
-            .org_billed
-            .iter()
-            .any(|(billed, name)| billed == user && name.eq_ignore_ascii_case(org))
-    };
+    let billed: Vec<String> = reads
+        .org_billed
+        .iter()
+        .filter(|(billed, _)| billed == user)
+        .map(|(_, org)| org.clone())
+        .collect();
     row.provider() == Provider::Copilot
         && row.metrics().is_empty()
         && row
             .messages()
             .iter()
-            .filter_map(|message| codexbar_providers::copilot::seatless_note_orgs(message))
-            .flatten()
-            .any(|org| !billed(&org))
+            .any(|message| codexbar_providers::copilot::seatless_note_names_only(message, &billed) == Some(false))
 }
 
 /// Whether `row` is a seatless Copilot user's: no usage of their own and Copilot's note that the account has no seat,
@@ -1796,17 +1786,16 @@ impl Dashboard {
         let (history, factory) = providers;
         // Account settings may have changed since the last refresh (a first configured account added).
         migrate_legacy_ids(&history, cx);
-        // Sign-ins read before the adapters are built, which read them too: a token removed meanwhile may still be the
-        // one the adapter fetches with (SFL round 4 on #351).
-        let signed_in = fetch_reads(SettingsHub::global(cx));
         let mut providers = factory(SettingsHub::global(cx));
+        // The users the adapters fetch with CodexBar's sign-in, as they were built (SFL round 5 on #351).
+        let own: Vec<String> = providers.iter().flat_map(|provider| provider.own_sign_ins()).collect();
         if let Some((name, account)) = &only {
             providers.retain(|provider| {
                 provider.name() == *name && (account.is_none() || provider.account_id() == account.as_deref())
             });
         }
         self.refresh_revision = SettingsHub::revision(cx);
-        self.refresh_read = with_sign_ins(fetch_reads(SettingsHub::global(cx)), signed_in);
+        self.refresh_read = with_own_sign_ins(copilot_reads(SettingsHub::global(cx)), own);
         self.loading = true;
         self.fetch_partial = only.is_some();
         self.show_placeholders(&providers, cx);
@@ -2379,6 +2368,9 @@ impl Dashboard {
         let (added, lost) = self.adds_accounts(&adapters, cx);
         self.configured = adapters.clone();
         self.drop_unconfigured_accounts(&adapters, &lost, cx);
+        // With the kept marks the change made, though it dropped nothing: quitting before the refresh lands would lose
+        // them (SFL round 5 on #351).
+        self.save_snapshots(cx);
         if added {
             self.refresh(cx);
         }
