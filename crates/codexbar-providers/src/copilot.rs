@@ -43,12 +43,15 @@ const GH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const GH_MISSING: &str = "Install the GitHub CLI and sign in to it.";
 const GH_LOGIN: &str = "Sign in to the GitHub CLI for this account.";
 
-/// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)").
+/// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
+/// login failed ("X Failed to log in to github.com account old-user (keyring)"): their own fetch reports that, as with
+/// `--json` output (#350).
 pub fn parse_gh_accounts(status: &str) -> Vec<String> {
     let mut accounts = Vec::new();
     for line in status.lines() {
         let line = line.trim();
-        if !line.to_lowercase().contains("logged in to github.com") {
+        let lower = line.to_lowercase();
+        if !lower.contains("logged in to github.com") && !lower.contains("log in to github.com account") {
             continue;
         }
         let name = ["account ", " as "].iter().find_map(|marker| {
@@ -1024,8 +1027,24 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             Err(err @ ProviderError::NotSignedIn { hint: GH_MISSING }) => return Err(err),
             Err(_) => {}
         }
-        self.gh(&["auth", "status", "--hostname", HOST])
-            .map(|status| parse_gh_accounts(&status))
+        // A GitHub CLI without `--json` exits nonzero when any of its logins failed, one expired among valid ones too.
+        // The users it lists are still read, each reporting its own failure, rather than Copilot failing as a whole and
+        // dropping users whose login works (#350).
+        match self
+            .commands
+            .run("gh", &["auth", "status", "--hostname", HOST], GH_TIMEOUT)
+        {
+            Ok(output) => {
+                let accounts = parse_gh_accounts(&format!("{}\n{}", output.stdout, output.stderr));
+                if output.success || !accounts.is_empty() {
+                    Ok(accounts)
+                } else {
+                    Err(ProviderError::NotSignedIn { hint: GH_LOGIN })
+                }
+            }
+            Err(CommandError::NotFound) => Err(ProviderError::NotSignedIn { hint: GH_MISSING }),
+            Err(CommandError::TimedOut | CommandError::Failed) => Err(ProviderError::Network),
+        }
     }
 }
 
@@ -1282,6 +1301,81 @@ mod tests {
             ["octocat"]
         );
         assert!(parse_gh_accounts("You are not logged into any GitHub hosts.").is_empty());
+        // #350: a login that failed is listed too, for its own fetch to report.
+        assert_eq!(
+            parse_gh_accounts(&format!(
+                "{STATUS}  X Failed to log in to github.com account old-user (keyring)\n  - The token in keyring is invalid.\n"
+            )),
+            ["HemSoft", "fhemmerrelias", "old-user"]
+        );
+    }
+
+    // #350: a GitHub CLI without `--json` exits nonzero when one of its logins expired. The users whose login works are
+    // still read, and the expired one fails on its own, rather than Copilot failing as a whole, not signed in.
+    #[test]
+    fn an_older_github_cli_with_one_expired_login_still_reads_the_others() {
+        struct OlderGh;
+        impl CommandRunner for OlderGh {
+            fn run(&self, _: &str, args: &[&str], _: StdDuration) -> Result<CommandOutput, CommandError> {
+                let output = |success, stdout: &str, stderr: &str| {
+                    Ok(CommandOutput {
+                        success,
+                        stdout: stdout.into(),
+                        stderr: stderr.into(),
+                    })
+                };
+                match args {
+                    [.., "--json", "hosts"] => output(false, "", "unknown flag: --json"),
+                    ["auth", "status", ..] => output(
+                        false,
+                        "github.com\n  \u{2713} Logged in to github.com account HemSoft (keyring)\n",
+                        "  X Failed to log in to github.com account old-user (keyring)\n",
+                    ),
+                    ["auth", "token", "--user", "HemSoft", ..] => output(true, "gho_hem\n", ""),
+                    ["auth", "token", "--user", "old-user", ..] => output(true, "gho_old\n", ""),
+                    _ => Err(CommandError::Failed),
+                }
+            }
+        }
+        let http = FakeHttp {
+            by_token: HashMap::from([
+                ("token gho_hem".into(), ok(USER)),
+                ("token gho_old".into(), HttpResponse::new(401, "{}")),
+            ]),
+            seen: Mutex::default(),
+        };
+        let outcomes = CopilotProvider::new(http, OlderGh).fetch_outcomes(now()).unwrap();
+        assert!(
+            outcomes.iter().any(
+                |outcome| matches!(outcome, AccountOutcome::Fresh(account) if account.id() == &account_id("HemSoft"))
+            ),
+            "the valid login is read"
+        );
+        assert!(
+            outcomes.iter().any(
+                |outcome| matches!(outcome, AccountOutcome::Failed { account, .. } if account == &account_id("old-user"))
+            ),
+            "the expired one fails on its own"
+        );
+        // With no login listed at all, it is still not signed in.
+        struct SignedOutGh;
+        impl CommandRunner for SignedOutGh {
+            fn run(&self, _: &str, _: &[&str], _: StdDuration) -> Result<CommandOutput, CommandError> {
+                Ok(CommandOutput {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: "You are not logged into any GitHub hosts.".into(),
+                })
+            }
+        }
+        let http = FakeHttp {
+            by_token: HashMap::new(),
+            seen: Mutex::default(),
+        };
+        assert_eq!(
+            CopilotProvider::new(http, SignedOutGh).fetch_outcomes(now()).err(),
+            Some(ProviderError::NotSignedIn { hint: GH_LOGIN })
+        );
     }
 
     #[test]
