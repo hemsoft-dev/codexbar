@@ -706,7 +706,9 @@ if command -v setsid >/dev/null; then exec setsid /bin/sh -c "$inner"; else exec
     #[cfg(unix)]
     #[test]
     fn a_stopped_sign_in_waits_for_a_helper_its_wrapper_started_apart() {
-        let wrapper = r#"if command -v setsid >/dev/null; then setsid /bin/sh -c 'sleep 4' & else perl -e 'setpgrp(0, 0); exec @ARGV' /bin/sh -c 'sleep 4' & fi
+        // The helper records a terminate signal, which it must never get (SFL round 5 on #352).
+        let wrapper = r#"helper='trap "echo > $SIGNALLED; exit 1" TERM; sleep 4 & wait'
+if command -v setsid >/dev/null; then setsid /bin/sh -c "$helper" & else perl -e 'setpgrp(0, 0); exec @ARGV' /bin/sh -c "$helper" & fi
 echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
 trap 'exit 0' TERM
 n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
