@@ -325,8 +325,12 @@ struct CopilotReads {
     /// The accounts its enabled records name: each user's, and the organization card a user's record bills, as
     /// `providers::copilot` sets it up.
     named: Vec<String>,
-    /// The users among `named` a record reads through the GitHub CLI's sign-in rather than CodexBar's own (#346).
+    /// The users among `named` a record reads through the GitHub CLI's sign-in rather than CodexBar's own, and bills
+    /// nothing on: discovery reads the same row for them (#346).
     through_cli: Vec<String>,
+    /// The users among `named` a CodexBar sign-in names. Copilot fetches them with CodexBar's token, though a Command
+    /// line record names them too, so their row isn't one discovery reads (SFL on #348).
+    signed_in: Vec<String>,
     /// Whether a record discovers every GitHub CLI user besides.
     discovers: bool,
 }
@@ -336,7 +340,13 @@ impl CopilotReads {
     /// through the GitHub CLI, as the record that named it did (#346). Discovery never reads an organization card, nor a
     /// CodexBar sign-in.
     fn still_reads(&self, before: &Self, read: &String) -> bool {
-        self.named.contains(read) || (self.discovers && before.through_cli.contains(read))
+        self.named.contains(read) || (self.discovers && before.discovery_reads(read))
+    }
+
+    /// Whether discovery would read the row these settings read for `user`: a record reads it through the GitHub CLI,
+    /// billing nothing on it, and no CodexBar sign-in names that user.
+    fn discovery_reads(&self, user: &String) -> bool {
+        self.through_cli.contains(user) && !self.signed_in.contains(user)
     }
 }
 
@@ -352,7 +362,9 @@ fn copilot_reads(hub: &SettingsHub) -> CopilotReads {
     reads
 }
 
-/// Adds the Copilot accounts `record` names to `reads`: its user's, and the organization card it bills.
+/// Adds the Copilot accounts `record` names to `reads`: its user's, and the organization card it bills. A record that
+/// bills an organization or enterprise puts its credits on the user's row as well (`CopilotProvider::add_billing`), so
+/// discovery doesn't read the same row for that user (SFL on #348).
 fn record_reads(record: &codexbar_store::settings::AccountRecord, reads: &mut CopilotReads) {
     use codexbar_providers::copilot::{account_id, org_account_id};
     fn set(value: &Option<String>) -> Option<&str> {
@@ -362,7 +374,9 @@ fn record_reads(record: &codexbar_store::settings::AccountRecord, reads: &mut Co
         return;
     };
     let user = account_id(user).as_str().to_owned();
-    if !crate::github_sign_in::is_managed(record) {
+    if crate::github_sign_in::is_managed(record) {
+        reads.signed_in.push(user.clone());
+    } else if set(&record.copilot_organization).is_none() {
         reads.through_cli.push(user.clone());
     }
     reads.named.push(user);
