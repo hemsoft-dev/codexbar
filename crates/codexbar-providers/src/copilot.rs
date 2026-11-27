@@ -47,24 +47,37 @@ pub const NO_SEAT_NOTE: &str = "No Copilot seat on this account.";
 
 /// Whether a seatless account's note (`NO_SEAT_NOTE`, then "It shows acme and globex's AI credits." and "acme's AI
 /// credits couldn't be read with it.") names only organizations in `orgs`; `None` for any other note. The names aren't
-/// parsed out of the note: an organization's configured text can hold periods and spaces itself (SFL rounds 4 and 5
-/// on #351). What is left once `orgs`, longest first, and the note's own words are taken out must be nothing.
+/// parsed out of the note, since an organization's configured text can hold periods and spaces itself (SFL rounds 4
+/// and 5 on #351): each sentence's list must be made of `orgs` joined by " and ". The note's own words are matched as
+/// sentences, not removed wherever they occur, so an organization named "AI" or "credits" can't take them away (Codex
+/// on #351).
 pub fn seatless_note_names_only(message: &str, orgs: &[String]) -> Option<bool> {
-    let mut rest = message.strip_prefix(NO_SEAT_NOTE)?.to_owned();
-    let mut orgs: Vec<&String> = orgs.iter().filter(|org| !org.is_empty()).collect();
-    orgs.sort_by_key(|org| std::cmp::Reverse(org.len()));
-    for org in orgs {
-        rest = rest.replace(org.as_str(), "");
+    let mut rest = message.strip_prefix(NO_SEAT_NOTE)?.trim_start();
+    while !rest.is_empty() {
+        let sentence = match rest.strip_prefix("It shows ") {
+            Some(shown) => shown.split_once("'s AI credits."),
+            None => rest.split_once("'s AI credits couldn't be read with it."),
+        };
+        let Some((list, after)) = sentence else {
+            return Some(false);
+        };
+        if !names_only(list, orgs) {
+            return Some(false);
+        }
+        rest = after.trim_start();
     }
-    for words in [
-        "'s AI credits couldn't be read with it.",
-        "'s AI credits.",
-        "It shows ",
-        " and ",
-    ] {
-        rest = rest.replace(words, "");
-    }
-    Some(rest.trim().is_empty())
+    Some(true)
+}
+
+/// Whether `list` is one or more of `orgs` joined by " and ".
+fn names_only(list: &str, orgs: &[String]) -> bool {
+    orgs.iter().filter(|org| !org.is_empty()).any(|org| {
+        list == org.as_str()
+            || list
+                .strip_prefix(org.as_str())
+                .and_then(|rest| rest.strip_prefix(" and "))
+                .is_some_and(|rest| names_only(rest, orgs))
+    })
 }
 
 /// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
@@ -1379,6 +1392,23 @@ mod tests {
         assert_eq!(
             seatless_note_names_only(url, &orgs(&["https://github.com/acme.inc"])),
             Some(true)
+        );
+        // Codex on #351: an organization named after the note's own words doesn't take them away.
+        let words = "No Copilot seat on this account. It shows credits's AI credits.";
+        assert_eq!(seatless_note_names_only(words, &orgs(&["credits"])), Some(true));
+        assert_eq!(seatless_note_names_only(words, &orgs(&["AI"])), Some(false));
+        let ai = "No Copilot seat on this account. AI's AI credits couldn't be read with it.";
+        assert_eq!(seatless_note_names_only(ai, &orgs(&["AI"])), Some(true));
+        assert_eq!(seatless_note_names_only(ai, &orgs(&["credits"])), Some(false));
+        // A name holding " and " itself.
+        let joined = "No Copilot seat on this account. It shows Acme and Sons and globex's AI credits.";
+        assert_eq!(
+            seatless_note_names_only(joined, &orgs(&["Acme and Sons", "globex"])),
+            Some(true)
+        );
+        assert_eq!(
+            seatless_note_names_only(joined, &orgs(&["Acme", "globex"])),
+            Some(false)
         );
     }
 
