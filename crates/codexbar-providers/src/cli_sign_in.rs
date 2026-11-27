@@ -513,17 +513,44 @@ mod tests {
         assert!(matches!(result, Err(CliSignInError::Start(_))));
     }
 
-    /// Starts `script`, a CLI that leaves the process id `finish` must see stopped in `$PID_FILE`, through the real
-    /// waiter and terminal script (run by `sh`, no window), cancels it once it runs, and says whether that process was
-    /// still running when `finish` returned.
+    /// What `stop` found when `finish` returned.
     #[cfg(unix)]
-    fn outlives_finish(name: &str, script: &str) -> bool {
-        let dir = std::env::temp_dir().join(format!("codexbar-cli-stop-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let pid_file = dir.join("cli");
+    #[derive(Debug, PartialEq)]
+    struct Stopped {
+        /// The process whose id the CLI left in `$PID_FILE` still ran.
+        running: bool,
+        /// A process the CLI started got the terminate signal (it writes `$SIGNALLED`).
+        signalled: bool,
+    }
+
+    /// Whether process `pid` runs: a zombie has ended, though its parent hasn't reaped it yet.
+    #[cfg(unix)]
+    fn runs(pid: &str) -> bool {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .is_ok_and(|out| {
+                let state = String::from_utf8_lossy(&out.stdout);
+                out.status.success() && !state.trim().is_empty() && !state.contains('Z')
+            })
+    }
+
+    /// Starts `script` as the CLI through the real waiter and terminal script (run by `sh`, no window), cancels it once
+    /// it has left a process id in `$PID_FILE`, and says what `finish` left behind.
+    #[cfg(unix)]
+    fn stop(name: &str, script: &str) -> Stopped {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos();
+        let dir = std::env::temp_dir().join(format!("codexbar-cli-stop-{name}-{}-{nanos}", std::process::id()));
+        // A folder of this test's own: one already there, which another user could have made, fails the test.
+        std::fs::create_dir(&dir).unwrap();
+        let (pid_file, signalled) = (dir.join("cli"), dir.join("signalled"));
         let mut base = Command::new("/bin/sh");
-        base.args(["-c", script]).env("PID_FILE", &pid_file);
+        base.args(["-c", script])
+            .env("PID_FILE", &pid_file)
+            .env("SIGNALLED", &signalled);
         let window = open_with(
             Cli::Codex,
             Some(base),
@@ -549,12 +576,15 @@ mod tests {
             window.finish(std::time::Duration::from_secs(60), &cancel),
             Err(CliSignInError::Failed)
         );
-        let alive = Command::new("kill").args(["-0", &pid]).status().unwrap().success();
-        if alive {
+        let stopped = Stopped {
+            running: runs(&pid),
+            signalled: signalled.exists(),
+        };
+        if stopped.running {
             let _ = Command::new("kill").args(["-KILL", &pid]).status();
         }
         let _ = std::fs::remove_dir_all(&dir);
-        alive
+        stopped
     }
 
     // SFL on #344 (#345): on macOS and Linux a timed-out or cancelled sign-in stopped only the terminal's waiter, and
@@ -565,19 +595,31 @@ mod tests {
     fn a_stopped_sign_in_returns_once_its_cli_has_stopped() {
         // A CLI that waits, as a sign-in does for the browser.
         let cli = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
-        assert!(!outlives_finish("cli", cli), "the CLI has stopped when finish returns");
+        assert_eq!(
+            stop("cli", cli),
+            Stopped {
+                running: false,
+                signalled: false
+            },
+            "the CLI has stopped when finish returns"
+        );
     }
 
-    // SFL on #347: a wrapper the CLI was found as can exit on the terminate signal without passing it on to the CLI it
-    // started, which then signs in on its own.
+    // SFL rounds 1 and 2 on #347: what the CLI started runs on when the CLI stops: the CLI itself, when a wrapper it
+    // was found as exits on the signal without passing it on, or the browser the CLI opened. `finish` waits for it, a
+    // few seconds at most, and never signals it: a browser's windows are the user's.
     #[cfg(unix)]
     #[test]
-    fn a_stopped_sign_in_returns_once_the_cli_a_wrapper_started_has_stopped() {
-        let wrapper =
-            r#"trap 'exit 0' TERM; sleep 30 & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; wait"#;
-        assert!(
-            !outlives_finish("wrapper", wrapper),
-            "the CLI the wrapper started has stopped when finish returns"
+    fn a_stopped_sign_in_waits_for_what_its_cli_started_without_signalling_it() {
+        // A process that ends on its own 2.5 s after it starts, and says so if it is signalled first.
+        let started = r#"( trap 'echo > "$SIGNALLED"; exit 1' TERM; sleep 2.5 & wait ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
+        assert_eq!(
+            stop("started", started),
+            Stopped {
+                running: false,
+                signalled: false
+            },
+            "it ended on its own before finish returned"
         );
     }
 

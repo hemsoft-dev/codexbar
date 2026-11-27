@@ -80,8 +80,8 @@ impl Contained {
 
     /// Stops a console's sign-in (`spawn_console`) and returns once its CLI has stopped. On Windows ending the child
     /// ends the CLI, and the job ends what it started. On macOS and Linux the child is only the terminal's waiter: the
-    /// script's watchdog notices it is gone at its next one-second check and stops the CLI and everything it started,
-    /// and the script writes its status file once they have ended. Until then a retry would start a second CLI on the
+    /// script's watchdog notices it is gone at its next one-second check and stops the CLI, and the script writes its
+    /// status file once the CLI and what it started have ended. Until then a retry would start a second CLI on the
     /// same profile, so this waits for that file, up to `CLI_STOP` (#345). A script folder already gone means the waiter
     /// read the status and deleted it: the CLI had finished.
     pub(crate) fn close_console(&mut self) {
@@ -95,8 +95,8 @@ impl Contained {
 }
 
 /// How long `close_console` waits on macOS and Linux for a stopped sign-in's CLI to end: the watchdog's one-second
-/// check, then the up to 3 s it gives the CLI's processes to exit on their terminate signal (`terminal::WATCHDOG`). A
-/// script that never ran (no terminal opened) has no CLI to wait for, and a CLI that ignores the signal outlasts it.
+/// check, then the up to 3 s it waits for the CLI and what it started to end (`terminal::WATCHDOG`). A script that
+/// never ran (no terminal opened) has no CLI to wait for, and a CLI that ignores the signal outlasts it.
 #[cfg(not(windows))]
 const CLI_STOP: std::time::Duration = std::time::Duration::from_secs(6);
 
@@ -217,7 +217,7 @@ mod terminal {
             script.push(b' ');
             script.extend(quote(arg));
         }
-        // A CLI the watchdog stopped is published once the watchdog has seen everything it started end.
+        // A CLI the watchdog stopped is published once the watchdog has seen what it started end.
         script.extend_from_slice(b"\ncode=$?\nif [ -f ");
         script.extend(file("stopping"));
         script.extend_from_slice(
@@ -227,17 +227,27 @@ mod terminal {
     }
 
     /// The script's watchdog, run by `sh -c` with the script's process id, the waiter's and the `stopping` file, so `$$`
-    /// is its own. Once the waiter is gone it marks `stopping`, sends every process the script started, and theirs, the
-    /// terminate signal, and waits up to 3 s for them all to end. The whole tree, taken before the signal: a wrapper the
-    /// CLI was found as may exit on the signal without passing it on, while the CLI it started signs in (SFL on #347).
+    /// is its own. Once the waiter is gone it marks `stopping` and sends the CLI the terminate signal. Then it waits, up
+    /// to 3 s, until nothing the CLI started still runs (SFL on #347): a wrapper the CLI was found as may exit on the
+    /// signal without passing it on, while the CLI it started signs in. It looks again every tenth of a second, and
+    /// remembers what it saw, as a process the CLI's wrapper leaves behind is no longer in the script's tree. It never
+    /// signals those processes: one can be the browser the CLI opened, which the user's other windows share (SFL on
+    /// #347). A zombie has ended. A process started and orphaned between two looks isn't waited for.
     const WATCHDOG: &[u8] = b"while sleep 1; kill -0 \"$2\" 2>/dev/null; do :; done
 : > \"$3\"
 tree() { for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || { echo \"$child\"; tree \"$child\"; }; done; }
-pids=$(tree \"$1\")
-[ -n \"$pids\" ] && kill -TERM $pids 2>/dev/null
-alive() { for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && return 0; done; return 1; }
+running() { state=$(ps -o stat= -p \"$1\" 2>/dev/null) || return 1; case \"$state\" in *Z* | \"\") return 1 ;; esac; }
+seen=$(echo $(tree \"$1\"))
+for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || kill -TERM \"$child\" 2>/dev/null; done
 tries=0
-while alive && [ \"$tries\" -lt 30 ]; do sleep 0.1; tries=$((tries + 1)); done
+while [ \"$tries\" -lt 30 ]; do
+  for pid in $(tree \"$1\"); do case \" $seen \" in *\" $pid \"*) ;; *) seen=\"$seen $pid\" ;; esac; done
+  busy=
+  for pid in $seen; do running \"$pid\" && busy=1 && break; done
+  [ -n \"$busy\" ] || break
+  sleep 0.1
+  tries=$((tries + 1))
+done
 ";
 
     /// Opens the script in Terminal (macOS) or the first terminal emulator found (Linux).
