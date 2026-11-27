@@ -682,13 +682,31 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
         );
     }
 
+    // SFL round 3 on #352: a CLI that starts a session (Linux) or process group (macOS) of its own and ignores the
+    // terminate signal is still the script's child: it is looked at and killed, rather than left out of the wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_ends_a_cli_that_leaves_its_session() {
+        let cli = r#"inner='trap "" TERM; echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done'
+if command -v setsid >/dev/null; then exec setsid /bin/sh -c "$inner"; else exec perl -e 'setpgrp(0, 0); exec @ARGV' /bin/sh -c "$inner"; fi"#;
+        assert_eq!(
+            stop("own-session", cli),
+            Stopped {
+                running: false,
+                signalled: false,
+                replaced: false
+            },
+            "the CLI was ended before finish returned"
+        );
+    }
+
     // #349: what the CLI started is waited for as long as it runs, not only for a few seconds: here it ends on its own
-    // 6 s after it starts, after the 3 s the CLI gets and the 6 s `finish` used to wait at most. It still isn't
-    // signalled.
+    // 12 s after it starts, well after the 3 s the CLI gets (which looking at what runs stretches to about 6 s on a
+    // Mac) and the 6 s `finish` used to wait at most. It still isn't signalled.
     #[cfg(unix)]
     #[test]
     fn a_stopped_sign_in_waits_for_what_its_cli_started_however_long_it_runs() {
-        let started = r#"( trap 'echo > "$SIGNALLED"; exit 1' TERM; sleep 6 & wait ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
+        let started = r#"( trap 'echo > "$SIGNALLED"; exit 1' TERM; sleep 12 & wait ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
         assert_eq!(
             stop("long", started),
             Stopped {

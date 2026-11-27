@@ -290,7 +290,8 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// process tree and remembers what it saw. No process's environment is read (SFL round 7 on #347: PRIVACY.md says a
     /// cancelled sign-in never inspects the user's browser). Nothing running counts only when a second look agrees: a
     /// process can start just after one look lists what runs and before the last process it found ends, and the next
-    /// look sees it. A process that starts a session or group of its own leaves the wait. A zombie has ended. The mark
+    /// look sees it. A process that starts a session or group of its own leaves the wait, unless it is the script's own
+    /// child, the CLI, which is always looked at, so it is still killed (SFL round 3 on #352). A zombie has ended. The mark
     /// is written by `touch`, not `:`: a special built-in's failed redirection ends a POSIX shell, and the folder may
     /// already be gone (SFL round 3 on #347).
     ///
@@ -339,6 +340,7 @@ look() {
     for pid in $(tree \"$1\"); do case \" $seen \" in *\" $pid \"*) ;; *) seen=\"$seen $pid\" ;; esac; done
     pids=$seen
   fi
+  pids=\"$pids $(pgrep -P \"$script\" 2>/dev/null)\"
 }
 busy() {
   look \"$1\"
@@ -445,20 +447,20 @@ else exit 127; fi"#
         }
     }
 
-    /// Starts `command` in a terminal: the waiting child, with the script folder it deletes when the CLI finishes.
+    /// Starts `command` in a terminal: the waiting child, with the script folder `Contained` deletes once it has ended.
     pub(super) fn spawn(command: &Command) -> std::io::Result<super::Contained> {
         spawn_with(command, launcher())
     }
 
     /// The waiter's shell code, run with the script (`$1`), its status file (`$2`), its folder (`$3`) and CodexBar's process
     /// id (`$4`); `launch` starts the script without waiting for it. The waiter leaves its process id, and CodexBar's,
-    /// for the script's watchdog, and gives up when CodexBar is gone. It deletes the folder once it has read the status,
-    /// unless the sign-in was cancelled (`mark_cancelled`): the script then still has to settle what a CLI that ended at
-    /// that moment started, and `close_console` waits for it (SFL round 2 on #352).
+    /// for the script's watchdog, gives up when CodexBar is gone, and exits with the code it read. It leaves the folder:
+    /// `Contained` deletes it once the waiter has ended. A waiter deleting it could race a cancel, and take the `cancel`
+    /// mark away before the script settled what a CLI that ended at that moment started (SFL rounds 2 and 3 on #352).
     pub(super) fn waiter(launch: &str) -> String {
         format!(
             "echo \"$$ $4\" > \"$3/waiter\"\n{launch}\nwhile [ ! -f \"$2\" ]; do kill -0 \"$4\" 2>/dev/null || exit 1; sleep \
-             0.5; done\ncode=$(cat \"$2\")\n[ ! -f \"$3/cancel\" ] || exit 1\nrm -rf \"$3\"\nexit \"${{code:-1}}\""
+             0.5; done\ncode=$(cat \"$2\")\nexit \"${{code:-1}}\""
         )
     }
 
@@ -822,10 +824,11 @@ mod tests {
         assert_eq!(status.trim(), "130");
     }
 
-    // SFL round 2 on #352: a waiter that finds the folder marked cancelled leaves it, with the status it read, to the
-    // script, which still has to settle what the CLI started; without the mark it deletes the folder, as before.
+    // SFL rounds 2 and 3 on #352: a waiter reports the code it read and leaves the folder, cancelled or not, so a cancel
+    // racing it can't take the `cancel` mark away before the script has settled; `Contained` deletes the folder once the
+    // waiter has ended.
     #[test]
-    fn a_waiter_leaves_a_cancelled_sign_in_s_folder_to_its_script() {
+    fn a_waiter_reports_its_status_and_leaves_the_folder() {
         let run = |dir: &Path| {
             std::fs::write(dir.join("status"), "0").unwrap();
             Command::new("/bin/sh")
@@ -841,15 +844,18 @@ mod tests {
         let cancelled = folder("waiter-cancelled");
         super::terminal::mark_cancelled(Some(&cancelled));
         let succeeded = run(&cancelled);
-        let kept = cancelled.exists();
+        let kept = cancelled.join("cancel").exists();
         let _ = std::fs::remove_dir_all(&cancelled);
-        assert!(
-            !succeeded && kept,
-            "the cancelled sign-in's folder stays for its script"
-        );
+        assert!(succeeded, "it reports the code it read");
+        assert!(kept, "the cancelled sign-in's mark stays for its script");
         let finished = folder("waiter-finished");
-        assert!(run(&finished), "a finished sign-in reports its code");
-        assert!(!finished.exists(), "and its folder goes");
+        let succeeded = run(&finished);
+        let kept = finished.exists();
+        let _ = std::fs::remove_dir_all(&finished);
+        assert!(
+            succeeded && kept,
+            "a finished sign-in's folder stays for `Contained` to delete"
+        );
     }
 
     // SFL round 2 on #352: a watchdog whose script is no longer its parent, as after the script was ended without its
@@ -908,7 +914,7 @@ mod tests {
             command
                 .args([
                     "-c",
-                    r#"trap 'echo > "$SIGNALLED"' TERM; ( sleep 1 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; while kill -0 "$WAITER" 2>/dev/null; do sleep 0.02; done"#,
+                    r#"trap 'echo > "$SIGNALLED"' TERM; ( sleep 2 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; while kill -0 "$WAITER" 2>/dev/null; do sleep 0.02; done"#,
                 ])
                 .env("PID_FILE", &pid_file)
                 .env("SIGNALLED", &signalled)
@@ -921,6 +927,8 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
             }
             let started = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+            // Still running as the waiter goes, or the test proves nothing (SFL round 3 on #352).
+            assert!(runs(&started), "what the CLI started runs when its waiter goes");
             let _ = waiter.kill();
             let _ = waiter.wait();
             shell.wait().unwrap();
@@ -931,7 +939,7 @@ mod tests {
             let _ = std::fs::remove_dir_all(&holder);
             if watchdog_first {
                 // Let what it started end before the next run.
-                std::thread::sleep(Duration::from_millis(1200));
+                std::thread::sleep(Duration::from_millis(2200));
                 continue;
             }
             assert!(!running, "what the CLI started ended before its status was published");
@@ -955,7 +963,7 @@ mod tests {
         command
             .args([
                 "-c",
-                r#"( sleep 1 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; n=0; while [ ! -f "$GO" ] && [ "$n" -lt 600 ]; do sleep 0.02; n=$((n + 1)); done"#,
+                r#"( sleep 2 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; n=0; while [ ! -f "$GO" ] && [ "$n" -lt 600 ]; do sleep 0.02; n=$((n + 1)); done"#,
             ])
             .env("PID_FILE", &pid_file)
             .env("GO", &go);
@@ -967,6 +975,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let started = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+        assert!(runs(&started), "what the CLI started runs as the sign-in is cancelled");
         // `close_console`'s mark, then the CLI ends while the waiter still runs.
         super::terminal::mark_cancelled(Some(&dir));
         std::fs::write(&go, "").unwrap();
