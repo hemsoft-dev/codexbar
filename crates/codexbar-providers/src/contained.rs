@@ -80,9 +80,10 @@ impl Contained {
 
     /// Stops a console's sign-in (`spawn_console`) and returns once its CLI has stopped. On Windows ending the child
     /// ends the CLI, and the job ends what it started. On macOS and Linux the child is only the terminal's waiter: the
-    /// script's watchdog notices it is gone at its next one-second check and stops the CLI, and the script then writes
-    /// its status file. Until then a retry would start a second CLI on the same profile, so this waits for that file,
-    /// up to `CLI_STOP` (#345).
+    /// script's watchdog notices it is gone at its next one-second check and stops the CLI and everything it started,
+    /// and the script writes its status file once they have ended. Until then a retry would start a second CLI on the
+    /// same profile, so this waits for that file, up to `CLI_STOP` (#345). A script folder already gone means the waiter
+    /// read the status and deleted it: the CLI had finished.
     pub(crate) fn close_console(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -94,10 +95,10 @@ impl Contained {
 }
 
 /// How long `close_console` waits on macOS and Linux for a stopped sign-in's CLI to end: the watchdog's one-second
-/// check, then time for the CLI to exit on its terminate signal. A script that never ran (no terminal opened) has no
-/// CLI to wait for, and a CLI that ignores the signal outlasts it.
+/// check, then the up to 3 s it gives the CLI's processes to exit on their terminate signal (`terminal::WATCHDOG`). A
+/// script that never ran (no terminal opened) has no CLI to wait for, and a CLI that ignores the signal outlasts it.
 #[cfg(not(windows))]
-const CLI_STOP: std::time::Duration = std::time::Duration::from_secs(5);
+const CLI_STOP: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Spawns `command` with no console window, inside a kill-on-close job.
 pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
@@ -185,11 +186,12 @@ mod terminal {
         script.extend(file("status"));
         // Closing the terminal hangs the script up: that is a sign-in that didn't finish, reported at once. The CLI
         // ends with CodexBar's sign-in: once the waiter is gone (cancelled, timed out, or CodexBar quit), the watchdog
-        // stops the CLI before it can finish a sign-in nobody is waiting for.
-        script.extend_from_slice(
-            b"; }\ntrap 'publish 129; exit 129' HUP INT TERM\n\
-              ( while sleep 1; kill -0 \"$waiter\" 2>/dev/null; do :; done; pkill -TERM -P $$ ) &\nwatchdog=$!\n",
-        );
+        // stops the CLI before it can finish a sign-in nobody is waiting for (`WATCHDOG`).
+        script.extend_from_slice(b"; }\ntrap 'publish 129; exit 129' HUP INT TERM\n/bin/sh -c '");
+        script.extend_from_slice(WATCHDOG);
+        script.extend_from_slice(b"' sh $$ \"$waiter\" ");
+        script.extend(file("stopping"));
+        script.extend_from_slice(b" &\nwatchdog=$!\n");
         for (name, value) in command.get_envs() {
             match value {
                 Some(value) => {
@@ -215,9 +217,28 @@ mod terminal {
             script.push(b' ');
             script.extend(quote(arg));
         }
-        script.extend_from_slice(b"\ncode=$?\nkill \"$watchdog\" 2>/dev/null\npublish \"$code\"\n");
+        // A CLI the watchdog stopped is published once the watchdog has seen everything it started end.
+        script.extend_from_slice(b"\ncode=$?\nif [ -f ");
+        script.extend(file("stopping"));
+        script.extend_from_slice(
+            b" ]; then wait \"$watchdog\"; else kill \"$watchdog\" 2>/dev/null; fi\npublish \"$code\"\n",
+        );
         script
     }
+
+    /// The script's watchdog, run by `sh -c` with the script's process id, the waiter's and the `stopping` file, so `$$`
+    /// is its own. Once the waiter is gone it marks `stopping`, sends every process the script started, and theirs, the
+    /// terminate signal, and waits up to 3 s for them all to end. The whole tree, taken before the signal: a wrapper the
+    /// CLI was found as may exit on the signal without passing it on, while the CLI it started signs in (SFL on #347).
+    const WATCHDOG: &[u8] = b"while sleep 1; kill -0 \"$2\" 2>/dev/null; do :; done
+: > \"$3\"
+tree() { for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || { echo \"$child\"; tree \"$child\"; }; done; }
+pids=$(tree \"$1\")
+[ -n \"$pids\" ] && kill -TERM $pids 2>/dev/null
+alive() { for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && return 0; done; return 1; }
+tries=0
+while alive && [ \"$tries\" -lt 30 ]; do sleep 0.1; tries=$((tries + 1)); done
+";
 
     /// Opens the script in Terminal (macOS) or the first terminal emulator found (Linux).
     fn launcher() -> &'static str {
@@ -235,11 +256,12 @@ else exit 127; fi"#
         }
     }
 
-    /// Waits until the script in `folder` has written its status file (its CLI has ended), up to `bound`.
+    /// Waits until the script in `folder` has written its status file (its CLI has ended), up to `bound`, or the folder
+    /// is gone (the waiter read the status and deleted it).
     pub(super) fn await_status(folder: &Path, bound: std::time::Duration) {
         let status = folder.join("status");
         let deadline = std::time::Instant::now() + bound;
-        while !status.exists() && std::time::Instant::now() < deadline {
+        while folder.exists() && !status.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
@@ -331,6 +353,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // SFL on #347: a waiter that read the status and deleted its folder just before the sign-in was stopped had a
+    // finished CLI; the wait for its status file ends at once rather than after `CLI_STOP`.
+    #[test]
+    fn a_consumed_status_ends_the_wait_at_once() {
+        let gone = std::env::temp_dir().join(format!("codexbar-terminal-consumed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&gone);
+        let started = Instant::now();
+        super::terminal::await_status(&gone, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn the_terminal_script_runs_the_command_as_configured() {
         let mut command = Command::new("/opt/it's/claude");
@@ -386,8 +419,8 @@ mod tests {
         let started_file = dir.join("started");
         let mut command = Command::new("sh");
         command
-            .arg("-c")
-            .arg(format!("echo > '{}'; exec sleep 30", started_file.display()));
+            .args(["-c", r#"echo > "$STARTED"; exec sleep 30"#])
+            .env("STARTED", &started_file);
         let path = dir.join("script.sh");
         std::fs::write(&path, script(&command, &dir)).unwrap();
         use std::os::unix::process::CommandExt as _;

@@ -513,20 +513,17 @@ mod tests {
         assert!(matches!(result, Err(CliSignInError::Start(_))));
     }
 
-    // SFL on #344 (#345): on macOS and Linux a timed-out or cancelled sign-in stopped only the terminal's waiter, and
-    // the CLI ran on for up to a second, until the script's watchdog stopped it. A retry in that time signed the same
-    // profile in twice.
+    /// Starts `script`, a CLI that leaves the process id `finish` must see stopped in `$PID_FILE`, through the real
+    /// waiter and terminal script (run by `sh`, no window), cancels it once it runs, and says whether that process was
+    /// still running when `finish` returned.
     #[cfg(unix)]
-    #[test]
-    fn a_stopped_sign_in_returns_once_its_cli_has_stopped() {
-        let dir = std::env::temp_dir().join(format!("codexbar-cli-stop-{}", std::process::id()));
+    fn outlives_finish(name: &str, script: &str) -> bool {
+        let dir = std::env::temp_dir().join(format!("codexbar-cli-stop-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let pid_file = dir.join("cli");
-        // A CLI that leaves its process id and waits, as a sign-in does for the browser.
         let mut base = Command::new("/bin/sh");
-        base.arg("-c")
-            .arg(format!("echo $$ > '{}'; exec sleep 30", pid_file.display()));
+        base.args(["-c", script]).env("PID_FILE", &pid_file);
         let window = open_with(
             Cli::Codex,
             Some(base),
@@ -535,10 +532,18 @@ mod tests {
         )
         .unwrap();
         let started = std::time::Instant::now();
-        while !pid_file.exists() && started.elapsed() < std::time::Duration::from_secs(10) {
+        // A whole process id: the scripts write it beside the file and rename it into place.
+        let pid = loop {
+            let read = std::fs::read_to_string(&pid_file).unwrap_or_default();
+            if read.trim().parse::<u32>().is_ok() {
+                break read.trim().to_owned();
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "the CLI started"
+            );
             std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+        };
         let cancel = std::sync::atomic::AtomicBool::new(true);
         assert_eq!(
             window.finish(std::time::Duration::from_secs(60), &cancel),
@@ -546,10 +551,34 @@ mod tests {
         );
         let alive = Command::new("kill").args(["-0", &pid]).status().unwrap().success();
         if alive {
-            let _ = Command::new("kill").arg(&pid).status();
+            let _ = Command::new("kill").args(["-KILL", &pid]).status();
         }
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(!alive, "the CLI has stopped when finish returns");
+        alive
+    }
+
+    // SFL on #344 (#345): on macOS and Linux a timed-out or cancelled sign-in stopped only the terminal's waiter, and
+    // the CLI ran on for up to a second, until the script's watchdog stopped it. A retry in that time signed the same
+    // profile in twice.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_returns_once_its_cli_has_stopped() {
+        // A CLI that waits, as a sign-in does for the browser.
+        let cli = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
+        assert!(!outlives_finish("cli", cli), "the CLI has stopped when finish returns");
+    }
+
+    // SFL on #347: a wrapper the CLI was found as can exit on the terminate signal without passing it on to the CLI it
+    // started, which then signs in on its own.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_returns_once_the_cli_a_wrapper_started_has_stopped() {
+        let wrapper =
+            r#"trap 'exit 0' TERM; sleep 30 & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; wait"#;
+        assert!(
+            !outlives_finish("wrapper", wrapper),
+            "the CLI the wrapper started has stopped when finish returns"
+        );
     }
 
     #[test]
