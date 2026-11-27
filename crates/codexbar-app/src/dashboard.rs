@@ -619,10 +619,12 @@ fn signed_out_of_discovery(
         && !named.iter().any(|read| read == id)
 }
 
-/// The ids of `rows` a fetch read while no record named them (`reads`, the settings it started with): a kept row a
-/// fetch from before the change read again is still kept (Codex on #348).
+/// The ids of the Copilot rows in `rows` a fetch read while no record named them (`reads`, the settings it started
+/// with): a kept row a fetch from before the change read again is still kept, and so is one another provider's row with
+/// the same id stands beside (Codex on #348).
 fn read_unnamed(rows: &[AccountSnapshot], reads: &CopilotReads) -> Vec<String> {
     rows.iter()
+        .filter(|account| account.provider() == Provider::Copilot)
         .map(|account| account.id().as_str().to_owned())
         .filter(|id| !reads.named.contains(id))
         .collect()
@@ -3618,4 +3620,26 @@ fn arrange(
         .flat_map(|section| section.accounts)
         .filter_map(|id| by_id.remove(&id))
         .collect()
+}
+
+#[cfg(test)]
+mod read_unnamed_tests {
+    use super::*;
+
+    // Codex on #348: only a fresh Copilot row clears Copilot's kept mark, not another provider's row with its id, nor a
+    // Copilot row a fetch read while a record still named it.
+    #[test]
+    fn only_a_copilot_row_read_unnamed_clears_the_kept_mark() {
+        let row = |provider, id: &str| AccountSnapshot::new(AccountId::new(id), provider, Vec::new(), Utc::now());
+        let named = CopilotReads {
+            named: vec!["copilot-bob".into()],
+            ..CopilotReads::default()
+        };
+        let rows = [
+            row(Provider::Greptile, "copilot-alice"),
+            row(Provider::Copilot, "copilot-bob"),
+            row(Provider::Copilot, "copilot-carol"),
+        ];
+        assert_eq!(read_unnamed(&rows, &named), vec!["copilot-carol".to_owned()]);
+    }
 }
