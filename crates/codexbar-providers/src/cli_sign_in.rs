@@ -700,6 +700,27 @@ if command -v setsid >/dev/null; then exec setsid /bin/sh -c "$inner"; else exec
         );
     }
 
+    // SFL round 4 on #352: a wrapper that starts a helper in a session (Linux) or process group (macOS) of its own, and
+    // stays until it is stopped, leaves that helper outside what the script's session or group holds. The helper was
+    // the script's descendant when the watchdog first looked, so it is still waited for, without being signalled.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_waits_for_a_helper_its_wrapper_started_apart() {
+        let wrapper = r#"if command -v setsid >/dev/null; then setsid /bin/sh -c 'sleep 4' & else perl -e 'setpgrp(0, 0); exec @ARGV' /bin/sh -c 'sleep 4' & fi
+echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
+trap 'exit 0' TERM
+n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
+        assert_eq!(
+            stop("apart", wrapper),
+            Stopped {
+                running: false,
+                signalled: false,
+                replaced: false
+            },
+            "the helper ended before finish returned"
+        );
+    }
+
     // #349: what the CLI started is waited for as long as it runs, not only for a few seconds: here it ends on its own
     // 12 s after it starts, well after the 3 s the CLI gets (which looking at what runs stretches to about 6 s on a
     // Mac) and the 6 s `finish` used to wait at most. It still isn't signalled.

@@ -287,11 +287,14 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// parent, however late the wrapper started it (SFL round 4 on #347). The script's own ancestors in that session, a
     /// shell the terminal ran it through, aren't waited for. On macOS it follows the script's process group, which
     /// Terminal starts it as the leader of, the same way (#349). Where the script leads neither, it follows the script's
-    /// process tree and remembers what it saw. No process's environment is read (SFL round 7 on #347: PRIVACY.md says a
+    /// process tree and remembers what it saw. It always follows that tree as well, so a process the CLI started in a
+    /// session or group of its own while still its descendant is waited for too (SFL round 4 on #352). No process's
+    /// environment is read (SFL round 7 on #347: PRIVACY.md says a
     /// cancelled sign-in never inspects the user's browser). Nothing running counts only when a second look agrees: a
     /// process can start just after one look lists what runs and before the last process it found ends, and the next
-    /// look sees it. A process that starts a session or group of its own leaves the wait, unless it is the script's own
-    /// child, the CLI, which is always looked at, so it is still killed (SFL round 3 on #352). A zombie has ended. The mark
+    /// look sees it. A process that leaves the script's tree and starts a session or group of its own before any look
+    /// sees it leaves the wait; the script's own child, the CLI, is always in the tree, so it is still killed (SFL round
+    /// 3 on #352). A zombie has ended. The mark
     /// is written by `touch`, not `:`: a special built-in's failed redirection ends a POSIX shell, and the folder may
     /// already be gone (SFL round 3 on #347).
     ///
@@ -301,7 +304,9 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// sign-in still running (#349). The terminal then says so, and pressing Return there ends the wait: a browser the
     /// CLI opened holds the sign-in only until the user does. Closing the window would end it too, but a terminal sends
     /// its hang-up to everything in its foreground group, a browser the CLI started there among them, so the note
-    /// doesn't suggest it (SFL round 1 on #352). The process reading Return isn't waited for. Without a terminal to read,
+    /// doesn't suggest it (SFL round 1 on #352). The process reading Return isn't waited for, and is ended with the wait,
+    /// or when the watchdog is stopped (an interrupt's trap stops it), but only while it is still the watchdog's child:
+    /// one that already ended has left its process id free (SFL round 4 on #352). Without a terminal to read,
     /// as in the tests, the wait goes on. The wait also ends once CodexBar (`$4`) or the script folder is gone: nothing
     /// then waits for the status.
     ///
@@ -330,17 +335,15 @@ else
   group=$(ps -o pgid= -p \"$1\" 2>/dev/null | tr -d \" \")
   [ \"$group\" = \"$1\" ] || group=
 fi
-[ -n \"$sid$group\" ] || seen=$(echo $(tree \"$1\"))
+seen=$(echo $(tree \"$script\"))
 look() {
+  for pid in $(tree \"$script\"); do case \" $seen \" in *\" $pid \"*) ;; *) seen=\"$seen $pid\" ;; esac; done
+  pids=$seen
   if [ -n \"$sid\" ]; then
-    pids=$(ps -o pid= -s \"$sid\" 2>/dev/null)
+    pids=\"$pids $(ps -o pid= -s \"$sid\" 2>/dev/null)\"
   elif [ -n \"$group\" ]; then
-    pids=$(ps -A -o pid= -o pgid= 2>/dev/null | while read -r pid pg; do [ \"$pg\" != \"$group\" ] || echo \"$pid\"; done)
-  else
-    for pid in $(tree \"$1\"); do case \" $seen \" in *\" $pid \"*) ;; *) seen=\"$seen $pid\" ;; esac; done
-    pids=$seen
+    pids=\"$pids $(ps -A -o pid= -o pgid= 2>/dev/null | while read -r pid pg; do [ \"$pg\" != \"$group\" ] || echo \"$pid\"; done)\"
   fi
-  pids=\"$pids $(pgrep -P \"$script\" 2>/dev/null)\"
 }
 busy() {
   look \"$1\"
@@ -361,6 +364,9 @@ signal KILL \"$1\"
 [ \"$2\" != - ] || exit 0
 told=
 reader=
+child() { [ \"$(ps -o ppid= -p \"$1\" 2>/dev/null | tr -d \" \")\" = \"$$\" ]; }
+quit() { [ -z \"$reader\" ] || ! child \"$reader\" || kill -KILL \"$reader\" 2>/dev/null; exit 0; }
+trap quit TERM
 while [ -d \"${3%/*}\" ] && [ ! -f \"$3.done\" ] && { [ -z \"$4\" ] || kill -0 \"$4\" 2>/dev/null; }; do
   touch \"$3\" 2>/dev/null
   settled \"$1\" && break
@@ -375,7 +381,7 @@ while [ -d \"${3%/*}\" ] && [ ! -f \"$3.done\" ] && { [ -z \"$4\" ] || kill -0 \
   fi
   sleep 0.5
 done
-[ -z \"$reader\" ] || kill -KILL \"$reader\" 2>/dev/null
+quit
 ";
 
     /// Opens the script in Terminal (macOS) or the first terminal emulator found (Linux).
@@ -741,10 +747,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         std::fs::write(&release, "").unwrap();
-        let released = Instant::now();
         shell.wait().unwrap();
-        // It ended with the survivor rather than after the 3 s (SFL round 6 on #347).
-        let ended = released.elapsed();
+        // It ended with the survivor rather than after the 3 s (SFL round 6 on #347): timed between the release file
+        // and the script's `ended` mark, so a test thread scheduled late doesn't count (SFL round 4 on #352).
+        let written = |path: &Path| path.metadata().and_then(|meta| meta.modified()).unwrap();
+        let ended = written(&dir.join("ended"))
+            .duration_since(written(&release))
+            .unwrap_or_default();
         let running = runs(&survivor);
         let status = std::fs::read_to_string(dir.join("status")).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&dir);
