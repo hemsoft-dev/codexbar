@@ -2888,21 +2888,50 @@ fn removing_a_codexbar_sign_in_a_command_line_record_shares_drops_its_row(cx: &m
 #[gpui_kit::test]
 fn switching_off_a_billing_command_line_record_drops_its_user_s_row(cx: &mut TestAppContext) {
     let records = r#"{ "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
-          "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" }"#;
+          "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme",
+          "copilotEnterprise": "acme-ent" }"#;
     let kept = alice_kept_after(cx, "copilot-billing-record-off", records, |cx| {
         switch_off(cx, "cp-alice")
     });
     assert!(!kept, "the row with the record's billing doesn't stay");
 }
 
-// Codex on #348: Alice on two Command line records, one billing her organization, has that billing on her row.
+// SFL round 2 on #348: an organization billed on its own (Copilot Business) changes only its card, not Alice's row.
+// Switching that record off keeps her row while discovery is on.
+#[gpui_kit::test]
+fn switching_off_a_business_billing_record_keeps_its_user_s_row(cx: &mut TestAppContext) {
+    let records = r#"{ "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+          "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" }"#;
+    let kept = alice_kept_after(cx, "copilot-business-record-off", records, |cx| {
+        switch_off(cx, "cp-alice")
+    });
+    assert!(kept, "discovery reads the same row for her");
+}
+
+// SFL round 2 on #348: Alice's row was fetched with her CodexBar sign-in's token. Switching that sign-in off, then her
+// Command line record, takes the row away though discovery is on: no fetch since read it the way discovery does.
+#[gpui_kit::test]
+fn switching_off_a_codexbar_sign_in_then_its_command_line_twin_drops_the_row(cx: &mut TestAppContext) {
+    let records = r#"{ "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+          "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+        { "id": "cp-alice-cli", "providerId": "Copilot", "displayLabel": "Alice (CLI)", "enabled": true,
+          "authenticationMethod": "CommandLine", "externalAccountId": "alice" }"#;
+    let kept = alice_kept_after(cx, "copilot-sign-in-then-cli-off", records, |cx| {
+        switch_off(cx, "cp-alice");
+        switch_off(cx, "cp-alice-cli");
+    });
+    assert!(!kept, "the sign-in's usage doesn't stay");
+}
+
+// Codex on #348: Alice on two Command line records, one billing her enterprise, has that billing on her row.
 // Removing both takes the row away though discovery is on and the other record billed nothing.
 #[gpui_kit::test]
 fn removing_a_billing_record_beside_an_unbilled_one_drops_its_user_s_row(cx: &mut TestAppContext) {
     let records = r#"{ "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
           "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
         { "id": "cp-alice-org", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
-          "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" }"#;
+          "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme",
+          "copilotEnterprise": "acme-ent" }"#;
     let kept = alice_kept_after(cx, "copilot-billed-and-unbilled-removed", records, |cx| {
         cx.update(|cx| {
             SettingsHub::update(cx, |settings| {
