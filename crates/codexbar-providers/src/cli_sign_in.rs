@@ -581,6 +581,8 @@ mod tests {
             window.finish(std::time::Duration::from_secs(60), &cancel),
             Err(CliSignInError::Failed)
         );
+        // The CLI may have left a later process id (`a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits`).
+        let pid = std::fs::read_to_string(&pid_file).map_or(pid, |read| read.trim().to_owned());
         let stopped = Stopped {
             running: runs(&pid),
             signalled: signalled.exists(),
@@ -613,6 +615,25 @@ mod tests {
     // SFL rounds 1 and 2 on #347: what the CLI started runs on when the CLI stops: the CLI itself, when a wrapper it
     // was found as exits on the signal without passing it on, or the browser the CLI opened. `finish` waits for it, a
     // few seconds at most, and never signals it: a browser's windows are the user's.
+    // SFL round 4 on #347: a wrapper that starts the CLI just as it exits on the signal leaves it to another parent before
+    // the watchdog has seen it. The watchdog still waits for it, on Linux, where it finds the CLI by its environment;
+    // macOS shows no other process's environment.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits() {
+        let wrapper = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
+trap '( sleep 2.5 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exit 0' TERM
+while :; do sleep 0.1; done"#;
+        assert_eq!(
+            stop("late", wrapper),
+            Stopped {
+                running: false,
+                signalled: false
+            },
+            "the process the wrapper started as it exited ended before finish returned"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_stopped_sign_in_waits_for_what_its_cli_started_without_signalling_it() {
