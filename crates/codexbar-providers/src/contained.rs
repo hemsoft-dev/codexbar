@@ -82,10 +82,13 @@ impl Contained {
     /// ends the CLI, and the job ends what it started. On macOS and Linux the child is only the terminal's waiter: the
     /// script's watchdog notices it is gone at its next one-second check and stops the CLI, and the script writes its
     /// status file once the CLI and what it started have ended. Until then a retry would start a second CLI on the
-    /// same profile, so this waits for that file (#345): up to `CLI_STOP` for the watchdog to start stopping the CLI,
-    /// then for as long as it is still stopping it (#349, `terminal::await_status`). A script folder already gone means
-    /// the waiter read the status and deleted it: the CLI had finished.
+    /// same profile, so this waits for the script to end (#345): up to `CLI_STOP` for the watchdog to start stopping the
+    /// CLI, then for as long as it is still stopping it (#349, `terminal::await_status`). A script folder already gone
+    /// means the waiter read the status and deleted it: the CLI had finished. The script folder is marked cancelled
+    /// first, so a CLI that ends just as the waiter is stopped is settled too (SFL round 1 on #352).
     pub(crate) fn close_console(&mut self) {
+        #[cfg(not(windows))]
+        terminal::mark_cancelled(self.folder.as_deref());
         let _ = self.child.kill();
         let _ = self.child.wait();
         #[cfg(not(windows))]
@@ -101,7 +104,8 @@ impl Contained {
 const CLI_STOP: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// How recently a stopping watchdog must have renewed its `stopping` mark to count as still stopping: it renews it at
-/// least every half second (`terminal::SETTLE`). An older mark is a script that was ended before it could report.
+/// least every half second (`terminal::SETTLE`), and a file system that keeps whole seconds still shows a change every
+/// second. A mark that stopped changing is a script that was ended before it could report.
 #[cfg(not(windows))]
 const STOPPING: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -190,11 +194,19 @@ mod terminal {
         script.extend(file("status.tmp"));
         script.push(b' ');
         script.extend(file("status"));
+        // The last thing the script does, once its status is out and what a cancelled CLI started has ended: what
+        // `close_console` waits for.
+        script.extend_from_slice(b"; }\nend() { touch ");
+        script.extend(file("ended"));
+        script.extend_from_slice(b" 2>/dev/null");
         // Closing the terminal hangs the script up: that is a sign-in that didn't finish, reported once what the CLI
         // started has ended too (`settle`, SFL round 5 on #347). The CLI ends with CodexBar's sign-in: once the waiter is
         // gone (cancelled, timed out, or CodexBar quit), the watchdog stops the CLI before it can finish a sign-in
         // nobody is waiting for (`SETTLE`). A CLI that ended on its own as the waiter went, before the watchdog saw it
-        // go, is settled by the script itself (`stopped`, #349): what it started may still be signing in.
+        // go, is settled by the script itself (`stopped`, #349): what it started may still be signing in. So is one that
+        // ended just before the sign-in was cancelled, while its waiter still ran: `close_console` marks the folder
+        // `cancel` before it stops the waiter, and the script looks for that mark once it has published (SFL round 1 on
+        // #352).
         let settle_args = |script: &mut Vec<u8>, waiter: &[u8]| {
             script.extend_from_slice(b"' sh $$ ");
             script.extend_from_slice(waiter);
@@ -208,7 +220,7 @@ mod terminal {
         script.extend_from_slice(b"; }\nstopped() { /bin/sh -c '");
         script.extend_from_slice(SETTLE);
         settle_args(&mut script, b"\"$waiter\"");
-        script.extend_from_slice(b"; }\ntrap 'settle; publish 129; exit 129' HUP INT TERM\n/bin/sh -c '");
+        script.extend_from_slice(b"; }\ntrap 'settle; publish 129; end; exit 129' HUP INT TERM\n/bin/sh -c '");
         script.extend_from_slice(WAIT_FOR_WAITER);
         script.extend_from_slice(SETTLE);
         settle_args(&mut script, b"\"$waiter\"");
@@ -239,13 +251,18 @@ mod terminal {
             script.extend(quote(arg));
         }
         // A CLI the watchdog stopped is published once the watchdog has seen what it started end; one that ended as
-        // its waiter went, once the script has.
+        // its waiter went, once the script has. One that ended as the sign-in was cancelled is settled once it is
+        // published.
         script.extend_from_slice(b"\ncode=$?\nif [ -f ");
         script.extend(file("stopping"));
         script.extend_from_slice(
             b" ]; then wait \"$watchdog\"; else kill \"$watchdog\" 2>/dev/null; kill -0 \"$waiter\" 2>/dev/null || \
-              stopped; fi\npublish \"$code\"\n",
+              stopped; fi\npublish \"$code\"\n[ -f ",
         );
+        script.extend(file("stopping"));
+        script.extend_from_slice(b" ] || [ ! -f ");
+        script.extend(file("cancel"));
+        script.extend_from_slice(b" ] || stopped\nend\n");
         script
     }
 
@@ -271,9 +288,12 @@ mod terminal {
     /// The CLI gets 3 s to end on the signal; one that ignores it is then killed (#349). Nothing else is signalled: it
     /// can be the browser the CLI opened, whose windows are the user's (SFL round 2 on #347). What the CLI started is
     /// waited for as long as it runs, renewing the mark that keeps `close_console` waiting, since a retry would overlap a
-    /// sign-in still running (#349). The terminal then says so, and closing it ends the wait (the script's hang-up
-    /// trap): a browser the CLI opened holds the sign-in only until the user closes the window. The wait also ends once
-    /// CodexBar (`$4`) or the script folder is gone: nothing then waits for the status.
+    /// sign-in still running (#349). The terminal then says so, and pressing Return there ends the wait: a browser the
+    /// CLI opened holds the sign-in only until the user does. Closing the window would end it too, but a terminal sends
+    /// its hang-up to everything in its foreground group, a browser the CLI started there among them, so the note
+    /// doesn't suggest it (SFL round 1 on #352). The process reading Return isn't waited for. Without a terminal to read,
+    /// as in the tests, the wait goes on. The wait also ends once CodexBar (`$4`) or the script folder is gone: nothing
+    /// then waits for the status.
     ///
     /// The script's hang-up trap runs the same, without waiting for the waiter (`$2` is `-`), before it reports a closed
     /// terminal: a process the CLI started that survives the hang-up is waited for as well, for the 3 s only.
@@ -322,15 +342,22 @@ done
 signal KILL \"$1\"
 [ \"$2\" != - ] || exit 0
 told=
-while [ -d \"${3%/*}\" ] && { [ -z \"$4\" ] || kill -0 \"$4\" 2>/dev/null; }; do
+reader=
+while [ -d \"${3%/*}\" ] && [ ! -f \"$3.done\" ] && { [ -z \"$4\" ] || kill -0 \"$4\" 2>/dev/null; }; do
   touch \"$3\" 2>/dev/null
-  settled \"$1\" && exit 0
+  settled \"$1\" && break
   if [ \"$quiet\" = 0 ] && [ -z \"$told\" ]; then
     told=1
-    echo \"CodexBar stopped this sign-in and is waiting for what it started to end. Close this window to stop waiting.\"
+    if true 2>/dev/null < /dev/tty; then
+      echo \"CodexBar stopped this sign-in and is waiting for what it started to end. Press Return to stop waiting.\" > /dev/tty
+      ( read -r line < /dev/tty; touch \"$3.done\" 2>/dev/null ) &
+      reader=$!
+      skip=\"$skip$reader \"
+    fi
   fi
   sleep 0.5
 done
+[ -z \"$reader\" ] || kill -KILL \"$reader\" 2>/dev/null
 ";
 
     /// Opens the script in Terminal (macOS) or the first terminal emulator found (Linux).
@@ -349,27 +376,57 @@ else exit 127; fi"#
         }
     }
 
-    /// Waits until the script in `folder` has written its status file (its CLI has ended), or the folder is gone (the
-    /// waiter read the status and deleted it). It waits up to `bound` for the watchdog to start stopping the CLI, then
-    /// for as long as the watchdog keeps renewing its `stopping` mark (#349): a CLI that outlasts the terminate signal,
-    /// or what it started, is still stopping, however long that takes. The terminal then says the user can close it.
+    /// Waits until the script in `folder` has ended (its `ended` mark: its CLI and what a cancelled CLI started have
+    /// ended, and its status is out), or the folder is gone (the waiter read the status and deleted it). It waits up to
+    /// `bound` for the watchdog to start stopping the CLI, then for as long as the watchdog keeps renewing its
+    /// `stopping` mark (#349, `Stopping`): a CLI that outlasts the terminate signal, or what it started, is still
+    /// stopping, however long that takes. The terminal then says the user can press Return to stop waiting.
     pub(super) fn await_status(folder: &Path, bound: std::time::Duration) {
-        let status = folder.join("status");
-        let stopping = folder.join("stopping");
-        let deadline = std::time::Instant::now() + bound;
-        while folder.exists()
-            && !status.exists()
-            && (std::time::Instant::now() < deadline || renewed(&stopping, super::STOPPING))
-        {
+        let ended = folder.join("ended");
+        let mut stopping = Stopping::new(folder.join("stopping"), bound);
+        while folder.exists() && !ended.exists() && stopping.goes_on() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
-    /// Whether the file at `path` was written in the last `within`.
-    pub(super) fn renewed(path: &Path, within: std::time::Duration) -> bool {
-        path.metadata()
-            .and_then(|meta| meta.modified())
-            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age < within))
+    /// Whether a stopped sign-in's watchdog is still stopping its CLI: within the bound it gets to start, or its mark
+    /// changed in the last `STOPPING`. Changes are timed by this process's own clock, not the mark's time, so a change
+    /// of the system clock neither ends the wait early nor holds it (SFL round 1 on #352).
+    pub(super) struct Stopping {
+        mark: std::path::PathBuf,
+        deadline: std::time::Instant,
+        seen: Option<std::time::SystemTime>,
+        changed: std::time::Instant,
+    }
+
+    impl Stopping {
+        pub(super) fn new(mark: std::path::PathBuf, bound: std::time::Duration) -> Self {
+            let now = std::time::Instant::now();
+            Self {
+                mark,
+                deadline: now + bound,
+                seen: None,
+                changed: now,
+            }
+        }
+
+        /// Looks at the mark again: whether the wait goes on.
+        pub(super) fn goes_on(&mut self) -> bool {
+            let modified = self.mark.metadata().and_then(|meta| meta.modified()).ok();
+            if modified != self.seen {
+                self.seen = modified;
+                self.changed = std::time::Instant::now();
+            }
+            std::time::Instant::now() < self.deadline
+                || (self.seen.is_some() && self.changed.elapsed() < super::STOPPING)
+        }
+    }
+
+    /// Marks the script folder `cancel`, if there is one, before its waiter is stopped (`Contained::close_console`).
+    pub(super) fn mark_cancelled(folder: Option<&Path>) {
+        if let Some(folder) = folder {
+            let _ = std::fs::write(folder.join("cancel"), "");
+        }
     }
 
     /// Starts `command` in a terminal: the waiting child, with the script folder it deletes when the CLI finishes.
@@ -517,7 +574,8 @@ mod tests {
                 "publish() { echo \"$1\" > '/tmp/x/status.tmp' && mv '/tmp/x/status.tmp' '/tmp/x/status'; }\n"
             )
         );
-        assert!(text.ends_with("publish \"$code\"\n"));
+        assert!(text.ends_with("] || stopped\nend\n"));
+        assert!(text.contains("\npublish \"$code\"\n"));
         // The watchdog reads no process's environment (SFL round 7 on #347).
         assert!(!text.contains("environ"));
         assert_eq!(quote(OsStr::new("a'b")), br"'a'\''b'");
@@ -674,22 +732,72 @@ mod tests {
 
     // #349: a CLI that ends on its own just as its waiter goes, before the watchdog's next check has seen the waiter go,
     // used to be published at once. What it started, here a process that ends on its own a second later, may still be
-    // signing in: the script waits for it as the watchdog would.
+    // signing in: the script waits for it as the watchdog would. The watchdog can still see the waiter go first; the
+    // CLI then records the terminate signal, and the run is tried again, so the script's own path is what passes (SFL
+    // round 1 on #352).
     #[test]
     fn a_cli_that_ends_as_its_waiter_goes_is_published_once_what_it_started_has_ended() {
-        let dir = folder("ended-first");
-        let holder = folder("ended-first-pid");
+        for _ in 0..5 {
+            let dir = folder("ended-first");
+            let holder = folder("ended-first-pid");
+            let mut waiter = Command::new("sleep").arg("30").spawn().unwrap();
+            std::fs::write(dir.join("waiter"), waiter.id().to_string()).unwrap();
+            let (pid_file, signalled) = (holder.join("started"), holder.join("signalled"));
+            let mut command = Command::new("sh");
+            command
+                .args([
+                    "-c",
+                    r#"trap 'echo > "$SIGNALLED"' TERM; ( sleep 1 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; while kill -0 "$WAITER" 2>/dev/null; do sleep 0.02; done"#,
+                ])
+                .env("PID_FILE", &pid_file)
+                .env("SIGNALLED", &signalled)
+                .env("WAITER", waiter.id().to_string());
+            let path = holder.join("script.sh");
+            std::fs::write(&path, script(&command, &dir)).unwrap();
+            let mut shell = run_script(&path).spawn().unwrap();
+            let waiting = Instant::now();
+            while !pid_file.exists() && waiting.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let started = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+            let _ = waiter.kill();
+            let _ = waiter.wait();
+            shell.wait().unwrap();
+            let running = runs(&started);
+            let watchdog_first = signalled.exists();
+            let status = std::fs::read_to_string(dir.join("status")).unwrap_or_default();
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&holder);
+            if watchdog_first {
+                // Let what it started end before the next run.
+                std::thread::sleep(Duration::from_millis(1200));
+                continue;
+            }
+            assert!(!running, "what the CLI started ended before its status was published");
+            assert_eq!(status.trim(), "0");
+            return;
+        }
+        panic!("the watchdog saw the waiter go first every time");
+    }
+
+    // SFL round 1 on #352: a CLI that ends just as the sign-in is cancelled, while its waiter still runs, is published at
+    // once. `close_console` has marked the folder `cancel` before stopping the waiter, so the script then waits for what
+    // the CLI started, here a process that ends on its own a second later, before it ends.
+    #[test]
+    fn a_cli_that_ends_as_the_sign_in_is_cancelled_ends_once_what_it_started_has_ended() {
+        let dir = folder("ended-at-cancel");
+        let holder = folder("ended-at-cancel-pid");
         let mut waiter = Command::new("sleep").arg("30").spawn().unwrap();
         std::fs::write(dir.join("waiter"), waiter.id().to_string()).unwrap();
-        let pid_file = holder.join("started");
+        let (pid_file, go) = (holder.join("started"), holder.join("go"));
         let mut command = Command::new("sh");
         command
             .args([
                 "-c",
-                r#"trap '' TERM; ( sleep 1 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; while kill -0 "$WAITER" 2>/dev/null; do sleep 0.02; done"#,
+                r#"( sleep 1 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; n=0; while [ ! -f "$GO" ] && [ "$n" -lt 600 ]; do sleep 0.02; n=$((n + 1)); done"#,
             ])
             .env("PID_FILE", &pid_file)
-            .env("WAITER", waiter.id().to_string());
+            .env("GO", &go);
         let path = holder.join("script.sh");
         std::fs::write(&path, script(&command, &dir)).unwrap();
         let mut shell = run_script(&path).spawn().unwrap();
@@ -698,15 +806,52 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         let started = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
-        let _ = waiter.kill();
-        let _ = waiter.wait();
+        // `close_console`'s mark, then the CLI ends while the waiter still runs.
+        super::terminal::mark_cancelled(Some(&dir));
+        std::fs::write(&go, "").unwrap();
         shell.wait().unwrap();
         let running = runs(&started);
-        let status = std::fs::read_to_string(dir.join("status")).unwrap_or_default();
+        let ended = dir.join("ended").exists();
+        let _ = waiter.kill();
+        let _ = waiter.wait();
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&holder);
-        assert!(!running, "what the CLI started ended before its status was published");
-        assert_eq!(status.trim(), "0");
+        assert!(!running, "what the CLI started ended before the script did");
+        assert!(ended, "the script marked its end");
+    }
+
+    // SFL round 1 on #352: the wait follows the `stopping` mark's changes on this process's clock, so a mark whose time
+    // reads as the future, after the system clock was set back, still keeps the wait going while it changes.
+    #[test]
+    fn a_stopping_mark_from_the_future_still_keeps_the_wait_going() {
+        let dir = folder("future-mark");
+        let stopping = dir.join("stopping");
+        std::fs::write(&stopping, "").unwrap();
+        let renewing = {
+            let stopping = stopping.clone();
+            std::thread::spawn(move || {
+                let ahead = std::time::SystemTime::now() + Duration::from_secs(3600);
+                for step in 0..12 {
+                    if let Ok(file) = std::fs::File::options().write(true).open(&stopping) {
+                        let _ = file.set_modified(ahead + Duration::from_secs(step));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            })
+        };
+        let started = Instant::now();
+        super::terminal::await_status(&dir, Duration::from_millis(200));
+        let waited = started.elapsed();
+        renewing.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            waited >= Duration::from_millis(1100),
+            "waited while the mark changed: {waited:?}"
+        );
+        assert!(
+            waited < Duration::from_secs(5),
+            "ended once it stopped changing: {waited:?}"
+        );
     }
 
     // #349: a watchdog still stopping the CLI renews its `stopping` mark, and the wait goes on past the bound for as long
