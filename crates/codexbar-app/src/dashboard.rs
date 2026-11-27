@@ -602,15 +602,53 @@ fn note_discovered(discovered: &mut Vec<String>, rows: &[AccountSnapshot], reads
     }
 }
 
-/// True when `account` is a Copilot row none of `named` names and Copilot failed as a whole for want of a sign-in
-/// (`signed_out` lists such providers): the GitHub CLI reads no user, so discovery reads none either, and the row is
-/// left from before (SFL round 4 on #348). Copilot's placeholder stays with its failure.
-fn signed_out_of_discovery(account: &AccountSnapshot, signed_out: &[&'static str], named: &[String]) -> bool {
+/// True when `account` is a Copilot row kept for discovery (`kept`) that no record names now (`named`), and Copilot
+/// failed as a whole for want of a sign-in (`signed_out` lists such providers): the GitHub CLI may read no user, and
+/// the row stayed only because discovery was to stand in (SFL round 4 on #348). Rows discovery alone showed keep their
+/// last good usage as before: an older GitHub CLI also fails this way when one of several logins expired (SFL round 5).
+fn signed_out_of_discovery(
+    account: &AccountSnapshot,
+    signed_out: &[&'static str],
+    named: &[String],
+    kept: &[String],
+) -> bool {
     let id = account.id().as_str();
     account.provider() == Provider::Copilot
         && signed_out.contains(&Provider::Copilot.display_name())
-        && !id.starts_with(PLACEHOLDER_PREFIX)
+        && kept.iter().any(|row| row == id)
         && !named.iter().any(|read| read == id)
+}
+
+/// The ids of `rows`.
+fn refreshed_ids(rows: &[AccountSnapshot]) -> Vec<String> {
+    rows.iter().map(|account| account.id().as_str().to_owned()).collect()
+}
+
+/// `accounts` without those in `removed`: the accounts a settings change stopped naming whose rows stay for discovery,
+/// or the kept rows a fetch hasn't read again.
+fn without(accounts: Vec<String>, removed: &[String]) -> Vec<String> {
+    accounts
+        .into_iter()
+        .filter(|account| !removed.contains(account))
+        .collect()
+}
+
+/// `copilot_reads` for rows restored at start, whose snapshots don't say how they were read: a user any CodexBar sign-in
+/// names, switched off or not, may hold that sign-in's usage, which discovery doesn't read (SFL round 5 on #348).
+fn restored_reads(hub: &SettingsHub) -> CopilotReads {
+    let mut reads = copilot_reads(hub);
+    let users = hub.settings().accounts().iter().filter(|record| {
+        record.provider == codexbar_store::settings::names::COPILOT && crate::github_sign_in::is_managed(record)
+    });
+    for record in users {
+        reads.signed_in.extend(
+            record
+                .external_id
+                .as_deref()
+                .map(|user| codexbar_providers::copilot::account_id(user.trim()).as_str().to_owned()),
+        );
+    }
+    reads
 }
 
 /// Whether `account` stays after a settings change that leaves `adapters` (#192): one of them serves it, and it isn't a
@@ -745,6 +783,9 @@ pub struct Dashboard {
     /// when that fetch started): discovery can stand in for them (SFL round 2 on #348). A row fetched with CodexBar's
     /// token, or with a record's enterprise billing, isn't one, though the settings since may no longer say so.
     discovered_rows: Vec<String>,
+    /// The Copilot users a settings change stopped naming whose rows stayed for discovery, until a fetch reads them
+    /// again: they go if Copilot then fails as a whole for want of a sign-in (`signed_out_of_discovery`).
+    kept_rows: Vec<String>,
     /// The window placement last saved (#194), and one seen since that is saved once it stays the same for a tick,
     /// so a drag or resize is written once it ends rather than at every step.
     placement: Option<codexbar_store::prefs::WindowPlacement>,
@@ -1014,6 +1055,7 @@ impl Dashboard {
             copilot_read: Default::default(),
             refresh_read: Default::default(),
             discovered_rows: Vec::new(),
+            kept_rows: Vec::new(),
             placement: crate::prefs_hub::PrefsHub::window_placement(cx),
             placement_pending: None,
             #[cfg(windows)]
@@ -1859,7 +1901,8 @@ impl Dashboard {
         accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), SettingsHub::global(cx)));
         note_discovered(&mut self.discovered_rows, &refreshed, &self.refresh_read);
         let named = copilot_reads(SettingsHub::global(cx)).named;
-        accounts.retain(|account| !signed_out_of_discovery(account, &signed_out, &named));
+        accounts.retain(|account| !signed_out_of_discovery(account, &signed_out, &named, &self.kept_rows));
+        self.kept_rows = without(std::mem::take(&mut self.kept_rows), &refreshed_ids(&refreshed));
         // Placeholders that a result replaced (or that left with their provider) are gone.
         self.placeholders
             .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
@@ -1974,7 +2017,7 @@ impl Dashboard {
         note_discovered(
             &mut self.discovered_rows,
             &restored,
-            &copilot_reads(SettingsHub::global(cx)),
+            &restored_reads(SettingsHub::global(cx)),
         );
         self.set_accounts(restored, cx);
     }
@@ -2115,7 +2158,9 @@ impl Dashboard {
         let lost = lost_reads(&self.copilot_read, &reads, &self.discovered_rows);
         // Any account a record stopped naming, though its row stays for discovery: the refresh shows whether discovery
         // still finds that user (SFL round 3 on #348).
-        let rediscover = reads.discovers && !lost_reads(&self.copilot_read, &reads, &[]).is_empty();
+        let gone = lost_reads(&self.copilot_read, &reads, &[]);
+        let rediscover = reads.discovers && !gone.is_empty();
+        self.kept_rows.extend(without(gone, &lost));
         self.copilot_read = reads;
         let added = more || rediscover || adapters.iter().any(|adapter| !self.configured.contains(adapter));
         (added, lost)

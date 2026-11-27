@@ -3103,6 +3103,74 @@ fn a_kept_user_goes_when_the_github_cli_reads_no_one(cx: &mut TestAppContext) {
     );
 }
 
+// SFL round 5 on #348: a user discovery alone shows keeps their last good row when Copilot fails as a whole, not
+// signed in, as before: an older GitHub CLI fails this way when one of several logins expired.
+#[gpui_kit::test]
+fn a_discovered_user_keeps_their_row_when_copilot_says_not_signed_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-discovered-not-signed-in",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let signed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let failing = FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::NotSignedIn {
+        hint: "Sign in to the GitHub CLI.",
+    }) as Arc<dyn UsageProvider>;
+    let switch = signed_out.clone();
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_: &SettingsHub| {
+        vec![if switch.load(std::sync::atomic::Ordering::SeqCst) {
+            failing.clone()
+        } else {
+            users.clone()
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    signed_out.store(true, std::sync::atomic::Ordering::SeqCst);
+    refresh(cx, &dashboard);
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "her last good usage stays, marked failed"
+    );
+}
+
+// SFL round 5 on #348: a row restored at start whose user still has a switched-off CodexBar sign-in may hold that
+// sign-in's usage. Switching off her Command line record takes it away, though discovery is on.
+#[gpui_kit::test]
+fn a_restored_row_a_codexbar_sign_in_may_have_read_goes_with_its_last_record(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-restored-oauth-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": false,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-alice-cli", "providerId": "Copilot", "displayLabel": "Alice (CLI)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now());
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    let limited =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::Http { status: 429 });
+    let dashboard = open_live_fixed(cx, &settings, vec![limited as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    let alice = alice.as_str().to_owned();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "restored, through a rate-limited start"
+    );
+    switch_off(cx, "cp-alice-cli");
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "not one discovery is known to read"
+    );
+}
+
 /// Greptile's adapter for its record `account`, whose account failed: its failure row carries that account's id.
 struct FailsFor {
     account: &'static str,
