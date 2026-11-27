@@ -540,12 +540,6 @@ mod tests {
         out.status.success() && !state.trim().is_empty() && !state.contains('Z')
     }
 
-    /// A fixture's `register PID`: what `/proc` would show for a process the CLI started, which inherits the script's
-    /// mark, written to the test's own `CODEXBAR_PROC` folder. The watchdog reads that folder, never the host's `/proc`
-    /// (Codex on #347).
-    #[cfg(unix)]
-    const REGISTER: &str = r#"register() { mkdir -p "$CODEXBAR_PROC/$1" && printf 'CODEXBAR_SIGN_IN=%s\000' "$CODEXBAR_SIGN_IN" > "$CODEXBAR_PROC/$1/environ"; }"#;
-
     /// Starts `script` as the CLI through the real waiter and terminal script (run by `sh`, no window), cancels it once
     /// it has left a process id in `$PID_FILE`, and says what `finish` left behind.
     #[cfg(unix)]
@@ -557,13 +551,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codexbar-cli-stop-{name}-{}-{nanos}", std::process::id()));
         // A folder of this test's own: one already there, which another user could have made, fails the test.
         std::fs::create_dir(&dir).unwrap();
-        let (pid_file, signalled, procs) = (dir.join("cli"), dir.join("signalled"), dir.join("proc"));
-        std::fs::create_dir(&procs).unwrap();
+        let (pid_file, signalled) = (dir.join("cli"), dir.join("signalled"));
         let mut base = Command::new("/bin/sh");
-        base.args(["-c", &format!("{REGISTER}\n{script}")])
+        base.args(["-c", script])
             .env("PID_FILE", &pid_file)
-            .env("SIGNALLED", &signalled)
-            .env("CODEXBAR_PROC", &procs);
+            .env("SIGNALLED", &signalled);
         let window = open_with(
             Cli::Codex,
             Some(base),
@@ -624,13 +616,13 @@ mod tests {
     // was found as exits on the signal without passing it on, or the browser the CLI opened. `finish` waits for it, a
     // few seconds at most, and never signals it: a browser's windows are the user's.
     // SFL round 4 on #347: a wrapper that starts the CLI just as it exits on the signal leaves it to another parent before
-    // the watchdog has seen it. The watchdog still waits for it, on Linux, where it finds the CLI by its environment;
-    // macOS shows no other process's environment.
+    // the watchdog has seen it. The watchdog still waits for it, on Linux, where it follows the script's session; macOS
+    // follows the process tree.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits() {
         let wrapper = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
-trap '( sleep 2.5 ) & register $!; echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exit 0' TERM
+trap '( sleep 2.5 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exit 0' TERM
 while :; do sleep 0.1; done"#;
         assert_eq!(
             stop("late", wrapper),
@@ -646,7 +638,7 @@ while :; do sleep 0.1; done"#;
     #[test]
     fn a_stopped_sign_in_waits_for_what_its_cli_started_without_signalling_it() {
         // A process that ends on its own 2.5 s after it starts, and says so if it is signalled first.
-        let started = r#"( trap 'echo > "$SIGNALLED"; exit 1' TERM; sleep 2.5 & wait ) & register $!; echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
+        let started = r#"( trap 'echo > "$SIGNALLED"; exit 1' TERM; sleep 2.5 & wait ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
         assert_eq!(
             stop("started", started),
             Stopped {
