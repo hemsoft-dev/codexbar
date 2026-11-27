@@ -188,6 +188,13 @@ mod terminal {
         // started has ended too (`settle`, SFL round 5 on #347). The CLI ends with CodexBar's sign-in: once the waiter is
         // gone (cancelled, timed out, or CodexBar quit), the watchdog stops the CLI before it can finish a sign-in
         // nobody is waiting for (`SETTLE`).
+        // Where the watchdog reads processes' environments on Linux: `/proc`, or a test's fixture folder, which the test
+        // names with `CODEXBAR_PROC`. A test never reads the host's (Codex on #347).
+        let procs = command
+            .get_envs()
+            .find(|(name, _)| *name == "CODEXBAR_PROC")
+            .and_then(|(_, value)| value)
+            .unwrap_or(OsStr::new(PROCS));
         let settle_args = |script: &mut Vec<u8>, waiter: &[u8]| {
             script.extend_from_slice(b"' sh $$ ");
             script.extend_from_slice(waiter);
@@ -195,6 +202,8 @@ mod terminal {
             script.extend(file("stopping"));
             script.push(b' ');
             script.extend(quote(dir.as_os_str()));
+            script.push(b' ');
+            script.extend(quote(procs));
         };
         script.extend_from_slice(b"; }\nsettle() { /bin/sh -c '");
         script.extend_from_slice(SETTLE);
@@ -241,8 +250,17 @@ mod terminal {
         script
     }
 
-    /// The script's watchdog, run by `sh -c` with the script's process id, the waiter's, the `stopping` file and the
-    /// script folder, so `$$` is its own: it waits for the waiter to go, then settles (`SETTLE`).
+    /// The processes the watchdog reads on Linux. A test build reads none unless the test names a fixture folder: tests
+    /// never read the host's processes' environments (AGENTS.md, Codex on #347).
+    const PROCS: &str = if cfg!(test) {
+        "/nonexistent/codexbar-test-proc"
+    } else {
+        "/proc"
+    };
+
+    /// The script's watchdog, run by `sh -c` with the script's process id, the waiter's, the `stopping` file, the
+    /// script folder and where processes are read (`PROCS`), so `$$` is its own: it waits for the waiter to go, then
+    /// settles (`SETTLE`).
     const WAIT_FOR_WAITER: &[u8] = b"while sleep 1; kill -0 \"$2\" 2>/dev/null; do :; done\n";
 
     /// What the watchdog does once the waiter is gone: it marks `stopping` and sends the CLI the terminate
@@ -263,11 +281,12 @@ mod terminal {
     /// terminal: a process the CLI started that survives the hang-up is waited for as well.
     const SETTLE: &[u8] = b"true 2>/dev/null > \"$3\"
 mark=\"CODEXBAR_SIGN_IN=$4\"
+procs=\"$5\"
 tree() { for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || { echo \"$child\"; tree \"$child\"; }; done; }
 seen=$(echo $(tree \"$1\"))
 look() {
   if [ -d /proc/self ]; then
-    pids=$(grep -lsxzF \"$mark\" /proc/[0-9]*/environ | sed -e \"s|^/proc/||\" -e \"s|/environ\\$||\")
+    pids=$(grep -lsxzF \"$mark\" \"$procs\"/[0-9]*/environ | sed -e \"s|^$procs/||\" -e \"s|/environ\\$||\")
   else
     for pid in $(tree \"$1\"); do case \" $seen \" in *\" $pid \"*) ;; *) seen=\"$seen $pid\" ;; esac; done
     pids=$seen
@@ -450,6 +469,8 @@ mod tests {
             )
         );
         assert!(text.ends_with("publish \"$code\"\n"));
+        // A test's watchdog reads no process environments unless the test names its own fixture folder (Codex on #347).
+        assert!(text.contains(" '/nonexistent/codexbar-test-proc' &\n"));
         assert_eq!(quote(OsStr::new("a'b")), br"'a'\''b'");
         // A path that isn't UTF-8 keeps its bytes.
         use std::os::unix::ffi::OsStrExt as _;
@@ -527,13 +548,19 @@ mod tests {
         let holder = folder("hangup-survivor-pid");
         std::fs::write(dir.join("waiter"), std::process::id().to_string()).unwrap();
         let pid_file = holder.join("survivor");
+        // The survivor's entry in the test's own process folder, as `/proc` would show it (Codex on #347).
+        let procs = holder.join("proc");
+        std::fs::create_dir(&procs).unwrap();
         let mut command = Command::new("sh");
         command
             .args([
                 "-c",
-                r#"( trap '' HUP; sleep 2 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#,
+                r#"( trap '' HUP; sleep 2 ) & p=$!
+mkdir -p "$CODEXBAR_PROC/$p" && printf 'CODEXBAR_SIGN_IN=%s\000' "$CODEXBAR_SIGN_IN" > "$CODEXBAR_PROC/$p/environ"
+echo $p > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#,
             ])
-            .env("PID_FILE", &pid_file);
+            .env("PID_FILE", &pid_file)
+            .env("CODEXBAR_PROC", &procs);
         let path = holder.join("script.sh");
         std::fs::write(&path, script(&command, &dir)).unwrap();
         use std::os::unix::process::CommandExt as _;
