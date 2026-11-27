@@ -50,10 +50,12 @@ pub const NO_SEAT_NOTE: &str = "No Copilot seat on this account.";
 pub fn seatless_note_orgs(message: &str) -> Option<Vec<String>> {
     let rest = message.strip_prefix(NO_SEAT_NOTE)?;
     let mut orgs = Vec::new();
-    for sentence in rest.split_inclusive('.') {
-        let Some((list, _)) = sentence.trim().split_once("'s AI credits") else {
-            continue;
-        };
+    let mut pieces: Vec<&str> = rest.split("'s AI credits").collect();
+    pieces.pop();
+    // Each list runs from the last sentence end (". ") before its "'s AI credits": an organization a URL was pasted
+    // for can hold periods itself (SFL round 4 on #351).
+    for piece in pieces {
+        let list = piece.rsplit(". ").next().unwrap_or(piece).trim();
         let list = list.strip_prefix("It shows ").unwrap_or(list);
         orgs.extend(list.split(" and ").map(str::to_owned));
     }
@@ -1353,6 +1355,13 @@ mod tests {
             Some(vec!["acme".to_owned(), "globex".to_owned()])
         );
         assert_eq!(seatless_note_orgs("Usage is delayed by up to an hour"), None);
+        // SFL round 4 on #351: an organization pasted as a URL keeps its periods.
+        assert_eq!(
+            seatless_note_orgs(
+                "No Copilot seat on this account. https://github.com/acme.inc's AI credits couldn't be read with it."
+            ),
+            Some(vec!["https://github.com/acme.inc".to_owned()])
+        );
     }
 
     // #350: a GitHub CLI without `--json` exits nonzero when one of its logins expired. The users whose login works are

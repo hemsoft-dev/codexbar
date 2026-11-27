@@ -3944,6 +3944,130 @@ fn a_saved_seatless_row_isn_t_restored_once_its_billing_is_off(cx: &mut TestAppC
     );
 }
 
+/// A credential store whose one token, `cp-alice`'s, is there for its first read only: removed from outside while a
+/// refresh starts.
+#[derive(Default)]
+struct RemovedAfterFirstRead {
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl CredentialStore for RemovedAfterFirstRead {
+    fn read(&self, account_id: &str) -> Result<Option<String>, CredentialError> {
+        let first = account_id == "cp-alice" && self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        Ok(first.then(|| "gho_alice".to_owned()))
+    }
+
+    fn write(&self, _: &str, _: &str) -> Result<(), CredentialError> {
+        Ok(())
+    }
+
+    fn delete(&self, _: &str) -> Result<(), CredentialError> {
+        Ok(())
+    }
+}
+
+// SFL round 4 on #351: the adapters read Alice's CodexBar token as a refresh starts, and it is gone by the time the
+// dashboard notes how that refresh reads her. Either read finding it counts, so her row isn't taken for one discovery
+// reads, and switching her sign-in off takes it away though discovery is on.
+#[gpui_kit::test]
+fn a_token_removed_as_a_refresh_starts_still_counts_as_signed_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-token-removed-at-start",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on {
+            users.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, RemovedAfterFirstRead::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "the sign-in's usage doesn't stay for discovery"
+    );
+}
+
+// SFL round 4 on #351: Alice stayed for discovery after her record was switched off, and a rate-limited refresh hasn't
+// read her again; that is saved with her row.
+#[gpui_kit::test]
+fn a_kept_user_is_saved_as_kept(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-saved",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on {
+            users.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(ids(cx, &dashboard).contains(&alice), "kept for discovery");
+    assert_eq!(codexbar_store::snapshots::load_kept(&settings.0), [alice]);
+}
+
+// SFL round 4 on #351: a row saved as kept for discovery is still kept after a restart, so it goes when the startup
+// refresh finds the GitHub CLI signed in to no one.
+#[gpui_kit::test]
+fn a_row_saved_as_kept_goes_when_the_github_cli_reads_no_one_after_a_restart(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-across-restart",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now());
+    let ids_saved = [alice.as_str().to_owned()];
+    codexbar_store::snapshots::save_copilot_snapshots(&settings.0, &[saved], &ids_saved, &ids_saved).unwrap();
+    let signed_out =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::NotSignedIn {
+            hint: "Sign in to the GitHub CLI.",
+        });
+    let dashboard = open_live_fixed(cx, &settings, vec![signed_out as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    assert!(
+        !ids(cx, &dashboard).contains(&alice.as_str().to_owned()),
+        "no one signed in, so no one discovered"
+    );
+}
+
 /// Greptile's adapter for its record `account`, whose account failed: its failure row carries that account's id.
 struct FailsFor {
     account: &'static str,

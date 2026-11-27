@@ -49,21 +49,33 @@ pub fn load_snapshots(dir: &Path) -> Vec<AccountSnapshot> {
         .unwrap_or_default()
 }
 
-/// The ids of the Copilot rows saved in `dir` that were read the way discovery reads them (`save_discovered_snapshots`),
+/// The ids of the Copilot rows saved in `dir` that were read the way discovery reads them (`save_copilot_snapshots`),
 /// or `None` when the snapshots don't say: saved by a build from before #350, or none can be read.
 pub fn load_discovered(dir: &Path) -> Option<Vec<String>> {
+    load_ids(dir, DISCOVERED)
+}
+
+/// The ids of the saved Copilot rows that stayed for discovery after their record was switched off, awaiting a fetch
+/// that reads them again (`save_copilot_snapshots`, SFL round 4 on #351); none when the snapshots don't say.
+pub fn load_kept(dir: &Path) -> Vec<String> {
+    load_ids(dir, KEPT).unwrap_or_default()
+}
+
+fn load_ids(dir: &Path, key: &str) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(dir.join(SNAPSHOTS_FILE)).ok()?;
     let doc = serde_json::from_str::<Value>(&text).ok()?;
     doc.get("version")
         .and_then(Value::as_u64)
         .filter(|v| (1..=VERSION).contains(v))?;
-    let ids = doc.get(DISCOVERED)?.as_array()?;
+    let ids = doc.get(key)?.as_array()?;
     Some(ids.iter().filter_map(Value::as_str).map(str::to_owned).collect())
 }
 
-/// Which saved Copilot rows were read the way discovery reads them (#350). An older build ignores it, and drops it when
-/// it saves: the next start then can't tell (`load_discovered`).
+/// Which saved Copilot rows were read the way discovery reads them (#350), and which of them stayed for discovery
+/// after their record was switched off (SFL round 4 on #351). An older build ignores them, and drops them when it
+/// saves: the next start then can't tell (`load_discovered`).
 const DISCOVERED: &str = "copilotDiscovered";
+const KEPT: &str = "copilotKept";
 
 /// Saves snapshots, replacing the file atomically. A file from a newer CodexBar is left alone, so running an older
 /// build once doesn't destroy the newer one's data.
@@ -74,10 +86,20 @@ pub fn save_snapshots(dir: &Path, accounts: &[AccountSnapshot]) -> io::Result<()
 /// `save_snapshots`, with the ids of the Copilot rows among `accounts` that were read the way discovery reads them
 /// (#350): the records that read the others may be gone by the next start.
 pub fn save_discovered_snapshots(dir: &Path, accounts: &[AccountSnapshot], discovered: &[String]) -> io::Result<()> {
-    save(dir, accounts, Some(discovered))
+    save(dir, accounts, Some((discovered, &[])))
 }
 
-fn save(dir: &Path, accounts: &[AccountSnapshot], discovered: Option<&[String]>) -> io::Result<()> {
+/// `save_discovered_snapshots`, with the ids of the rows among them kept for discovery (`load_kept`).
+pub fn save_copilot_snapshots(
+    dir: &Path,
+    accounts: &[AccountSnapshot],
+    discovered: &[String],
+    kept: &[String],
+) -> io::Result<()> {
+    save(dir, accounts, Some((discovered, kept)))
+}
+
+fn save(dir: &Path, accounts: &[AccountSnapshot], copilot: Option<(&[String], &[String])>) -> io::Result<()> {
     let existing = std::fs::read_to_string(dir.join(SNAPSHOTS_FILE))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -92,8 +114,9 @@ fn save(dir: &Path, accounts: &[AccountSnapshot], discovered: Option<&[String]>)
         "version": VERSION,
         "accounts": accounts.iter().map(account_to_json).collect::<Vec<_>>(),
     });
-    if let Some(discovered) = discovered {
+    if let Some((discovered, kept)) = copilot {
         doc[DISCOVERED] = json!(discovered);
+        doc[KEPT] = json!(kept);
     }
     let text = serde_json::to_string_pretty(&doc).map_err(io::Error::other)?;
     std::fs::create_dir_all(dir)?;
@@ -967,6 +990,11 @@ mod tests {
         assert_eq!(load_snapshots(&dir.0), std::slice::from_ref(&alice));
         save_discovered_snapshots(&dir.0, std::slice::from_ref(&alice), &[]).unwrap();
         assert_eq!(load_discovered(&dir.0), Some(Vec::new()), "none read that way");
+        assert!(load_kept(&dir.0).is_empty());
+        // SFL round 4 on #351: and which of them stay for discovery.
+        let ids = ["copilot-alice".to_owned()];
+        save_copilot_snapshots(&dir.0, std::slice::from_ref(&alice), &ids, &ids).unwrap();
+        assert_eq!(load_kept(&dir.0), ids);
         std::fs::write(
             dir.0.join(SNAPSHOTS_FILE),
             r#"{ "version": 5, "accounts": [], "copilotDiscovered": ["x"] }"#,

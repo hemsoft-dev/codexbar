@@ -387,6 +387,17 @@ fn fetch_reads(hub: &SettingsHub) -> CopilotReads {
     })
 }
 
+/// `reads`, with every user `earlier` counted as signed in counted so too: when the two disagree on a CodexBar sign-in,
+/// its row isn't taken for one discovery reads (SFL round 4 on #351).
+fn with_sign_ins(mut reads: CopilotReads, earlier: CopilotReads) -> CopilotReads {
+    for user in earlier.signed_in {
+        if !reads.signed_in.contains(&user) {
+            reads.signed_in.push(user);
+        }
+    }
+    reads
+}
+
 /// What Copilot reads under the current settings, `signed_in` telling which records it fetches with CodexBar's token.
 fn reads_with(hub: &SettingsHub, signed_in: impl Fn(&codexbar_store::settings::AccountRecord) -> bool) -> CopilotReads {
     let mut reads = CopilotReads {
@@ -1785,6 +1796,9 @@ impl Dashboard {
         let (history, factory) = providers;
         // Account settings may have changed since the last refresh (a first configured account added).
         migrate_legacy_ids(&history, cx);
+        // Sign-ins read before the adapters are built, which read them too: a token removed meanwhile may still be the
+        // one the adapter fetches with (SFL round 4 on #351).
+        let signed_in = fetch_reads(SettingsHub::global(cx));
         let mut providers = factory(SettingsHub::global(cx));
         if let Some((name, account)) = &only {
             providers.retain(|provider| {
@@ -1792,7 +1806,7 @@ impl Dashboard {
             });
         }
         self.refresh_revision = SettingsHub::revision(cx);
-        self.refresh_read = fetch_reads(SettingsHub::global(cx));
+        self.refresh_read = with_sign_ins(fetch_reads(SettingsHub::global(cx)), signed_in);
         self.loading = true;
         self.fetch_partial = only.is_some();
         self.show_placeholders(&providers, cx);
@@ -2126,20 +2140,25 @@ impl Dashboard {
         accounts.extend(last_good);
     }
 
-    /// Notes which `restored` Copilot rows discovery read, as saved with them (#350). Snapshots from an older build
-    /// don't say, and fall back to what the settings may have read them with (`restored_reads`).
+    /// Notes which `restored` Copilot rows discovery read, and which of them stay for discovery awaiting a fetch, as
+    /// saved with them (#350, SFL round 4 on #351). Snapshots from an older build don't say, and fall back to what the
+    /// settings may have read them with (`restored_reads`).
     fn note_restored_discovery(&mut self, restored: &[AccountSnapshot], cx: &gpui_kit::App) {
         let hub = SettingsHub::global(cx);
         let Some(saved) = codexbar_store::snapshots::load_discovered(hub.dir()) else {
             note_discovered(&mut self.discovered_rows, restored, &restored_reads(hub));
             return;
         };
+        let kept = codexbar_store::snapshots::load_kept(hub.dir());
         for account in restored
             .iter()
             .filter(|account| account.provider() == Provider::Copilot)
         {
             let id = account.id().as_str().to_owned();
             self.discovered_rows.retain(|shown| shown != &id);
+            if kept.contains(&id) {
+                keep(&mut self.kept_rows, vec![id.clone()]);
+            }
             if saved.contains(&id) {
                 self.discovered_rows.push(id);
             }
@@ -2165,7 +2184,15 @@ impl Dashboard {
             .filter(|id| real.iter().any(|account| account.id().as_str() == id.as_str()))
             .cloned()
             .collect();
-        let _ = codexbar_store::snapshots::save_discovered_snapshots(SettingsHub::global(cx).dir(), &real, &discovered);
+        // And which of them stay for discovery awaiting a fetch, so a restart doesn't lose that (SFL round 4 on #351).
+        let kept: Vec<String> = self
+            .kept_rows
+            .iter()
+            .filter(|id| real.iter().any(|account| account.id().as_str() == id.as_str()))
+            .cloned()
+            .collect();
+        let _ =
+            codexbar_store::snapshots::save_copilot_snapshots(SettingsHub::global(cx).dir(), &real, &discovered, &kept);
     }
 
     /// Shows the last-good snapshots from the previous run until the first fetch returns.
