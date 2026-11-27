@@ -3278,17 +3278,23 @@ fn a_kept_row_keeps_its_last_good_usage_past_a_billed_fetch_from_before_the_chan
               "authenticationMethod": "CommandLine" } ] }"#,
     );
     let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    // The billed fetch's row says so, so the test tells it from her last good row (SFL round 1 on #351).
+    let billed: Arc<dyn UsageProvider> = Arc::new(AliceNoted {
+        note: Some("Shows Acme's AI credits."),
+    });
     let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
-        let alice_on = hub
+        let record = hub
             .settings()
             .accounts()
             .iter()
-            .any(|record| record.id == "cp-alice" && record.enabled);
-        vec![if alice_on {
-            users.clone()
-        } else {
-            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
-                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+            .find(|record| record.id == "cp-alice")
+            .cloned()
+            .unwrap();
+        vec![match (record.enabled, record.copilot_enterprise.is_some()) {
+            (true, true) => billed.clone(),
+            (true, false) => users.clone(),
+            (false, _) => FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>,
         }]
     });
     let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
@@ -3315,6 +3321,7 @@ fn a_kept_row_keeps_its_last_good_usage_past_a_billed_fetch_from_before_the_chan
         ids(cx, &dashboard).contains(&alice),
         "her last good row stays through the rate-limited refresh"
     );
+    assert!(!alice_notes(cx, &dashboard, "Acme"), "not the billed fetch's row");
 }
 
 // #350: a record for Alice added while discovery is on, and switched off before its first result came, found no row of
@@ -3493,6 +3500,229 @@ fn switching_off_a_business_billing_record_drops_a_seatless_user_s_row(cx: &mut 
     assert!(
         !ids(cx, &dashboard).contains(&alice),
         "the organization's note doesn't outlive its record"
+    );
+}
+
+/// Copilot reading Alice with usage of her own and, when `note` is set, the note an enterprise's billing adds.
+struct AliceNoted {
+    note: Option<&'static str>,
+}
+
+impl UsageProvider for AliceNoted {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        let alice = AccountSnapshot::new(
+            codexbar_providers::copilot::account_id("alice"),
+            Provider::Copilot,
+            vec![codexbar_core::Metric::Activity {
+                label: "Premium requests".into(),
+                count: 3,
+            }],
+            now,
+        )
+        .with_label("alice");
+        Ok(vec![codexbar_providers::AccountOutcome::Fresh(match self.note {
+            Some(note) => alice.with_message(note),
+            None => alice,
+        })])
+    }
+}
+
+/// `AliceNoted` once, then GitHub rate-limiting Copilot: counts the fetches themselves, not the factory's calls, which
+/// also list the configured adapters.
+struct NotedOnce {
+    fetches: std::sync::atomic::AtomicUsize,
+    first: AliceNoted,
+}
+
+impl UsageProvider for NotedOnce {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        if self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            self.first.fetch_outcomes(now)
+        } else {
+            Err(ProviderError::Http { status: 429 })
+        }
+    }
+}
+
+/// Whether Alice's shown row carries a note mentioning `text`.
+fn alice_notes(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>, text: &str) -> bool {
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    cx.update(|cx| {
+        dashboard
+            .read(cx)
+            .account(&alice)
+            .is_some_and(|row| row.messages().iter().any(|message| message.contains(text)))
+    })
+}
+
+// SFL round 1 on #351: Alice kept for discovery after her record was switched off is no longer kept once that record
+// is switched on again, here with an enterprise's billing. An unrelated change while its fetch runs doesn't swap her
+// billed row for the older one, and a rate-limited refresh after keeps the billed row.
+#[gpui_kit::test]
+fn a_user_switched_on_again_keeps_their_billed_row_past_an_unrelated_change(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-user-back-on",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let billed = Arc::new(NotedOnce {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+        first: AliceNoted {
+            note: Some("Shows Acme's AI credits."),
+        },
+    });
+    let billed_fetches = billed.clone();
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let record = hub
+            .settings()
+            .accounts()
+            .iter()
+            .find(|record| record.id == "cp-alice")
+            .cloned()
+            .unwrap();
+        let limited = || {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        };
+        vec![match (record.enabled, record.copilot_enterprise.is_some()) {
+            (false, _) => limited(),
+            (true, false) => users.clone(),
+            // Her first billed fetch, then GitHub rate-limits Copilot.
+            (true, true) => billed.clone() as Arc<dyn UsageProvider>,
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(ids(cx, &dashboard).contains(&alice), "kept for discovery");
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            record.enabled = true;
+            record.copilot_organization = Some("acme".into());
+            record.copilot_enterprise = Some("acme-ent".into());
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    // An unrelated change while that fetch runs.
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings.accounts().iter().find(|a| a.id == "cp-cli").cloned().unwrap();
+            record.label = "Every GitHub CLI user".into();
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        alice_notes(cx, &dashboard, "Acme"),
+        "her billed row stays through the rate-limited refresh"
+    );
+    assert_eq!(billed_fetches.fetches.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+// SFL round 1 on #351: Alice has no seat, and one of her two records bills an organization on its own, which fills her
+// row with its credits. Switching that record off takes the row away though the other record still names her: her next
+// fetch reports the missing seat, and would otherwise keep the old row with the organization's note.
+#[gpui_kit::test]
+fn switching_off_a_seatless_user_s_billing_record_drops_its_note_beside_another_record(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-two-records",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-alice-2", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> = Arc::new(SeatlessAlice);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let billing_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if billing_on {
+            seatless.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    assert!(alice_notes(cx, &dashboard, "acme's AI credits"));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    assert!(
+        !alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the organization's note doesn't outlive its record"
+    );
+}
+
+// SFL round 1 on #351: a row saved by an older build, which doesn't say how it was read, while Alice's CodexBar sign-in
+// is on but has no token: it may have had one when the row was saved. Switching that sign-in off takes the row away,
+// though discovery is on.
+#[gpui_kit::test]
+fn an_older_build_s_row_a_signed_out_codexbar_sign_in_may_have_read_goes_with_it(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-legacy-signed-out-oauth",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now());
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    let limited =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::Http { status: 429 });
+    let dashboard = open_live_fixed(cx, &settings, vec![limited as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    let alice = alice.as_str().to_owned();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "restored, through a rate-limited start"
+    );
+    switch_off(cx, "cp-alice");
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "not one discovery is known to read"
     );
 }
 

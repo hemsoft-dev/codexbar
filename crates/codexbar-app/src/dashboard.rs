@@ -417,11 +417,9 @@ fn record_reads(record: &codexbar_store::settings::AccountRecord, signed_in: boo
     };
     kind.push(user.clone());
     if let Some(org) = set(&record.copilot_organization) {
-        if set(&record.copilot_enterprise).is_some() {
-            reads.billed.push(user.clone());
-        } else {
-            reads.org_billed.push(user.clone());
-        }
+        let enterprise = set(&record.copilot_enterprise).is_some();
+        reads.billed.extend(enterprise.then(|| user.clone()));
+        reads.org_billed.extend((!enterprise).then(|| user.clone()));
         reads.named.push(org_account_id(org).as_str().to_owned());
     }
     reads.named.push(user);
@@ -682,15 +680,16 @@ fn without(accounts: Vec<String>, removed: &[String]) -> Vec<String> {
 }
 
 /// `copilot_reads` for rows restored at start from snapshots that don't say how they were read (saved by a build from
-/// before #350, which `discovered_snapshots` saves with them): a user any CodexBar sign-in names, or any record bills
-/// an organization on, switched off or not, may hold that sign-in's usage or that billing's credits, which discovery
-/// doesn't read (SFL round 5 and Codex on #348).
+/// before #350; this one saves it with them): a user any CodexBar sign-in names, or any record bills an organization
+/// on, switched off or not, may hold that sign-in's usage or that billing's credits, which discovery doesn't read (SFL
+/// round 5 and Codex on #348). A sign-in without a token counts too: it may have had one when the snapshot was saved
+/// (SFL round 1 on #351).
 fn restored_reads(hub: &SettingsHub) -> CopilotReads {
-    let mut reads = fetch_reads(hub);
+    let mut reads = copilot_reads(hub);
     let records = hub.settings().accounts();
     for record in records
         .iter()
-        .filter(|record| record.provider == codexbar_store::settings::names::COPILOT && !record.enabled)
+        .filter(|record| record.provider == codexbar_store::settings::names::COPILOT)
     {
         let mut all = CopilotReads::default();
         record_reads(record, crate::github_sign_in::is_managed(record), &mut all);
@@ -699,6 +698,46 @@ fn restored_reads(hub: &SettingsHub) -> CopilotReads {
         reads.org_billed.append(&mut all.org_billed);
     }
     reads
+}
+
+/// What a settings change does to what Copilot reads (`Dashboard::adds_accounts`).
+struct CopilotChange {
+    /// Copilot must fetch again: it reads an account it didn't (Codex on #344), may find through discovery a user a
+    /// record stopped naming (SFL round 3 on #348), or lost a seatless row's billing (SFL round 1 on #351).
+    refetch: bool,
+    /// The accounts the change took away (`lost_reads`), with seatless rows whose organization billing it switched
+    /// off.
+    lost: Vec<String>,
+    /// The users a record stopped naming whose rows stay for discovery.
+    kept: Vec<String>,
+}
+
+impl CopilotChange {
+    /// The change from `before` to `now`, with `discovered` the rows discovery read and `shown` the rows on screen.
+    fn of(before: &CopilotReads, now: &CopilotReads, discovered: &[String], shown: &[AccountSnapshot]) -> Self {
+        let mut lost = lost_reads(before, now, discovered);
+        // Any account a record stopped naming, though its row stays for discovery: the refresh shows whether discovery
+        // still finds that user (SFL round 3 on #348).
+        let gone = lost_reads(before, now, &[]);
+        let unbilled = unbilled_seatless(before, now, shown);
+        let refetch = reads_more(before, now) || (now.discovers && !gone.is_empty()) || !unbilled.is_empty();
+        let kept = without(gone, &lost);
+        lost.extend(unbilled);
+        Self { refetch, lost, kept }
+    }
+}
+
+/// The seatless Copilot rows in `shown` filled by organization billing that `before` had and `now` doesn't: a record
+/// still naming the user keeps them read, but their next fetch reports the missing seat and would keep the old row,
+/// with the switched-off billing's note (SFL round 1 on #351).
+fn unbilled_seatless(before: &CopilotReads, now: &CopilotReads, shown: &[AccountSnapshot]) -> Vec<String> {
+    shown
+        .iter()
+        .filter(|account| account.provider() == Provider::Copilot)
+        .filter(|account| account.metrics().is_empty() && !account.messages().is_empty())
+        .map(|account| account.id().as_str().to_owned())
+        .filter(|id| before.org_billed.contains(id) && !now.org_billed.contains(id))
+        .collect()
 }
 
 /// Whether `account` stays after a settings change that leaves `adapters` (#192): one of them serves it, and it isn't a
@@ -1804,6 +1843,8 @@ impl Dashboard {
     }
 
     fn apply_results(&mut self, results: Vec<FetchResult>, cx: &mut Context<Self>) {
+        // What each row showed before: a kept row's last good usage keeps its own (SFL round 1 on #351).
+        let shown_states = self.states.clone();
         // Which adapters reported: a provider name, narrowed to one account when the adapter serves just one.
         let adapters: Vec<(&'static str, Option<String>)> = results
             .iter()
@@ -1950,9 +1991,7 @@ impl Dashboard {
         }
         accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), SettingsHub::global(cx)));
         let stale = SettingsHub::revision(cx) != self.refresh_revision;
-        if stale {
-            self.keep_last_good_kept_rows(&mut accounts, &mut refreshed);
-        }
+        self.keep_last_good_kept_rows(stale, &shown_states, &mut accounts, &mut refreshed);
         note_discovered(&mut self.discovered_rows, &refreshed, &self.refresh_read);
         let named = copilot_reads(SettingsHub::global(cx)).named;
         accounts.retain(|account| !signed_out_of_discovery(account, &signed_out, &named, &self.kept_rows));
@@ -2002,13 +2041,21 @@ impl Dashboard {
         }
     }
 
-    /// For results whose fetch started before the settings last changed: a kept row (`kept_rows`) that fetch read the
-    /// way the switched-off record did, not the way discovery does, isn't the row discovery stands in for. Its last
-    /// good row, which discovery did read, is shown instead and keeps its mark, so a rate-limited refresh after still
-    /// has it (#350). Neither the fetched row nor how it was read is kept.
-    fn keep_last_good_kept_rows(&mut self, accounts: &mut Vec<AccountSnapshot>, refreshed: &mut Vec<AccountSnapshot>) {
+    /// For results whose fetch started before the settings last changed (`stale`): a kept row (`kept_rows`) that fetch
+    /// read the way the switched-off record did, not the way discovery does, isn't the row discovery stands in for. Its
+    /// last good row, which discovery did read, is shown instead, in the state it was shown in (`shown_states`), and
+    /// keeps its mark, so a rate-limited refresh after still has it (#350). Neither the fetched row nor how it was read
+    /// is kept.
+    fn keep_last_good_kept_rows(
+        &mut self,
+        stale: bool,
+        shown_states: &HashMap<String, AccountState>,
+        accounts: &mut Vec<AccountSnapshot>,
+        refreshed: &mut Vec<AccountSnapshot>,
+    ) {
         let superseded: Vec<String> = refreshed
             .iter()
+            .filter(|_| stale)
             .filter(|account| account.provider() == Provider::Copilot)
             .filter(|account| self.kept_rows.iter().any(|kept| kept == account.id().as_str()))
             .filter(|account| !self.refresh_read.discovery_read(account))
@@ -2024,11 +2071,35 @@ impl Dashboard {
         let mut last_good = Vec::new();
         accounts.retain(|account| !superseded_row(account));
         for shown in self.accounts.iter().filter(|shown| superseded_row(shown)) {
-            self.states
-                .insert(shown.id().as_str().to_owned(), AccountState::fresh(shown, self.now));
+            let id = shown.id().as_str().to_owned();
+            let state = shown_states
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| AccountState::fresh(shown, self.now));
+            self.states.insert(id, state);
             last_good.push(shown.clone());
         }
         accounts.extend(last_good);
+    }
+
+    /// Notes which `restored` Copilot rows discovery read, as saved with them (#350). Snapshots from an older build
+    /// don't say, and fall back to what the settings may have read them with (`restored_reads`).
+    fn note_restored_discovery(&mut self, restored: &[AccountSnapshot], cx: &gpui_kit::App) {
+        let hub = SettingsHub::global(cx);
+        let Some(saved) = codexbar_store::snapshots::load_discovered(hub.dir()) else {
+            note_discovered(&mut self.discovered_rows, restored, &restored_reads(hub));
+            return;
+        };
+        for account in restored
+            .iter()
+            .filter(|account| account.provider() == Provider::Copilot)
+        {
+            let id = account.id().as_str().to_owned();
+            self.discovered_rows.retain(|shown| shown != &id);
+            if saved.contains(&id) {
+                self.discovered_rows.push(id);
+            }
+        }
     }
 
     /// Saves real accounts' usage for the next start. Placeholders aren't saved; a write failure only costs the
@@ -2114,27 +2185,7 @@ impl Dashboard {
             self.states
                 .insert(account.id().as_str().to_owned(), AccountState::Restored);
         }
-        // How each Copilot row was read, saved with it (#350); snapshots from an older build fall back to what the
-        // settings may have read them with.
-        match codexbar_store::snapshots::load_discovered(SettingsHub::global(cx).dir()) {
-            Some(saved) => {
-                for account in restored
-                    .iter()
-                    .filter(|account| account.provider() == Provider::Copilot)
-                {
-                    let id = account.id().as_str().to_owned();
-                    self.discovered_rows.retain(|shown| shown != &id);
-                    if saved.contains(&id) {
-                        self.discovered_rows.push(id);
-                    }
-                }
-            }
-            None => note_discovered(
-                &mut self.discovered_rows,
-                &restored,
-                &restored_reads(SettingsHub::global(cx)),
-            ),
-        }
+        self.note_restored_discovery(&restored, cx);
         self.set_accounts(restored, cx);
     }
 
@@ -2270,16 +2321,13 @@ impl Dashboard {
         cx: &gpui_kit::App,
     ) -> (bool, Vec<String>) {
         let reads = copilot_reads(SettingsHub::global(cx));
-        let more = reads_more(&self.copilot_read, &reads);
-        let lost = lost_reads(&self.copilot_read, &reads, &self.discovered_rows);
-        // Any account a record stopped naming, though its row stays for discovery: the refresh shows whether discovery
-        // still finds that user (SFL round 3 on #348).
-        let gone = lost_reads(&self.copilot_read, &reads, &[]);
-        let rediscover = reads.discovers && !gone.is_empty();
-        keep(&mut self.kept_rows, without(gone, &lost));
+        let change = CopilotChange::of(&self.copilot_read, &reads, &self.discovered_rows, &self.accounts);
+        keep(&mut self.kept_rows, change.kept);
+        // A user a record names again isn't kept for discovery: that record's fetch reads them its own way.
+        self.kept_rows.retain(|user| !reads.named.contains(user));
         self.copilot_read = reads;
-        let added = more || rediscover || adapters.iter().any(|adapter| !self.configured.contains(adapter));
-        (added, lost)
+        let added = change.refetch || adapters.iter().any(|adapter| !self.configured.contains(adapter));
+        (added, change.lost)
     }
 
     /// Drops the rows and failure banners none of `adapters` serves, and those of the Copilot accounts the change took

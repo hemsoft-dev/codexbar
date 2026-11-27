@@ -50,8 +50,7 @@ pub fn parse_gh_accounts(status: &str) -> Vec<String> {
     let mut accounts = Vec::new();
     for line in status.lines() {
         let line = line.trim();
-        let lower = line.to_lowercase();
-        if !lower.contains("logged in to github.com") && !lower.contains("log in to github.com account") {
+        if !names_a_login(line) {
             continue;
         }
         let name = ["account ", " as "].iter().find_map(|marker| {
@@ -65,6 +64,20 @@ pub fn parse_gh_accounts(status: &str) -> Vec<String> {
         }
     }
     accounts
+}
+
+/// What a `gh` command that couldn't run means for Copilot: no GitHub CLI to sign in to, or no answer from it.
+fn gh_error(error: CommandError) -> ProviderError {
+    match error {
+        CommandError::NotFound => ProviderError::NotSignedIn { hint: GH_MISSING },
+        CommandError::TimedOut | CommandError::Failed => ProviderError::Network,
+    }
+}
+
+/// Whether a `gh auth status` line names a github.com login, signed in or failed.
+fn names_a_login(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    lower.contains("logged in to github.com") || lower.contains("log in to github.com account")
 }
 
 /// Maps a `copilot_internal/user` response to one account. Unlimited and absent quotas are not limits, so they
@@ -566,11 +579,11 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
     }
 
     fn gh(&self, args: &[&str]) -> Result<String, ProviderError> {
-        match self.commands.run("gh", args, GH_TIMEOUT) {
-            Ok(output) if output.success => Ok(format!("{}\n{}", output.stdout, output.stderr)),
-            Ok(_) => Err(ProviderError::NotSignedIn { hint: GH_LOGIN }),
-            Err(CommandError::NotFound) => Err(ProviderError::NotSignedIn { hint: GH_MISSING }),
-            Err(CommandError::TimedOut | CommandError::Failed) => Err(ProviderError::Network),
+        let output = self.commands.run("gh", args, GH_TIMEOUT).map_err(gh_error)?;
+        if output.success {
+            Ok(format!("{}\n{}", output.stdout, output.stderr))
+        } else {
+            Err(ProviderError::NotSignedIn { hint: GH_LOGIN })
         }
     }
 
@@ -1027,23 +1040,22 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             Err(err @ ProviderError::NotSignedIn { hint: GH_MISSING }) => return Err(err),
             Err(_) => {}
         }
-        // A GitHub CLI without `--json` exits nonzero when any of its logins failed, one expired among valid ones too.
-        // The users it lists are still read, each reporting its own failure, rather than Copilot failing as a whole and
-        // dropping users whose login works (#350).
-        match self
+        self.plain_cli_accounts()
+    }
+
+    /// The users plain `gh auth status` lists. A GitHub CLI without `--json` exits nonzero when any of its logins
+    /// failed, one expired among valid ones too. The users it lists are still read, each reporting its own failure,
+    /// rather than Copilot failing as a whole and dropping users whose login works (#350).
+    fn plain_cli_accounts(&self) -> Result<Vec<String>, ProviderError> {
+        let output = self
             .commands
             .run("gh", &["auth", "status", "--hostname", HOST], GH_TIMEOUT)
-        {
-            Ok(output) => {
-                let accounts = parse_gh_accounts(&format!("{}\n{}", output.stdout, output.stderr));
-                if output.success || !accounts.is_empty() {
-                    Ok(accounts)
-                } else {
-                    Err(ProviderError::NotSignedIn { hint: GH_LOGIN })
-                }
-            }
-            Err(CommandError::NotFound) => Err(ProviderError::NotSignedIn { hint: GH_MISSING }),
-            Err(CommandError::TimedOut | CommandError::Failed) => Err(ProviderError::Network),
+            .map_err(gh_error)?;
+        let accounts = parse_gh_accounts(&format!("{}\n{}", output.stdout, output.stderr));
+        if output.success || !accounts.is_empty() {
+            Ok(accounts)
+        } else {
+            Err(ProviderError::NotSignedIn { hint: GH_LOGIN })
         }
     }
 }
