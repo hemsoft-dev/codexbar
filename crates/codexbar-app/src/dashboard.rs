@@ -346,10 +346,14 @@ impl CopilotReads {
         self.named.contains(read) || (self.discovers && discovered.contains(read))
     }
 
-    /// Whether discovery would read the row these settings read for `user`: a record reads it through the GitHub CLI,
-    /// no CodexBar sign-in names that user, and no record bills an enterprise on them.
+    /// Whether discovery would read the row these settings read for `user`: discovery reads it itself or a record reads
+    /// it through the GitHub CLI (SFL round 3 on #348), no CodexBar sign-in names that user, no record bills an
+    /// enterprise on them, and it isn't an organization card, which discovery never reads.
     fn discovery_reads(&self, user: &String) -> bool {
-        self.through_cli.contains(user) && !self.signed_in.contains(user) && !self.billed.contains(user)
+        let read = self.discovers || self.through_cli.contains(user);
+        read && !self.signed_in.contains(user)
+            && !self.billed.contains(user)
+            && !codexbar_providers::copilot::is_org_account(user)
     }
 }
 
@@ -2075,7 +2079,9 @@ impl Dashboard {
         let reads = copilot_reads(SettingsHub::global(cx));
         let more = reads_more(&self.copilot_read, &reads);
         let lost = lost_reads(&self.copilot_read, &reads, &self.discovered_rows);
-        let rediscover = reads.discovers && !lost.is_empty();
+        // Any account a record stopped naming, though its row stays for discovery: the refresh shows whether discovery
+        // still finds that user (SFL round 3 on #348).
+        let rediscover = reads.discovers && !lost_reads(&self.copilot_read, &reads, &[]).is_empty();
         self.copilot_read = reads;
         let added = more || rediscover || adapters.iter().any(|adapter| !self.configured.contains(adapter));
         (added, lost)

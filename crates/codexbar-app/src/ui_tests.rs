@@ -2945,6 +2945,93 @@ fn removing_a_billing_record_beside_an_unbilled_one_drops_its_user_s_row(cx: &mu
     assert!(!kept, "the row with the removed billing doesn't stay");
 }
 
+// SFL round 3 on #348: switching off a named Command line record while discovery is on keeps Alice's row, and still
+// refreshes: the GitHub CLI no longer signed in to her, the refresh takes her row away.
+#[gpui_kit::test]
+fn a_kept_user_the_github_cli_no_longer_reads_goes_with_the_refresh(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-user-signed-out",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    // Alice while her record is on; then the GitHub CLI reads Bob only.
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on {
+            users.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-bob", Some(0.2)) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    switch_off(cx, "cp-alice");
+    assert!(ids(cx, &dashboard).contains(&alice), "kept for discovery");
+    cx.run_until_parked();
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "the change's own refresh shows discovery no longer finds her"
+    );
+}
+
+// SFL round 3 on #348: Alice's row came from discovery. A named Command line record added for her, whose refresh is
+// rate-limited, then switched off again, keeps that row: discovery read it.
+#[gpui_kit::test]
+fn a_discovered_row_stays_when_a_redundant_record_comes_and_goes(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-discovered-record-added-and-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    // Discovery's Alice until a record names her; from then on GitHub rate-limits Copilot.
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let named = hub.settings().accounts().iter().any(|record| record.id == "cp-alice");
+        vec![if named {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None)
+                .failing_with(ProviderError::Http { status: 429 }) as Arc<dyn UsageProvider>
+        } else {
+            users.clone()
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice), "discovery's Alice");
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings.accounts().iter().find(|a| a.id == "cp-cli").cloned().unwrap();
+            record.id = "cp-alice".into();
+            record.label = "Alice".into();
+            record.external_id = Some("alice".into());
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "the rate-limited refresh keeps her row"
+    );
+    switch_off(cx, "cp-alice");
+    refresh(cx, &dashboard);
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "the row discovery read stays through the next rate-limited refresh"
+    );
+}
+
 /// Greptile's adapter for its record `account`, whose account failed: its failure row carries that account's id.
 struct FailsFor {
     account: &'static str,
