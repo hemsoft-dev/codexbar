@@ -589,6 +589,30 @@ fn owns_another(
         .is_some_and(|outcome| owned.get(&record.id).is_some_and(|account| account != outcome))
 }
 
+/// Records in `discovered`, for each Copilot row in `rows`, whether it was read the way discovery does under `reads`
+/// (`Dashboard::discovered_rows`): a fresh row under the settings its fetch started with, a restored one under the
+/// settings it is restored with (SFL round 4 on #348).
+fn note_discovered(discovered: &mut Vec<String>, rows: &[AccountSnapshot], reads: &CopilotReads) {
+    for account in rows.iter().filter(|account| account.provider() == Provider::Copilot) {
+        let id = account.id().as_str().to_owned();
+        discovered.retain(|shown| shown != &id);
+        if reads.discovery_reads(&id) {
+            discovered.push(id);
+        }
+    }
+}
+
+/// True when `account` is a Copilot row none of `named` names and Copilot failed as a whole for want of a sign-in
+/// (`signed_out` lists such providers): the GitHub CLI reads no user, so discovery reads none either, and the row is
+/// left from before (SFL round 4 on #348). Copilot's placeholder stays with its failure.
+fn signed_out_of_discovery(account: &AccountSnapshot, signed_out: &[&'static str], named: &[String]) -> bool {
+    let id = account.id().as_str();
+    account.provider() == Provider::Copilot
+        && signed_out.contains(&Provider::Copilot.display_name())
+        && !id.starts_with(PLACEHOLDER_PREFIX)
+        && !named.iter().any(|read| read == id)
+}
+
 /// Whether `account` stays after a settings change that leaves `adapters` (#192): one of them serves it, and it isn't a
 /// Copilot account Copilot no longer reads (`unread`) or that the change took away (`lost`, from `lost_reads`), though
 /// Copilot's shared adapter stays (#343).
@@ -1723,6 +1747,8 @@ impl Dashboard {
         }
         // Only accounts that refreshed are checked for alerts: a failed provider's alerts neither clear nor repeat.
         let mut refreshed = Vec::new();
+        // Providers that failed as a whole for want of a sign-in.
+        let mut signed_out = Vec::new();
         for (provider, account_id, account_label, record, result) in results {
             match result {
                 Ok(outcomes) => {
@@ -1791,6 +1817,7 @@ impl Dashboard {
                         );
                         accounts.push(account.clone());
                     }
+                    signed_out.extend(error.needs_sign_in().then_some(provider));
                     self.failures.push(Failure {
                         provider,
                         account: account_id.clone(),
@@ -1830,7 +1857,9 @@ impl Dashboard {
             self.delete_forgotten_history(cx);
         }
         accounts.retain(|account| !unread(Some(account.provider()), account.id().as_str(), SettingsHub::global(cx)));
-        self.note_discovered_rows(&refreshed);
+        note_discovered(&mut self.discovered_rows, &refreshed, &self.refresh_read);
+        let named = copilot_reads(SettingsHub::global(cx)).named;
+        accounts.retain(|account| !signed_out_of_discovery(account, &signed_out, &named));
         // Placeholders that a result replaced (or that left with their provider) are gone.
         self.placeholders
             .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
@@ -1942,6 +1971,11 @@ impl Dashboard {
             self.states
                 .insert(account.id().as_str().to_owned(), AccountState::Restored);
         }
+        note_discovered(
+            &mut self.discovered_rows,
+            &restored,
+            &copilot_reads(SettingsHub::global(cx)),
+        );
         self.set_accounts(restored, cx);
     }
 
@@ -2085,20 +2119,6 @@ impl Dashboard {
         self.copilot_read = reads;
         let added = more || rediscover || adapters.iter().any(|adapter| !self.configured.contains(adapter));
         (added, lost)
-    }
-
-    /// Records, for each Copilot row a fetch just read, whether it read it the way discovery does (`discovered_rows`).
-    fn note_discovered_rows(&mut self, refreshed: &[AccountSnapshot]) {
-        for account in refreshed
-            .iter()
-            .filter(|account| account.provider() == Provider::Copilot)
-        {
-            let id = account.id().as_str().to_owned();
-            self.discovered_rows.retain(|shown| shown != &id);
-            if self.refresh_read.discovery_reads(&id) {
-                self.discovered_rows.push(id);
-            }
-        }
     }
 
     /// Drops the rows and failure banners none of `adapters` serves, and those of the Copilot accounts the change took
