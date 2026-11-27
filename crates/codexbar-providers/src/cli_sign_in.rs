@@ -521,6 +521,8 @@ mod tests {
         running: bool,
         /// A process the CLI started got the terminate signal (it writes `$SIGNALLED`).
         signalled: bool,
+        /// The CLI left a later process id in `$PID_FILE` than the one it started with.
+        replaced: bool,
     }
 
     /// Whether process `pid` runs: a zombie has ended, though its parent hasn't reaped it yet. `ps` failing other than
@@ -576,17 +578,28 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
-        let cancel = std::sync::atomic::AtomicBool::new(true);
-        assert_eq!(
-            window.finish(std::time::Duration::from_secs(60), &cancel),
-            Err(CliSignInError::Failed)
-        );
+        // On a thread, so a stop that never returns, now that it waits for as long as the CLI is stopping (#349), fails
+        // the test rather than hanging it.
+        let (sent, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cancel = std::sync::atomic::AtomicBool::new(true);
+            let _ = sent.send(window.finish(std::time::Duration::from_secs(60), &cancel));
+        });
+        let result = finished.recv_timeout(std::time::Duration::from_secs(30));
         // The CLI may have left a later process id (`a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits`).
-        let pid = std::fs::read_to_string(&pid_file).map_or(pid, |read| read.trim().to_owned());
+        let last = std::fs::read_to_string(&pid_file).map_or_else(|_| pid.clone(), |read| read.trim().to_owned());
+        if result.is_err() {
+            let _ = Command::new("kill").args(["-KILL", &pid, &last]).status();
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("finish didn't return");
+        }
+        assert_eq!(result.unwrap(), Err(CliSignInError::Failed));
         let stopped = Stopped {
-            running: runs(&pid),
+            running: runs(&last),
             signalled: signalled.exists(),
+            replaced: last != pid,
         };
+        let pid = last;
         if stopped.running {
             let _ = Command::new("kill").args(["-KILL", &pid]).status();
         }
@@ -606,7 +619,8 @@ mod tests {
             stop("cli", cli),
             Stopped {
                 running: false,
-                signalled: false
+                signalled: false,
+                replaced: false
             },
             "the CLI has stopped when finish returns"
         );
@@ -616,19 +630,20 @@ mod tests {
     // was found as exits on the signal without passing it on, or the browser the CLI opened. `finish` waits for it, a
     // few seconds at most, and never signals it: a browser's windows are the user's.
     // SFL round 4 on #347: a wrapper that starts the CLI just as it exits on the signal leaves it to another parent before
-    // the watchdog has seen it. The watchdog still waits for it, on Linux, where it follows the script's session; macOS
-    // follows the process tree.
-    #[cfg(target_os = "linux")]
+    // the watchdog has seen it. The watchdog still waits for it: on Linux it follows the script's session, on macOS its
+    // process group (#349). The wrapper must have left the successor's id, or the test proves nothing (#349).
+    #[cfg(unix)]
     #[test]
     fn a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits() {
         let wrapper = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
 trap '( sleep 2.5 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exit 0' TERM
-while :; do sleep 0.1; done"#;
+n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
         assert_eq!(
             stop("late", wrapper),
             Stopped {
                 running: false,
-                signalled: false
+                signalled: false,
+                replaced: true
             },
             "the process the wrapper started as it exited ended before finish returned"
         );
@@ -643,7 +658,84 @@ while :; do sleep 0.1; done"#;
             stop("started", started),
             Stopped {
                 running: false,
-                signalled: false
+                signalled: false,
+                replaced: false
+            },
+            "it ended on its own before finish returned"
+        );
+    }
+
+    // #349: a CLI that ignores the terminate signal is killed once it has had 3 s to end, rather than left running past
+    // `finish` for a retry to overlap.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_ends_a_cli_that_ignores_the_terminate_signal() {
+        let cli = r#"trap '' TERM; echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
+        assert_eq!(
+            stop("stubborn", cli),
+            Stopped {
+                running: false,
+                signalled: false,
+                replaced: false
+            },
+            "the CLI was ended before finish returned"
+        );
+    }
+
+    // SFL round 3 on #352: a CLI that starts a session (Linux) or process group (macOS) of its own and ignores the
+    // terminate signal is still the script's child: it is looked at and killed, rather than left out of the wait.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_ends_a_cli_that_leaves_its_session() {
+        let cli = r#"inner='trap "" TERM; echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done'
+if command -v setsid >/dev/null; then exec setsid /bin/sh -c "$inner"; else exec perl -e 'setpgrp(0, 0); exec @ARGV' /bin/sh -c "$inner"; fi"#;
+        assert_eq!(
+            stop("own-session", cli),
+            Stopped {
+                running: false,
+                signalled: false,
+                replaced: false
+            },
+            "the CLI was ended before finish returned"
+        );
+    }
+
+    // SFL round 4 on #352: a wrapper that starts a helper in a session (Linux) or process group (macOS) of its own, and
+    // stays until it is stopped, leaves that helper outside what the script's session or group holds. The helper was
+    // the script's descendant when the watchdog first looked, so it is still waited for, without being signalled.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_waits_for_a_helper_its_wrapper_started_apart() {
+        // The helper records a terminate signal, which it must never get (SFL round 5 on #352).
+        let wrapper = r#"helper='trap "echo > $SIGNALLED; exit 1" TERM; sleep 4 & wait'
+if command -v setsid >/dev/null; then setsid /bin/sh -c "$helper" & else perl -e 'setpgrp(0, 0); exec @ARGV' /bin/sh -c "$helper" & fi
+echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
+trap 'exit 0' TERM
+n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
+        assert_eq!(
+            stop("apart", wrapper),
+            Stopped {
+                running: false,
+                signalled: false,
+                replaced: false
+            },
+            "the helper ended before finish returned"
+        );
+    }
+
+    // #349: what the CLI started is waited for as long as it runs, not only for a few seconds: here it ends on its own
+    // 12 s after it starts, well after the 3 s the CLI gets (which looking at what runs stretches to about 6 s on a
+    // Mac) and the 6 s `finish` used to wait at most. It still isn't signalled.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_waits_for_what_its_cli_started_however_long_it_runs() {
+        let started = r#"( trap 'echo > "$SIGNALLED"; exit 1' TERM; sleep 12 & wait ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#;
+        assert_eq!(
+            stop("long", started),
+            Stopped {
+                running: false,
+                signalled: false,
+                replaced: false
             },
             "it ended on its own before finish returned"
         );
