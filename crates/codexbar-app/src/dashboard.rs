@@ -331,9 +331,10 @@ struct CopilotReads {
     /// couldn't be read, too (`CopilotProvider::add_billing`), whichever of their records bills (SFL rounds 1 and 2 and
     /// Codex on #348). An organization billed on its own changes only its card.
     billed: Vec<String>,
-    /// The users among `named` a record bills an organization on, on its own (Copilot Business): their row is unchanged,
-    /// unless they have no seat, when it says it shows that organization's credits instead (#350).
-    org_billed: Vec<String>,
+    /// The users among `named` a record bills an organization on, on its own (Copilot Business), with that
+    /// organization's card: their row is unchanged, unless they have no seat, when it says it shows those
+    /// organizations' credits instead (#350). One user can be billed for several (SFL round 2 on #351).
+    org_billed: Vec<(String, String)>,
     /// The users among `named` a CodexBar sign-in names. Copilot fetches them with CodexBar's token, though a Command
     /// line record names them too, so their row isn't one discovery reads (SFL on #348). Under the settings a fetch
     /// starts with (`fetch_reads`), a sign-in without a saved token doesn't count: Copilot reads that user through the
@@ -366,8 +367,7 @@ impl CopilotReads {
     /// (#350). Discovery reports that user's missing seat instead.
     fn discovery_read(&self, row: &AccountSnapshot) -> bool {
         let user = row.id().as_str().to_owned();
-        let seatless = row.metrics().is_empty() && !row.messages().is_empty();
-        self.discovery_reads(&user) && !(seatless && self.org_billed.contains(&user))
+        self.discovery_reads(&user) && !(seatless(row) && self.org_billed.iter().any(|(billed, _)| billed == &user))
     }
 }
 
@@ -419,8 +419,11 @@ fn record_reads(record: &codexbar_store::settings::AccountRecord, signed_in: boo
     if let Some(org) = set(&record.copilot_organization) {
         let enterprise = set(&record.copilot_enterprise).is_some();
         reads.billed.extend(enterprise.then(|| user.clone()));
-        reads.org_billed.extend((!enterprise).then(|| user.clone()));
-        reads.named.push(org_account_id(org).as_str().to_owned());
+        let card = org_account_id(org).as_str().to_owned();
+        reads
+            .org_billed
+            .extend((!enterprise).then(|| (user.clone(), card.clone())));
+        reads.named.push(card);
     }
     reads.named.push(user);
 }
@@ -734,10 +737,38 @@ fn unbilled_seatless(before: &CopilotReads, now: &CopilotReads, shown: &[Account
     shown
         .iter()
         .filter(|account| account.provider() == Provider::Copilot)
-        .filter(|account| account.metrics().is_empty() && !account.messages().is_empty())
+        .filter(|account| seatless(account))
         .map(|account| account.id().as_str().to_owned())
-        .filter(|id| before.org_billed.contains(id) && !now.org_billed.contains(id))
+        .filter(|id| {
+            before
+                .org_billed
+                .iter()
+                .any(|billing| &billing.0 == id && !now.org_billed.contains(billing))
+        })
         .collect()
+}
+
+/// Whether `row` is a seatless Copilot user's: no usage of their own and Copilot's note that the account has no seat,
+/// which an organization's billing fills in (SFL round 2 on #351: a seated user's row can have no usage and a note).
+fn seatless(row: &AccountSnapshot) -> bool {
+    row.metrics().is_empty()
+        && row
+            .messages()
+            .iter()
+            .any(|message| message.starts_with(codexbar_providers::copilot::NO_SEAT_NOTE))
+}
+
+/// Whether a restored row can show (SFL round 2 on #351): a Copilot row no enabled record names shows only through
+/// discovery, so not one saved as read another way (`load_discovered`). Snapshots that don't say keep it.
+fn restorable(hub: &SettingsHub) -> impl Fn(&AccountSnapshot) -> bool {
+    let saved = codexbar_store::snapshots::load_discovered(hub.dir());
+    let named = copilot_reads(hub).named;
+    move |account| {
+        let id = account.id().as_str();
+        account.provider() != Provider::Copilot
+            || named.iter().any(|read| read == id)
+            || saved.as_ref().is_none_or(|saved| saved.iter().any(|shown| shown == id))
+    }
 }
 
 /// Whether `account` stays after a settings change that leaves `adapters` (#192): one of them serves it, and it isn't a
@@ -2014,14 +2045,13 @@ impl Dashboard {
             if let Some(adapters) = self.configured_adapters(cx) {
                 // ... nor a Copilot account taken away, which discovery would otherwise let through (SFL round 5).
                 let now = copilot_reads(SettingsHub::global(cx));
-                let lost = lost_reads(&self.refresh_read, &now, &self.discovered_rows);
-                // A user the change stopped naming whose row this fetch, from before it, read the way discovery does
-                // stays, as the change itself would have kept it: marked, so it goes if the GitHub CLI then reads no one
-                // (#350). The change found no row for a user whose first result hadn't come yet.
-                keep(
-                    &mut self.kept_rows,
-                    without(lost_reads(&self.refresh_read, &now, &[]), &lost),
-                );
+                // As the change itself would have done, for this fetch's rows (`CopilotChange`): a user the change
+                // stopped naming whose row this fetch read the way discovery does stays, marked, so it goes if the GitHub
+                // CLI then reads no one (#350); the change found no row for a user whose first result hadn't come yet. A
+                // seatless row whose organization billing went goes (SFL round 2 on #351).
+                let change = CopilotChange::of(&self.refresh_read, &now, &self.discovered_rows, &accounts);
+                keep(&mut self.kept_rows, change.kept);
+                let lost = change.lost;
                 accounts.retain(|account| keeps_account(&adapters, account, &lost, SettingsHub::global(cx)));
                 self.failures
                     .retain(|failure| keeps_failure(&adapters, failure, &lost, SettingsHub::global(cx)));
@@ -2161,6 +2191,7 @@ impl Dashboard {
             // A Copilot user switched off shares Copilot's one adapter with the others, which this check can't see
             // (#343, SFL round 3 on #344).
             .filter(|account| !unread(Some(account.provider()), account.id().as_str(), hub))
+            .filter(restorable(hub))
             .filter(|account| {
                 // With several adapters for one provider (Codex accounts, #78), any of them may hold the account.
                 let mut current = signed_in
@@ -3798,7 +3829,7 @@ mod read_unnamed_tests {
         let alice = codexbar_providers::copilot::account_id("alice");
         let reads = CopilotReads {
             discovers: true,
-            org_billed: vec![alice.as_str().to_owned()],
+            org_billed: vec![(alice.as_str().to_owned(), "copilot-org-acme".to_owned())],
             ..CopilotReads::default()
         };
         let now = Utc::now();

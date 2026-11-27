@@ -42,6 +42,8 @@ const HOST: &str = "github.com";
 const GH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 const GH_MISSING: &str = "Install the GitHub CLI and sign in to it.";
 const GH_LOGIN: &str = "Sign in to the GitHub CLI for this account.";
+/// How a seatless account's row begins, before the organizations whose AI credits it shows.
+pub const NO_SEAT_NOTE: &str = "No Copilot seat on this account.";
 
 /// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
 /// login failed ("X Failed to log in to github.com account old-user (keyring)"): their own fetch reports that, as with
@@ -1213,7 +1215,7 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                     }
                     let seatless = error == (ProviderError::Unexpected { detail: NO_SEAT });
                     if seatless && !(shown.is_empty() && unread.is_empty()) {
-                        let mut message = "No Copilot seat on this account.".to_owned();
+                        let mut message = NO_SEAT_NOTE.to_owned();
                         if !shown.is_empty() {
                             message.push_str(&format!(" It shows {}'s AI credits.", shown.join(" and ")));
                         }
