@@ -3765,7 +3765,7 @@ fn a_refresh_from_before_a_seatless_user_s_billing_went_doesn_t_bring_its_note_b
 }
 
 // SFL round 2 on #351: Alice is billed for two organizations on their own, and her seatless row shows both. Switching
-// one of those records off takes the row away, though the other still bills her: it named the switched-off one.
+// one of those records off takes the row away, though the other still bills her: its note names the switched-off one.
 #[gpui_kit::test]
 fn switching_off_one_of_a_seatless_user_s_organizations_drops_its_note(cx: &mut TestAppContext) {
     let settings = TempSettings::new(
@@ -3776,7 +3776,10 @@ fn switching_off_one_of_a_seatless_user_s_organizations_drops_its_note(cx: &mut 
             { "id": "cp-alice-globex", "providerId": "Copilot", "displayLabel": "Alice (Globex)", "enabled": true,
               "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "globex" } ] }"#,
     );
-    let seatless: Arc<dyn UsageProvider> = Arc::new(SeatlessAlice);
+    let seatless: Arc<dyn UsageProvider> = SeatlessNoted::new(
+        "No Copilot seat on this account. It shows acme and globex's AI credits.",
+        false,
+    );
     let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
         let both_on = hub.settings().accounts().iter().all(|record| record.enabled);
         vec![if both_on {
@@ -3826,6 +3829,119 @@ fn a_saved_row_no_record_or_discovery_reads_isn_t_restored(cx: &mut TestAppConte
         "the removed sign-in's row isn't restored"
     );
     assert!(shown.contains(&bob.as_str().to_owned()), "the row discovery read is");
+}
+
+/// Copilot reading Alice without a seat, her row saying `note`; with `once`, GitHub rate-limits Copilot after the first
+/// fetch.
+struct SeatlessNoted {
+    note: &'static str,
+    once: bool,
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+impl SeatlessNoted {
+    fn new(note: &'static str, once: bool) -> Arc<Self> {
+        Arc::new(Self {
+            note,
+            once,
+            fetches: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+impl UsageProvider for SeatlessNoted {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        if self.once && self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+            return Err(ProviderError::Http { status: 429 });
+        }
+        Ok(vec![codexbar_providers::AccountOutcome::Fresh(
+            AccountSnapshot::new(
+                codexbar_providers::copilot::account_id("alice"),
+                Provider::Copilot,
+                Vec::new(),
+                now,
+            )
+            .with_label("alice")
+            .with_message(self.note),
+        )])
+    }
+}
+
+// SFL round 3 on #351: Alice's seatless row shows Acme's credits. A second organization's billing record added for her
+// and switched off again before any fetch shows it leaves that row: it names only Acme, still billed, so it stays
+// through the rate-limited refreshes.
+#[gpui_kit::test]
+fn a_seatless_row_stays_when_another_organization_s_billing_comes_and_goes(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-org-added-and-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> =
+        SeatlessNoted::new("No Copilot seat on this account. It shows acme's AI credits.", true);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_: &SettingsHub| vec![seatless.clone()]);
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    assert!(alice_notes(cx, &dashboard, "acme's AI credits"));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let mut record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            record.id = "cp-alice-globex".into();
+            record.label = "Alice (Globex)".into();
+            record.copilot_organization = Some("globex".into());
+            settings.upsert(record)
+        })
+    })
+    .unwrap();
+    switch_off(cx, "cp-alice-globex");
+    cx.run_until_parked();
+    assert!(
+        alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the row naming only Acme stays"
+    );
+}
+
+// SFL round 3 on #351: Alice's seatless row, saved while a record billed Acme on its own, isn't restored once that
+// record is switched off before the next start, though another record still names her: its note names that billing.
+#[gpui_kit::test]
+fn a_saved_seatless_row_isn_t_restored_once_its_billing_is_off(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-restored-seatless-billing-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-alice-2", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now())
+        .with_message("No Copilot seat on this account. It shows acme's AI credits.");
+    codexbar_store::snapshots::save_discovered_snapshots(&settings.0, &[saved], &[]).unwrap();
+    let limited =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::Http { status: 429 });
+    let dashboard = open_live_fixed(cx, &settings, vec![limited as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    assert!(
+        !alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the switched-off billing's note isn't restored"
+    );
 }
 
 /// Greptile's adapter for its record `account`, whose account failed: its failure row carries that account's id.

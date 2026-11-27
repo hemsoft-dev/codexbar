@@ -332,7 +332,7 @@ struct CopilotReads {
     /// Codex on #348). An organization billed on its own changes only its card.
     billed: Vec<String>,
     /// The users among `named` a record bills an organization on, on its own (Copilot Business), with that
-    /// organization's card: their row is unchanged, unless they have no seat, when it says it shows those
+    /// organization's name: their row is unchanged, unless they have no seat, when it says it shows those
     /// organizations' credits instead (#350). One user can be billed for several (SFL round 2 on #351).
     org_billed: Vec<(String, String)>,
     /// The users among `named` a CodexBar sign-in names. Copilot fetches them with CodexBar's token, though a Command
@@ -419,11 +419,10 @@ fn record_reads(record: &codexbar_store::settings::AccountRecord, signed_in: boo
     if let Some(org) = set(&record.copilot_organization) {
         let enterprise = set(&record.copilot_enterprise).is_some();
         reads.billed.extend(enterprise.then(|| user.clone()));
-        let card = org_account_id(org).as_str().to_owned();
         reads
             .org_billed
-            .extend((!enterprise).then(|| (user.clone(), card.clone())));
-        reads.named.push(card);
+            .extend((!enterprise).then(|| (user.clone(), org.to_owned())));
+        reads.named.push(org_account_id(org).as_str().to_owned());
     }
     reads.named.push(user);
 }
@@ -722,7 +721,7 @@ impl CopilotChange {
         // Any account a record stopped naming, though its row stays for discovery: the refresh shows whether discovery
         // still finds that user (SFL round 3 on #348).
         let gone = lost_reads(before, now, &[]);
-        let unbilled = unbilled_seatless(before, now, shown);
+        let unbilled = stale_seatless(now, shown);
         let refetch = reads_more(before, now) || (now.discovers && !gone.is_empty()) || !unbilled.is_empty();
         let kept = without(gone, &lost);
         lost.extend(unbilled);
@@ -730,22 +729,35 @@ impl CopilotChange {
     }
 }
 
-/// The seatless Copilot rows in `shown` filled by organization billing that `before` had and `now` doesn't: a record
+/// The seatless Copilot rows in `shown` whose note names an organization `now` no longer bills their user on: a record
 /// still naming the user keeps them read, but their next fetch reports the missing seat and would keep the old row,
-/// with the switched-off billing's note (SFL round 1 on #351).
-fn unbilled_seatless(before: &CopilotReads, now: &CopilotReads, shown: &[AccountSnapshot]) -> Vec<String> {
+/// with the switched-off billing's note (SFL round 1 on #351). A row naming only organizations still billed stays (SFL
+/// round 3 on #351).
+fn stale_seatless(now: &CopilotReads, shown: &[AccountSnapshot]) -> Vec<String> {
     shown
         .iter()
-        .filter(|account| account.provider() == Provider::Copilot)
-        .filter(|account| seatless(account))
+        .filter(|account| stale_billing_note(account, now))
         .map(|account| account.id().as_str().to_owned())
-        .filter(|id| {
-            before
-                .org_billed
-                .iter()
-                .any(|billing| &billing.0 == id && !now.org_billed.contains(billing))
-        })
         .collect()
+}
+
+/// Whether `row` is a seatless Copilot row whose note names an organization `reads` doesn't bill its user on.
+fn stale_billing_note(row: &AccountSnapshot, reads: &CopilotReads) -> bool {
+    let user = row.id().as_str();
+    let billed = |org: &String| {
+        reads
+            .org_billed
+            .iter()
+            .any(|(billed, name)| billed == user && name.eq_ignore_ascii_case(org))
+    };
+    row.provider() == Provider::Copilot
+        && row.metrics().is_empty()
+        && row
+            .messages()
+            .iter()
+            .filter_map(|message| codexbar_providers::copilot::seatless_note_orgs(message))
+            .flatten()
+            .any(|org| !billed(&org))
 }
 
 /// Whether `row` is a seatless Copilot user's: no usage of their own and Copilot's note that the account has no seat,
@@ -759,15 +771,17 @@ fn seatless(row: &AccountSnapshot) -> bool {
 }
 
 /// Whether a restored row can show (SFL round 2 on #351): a Copilot row no enabled record names shows only through
-/// discovery, so not one saved as read another way (`load_discovered`). Snapshots that don't say keep it.
+/// discovery, so not one saved as read another way (`load_discovered`); snapshots that don't say keep it. Nor does a
+/// seatless row whose note names an organization billing switched off since (SFL round 3 on #351).
 fn restorable(hub: &SettingsHub) -> impl Fn(&AccountSnapshot) -> bool {
     let saved = codexbar_store::snapshots::load_discovered(hub.dir());
-    let named = copilot_reads(hub).named;
+    let reads = copilot_reads(hub);
     move |account| {
         let id = account.id().as_str();
-        account.provider() != Provider::Copilot
-            || named.iter().any(|read| read == id)
-            || saved.as_ref().is_none_or(|saved| saved.iter().any(|shown| shown == id))
+        let shown = account.provider() != Provider::Copilot
+            || reads.named.iter().any(|read| read == id)
+            || saved.as_ref().is_none_or(|saved| saved.iter().any(|shown| shown == id));
+        shown && !stale_billing_note(account, &reads)
     }
 }
 
@@ -3829,7 +3843,7 @@ mod read_unnamed_tests {
         let alice = codexbar_providers::copilot::account_id("alice");
         let reads = CopilotReads {
             discovers: true,
-            org_billed: vec![(alice.as_str().to_owned(), "copilot-org-acme".to_owned())],
+            org_billed: vec![(alice.as_str().to_owned(), "acme".to_owned())],
             ..CopilotReads::default()
         };
         let now = Utc::now();

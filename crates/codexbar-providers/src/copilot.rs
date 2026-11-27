@@ -45,6 +45,21 @@ const GH_LOGIN: &str = "Sign in to the GitHub CLI for this account.";
 /// How a seatless account's row begins, before the organizations whose AI credits it shows.
 pub const NO_SEAT_NOTE: &str = "No Copilot seat on this account.";
 
+/// The organizations a seatless account's note names (`NO_SEAT_NOTE`, then "It shows acme and globex's AI credits."
+/// and "acme's AI credits couldn't be read with it."), or `None` for any other note.
+pub fn seatless_note_orgs(message: &str) -> Option<Vec<String>> {
+    let rest = message.strip_prefix(NO_SEAT_NOTE)?;
+    let mut orgs = Vec::new();
+    for sentence in rest.split_inclusive('.') {
+        let Some((list, _)) = sentence.trim().split_once("'s AI credits") else {
+            continue;
+        };
+        let list = list.strip_prefix("It shows ").unwrap_or(list);
+        orgs.extend(list.split(" and ").map(str::to_owned));
+    }
+    Some(orgs)
+}
+
 /// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
 /// login failed ("X Failed to log in to github.com account old-user (keyring)"): their own fetch reports that, as with
 /// `--json` output (#350).
@@ -1322,6 +1337,22 @@ mod tests {
             )),
             ["HemSoft", "fhemmerrelias", "old-user"]
         );
+    }
+
+    // SFL round 3 on #351: the dashboard reads which organizations a seatless note names.
+    #[test]
+    fn a_seatless_note_names_its_organizations() {
+        assert_eq!(
+            seatless_note_orgs("No Copilot seat on this account. It shows acme-biz and acme-two's AI credits."),
+            Some(vec!["acme-biz".to_owned(), "acme-two".to_owned()])
+        );
+        assert_eq!(
+            seatless_note_orgs(
+                "No Copilot seat on this account. It shows acme's AI credits. globex's AI credits couldn't be read with it."
+            ),
+            Some(vec!["acme".to_owned(), "globex".to_owned()])
+        );
+        assert_eq!(seatless_note_orgs("Usage is delayed by up to an hour"), None);
     }
 
     // #350: a GitHub CLI without `--json` exits nonzero when one of its logins expired. The users whose login works are
