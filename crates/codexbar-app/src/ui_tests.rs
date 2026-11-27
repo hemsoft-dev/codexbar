@@ -3171,6 +3171,82 @@ fn a_restored_row_a_codexbar_sign_in_may_have_read_goes_with_its_last_record(cx:
     );
 }
 
+// Codex on #348: a named record switched off while a refresh runs keeps its user for discovery. The running fetch,
+// from before the change, reads her again, but that doesn't clear the mark: when the GitHub CLI then reads no one, her
+// row goes.
+#[gpui_kit::test]
+fn a_fetch_from_before_the_change_leaves_a_kept_user_marked(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-kept-user-in-flight",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let users: Arc<dyn UsageProvider> = Arc::new(CopilotUsers { alice_fails: false });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |hub: &SettingsHub| {
+        let alice_on = hub
+            .settings()
+            .accounts()
+            .iter()
+            .any(|record| record.id == "cp-alice" && record.enabled);
+        vec![if alice_on {
+            users.clone()
+        } else {
+            FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::NotSignedIn {
+                hint: "Sign in to the GitHub CLI.",
+            }) as Arc<dyn UsageProvider>
+        }]
+    });
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    switch_off(cx, "cp-alice");
+    cx.run_until_parked();
+    refresh(cx, &dashboard);
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "no one signed in, so no one discovered"
+    );
+}
+
+// Codex on #348: a row restored at start whose user a switched-off record still bills an enterprise on may carry that
+// billing's credits. Switching off her last named record takes it away, though discovery is on.
+#[gpui_kit::test]
+fn a_restored_row_a_switched_off_billing_record_may_have_filled_goes_with_its_last_record(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-restored-billing-off",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice-ent", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme",
+              "copilotEnterprise": "acme-ent" },
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let alice = codexbar_providers::copilot::account_id("alice");
+    let saved = AccountSnapshot::new(alice.clone(), Provider::Copilot, Vec::new(), chrono::Utc::now());
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    let limited =
+        FakeProvider::new(Provider::Copilot, "copilot-alice", None).failing_with(ProviderError::Http { status: 429 });
+    let dashboard = open_live_fixed(cx, &settings, vec![limited as Arc<dyn UsageProvider>]);
+    cx.run_until_parked();
+    let alice = alice.as_str().to_owned();
+    assert!(
+        ids(cx, &dashboard).contains(&alice),
+        "restored, through a rate-limited start"
+    );
+    switch_off(cx, "cp-alice");
+    assert!(
+        !ids(cx, &dashboard).contains(&alice),
+        "not one discovery is known to read"
+    );
+}
+
 /// Greptile's adapter for its record `account`, whose account failed: its failure row carries that account's id.
 struct FailsFor {
     account: &'static str,

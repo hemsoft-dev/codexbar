@@ -619,9 +619,13 @@ fn signed_out_of_discovery(
         && !named.iter().any(|read| read == id)
 }
 
-/// The ids of `rows`.
-fn refreshed_ids(rows: &[AccountSnapshot]) -> Vec<String> {
-    rows.iter().map(|account| account.id().as_str().to_owned()).collect()
+/// The ids of `rows` a fetch read while no record named them (`reads`, the settings it started with): a kept row a
+/// fetch from before the change read again is still kept (Codex on #348).
+fn read_unnamed(rows: &[AccountSnapshot], reads: &CopilotReads) -> Vec<String> {
+    rows.iter()
+        .map(|account| account.id().as_str().to_owned())
+        .filter(|id| !reads.named.contains(id))
+        .collect()
 }
 
 /// `accounts` without those in `removed`: the accounts a settings change stopped naming whose rows stay for discovery,
@@ -634,19 +638,19 @@ fn without(accounts: Vec<String>, removed: &[String]) -> Vec<String> {
 }
 
 /// `copilot_reads` for rows restored at start, whose snapshots don't say how they were read: a user any CodexBar sign-in
-/// names, switched off or not, may hold that sign-in's usage, which discovery doesn't read (SFL round 5 on #348).
+/// names, or any record bills an enterprise on, switched off or not, may hold that sign-in's usage or that billing's
+/// credits, which discovery doesn't read (SFL round 5 and Codex on #348).
 fn restored_reads(hub: &SettingsHub) -> CopilotReads {
     let mut reads = copilot_reads(hub);
-    let users = hub.settings().accounts().iter().filter(|record| {
-        record.provider == codexbar_store::settings::names::COPILOT && crate::github_sign_in::is_managed(record)
-    });
-    for record in users {
-        reads.signed_in.extend(
-            record
-                .external_id
-                .as_deref()
-                .map(|user| codexbar_providers::copilot::account_id(user.trim()).as_str().to_owned()),
-        );
+    let records = hub.settings().accounts();
+    for record in records
+        .iter()
+        .filter(|record| record.provider == codexbar_store::settings::names::COPILOT)
+    {
+        let mut all = CopilotReads::default();
+        record_reads(record, &mut all);
+        reads.signed_in.append(&mut all.signed_in);
+        reads.billed.append(&mut all.billed);
     }
     reads
 }
@@ -1902,7 +1906,10 @@ impl Dashboard {
         note_discovered(&mut self.discovered_rows, &refreshed, &self.refresh_read);
         let named = copilot_reads(SettingsHub::global(cx)).named;
         accounts.retain(|account| !signed_out_of_discovery(account, &signed_out, &named, &self.kept_rows));
-        self.kept_rows = without(std::mem::take(&mut self.kept_rows), &refreshed_ids(&refreshed));
+        self.kept_rows = without(
+            std::mem::take(&mut self.kept_rows),
+            &read_unnamed(&refreshed, &self.refresh_read),
+        );
         // Placeholders that a result replaced (or that left with their provider) are gone.
         self.placeholders
             .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
