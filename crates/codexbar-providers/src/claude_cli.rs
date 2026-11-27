@@ -137,8 +137,7 @@ impl LoginWindow {
     }
 
     fn close(&mut self) {
-        let _ = self.process.child.kill();
-        let _ = self.process.child.wait();
+        self.process.close_console();
     }
 }
 

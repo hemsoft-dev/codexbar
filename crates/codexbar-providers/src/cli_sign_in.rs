@@ -100,7 +100,8 @@ impl SignInWindow {
         .map(crate::platform::command);
         open_with(cli, base, profile(cli), crate::contained::spawn_console)
     }
-    /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success.
+    /// Waits until the console window closes, up to `timeout`. Ok when the CLI reported success. A sign-in stopped by
+    /// the timeout or `cancel` returns once its CLI has stopped (`Contained::close_console`), so a retry can't overlap it.
     pub fn finish(
         self,
         timeout: std::time::Duration,
@@ -115,8 +116,8 @@ impl SignInWindow {
                         .try_wait()
                         .map(|status| status.map(|status| status.success())),
                     Ask::Stop => {
-                        let _ = process.child.kill();
-                        process.child.wait().map(|_| None)
+                        process.close_console();
+                        Ok(None)
                     }
                 },
                 timeout,
@@ -510,6 +511,45 @@ mod tests {
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
         });
         assert!(matches!(result, Err(CliSignInError::Start(_))));
+    }
+
+    // SFL on #344 (#345): on macOS and Linux a timed-out or cancelled sign-in stopped only the terminal's waiter, and
+    // the CLI ran on for up to a second, until the script's watchdog stopped it. A retry in that time signed the same
+    // profile in twice.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_sign_in_returns_once_its_cli_has_stopped() {
+        let dir = std::env::temp_dir().join(format!("codexbar-cli-stop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("cli");
+        // A CLI that leaves its process id and waits, as a sign-in does for the browser.
+        let mut base = Command::new("/bin/sh");
+        base.arg("-c")
+            .arg(format!("echo $$ > '{}'; exec sleep 30", pid_file.display()));
+        let window = open_with(
+            Cli::Codex,
+            Some(base),
+            Vec::new(),
+            crate::contained::spawn_console_without_terminal,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        while !pid_file.exists() && started.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        assert_eq!(
+            window.finish(std::time::Duration::from_secs(60), &cancel),
+            Err(CliSignInError::Failed)
+        );
+        let alive = Command::new("kill").args(["-0", &pid]).status().unwrap().success();
+        if alive {
+            let _ = Command::new("kill").arg(&pid).status();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!alive, "the CLI has stopped when finish returns");
     }
 
     #[test]

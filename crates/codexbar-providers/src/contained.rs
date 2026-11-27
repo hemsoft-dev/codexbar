@@ -77,7 +77,27 @@ impl Contained {
         job_result?;
         status
     }
+
+    /// Stops a console's sign-in (`spawn_console`) and returns once its CLI has stopped. On Windows ending the child
+    /// ends the CLI, and the job ends what it started. On macOS and Linux the child is only the terminal's waiter: the
+    /// script's watchdog notices it is gone at its next one-second check and stops the CLI, and the script then writes
+    /// its status file. Until then a retry would start a second CLI on the same profile, so this waits for that file,
+    /// up to `CLI_STOP` (#345).
+    pub(crate) fn close_console(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        #[cfg(not(windows))]
+        if let Some(folder) = &self.folder {
+            terminal::await_status(folder, CLI_STOP);
+        }
+    }
 }
+
+/// How long `close_console` waits on macOS and Linux for a stopped sign-in's CLI to end: the watchdog's one-second
+/// check, then time for the CLI to exit on its terminate signal. A script that never ran (no terminal opened) has no
+/// CLI to wait for, and a CLI that ignores the signal outlasts it.
+#[cfg(not(windows))]
+const CLI_STOP: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Spawns `command` with no console window, inside a kill-on-close job.
 pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
@@ -215,8 +235,22 @@ else exit 127; fi"#
         }
     }
 
+    /// Waits until the script in `folder` has written its status file (its CLI has ended), up to `bound`.
+    pub(super) fn await_status(folder: &Path, bound: std::time::Duration) {
+        let status = folder.join("status");
+        let deadline = std::time::Instant::now() + bound;
+        while !status.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     /// Starts `command` in a terminal: the waiting child, with the script folder it deletes when the CLI finishes.
     pub(super) fn spawn(command: &Command) -> std::io::Result<super::Contained> {
+        spawn_with(command, launcher())
+    }
+
+    /// `spawn`, with `launch` the shell code that starts the script (`$1`) without waiting for it.
+    pub(super) fn spawn_with(command: &Command, launch: &str) -> std::io::Result<super::Contained> {
         let mut name = [0u8; 8];
         getrandom::fill(&mut name).map_err(|_| std::io::Error::other("no random name for the script folder"))?;
         let suffix: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -233,7 +267,7 @@ else exit 127; fi"#
         let waiter = format!(
             "echo $$ > \"$3/waiter\"\n{}\nwhile [ ! -f \"$2\" ]; do kill -0 \"$4\" 2>/dev/null || exit 1; sleep 0.5; \
              done\ncode=$(cat \"$2\")\nrm -rf \"$3\"\nexit \"${{code:-1}}\"",
-            launcher()
+            launch
         );
         Command::new("/bin/sh")
             .args(["-c", &waiter, "sh"])
@@ -250,6 +284,13 @@ else exit 127; fi"#
                 folder: Some(dir.clone()),
             })
     }
+}
+
+/// `spawn_console` with the script run by `sh` in the background rather than in a terminal window, for tests on macOS
+/// and Linux: no window opens.
+#[cfg(all(test, not(windows)))]
+pub(crate) fn spawn_console_without_terminal(command: &mut Command) -> std::io::Result<Contained> {
+    terminal::spawn_with(command, r#"/bin/sh "$1" </dev/null >/dev/null 2>&1 &"#)
 }
 
 #[cfg(all(test, not(windows)))]
@@ -342,14 +383,22 @@ mod tests {
     fn closing_the_terminal_reports_a_failed_sign_in() {
         let dir = folder("hangup");
         std::fs::write(dir.join("waiter"), std::process::id().to_string()).unwrap();
-        let mut command = Command::new("sleep");
-        command.arg("30");
+        let started_file = dir.join("started");
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("echo > '{}'; exec sleep 30", started_file.display()));
         let path = dir.join("script.sh");
         std::fs::write(&path, script(&command, &dir)).unwrap();
         use std::os::unix::process::CommandExt as _;
         // A process group of its own, like the foreground job of a terminal.
         let mut shell = Command::new("sh").arg(&path).process_group(0).spawn().unwrap();
-        std::thread::sleep(Duration::from_millis(500));
+        // Only once the CLI runs: a hang-up sent while the script is still starting it misses the CLI, and the script
+        // then waits out the CLI's 30 s before its trap runs (seen on a loaded Linux machine).
+        let waiting = Instant::now();
+        while !started_file.exists() && waiting.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         // What a terminal sends its foreground job when its window closes.
         let group = format!("-{}", shell.id());
         assert!(
