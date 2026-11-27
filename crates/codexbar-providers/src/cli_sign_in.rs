@@ -523,16 +523,21 @@ mod tests {
         signalled: bool,
     }
 
-    /// Whether process `pid` runs: a zombie has ended, though its parent hasn't reaped it yet.
+    /// Whether process `pid` runs: a zombie has ended, though its parent hasn't reaped it yet. `ps` failing other than
+    /// by finding no such process fails the test rather than counting as an ended process (SFL round 3 on #347).
     #[cfg(unix)]
     fn runs(pid: &str) -> bool {
-        Command::new("ps")
+        let out = Command::new("ps")
             .args(["-o", "stat=", "-p", pid])
             .output()
-            .is_ok_and(|out| {
-                let state = String::from_utf8_lossy(&out.stdout);
-                out.status.success() && !state.trim().is_empty() && !state.contains('Z')
-            })
+            .expect("ps runs");
+        let state = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() || out.stderr.is_empty(),
+            "ps failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.status.success() && !state.trim().is_empty() && !state.contains('Z')
     }
 
     /// Starts `script` as the CLI through the real waiter and terminal script (run by `sh`, no window), cancels it once

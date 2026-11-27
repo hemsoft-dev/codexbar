@@ -232,9 +232,12 @@ mod terminal {
     /// signal without passing it on, while the CLI it started signs in. It looks again every tenth of a second, and
     /// remembers what it saw, as a process the CLI's wrapper leaves behind is no longer in the script's tree. It never
     /// signals those processes: one can be the browser the CLI opened, which the user's other windows share (SFL on
-    /// #347). A zombie has ended. A process started and orphaned between two looks isn't waited for.
+    /// #347). A zombie has ended. A process started and orphaned between two looks isn't waited for, and one still
+    /// running after the 3 s is left to end on its own: waiting on would hold the sign-in for as long as a browser the
+    /// CLI opened stays open. The mark is written by `true`, not `:`: a special built-in's failed redirection ends a
+    /// POSIX shell, and the folder may already be gone (SFL round 3 on #347).
     const WATCHDOG: &[u8] = b"while sleep 1; kill -0 \"$2\" 2>/dev/null; do :; done
-: > \"$3\"
+true 2>/dev/null > \"$3\"
 tree() { for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || { echo \"$child\"; tree \"$child\"; }; done; }
 running() { state=$(ps -o stat= -p \"$1\" 2>/dev/null) || return 1; case \"$state\" in *Z* | \"\") return 1 ;; esac; }
 seen=$(echo $(tree \"$1\"))
@@ -479,6 +482,30 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10), "the 30 s CLI was stopped");
         assert_ne!(std::fs::read_to_string(dir.join("status")).unwrap().trim(), "0");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // SFL round 3 on #347: a Settings sign-in that is cancelled deletes the script folder once its waiter has ended,
+    // which can be before the watchdog wakes. The watchdog still stops the CLI: its `stopping` mark can't be written,
+    // and a failed redirection must not end it.
+    #[test]
+    fn the_cli_stops_when_its_script_folder_went_first() {
+        let dir = folder("folder-gone");
+        let holder = folder("folder-gone-script");
+        let mut gone = Command::new("true").spawn().unwrap();
+        let gone_id = gone.id();
+        gone.wait().unwrap();
+        std::fs::write(dir.join("waiter"), gone_id.to_string()).unwrap();
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let path = holder.join("script.sh");
+        std::fs::write(&path, script(&command, &dir)).unwrap();
+        let started = Instant::now();
+        let mut shell = Command::new("sh").arg(&path).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::remove_dir_all(&dir).unwrap();
+        shell.wait().unwrap();
+        assert!(started.elapsed() < Duration::from_secs(10), "the 30 s CLI was stopped");
+        let _ = std::fs::remove_dir_all(&holder);
     }
 }
 
