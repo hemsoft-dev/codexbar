@@ -637,7 +637,7 @@ mod tests {
     fn a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits() {
         let wrapper = r#"echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
 trap '( sleep 2.5 ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exit 0' TERM
-while :; do sleep 0.1; done"#;
+n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
         assert_eq!(
             stop("late", wrapper),
             Stopped {
@@ -670,8 +670,7 @@ while :; do sleep 0.1; done"#;
     #[cfg(unix)]
     #[test]
     fn a_stopped_sign_in_ends_a_cli_that_ignores_the_terminate_signal() {
-        let cli =
-            r#"trap '' TERM; echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; while :; do sleep 0.1; done"#;
+        let cli = r#"trap '' TERM; echo $$ > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#;
         assert_eq!(
             stop("stubborn", cli),
             Stopped {

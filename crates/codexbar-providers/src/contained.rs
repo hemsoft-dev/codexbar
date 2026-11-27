@@ -622,7 +622,7 @@ mod tests {
         command
             .args([
                 "-c",
-                r#"( trap '' HUP; while [ ! -f "$RELEASE" ]; do sleep 0.05; done ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#,
+                r#"( trap '' HUP; n=0; while [ ! -f "$RELEASE" ] && [ "$n" -lt 400 ]; do sleep 0.05; n=$((n + 1)); done ) & echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"; exec sleep 30"#,
             ])
             .env("PID_FILE", &pid_file)
             .env("RELEASE", &release);
