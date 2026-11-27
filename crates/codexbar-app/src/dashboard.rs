@@ -325,9 +325,11 @@ struct CopilotReads {
     /// The accounts its enabled records name: each user's, and the organization card a user's record bills, as
     /// `providers::copilot` sets it up.
     named: Vec<String>,
-    /// The users among `named` a record reads through the GitHub CLI's sign-in rather than CodexBar's own, and bills
-    /// nothing on: discovery reads the same row for them (#346).
+    /// The users among `named` a record reads through the GitHub CLI's sign-in rather than CodexBar's own (#346).
     through_cli: Vec<String>,
+    /// The users among `named` a record bills an organization or enterprise on: their row carries its credits too
+    /// (`CopilotProvider::add_billing`), whichever of their records bills (SFL round 1 and Codex on #348).
+    billed: Vec<String>,
     /// The users among `named` a CodexBar sign-in names. Copilot fetches them with CodexBar's token, though a Command
     /// line record names them too, so their row isn't one discovery reads (SFL on #348).
     signed_in: Vec<String>,
@@ -344,9 +346,9 @@ impl CopilotReads {
     }
 
     /// Whether discovery would read the row these settings read for `user`: a record reads it through the GitHub CLI,
-    /// billing nothing on it, and no CodexBar sign-in names that user.
+    /// no CodexBar sign-in names that user, and no record bills on them.
     fn discovery_reads(&self, user: &String) -> bool {
-        self.through_cli.contains(user) && !self.signed_in.contains(user)
+        self.through_cli.contains(user) && !self.signed_in.contains(user) && !self.billed.contains(user)
     }
 }
 
@@ -362,9 +364,7 @@ fn copilot_reads(hub: &SettingsHub) -> CopilotReads {
     reads
 }
 
-/// Adds the Copilot accounts `record` names to `reads`: its user's, and the organization card it bills. A record that
-/// bills an organization or enterprise puts its credits on the user's row as well (`CopilotProvider::add_billing`), so
-/// discovery doesn't read the same row for that user (SFL on #348).
+/// Adds the Copilot accounts `record` names to `reads`: its user's, and the organization card it bills.
 fn record_reads(record: &codexbar_store::settings::AccountRecord, reads: &mut CopilotReads) {
     use codexbar_providers::copilot::{account_id, org_account_id};
     fn set(value: &Option<String>) -> Option<&str> {
@@ -374,15 +374,17 @@ fn record_reads(record: &codexbar_store::settings::AccountRecord, reads: &mut Co
         return;
     };
     let user = account_id(user).as_str().to_owned();
-    if crate::github_sign_in::is_managed(record) {
-        reads.signed_in.push(user.clone());
-    } else if set(&record.copilot_organization).is_none() {
-        reads.through_cli.push(user.clone());
+    let kind = if crate::github_sign_in::is_managed(record) {
+        &mut reads.signed_in
+    } else {
+        &mut reads.through_cli
+    };
+    kind.push(user.clone());
+    if let Some(org) = set(&record.copilot_organization) {
+        reads.billed.push(user.clone());
+        reads.named.push(org_account_id(org).as_str().to_owned());
     }
     reads.named.push(user);
-    reads
-        .named
-        .extend(set(&record.copilot_organization).map(|org| org_account_id(org).as_str().to_owned()));
 }
 
 /// The accounts `before`'s records named that `now` no longer reads (SFL rounds 4 and 5 on #344): the Copilot users and

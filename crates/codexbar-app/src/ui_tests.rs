@@ -2895,6 +2895,27 @@ fn switching_off_a_billing_command_line_record_drops_its_user_s_row(cx: &mut Tes
     assert!(!kept, "the row with the record's billing doesn't stay");
 }
 
+// Codex on #348: Alice on two Command line records, one billing her organization, has that billing on her row.
+// Removing both takes the row away though discovery is on and the other record billed nothing.
+#[gpui_kit::test]
+fn removing_a_billing_record_beside_an_unbilled_one_drops_its_user_s_row(cx: &mut TestAppContext) {
+    let records = r#"{ "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+          "authenticationMethod": "CommandLine", "externalAccountId": "alice" },
+        { "id": "cp-alice-org", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+          "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" }"#;
+    let kept = alice_kept_after(cx, "copilot-billed-and-unbilled-removed", records, |cx| {
+        cx.update(|cx| {
+            SettingsHub::update(cx, |settings| {
+                settings.remove("cp-alice");
+                settings.remove("cp-alice-org");
+                Ok(())
+            })
+        })
+        .unwrap();
+    });
+    assert!(!kept, "the row with the removed billing doesn't stay");
+}
+
 /// Greptile's adapter for its record `account`, whose account failed: its failure row carries that account's id.
 struct FailsFor {
     account: &'static str,
