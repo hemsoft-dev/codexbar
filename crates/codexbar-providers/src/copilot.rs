@@ -79,13 +79,12 @@ fn names_only(list: &str, orgs: &[String]) -> bool {
 
 /// The non-empty names in `orgs`, each once whatever its capitalization.
 fn distinct_names(orgs: &[String]) -> Vec<&[u8]> {
-    let mut names: Vec<&[u8]> = Vec::new();
-    for org in orgs.iter().filter(|org| !org.is_empty()) {
-        if !names.iter().any(|known| known.eq_ignore_ascii_case(org.as_bytes())) {
-            names.push(org.as_bytes());
-        }
-    }
-    names
+    // Each name once by its lowercase form, in one pass however many records there are (SFL round 2 on #356).
+    let mut seen = std::collections::HashSet::new();
+    orgs.iter()
+        .filter(|org| !org.is_empty() && seen.insert(org.to_ascii_lowercase()))
+        .map(|org| org.as_bytes())
+        .collect()
 }
 
 /// Whether `list` is one or more of `names` joined by " and ", ignoring ASCII case: `starts` marks where a name can

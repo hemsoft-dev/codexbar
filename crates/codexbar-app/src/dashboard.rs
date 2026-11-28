@@ -2296,9 +2296,14 @@ impl Dashboard {
     /// differently, filtered or enriched, is written with the next save.
     fn remember_restored(&mut self, cx: &mut Context<Self>) {
         let dir = SettingsHub::global(cx).dir();
+        // Snapshots saved before #350 don't say how each Copilot row was read: the next save must say so, so they are
+        // never taken as written (SFL round 2 on #356).
+        let Some(discovered) = codexbar_store::snapshots::load_discovered(dir) else {
+            return;
+        };
         let on_disk = SavedSnapshots {
             accounts: codexbar_store::snapshots::load_snapshots(dir),
-            discovered: codexbar_store::snapshots::load_discovered(dir).unwrap_or_default(),
+            discovered,
             kept: codexbar_store::snapshots::load_kept(dir),
         };
         let shown = self.snapshot_state();

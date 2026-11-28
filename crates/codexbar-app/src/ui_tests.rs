@@ -3568,6 +3568,34 @@ fn a_refresh_request_before_the_first_fetch_doesn_t_rewrite_the_restored_snapsho
     );
 }
 
+// SFL round 2 on #356: snapshots saved before #350 don't say how each Copilot row was read. They are never taken as
+// written, so the next save, here a refresh request before the first fetch, records it.
+#[gpui_kit::test]
+fn snapshots_saved_without_how_copilot_read_them_are_written_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore-legacy", "{}");
+    let saved = AccountSnapshot::new(
+        AccountId::new("claude-1"),
+        Provider::Claude,
+        Vec::new(),
+        chrono::Utc::now(),
+    );
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    assert_eq!(codexbar_store::snapshots::load_discovered(&settings.0), None);
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.4));
+    let dashboard = open_live(cx, &settings, vec![claude]);
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Restored);
+    cx.update(SettingsHub::request_refresh);
+    assert_eq!(
+        dashboard.read_with(cx, |dashboard, _| dashboard.snapshot_writes()),
+        1,
+        "the legacy file is written with how its rows were read"
+    );
+    assert_eq!(
+        codexbar_store::snapshots::load_discovered(&settings.0),
+        Some(Vec::new())
+    );
+}
+
 // #353: Copilot groups an organization's billing in any capitalization. Alice's seatless row shows acme's credits;
 // her record recapitalized to Acme still bills that organization, so the row stays through rate-limited refreshes.
 #[gpui_kit::test]
