@@ -307,10 +307,13 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// time there, and the whole file is read, since a process's name can hold a line break (SFL round 3 on #357).
     /// macOS keeps each process's start time as it was, which `ps` is asked for in UTC and the C locale, so a change of
     /// time zone doesn't change it (SFL rounds 2 and 3 on #357); it is kept as seconds since 1970, so it compares as a
-    /// number. A look notes when it starts listing (`listed_at`, the same count), lists the tree's ids with the parent
-    /// each was found under, then reads each start: a process is taken while it still has that parent, or, when its
-    /// parent ended since and left it to another, if it started no later than the listing did. A process that took an
-    /// id after the listing started after it, so it isn't taken for the one listed (SFL rounds 4 and 5 on #357). Before
+    /// number. A look lists the tree's ids with the parent each was found under and, in the same step, when the listing
+    /// ended (`list`: an `@` entry, the same count), then reads each start: a process is taken while it still has that
+    /// parent, or, when its parent ended since and left it to another, if it started no later than the listing ended.
+    /// Everything the tree listed existed when it was listed, however late in the scan (Codex on #357); a process that
+    /// took a listed id after the listing started after it, so it isn't taken for the one listed (SFL rounds 4 and 5
+    /// on #357), but for one that took it during the scan itself. Listing and time are one assignment, so a stop that
+    /// interrupts a look never pairs one look's ids with another's time (SFL round 6 on #357). Before
     /// the CLI's terminate signal only the tree's ids are listed, with no start read, as before #354: the starts are
     /// read once the signal is sent, and a process the signal left to another parent is still taken (SFL round 5 on
     /// #357). A stop that interrupts a look reads the starts of what it listed the same way. No
@@ -394,14 +397,16 @@ reader=
 beat=
 seen=$(cat \"$mark.seen\" 2>/dev/null)
 listed=
-listed_at=
 note() {
+  listed_at=${listed##*@}
   for item in $listed; do
+    case \"$item\" in @*) continue ;; esac
     pid=${item%%:*}
     started=$(stamp \"$pid\" \"${item#*:}\" \"$listed_at\") || continue
     case \" $seen \" in *\" $pid=$started \"*) ;; *) seen=\"$seen $pid=$started\" ;; esac
   done
 }
+list() { listed=\"$(tree \"$script\") @$(now)\"; }
 keep() { echo \"$seen\" > \"$mark.seen.$$\" 2>/dev/null && mv -f \"$mark.seen.$$\" \"$mark.seen\" 2>/dev/null; }
 quit() { note; keep; for helper in $reader $beat; do child \"$helper\" && kill -KILL \"$helper\" 2>/dev/null; done; exit 0; }
 trap quit TERM
@@ -419,8 +424,7 @@ else
   [ \"$group\" = \"$1\" ] || group=
 fi
 look() {
-  listed_at=$(now)
-  listed=$(tree \"$script\")
+  list
   note
   keep
   pids=$seen
@@ -443,8 +447,7 @@ busy() {
 }
 quiet=0
 settled() { if busy; then quiet=0; else quiet=$((quiet + 1)); fi; [ \"$quiet\" -ge 2 ]; }
-listed_at=$(now)
-listed=$(tree \"$script\")
+list
 signal TERM \"$1\"
 note
 keep
@@ -1033,16 +1036,23 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         let dir = folder("reparented");
         let holder = folder("reparented-helper");
         let tools = folder("reparented-tools");
-        for (tool, real) in [
-            ("cat", ["/bin/cat", "/usr/bin/cat"]),
-            ("date", ["/bin/date", "/usr/bin/date"]),
+        // The first `pgrep` takes 2 s, and the CLI starts the helper during it, so the helper is born while the tree is
+        // listed (Codex on #357).
+        for (tool, real, delay) in [
+            ("cat", ["/bin/cat", "/usr/bin/cat"], "sleep 0.3"),
+            ("date", ["/bin/date", "/usr/bin/date"], "sleep 0.3"),
+            (
+                "pgrep",
+                ["/usr/bin/pgrep", "/bin/pgrep"],
+                "[ -f \"$0.slow\" ] || { : > \"$0.slow\"; sleep 2; }",
+            ),
         ] {
             let real = real
                 .into_iter()
                 .find(|path| Path::new(path).exists())
                 .expect("installed");
             let path = tools.join(tool);
-            std::fs::write(&path, format!("#!/bin/sh\nsleep 0.3\nexec {real} \"$@\"\n")).unwrap();
+            std::fs::write(&path, format!("#!/bin/sh\n{delay}\nexec {real} \"$@\"\n")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let helper = holder.join("helper");
@@ -1057,15 +1067,17 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         command
             .args([
                 "-c",
-                r#"if command -v setsid >/dev/null; then setsid "$HELPER" & else perl -e 'setpgrp(0, 0); exec @ARGV' "$HELPER" & fi
+                r#"trap 'exit 0' TERM
+sleep 2
+if command -v setsid >/dev/null; then setsid "$HELPER" & else perl -e 'setpgrp(0, 0); exec @ARGV' "$HELPER" & fi
 echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
-trap 'exit 0' TERM
 n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
             ])
             .env("HELPER", &helper)
             .env("PID_FILE", &pid_file);
         let path = holder.join("script.sh");
         std::fs::write(&path, script(&command, &dir)).unwrap();
+        let spawned = Instant::now();
         let mut shell = run_script(&path)
             .env("PATH", format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display()))
             .spawn()
@@ -1076,7 +1088,9 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         }
         let helper_id = std::fs::read_to_string(&pid_file).unwrap_or_default().trim().to_owned();
         let started = start_of(&helper_id);
+        let helper_ends = Instant::now() + Duration::from_secs(6);
         shell.wait().unwrap();
+        let ended = Instant::now();
         let running = !helper_id.is_empty() && runs(&helper_id);
         if running && !started.is_empty() && start_of(&helper_id) == started {
             let _ = Command::new("kill").args(["-KILL", &helper_id]).status();
@@ -1085,6 +1099,13 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         let _ = std::fs::remove_dir_all(&holder);
         let _ = std::fs::remove_dir_all(&tools);
         assert!(!helper_id.is_empty(), "the CLI started the helper");
+        // Timed against the helper's own 6 s, not only read once the script has ended, so a test thread held up past
+        // the helper's end doesn't pass a stop that dropped it (SFL round 6 on #357).
+        assert!(
+            ended + Duration::from_millis(500) >= helper_ends,
+            "the stop lasted until the helper ended: {:?} after the script started",
+            ended - spawned
+        );
         assert!(!running, "the helper ended before the stop did");
     }
 
