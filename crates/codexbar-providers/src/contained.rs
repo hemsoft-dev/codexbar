@@ -225,11 +225,12 @@ mod terminal {
         settle_args(&mut script, b"\"$waiter\"");
         // Before a trap or the script settles, the watchdog is stopped and reaped: running beside it, the settle would
         // be the script's child when the watchdog kills the script's children (SFL round 7 on #352, #354). It is
-        // signalled only while it is still the script's child: one that already ended may have left its id to another
-        // process.
+        // signalled unless another process now holds its id: one that already ended may have left it to another process.
+        // The check runs in a process of the script's own, which the watchdog's last signals can end before it answers
+        // (SFL round 1 on #357), so only a parent that it reports, and that isn't the script, stops the signal.
         script.extend_from_slice(
-            b"; }\nwatchdog=\ncalm() { [ -z \"$watchdog\" ] || { [ \"$(ps -o ppid= -p \"$watchdog\" 2>/dev/null | tr -d \" \")\" \
-              != \"$$\" ] || kill \"$watchdog\" 2>/dev/null; wait \"$watchdog\" 2>/dev/null; }; }\n\
+            b"; }\nwatchdog=\ncalm() { [ -z \"$watchdog\" ] || { parent=$(ps -o ppid= -p \"$watchdog\" 2>/dev/null | tr -d \" \"); \
+              { [ -n \"$parent\" ] && [ \"$parent\" != \"$$\" ]; } || kill \"$watchdog\" 2>/dev/null; wait \"$watchdog\" 2>/dev/null; }; }\n\
               trap 'calm; settle -; publish 129; end; exit 129' HUP\ntrap 'calm; settle +; publish 130; end; exit 130' INT TERM\n\
               /bin/sh -c '",
         );
@@ -297,7 +298,9 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// session or group of its own while still its descendant is waited for too (SFL round 4 on #352). What it saw is
     /// kept beside the mark (`stopping.seen`), so the interrupt trap's settle, which runs once the watchdog is stopped,
     /// still waits for a process only the watchdog saw (SFL round 5 on #352). The file is written beside itself and
-    /// renamed into place, so a watchdog stopped as it writes leaves the whole list (#354). Each process it saw is kept
+    /// renamed into place, so a watchdog stopped as it writes leaves the whole list (#354), and written again as the
+    /// watchdog stops, so a process it saw since its last write isn't lost to the settle that follows (SFL round 1 on
+    /// #357). Each process it saw is kept
     /// with the time it started, and counts as running only while the process with that id started then: an id an
     /// ended process left free, taken by another, doesn't keep the sign-in busy (#354). No process's
     /// environment is read (SFL round 7 on #347: PRIVACY.md says a
@@ -350,7 +353,9 @@ signal() { mine || return 0; for child in $(pgrep -P \"$2\"); do [ \"$child\" = 
 child() { [ \"$(ps -o ppid= -p \"$1\" 2>/dev/null | tr -d \" \")\" = \"$$\" ]; }
 reader=
 beat=
-quit() { for helper in $reader $beat; do child \"$helper\" && kill -KILL \"$helper\" 2>/dev/null; done; exit 0; }
+seen=$(cat \"$mark.seen\" 2>/dev/null)
+keep() { echo \"$seen\" > \"$mark.seen.$$\" 2>/dev/null && mv -f \"$mark.seen.$$\" \"$mark.seen\" 2>/dev/null; }
+quit() { keep; for helper in $reader $beat; do child \"$helper\" && kill -KILL \"$helper\" 2>/dev/null; done; exit 0; }
 trap quit TERM
 ( me=$(exec /bin/sh -c \"echo \\$PPID\"); while [ \"$(ps -o ppid= -p \"$me\" 2>/dev/null | tr -d \" \")\" = \"$$\" ]; do touch \"$mark\" 2>/dev/null; sleep 0.5; done ) &
 beat=$!
@@ -370,7 +375,7 @@ look() {
     started=$(stamp \"$pid\") || continue
     case \" $seen \" in *\" $pid=$started \"*) ;; *) seen=\"$seen $pid=$started\" ;; esac
   done
-  echo \"$seen\" > \"$mark.seen.$$\" 2>/dev/null && mv -f \"$mark.seen.$$\" \"$mark.seen\" 2>/dev/null
+  keep
   pids=$seen
   if [ -n \"$sid\" ]; then
     pids=\"$pids $(ps -o pid= -s \"$sid\" 2>/dev/null)\"
@@ -391,7 +396,6 @@ busy() {
 }
 quiet=0
 settled() { if busy; then quiet=0; else quiet=$((quiet + 1)); fi; [ \"$quiet\" -ge 2 ]; }
-seen=$(cat \"$mark.seen\" 2>/dev/null)
 look
 signal TERM \"$1\"
 tries=0

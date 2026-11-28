@@ -586,12 +586,15 @@ mod tests {
             let _ = sent.send(window.finish(std::time::Duration::from_secs(60), &cancel));
         });
         // Each process id the CLI leaves, with when that process started, noted while it runs: the cleanup kills only
-        // a process that still is one of them, not another that took its id once it ended (#354).
+        // a process that still is one of them, not another that took its id once it ended (#354). The scripts write
+        // the id of a process that runs as they write it, so the start noted just after is that process's.
         let mut own = vec![(pid.clone(), start_of(&pid))];
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let result = loop {
             match finished.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(result) => break Some(result),
+                // A `finish` that panicked sends nothing: it fails the test at once (SFL round 1 on #357).
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
                 Err(_) if std::time::Instant::now() < deadline => note_own(&pid_file, &mut own),
                 Err(_) => break None,
             }
