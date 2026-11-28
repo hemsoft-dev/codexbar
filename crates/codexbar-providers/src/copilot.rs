@@ -122,6 +122,18 @@ fn name_once(names: &mut Vec<String>, organization: &str) {
     }
 }
 
+/// Notes in a seatless note's lists whether `organization`'s credits were `read` with one of its records. One read with
+/// any record shows them, as its card does (`add_org` keeps the read), so it is never also named as unreadable (SFL
+/// round 1 on #356).
+fn note_read(shown: &mut Vec<String>, unread: &mut Vec<String>, organization: &str, read: bool) {
+    if read {
+        unread.retain(|name| !name.eq_ignore_ascii_case(organization));
+        name_once(shown, organization);
+    } else if !shown.iter().any(|name| name.eq_ignore_ascii_case(organization)) {
+        name_once(unread, organization);
+    }
+}
+
 /// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
 /// login failed ("X Failed to log in to github.com account old-user (keyring)"): their own fetch reports that, as with
 /// `--json` output (#350).
@@ -1296,10 +1308,8 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                     // quotas instead of failing.
                     let (mut shown, mut unread) = (Vec::new(), Vec::new());
                     for billing in self.org_only_billing(username) {
-                        match self.add_org(billing, &token, now, &mut orgs) {
-                            Ok(_) => name_once(&mut shown, &billing.organization),
-                            Err(_) => name_once(&mut unread, &billing.organization),
-                        }
+                        let read = self.add_org(billing, &token, now, &mut orgs).is_ok();
+                        note_read(&mut shown, &mut unread, &billing.organization, read);
                     }
                     let seatless = error == (ProviderError::Unexpected { detail: NO_SEAT });
                     if seatless && !(shown.is_empty() && unread.is_empty()) {
@@ -1452,6 +1462,24 @@ mod tests {
             seatless_note_names_only(joined, &orgs(&["Acme", "globex"])),
             Some(false)
         );
+    }
+
+    // SFL round 1 on #356: duplicate records for one organization whose reads went both ways show its credits, read
+    // with one of them, and don't also call them unreadable, whichever came first.
+    #[test]
+    fn an_organization_read_with_one_of_its_records_isn_t_named_unreadable() {
+        for reads in [[false, true], [true, false]] {
+            let (mut shown, mut unread) = (Vec::new(), Vec::new());
+            for (read, name) in reads.into_iter().zip(["acme", "ACME"]) {
+                note_read(&mut shown, &mut unread, name, read);
+            }
+            assert_eq!(shown.len(), 1, "{reads:?}: {shown:?}");
+            assert!(unread.is_empty(), "{reads:?}: {unread:?}");
+        }
+        let (mut shown, mut unread) = (Vec::new(), Vec::new());
+        note_read(&mut shown, &mut unread, "acme", false);
+        note_read(&mut shown, &mut unread, "Acme", false);
+        assert_eq!((shown.len(), unread), (0, vec!["acme".to_owned()]));
     }
 
     // #353: Copilot groups an organization's billing in any capitalization, so a record that only recapitalizes it

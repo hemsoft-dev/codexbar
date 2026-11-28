@@ -3540,6 +3540,34 @@ fn a_settings_change_writes_the_snapshots_once_at_most(cx: &mut TestAppContext) 
     assert_eq!(writes(cx), before + 1, "the change that dropped it writes once");
 }
 
+// SFL round 1 on #356: snapshots restored just as saved aren't written again by a refresh request before the first
+// fetch has landed.
+#[gpui_kit::test]
+fn a_refresh_request_before_the_first_fetch_doesn_t_rewrite_the_restored_snapshots(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore-unchanged", "{}");
+    let saved = AccountSnapshot::new(
+        AccountId::new("claude-1"),
+        Provider::Claude,
+        Vec::new(),
+        chrono::Utc::now(),
+    );
+    codexbar_store::snapshots::save_copilot_snapshots(&settings.0, &[saved], &[], &[]).unwrap();
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.4));
+    let dashboard = open_live(cx, &settings, vec![claude]);
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Restored);
+    cx.update(SettingsHub::request_refresh);
+    assert_eq!(
+        dashboard.read_with(cx, |dashboard, _| dashboard.snapshot_writes()),
+        0,
+        "nothing new to write"
+    );
+    cx.run_until_parked();
+    assert!(
+        dashboard.read_with(cx, |dashboard, _| dashboard.snapshot_writes()) >= 1,
+        "the fetch's usage is written"
+    );
+}
+
 // #353: Copilot groups an organization's billing in any capitalization. Alice's seatless row shows acme's credits;
 // her record recapitalized to Acme still bills that organization, so the row stays through rate-limited refreshes.
 #[gpui_kit::test]

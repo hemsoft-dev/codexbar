@@ -2174,6 +2174,12 @@ impl Dashboard {
         if !matches!(self.source, DataSource::Live { .. }) {
             return;
         }
+        let saving = self.snapshot_state();
+        self.write_snapshots(saving, cx);
+    }
+
+    /// What `save_snapshots` would write now.
+    fn snapshot_state(&self) -> SavedSnapshots {
         let real: Vec<AccountSnapshot> = self
             .accounts
             .iter()
@@ -2194,14 +2200,11 @@ impl Dashboard {
             .filter(|id| real.iter().any(|account| account.id().as_str() == id.as_str()))
             .cloned()
             .collect();
-        self.write_snapshots(
-            SavedSnapshots {
-                accounts: real,
-                discovered,
-                kept,
-            },
-            cx,
-        );
+        SavedSnapshots {
+            accounts: real,
+            discovered,
+            kept,
+        }
     }
 
     /// Writes `saving` unless it is what was last written (#353): a settings change, or a refresh request that changes
@@ -2288,6 +2291,23 @@ impl Dashboard {
         }
         self.note_restored_discovery(&restored, cx);
         self.set_accounts(restored, cx);
+        self.remember_restored(cx);
+    }
+
+    /// Remembers the restored snapshots as written when they are what `snapshots.json` holds, so a settings change or
+    /// refresh request before the first fetch doesn't write the same again (SFL round 1 on #356). Anything restored
+    /// differently, filtered or enriched, is written with the next save.
+    fn remember_restored(&mut self, cx: &mut Context<Self>) {
+        let dir = SettingsHub::global(cx).dir();
+        let on_disk = SavedSnapshots {
+            accounts: codexbar_store::snapshots::load_snapshots(dir),
+            discovered: codexbar_store::snapshots::load_discovered(dir).unwrap_or_default(),
+            kept: codexbar_store::snapshots::load_kept(dir),
+        };
+        let shown = self.snapshot_state();
+        if shown == on_disk {
+            self.saved_snapshots = Some(shown);
+        }
     }
 
     /// What Smart order ranks each account by (#90): the status the heading shows, the strongest alert that holds,
