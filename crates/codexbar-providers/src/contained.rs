@@ -306,13 +306,14 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// since boot on Linux (`/proc/<pid>/stat`), which a change of the system clock leaves alone, unlike `ps`'s start
     /// time there, and the whole file is read, since a process's name can hold a line break (SFL round 3 on #357).
     /// macOS keeps each process's start time as it was, which `ps` is asked for in UTC and the C locale, so a change of
-    /// time zone doesn't change it (SFL rounds 2 and 3 on #357). Each process's start is read as the tree lists it,
-    /// with its parent, and it is taken only while that is still the parent it was listed under: an id that ended and
-    /// went to another process in between isn't taken for it, nor is that process's tree walked (SFL round 4 on
-    /// #357). A process whose parent ends at that moment is left out, as one that leaves the tree before a look is;
-    /// the session or group still holds it. What a look listed is kept with its starts, so a stop that interrupts the
-    /// look records it without reading any start again (SFL rounds 2 to 4 on #357). Before the CLI's terminate signal,
-    /// only the tree is listed; the session or group is first scanned by the look after it (SFL round 4 on #357). No
+    /// time zone doesn't change it (SFL rounds 2 and 3 on #357); it is kept as seconds since 1970, so it compares as a
+    /// number. A look notes when it starts listing (`listed_at`, the same count), lists the tree's ids with the parent
+    /// each was found under, then reads each start: a process is taken while it still has that parent, or, when its
+    /// parent ended since and left it to another, if it started no later than the listing did. A process that took an
+    /// id after the listing started after it, so it isn't taken for the one listed (SFL rounds 4 and 5 on #357). Before
+    /// the CLI's terminate signal only the tree's ids are listed, with no start read, as before #354: the starts are
+    /// read once the signal is sent, and a process the signal left to another parent is still taken (SFL round 5 on
+    /// #357). A stop that interrupts a look reads the starts of what it listed the same way. No
     /// process's
     /// environment is read (SFL round 7 on #347: PRIVACY.md says a
     /// cancelled sign-in never inspects the user's browser). Nothing running counts only when a second look agrees: a
@@ -353,24 +354,33 @@ touch \"$3\" 2>/dev/null
 mark=$3
 stamp() {
   want=$2
+  since=$3
   if [ -r \"/proc/$1/stat\" ]; then
     line=$(cat \"/proc/$1/stat\" 2>/dev/null)
     [ -n \"$line\" ] || return 1
     set -- ${line##*\") \"}
-    [ $# -ge 20 ] && { [ -z \"$want\" ] || [ \"$2\" = \"$want\" ]; } && echo \"${20}\"
+    [ $# -ge 20 ] || return 1
+    parent=$2
+    born=${20}
   else
     set -- $(LC_ALL=C TZ=UTC0 ps -o ppid= -o lstart= -p \"$1\" 2>/dev/null)
-    [ $# -gt 1 ] && { [ -z \"$want\" ] || [ \"$1\" = \"$want\" ]; } && echo \"$2$3$4$5$6\"
+    [ $# -gt 1 ] || return 1
+    parent=$1
+    shift
+    born=$(LC_ALL=C TZ=UTC0 date -j -f \"%a %b %d %T %Y\" \"$*\" +%s 2>/dev/null) || return 1
+  fi
+  { [ -z \"$want\" ] || [ \"$parent\" = \"$want\" ] || { [ -n \"$since\" ] && [ \"$born\" -le \"$since\" ]; }; } && echo \"$born\"
+}
+now() {
+  if [ -r /proc/self/stat ]; then
+    line=$(cat /proc/self/stat)
+    set -- ${line##*\") \"}
+    echo \"${20}\"
+  else
+    date +%s
   fi
 }
-tree() {
-  for child in $(pgrep -P \"$1\"); do
-    [ \"$child\" != \"$$\" ] || continue
-    started=$(stamp \"$child\" \"$1\") || continue
-    echo \"$child=$started\"
-    tree \"$child\"
-  done
-}
+tree() { for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || { echo \"$child:$1\"; tree \"$child\"; }; done; }
 running() {
   set -- \"$1\" \"$2\" $(ps -o stat= -o ppid= -p \"$1\" 2>/dev/null)
   [ $# -gt 3 ] || return 1
@@ -384,7 +394,14 @@ reader=
 beat=
 seen=$(cat \"$mark.seen\" 2>/dev/null)
 listed=
-note() { for entry in $listed; do case \" $seen \" in *\" $entry \"*) ;; *) seen=\"$seen $entry\" ;; esac; done; }
+listed_at=
+note() {
+  for item in $listed; do
+    pid=${item%%:*}
+    started=$(stamp \"$pid\" \"${item#*:}\" \"$listed_at\") || continue
+    case \" $seen \" in *\" $pid=$started \"*) ;; *) seen=\"$seen $pid=$started\" ;; esac
+  done
+}
 keep() { echo \"$seen\" > \"$mark.seen.$$\" 2>/dev/null && mv -f \"$mark.seen.$$\" \"$mark.seen\" 2>/dev/null; }
 quit() { note; keep; for helper in $reader $beat; do child \"$helper\" && kill -KILL \"$helper\" 2>/dev/null; done; exit 0; }
 trap quit TERM
@@ -402,6 +419,7 @@ else
   [ \"$group\" = \"$1\" ] || group=
 fi
 look() {
+  listed_at=$(now)
   listed=$(tree \"$script\")
   note
   keep
@@ -425,6 +443,7 @@ busy() {
 }
 quiet=0
 settled() { if busy; then quiet=0; else quiet=$((quiet + 1)); fi; [ \"$quiet\" -ge 2 ]; }
+listed_at=$(now)
 listed=$(tree \"$script\")
 signal TERM \"$1\"
 note
@@ -960,20 +979,25 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         assert_eq!(status.trim(), "130");
     }
 
-    /// When process `pid` started, as the watchdog keeps it: the kernel's count since boot on Linux, `ps`'s start time
-    /// without its spaces elsewhere.
+    /// When process `pid` started, as the watchdog keeps it: the kernel's count since boot on Linux, seconds since 1970
+    /// from `ps`'s start time in UTC elsewhere.
     fn start_of(pid: &str) -> String {
         if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             let fields = stat.rsplit_once(") ").map_or("", |(_, fields)| fields);
             return fields.split_whitespace().nth(19).unwrap_or_default().to_owned();
         }
-        let out = Command::new("ps")
-            .args(["-o", "lstart=", "-p", pid])
+        let out = Command::new("/bin/sh")
+            .args([
+                "-c",
+                r#"set -- $(ps -o lstart= -p "$1"); [ $# -gt 0 ] && date -j -f "%a %b %d %T %Y" "$*" +%s"#,
+                "sh",
+                pid,
+            ])
             .env("LC_ALL", "C")
             .env("TZ", "UTC0")
             .output()
-            .expect("ps runs");
-        String::from_utf8_lossy(&out.stdout).split_whitespace().collect()
+            .expect("sh runs");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
     }
 
     /// Runs a stopped sign-in's script, its waiter already gone, with `seen` as what a watchdog saw before
@@ -997,6 +1021,71 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         let took = started.elapsed();
         let _ = std::fs::remove_dir_all(&dir);
         took
+    }
+
+    // SFL round 5 on #357: a helper the CLI started in a session or group of its own, listed under the CLI before the
+    // terminate signal, has another parent by the time its start is read once the CLI has ended on that signal (each
+    // read made slow here, through `cat` on Linux and `date` on macOS). It started before the listing, so it is still
+    // taken, and the stop waits until it ends.
+    #[test]
+    fn a_stop_waits_for_a_helper_left_to_another_parent_as_the_cli_ends() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = folder("reparented");
+        let holder = folder("reparented-helper");
+        let tools = folder("reparented-tools");
+        for (tool, real) in [
+            ("cat", ["/bin/cat", "/usr/bin/cat"]),
+            ("date", ["/bin/date", "/usr/bin/date"]),
+        ] {
+            let real = real
+                .into_iter()
+                .find(|path| Path::new(path).exists())
+                .expect("installed");
+            let path = tools.join(tool);
+            std::fs::write(&path, format!("#!/bin/sh\nsleep 0.3\nexec {real} \"$@\"\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let helper = holder.join("helper");
+        std::fs::write(&helper, "#!/usr/bin/perl\nsleep 6;\n").unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut gone = Command::new("true").spawn().unwrap();
+        let gone_id = gone.id();
+        gone.wait().unwrap();
+        std::fs::write(dir.join("waiter"), gone_id.to_string()).unwrap();
+        let pid_file = holder.join("helper-id");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                r#"if command -v setsid >/dev/null; then setsid "$HELPER" & else perl -e 'setpgrp(0, 0); exec @ARGV' "$HELPER" & fi
+echo $! > "$PID_FILE.tmp" && mv "$PID_FILE.tmp" "$PID_FILE"
+trap 'exit 0' TERM
+n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
+            ])
+            .env("HELPER", &helper)
+            .env("PID_FILE", &pid_file);
+        let path = holder.join("script.sh");
+        std::fs::write(&path, script(&command, &dir)).unwrap();
+        let mut shell = run_script(&path)
+            .env("PATH", format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display()))
+            .spawn()
+            .unwrap();
+        let waiting = Instant::now();
+        while !pid_file.exists() && waiting.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let helper_id = std::fs::read_to_string(&pid_file).unwrap_or_default().trim().to_owned();
+        let started = start_of(&helper_id);
+        shell.wait().unwrap();
+        let running = !helper_id.is_empty() && runs(&helper_id);
+        if running && !started.is_empty() && start_of(&helper_id) == started {
+            let _ = Command::new("kill").args(["-KILL", &helper_id]).status();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&holder);
+        let _ = std::fs::remove_dir_all(&tools);
+        assert!(!helper_id.is_empty(), "the CLI started the helper");
+        assert!(!running, "the helper ended before the stop did");
     }
 
     // SFL round 3 on #357: a helper whose name holds a line break, started in a session or group of its own by a CLI

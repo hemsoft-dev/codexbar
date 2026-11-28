@@ -599,6 +599,8 @@ mod tests {
                 Err(_) => break None,
             }
         };
+        // A later id the CLI left after the last look, before `finish` returned (SFL round 5 on #357).
+        note_own(&pid_file, &mut own);
         // The CLI may have left a later process id (`a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits`).
         let last = std::fs::read_to_string(&pid_file).map_or_else(|_| pid.clone(), |read| read.trim().to_owned());
         let Some(result) = result else {
