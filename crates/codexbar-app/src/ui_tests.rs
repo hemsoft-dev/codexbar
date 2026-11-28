@@ -12341,8 +12341,9 @@ fn far_dates_east_of_utc_show_no_date_and_leave_the_others(cx: &mut TestAppConte
     let far = row(cx, "Far run-out");
     assert!(far.ends_with("No spending rate known yet"), "{far}");
     let ordinary = row(cx, "Ordinary");
-    // The Spend view counts days from the real clock, so only the fixed date is checked.
-    assert!(ordinary.contains("until Nov 27"), "{ordinary}");
+    // The Spend view counts days from the real clock, so only the fixed date is checked: "until Nov 27" before it,
+    // "Expected to have run out by Nov 27" once that day has passed in Tokyo.
+    assert!(ordinary.ends_with("Nov 27"), "{ordinary}");
     let first = label(cx, handle, "spend-runs-out-first").unwrap();
     assert!(first.contains("Ordinary") && first.ends_with("Nov 27"), "{first}");
     show(cx, Some(tokyo), true, DashboardView::Usage);
@@ -12359,7 +12360,12 @@ fn far_dates_east_of_utc_show_no_date_and_leave_the_others(cx: &mut TestAppConte
     if chrono::Local::now().offset().local_minus_utc() <= 0 {
         assert!(local.contains("until Dec 31"), "{local}");
     }
-    assert!(row(cx, "Ordinary").contains("until Nov 2"));
+    // In the machine's zone the run-out day is Nov 26, 27 or 28, before or after the real clock has passed it.
+    let ordinary = row(cx, "Ordinary");
+    assert!(
+        ordinary.contains("until Nov 2") || ordinary.contains("run out by Nov 2"),
+        "{ordinary}"
+    );
 }
 
 /// #318: a Copilot account 740 premium requests past its 3,000 allowance reads 3,740 in the Usage table and stays
