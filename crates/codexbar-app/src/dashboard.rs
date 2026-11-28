@@ -705,6 +705,14 @@ fn restored_reads(hub: &SettingsHub) -> CopilotReads {
     reads
 }
 
+/// What `Dashboard::save_snapshots` writes to `snapshots.json`.
+#[derive(PartialEq)]
+struct SavedSnapshots {
+    accounts: Vec<AccountSnapshot>,
+    discovered: Vec<String>,
+    kept: Vec<String>,
+}
+
 /// What a settings change does to what Copilot reads (`Dashboard::adds_accounts`).
 struct CopilotChange {
     /// Copilot must fetch again: it reads an account it didn't (Codex on #344), may find through discovery a user a
@@ -921,6 +929,10 @@ pub struct Dashboard {
     /// The Copilot users a settings change stopped naming whose rows stayed for discovery, until a fetch reads them
     /// again: they go if Copilot then fails as a whole for want of a sign-in (`signed_out_of_discovery`).
     kept_rows: Vec<String>,
+    /// What `save_snapshots` last wrote, so saving what's unchanged writes nothing (#353).
+    saved_snapshots: Option<SavedSnapshots>,
+    /// How many times `save_snapshots` wrote, for the headless UI tests.
+    snapshot_writes: usize,
     /// The window placement last saved (#194), and one seen since that is saved once it stays the same for a tick,
     /// so a drag or resize is written once it ends rather than at every step.
     placement: Option<codexbar_store::prefs::WindowPlacement>,
@@ -1191,6 +1203,8 @@ impl Dashboard {
             refresh_read: Default::default(),
             discovered_rows: Vec::new(),
             kept_rows: Vec::new(),
+            saved_snapshots: None,
+            snapshot_writes: 0,
             placement: crate::prefs_hub::PrefsHub::window_placement(cx),
             placement_pending: None,
             #[cfg(windows)]
@@ -2156,7 +2170,7 @@ impl Dashboard {
 
     /// Saves real accounts' usage for the next start. Placeholders aren't saved; a write failure only costs the
     /// restored view next time.
-    fn save_snapshots(&self, cx: &mut Context<Self>) {
+    fn save_snapshots(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.source, DataSource::Live { .. }) {
             return;
         }
@@ -2180,8 +2194,34 @@ impl Dashboard {
             .filter(|id| real.iter().any(|account| account.id().as_str() == id.as_str()))
             .cloned()
             .collect();
-        let _ =
-            codexbar_store::snapshots::save_copilot_snapshots(SettingsHub::global(cx).dir(), &real, &discovered, &kept);
+        self.write_snapshots(
+            SavedSnapshots {
+                accounts: real,
+                discovered,
+                kept,
+            },
+            cx,
+        );
+    }
+
+    /// Writes `saving` unless it is what was last written (#353): a settings change, or a refresh request that changes
+    /// nothing, then writes once at most.
+    fn write_snapshots(&mut self, saving: SavedSnapshots, cx: &mut Context<Self>) {
+        if self.saved_snapshots.as_ref() == Some(&saving) {
+            return;
+        }
+        let dir = SettingsHub::global(cx).dir();
+        let written =
+            codexbar_store::snapshots::save_copilot_snapshots(dir, &saving.accounts, &saving.discovered, &saving.kept);
+        self.snapshot_writes += 1;
+        // A failed write is tried again with the next save.
+        self.saved_snapshots = written.ok().map(|()| saving);
+    }
+
+    /// How many times the snapshots were written, for the headless UI tests.
+    #[cfg(test)]
+    pub fn snapshot_writes(&self) -> usize {
+        self.snapshot_writes
     }
 
     /// Shows the last-good snapshots from the previous run until the first fetch returns.
@@ -2368,8 +2408,9 @@ impl Dashboard {
         let (added, lost) = self.adds_accounts(&adapters, cx);
         self.configured = adapters.clone();
         self.drop_unconfigured_accounts(&adapters, &lost, cx);
-        // With the kept marks the change made, though it dropped nothing: quitting before the refresh lands would lose
-        // them (SFL round 5 on #351).
+        // Once for the whole change, with what `forget_removed_accounts` and `drop_unconfigured_accounts` took away and
+        // the kept marks it made, though it dropped nothing: quitting before the refresh lands would lose them (SFL
+        // round 5 on #351). Nothing is written when none of that changed (#353).
         self.save_snapshots(cx);
         if added {
             self.refresh(cx);
@@ -2395,7 +2436,7 @@ impl Dashboard {
     }
 
     /// Drops the rows and failure banners none of `adapters` serves, and those of the Copilot accounts the change took
-    /// away (`lost`).
+    /// away (`lost`). The caller saves the snapshots.
     fn drop_unconfigured_accounts(
         &mut self,
         adapters: &[(&'static str, Option<String>)],
@@ -2423,7 +2464,6 @@ impl Dashboard {
         self.placeholders
             .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
         self.set_accounts(accounts, cx);
-        self.save_snapshots(cx);
     }
 
     /// When accounts are removed in Settings (one at a time or by Reset), deletes what was kept for them: stored history,
@@ -2474,8 +2514,8 @@ impl Dashboard {
             .filter(|account| !removed.iter().any(|id| id == account.id().as_str()))
             .cloned()
             .collect();
+        // Saved by `follow_configured_adapters`, which follows every settings change, so the change writes once.
         self.set_accounts(accounts, cx);
-        self.save_snapshots(cx);
     }
 
     /// Deletes removed accounts' history that isn't deleted on disk yet (a failed rewrite) or that a refresh started
