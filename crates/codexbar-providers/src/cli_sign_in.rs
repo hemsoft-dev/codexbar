@@ -621,11 +621,18 @@ mod tests {
         stopped
     }
 
-    /// When process `pid` started, as `ps` tells it; empty once it has ended.
+    /// When process `pid` started, empty once it has ended: the kernel's count since boot on Linux, which a change of the
+    /// system clock leaves alone, and `ps`'s start time in UTC elsewhere (SFL round 3 on #357).
     #[cfg(unix)]
     fn start_of(pid: &str) -> String {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            let fields = stat.rsplit_once(") ").map_or("", |(_, fields)| fields);
+            return fields.split_whitespace().nth(19).unwrap_or_default().to_owned();
+        }
         let out = Command::new("ps")
             .args(["-o", "lstart=", "-p", pid])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC0")
             .output()
             .expect("ps runs");
         String::from_utf8_lossy(&out.stdout).trim().to_owned()
