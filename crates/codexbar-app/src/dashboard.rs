@@ -2171,9 +2171,6 @@ impl Dashboard {
     /// Saves real accounts' usage for the next start. Placeholders aren't saved; a write failure only costs the
     /// restored view next time.
     fn save_snapshots(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.source, DataSource::Live { .. }) {
-            return;
-        }
         let saving = self.snapshot_state();
         self.write_snapshots(saving, cx);
     }
@@ -2207,10 +2204,10 @@ impl Dashboard {
         }
     }
 
-    /// Writes `saving` unless it is what was last written (#353): a settings change, or a refresh request that changes
-    /// nothing, then writes once at most.
+    /// Writes `saving` for live data, unless it is what was last written (#353): a settings change, or a refresh request
+    /// that changes nothing, then writes once at most. The demo writes nothing.
     fn write_snapshots(&mut self, saving: SavedSnapshots, cx: &mut Context<Self>) {
-        if self.saved_snapshots.as_ref() == Some(&saving) {
+        if !matches!(self.source, DataSource::Live { .. }) || self.saved_snapshots.as_ref() == Some(&saving) {
             return;
         }
         let dir = SettingsHub::global(cx).dir();
