@@ -585,26 +585,81 @@ mod tests {
             let cancel = std::sync::atomic::AtomicBool::new(true);
             let _ = sent.send(window.finish(std::time::Duration::from_secs(60), &cancel));
         });
-        let result = finished.recv_timeout(std::time::Duration::from_secs(30));
+        // Each process id the CLI leaves, with when that process started, noted while it runs: the cleanup kills only
+        // a process that still is one of them, not another that took its id once it ended (#354). The scripts write
+        // the id of a process that runs as they write it, so the start noted just after is that process's.
+        let mut own = vec![(pid.clone(), start_of(&pid))];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let result = loop {
+            match finished.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(result) => break Some(result),
+                // A `finish` that panicked sends nothing: it fails the test at once (SFL round 1 on #357).
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
+                Err(_) if std::time::Instant::now() < deadline => note_own(&pid_file, &mut own),
+                Err(_) => break None,
+            }
+        };
+        // A later id the CLI left after the last look, before `finish` returned (SFL round 5 on #357).
+        note_own(&pid_file, &mut own);
         // The CLI may have left a later process id (`a_stopped_sign_in_waits_for_what_a_wrapper_starts_as_it_exits`).
         let last = std::fs::read_to_string(&pid_file).map_or_else(|_| pid.clone(), |read| read.trim().to_owned());
-        if result.is_err() {
-            let _ = Command::new("kill").args(["-KILL", &pid, &last]).status();
+        let Some(result) = result else {
+            for (id, _) in &own {
+                kill_own(id, &own);
+            }
             let _ = std::fs::remove_dir_all(&dir);
             panic!("finish didn't return");
-        }
-        assert_eq!(result.unwrap(), Err(CliSignInError::Failed));
+        };
+        assert_eq!(result, Err(CliSignInError::Failed));
         let stopped = Stopped {
             running: runs(&last),
             signalled: signalled.exists(),
             replaced: last != pid,
         };
-        let pid = last;
         if stopped.running {
-            let _ = Command::new("kill").args(["-KILL", &pid]).status();
+            kill_own(&last, &own);
         }
         let _ = std::fs::remove_dir_all(&dir);
         stopped
+    }
+
+    /// When process `pid` started, empty once it has ended: the kernel's count since boot on Linux, which a change of the
+    /// system clock leaves alone, and `ps`'s start time in UTC elsewhere (SFL round 3 on #357).
+    #[cfg(unix)]
+    fn start_of(pid: &str) -> String {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            let fields = stat.rsplit_once(") ").map_or("", |(_, fields)| fields);
+            return fields.split_whitespace().nth(19).unwrap_or_default().to_owned();
+        }
+        let out = Command::new("ps")
+            .args(["-o", "lstart=", "-p", pid])
+            .env("LC_ALL", "C")
+            .env("TZ", "UTC0")
+            .output()
+            .expect("ps runs");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// Notes the process id now in `pid_file`, with when it started, unless `own` has it.
+    #[cfg(unix)]
+    fn note_own(pid_file: &std::path::Path, own: &mut Vec<(String, String)>) {
+        let read = std::fs::read_to_string(pid_file).unwrap_or_default();
+        let id = read.trim();
+        if id.parse::<u32>().is_ok() && !own.iter().any(|(known, _)| known == id) {
+            let started = start_of(id);
+            if !started.is_empty() {
+                own.push((id.to_owned(), started));
+            }
+        }
+    }
+
+    /// Kills process `pid` only while it is the process `own` noted under that id: started when it was.
+    #[cfg(unix)]
+    fn kill_own(pid: &str, own: &[(String, String)]) {
+        let started = start_of(pid);
+        if !started.is_empty() && own.iter().any(|(id, at)| id == pid && *at == started) {
+            let _ = Command::new("kill").args(["-KILL", pid]).status();
+        }
     }
 
     // SFL on #344 (#345): on macOS and Linux a timed-out or cancelled sign-in stopped only the terminal's waiter, and
