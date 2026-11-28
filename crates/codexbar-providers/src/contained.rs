@@ -302,7 +302,11 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// watchdog stops, so a process it saw since its last write isn't lost to the settle that follows (SFL round 1 on
     /// #357). Each process it saw is kept
     /// with the time it started, and counts as running only while the process with that id started then: an id an
-    /// ended process left free, taken by another, doesn't keep the sign-in busy (#354). No process's
+    /// ended process left free, taken by another, doesn't keep the sign-in busy (#354). That time is the kernel's count
+    /// since boot on Linux (`/proc/<pid>/stat`), which a change of the system clock leaves alone, unlike `ps`'s start
+    /// time there; macOS keeps each process's start time as it was (SFL round 2 on #357). What a look lists is kept as
+    /// listed before each start is read, so a stop that interrupts the look still records it (SFL round 2 on #357). No
+    /// process's
     /// environment is read (SFL round 7 on #347: PRIVACY.md says a
     /// cancelled sign-in never inspects the user's browser). Nothing running counts only when a second look agrees: a
     /// process can start just after one look lists what runs and before the last process it found ends, and the next
@@ -341,21 +345,37 @@ mine || exit 0
 touch \"$3\" 2>/dev/null
 mark=$3
 tree() { for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || { echo \"$child\"; tree \"$child\"; }; done; }
-stamp() { set -- $(ps -o lstart= -p \"$1\" 2>/dev/null); [ $# -gt 0 ] && echo \"$1$2$3$4$5\"; }
+stamp() {
+  if [ -r \"/proc/$1/stat\" ]; then
+    read -r line 2>/dev/null < \"/proc/$1/stat\" || return 1
+    set -- ${line##*\") \"}
+    [ $# -ge 20 ] && echo \"${20}\"
+  else
+    set -- $(ps -o lstart= -p \"$1\" 2>/dev/null)
+    [ $# -gt 0 ] && echo \"$1$2$3$4$5\"
+  fi
+}
 running() {
-  set -- \"$1\" \"$2\" $(ps -o stat= -o ppid= -o lstart= -p \"$1\" 2>/dev/null)
-  [ $# -gt 4 ] || return 1
+  set -- \"$1\" \"$2\" $(ps -o stat= -o ppid= -p \"$1\" 2>/dev/null)
+  [ $# -gt 3 ] || return 1
   case \"$3\" in *Z*) return 1 ;; esac
   [ \"$4\" != \"$beat\" ] || return 1
-  [ -z \"$2\" ] || [ \"$5$6$7$8$9\" = \"$2\" ]
+  [ -z \"$2\" ] || [ \"$(stamp \"$1\")\" = \"$2\" ]
 }
 signal() { mine || return 0; for child in $(pgrep -P \"$2\"); do [ \"$child\" = \"$$\" ] || kill \"-$1\" \"$child\" 2>/dev/null; done; }
 child() { [ \"$(ps -o ppid= -p \"$1\" 2>/dev/null | tr -d \" \")\" = \"$$\" ]; }
 reader=
 beat=
 seen=$(cat \"$mark.seen\" 2>/dev/null)
+listed=
+note() {
+  for pid in $listed; do
+    started=$(stamp \"$pid\") || continue
+    case \" $seen \" in *\" $pid=$started \"*) ;; *) seen=\"$seen $pid=$started\" ;; esac
+  done
+}
 keep() { echo \"$seen\" > \"$mark.seen.$$\" 2>/dev/null && mv -f \"$mark.seen.$$\" \"$mark.seen\" 2>/dev/null; }
-quit() { keep; for helper in $reader $beat; do child \"$helper\" && kill -KILL \"$helper\" 2>/dev/null; done; exit 0; }
+quit() { note; keep; for helper in $reader $beat; do child \"$helper\" && kill -KILL \"$helper\" 2>/dev/null; done; exit 0; }
 trap quit TERM
 ( me=$(exec /bin/sh -c \"echo \\$PPID\"); while [ \"$(ps -o ppid= -p \"$me\" 2>/dev/null | tr -d \" \")\" = \"$$\" ]; do touch \"$mark\" 2>/dev/null; sleep 0.5; done ) &
 beat=$!
@@ -371,10 +391,8 @@ else
   [ \"$group\" = \"$1\" ] || group=
 fi
 look() {
-  for pid in $(tree \"$script\"); do
-    started=$(stamp \"$pid\") || continue
-    case \" $seen \" in *\" $pid=$started \"*) ;; *) seen=\"$seen $pid=$started\" ;; esac
-  done
+  listed=$(tree \"$script\")
+  note
   keep
   pids=$seen
   if [ -n \"$sid\" ]; then
@@ -929,8 +947,13 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         assert_eq!(status.trim(), "130");
     }
 
-    /// When process `pid` started, as `ps` tells it, without its spaces: how the watchdog keeps what it saw.
+    /// When process `pid` started, as the watchdog keeps it: the kernel's count since boot on Linux, `ps`'s start time
+    /// without its spaces elsewhere.
     fn start_of(pid: &str) -> String {
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            let fields = stat.rsplit_once(") ").map_or("", |(_, fields)| fields);
+            return fields.split_whitespace().nth(19).unwrap_or_default().to_owned();
+        }
         let out = Command::new("ps")
             .args(["-o", "lstart=", "-p", pid])
             .output()
@@ -965,21 +988,33 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
     // group, so only what the watchdog saw can hold the stop.
     #[test]
     fn a_seen_id_another_process_took_doesn_t_keep_a_stop_waiting() {
-        let mut other = Command::new("sleep").arg("8").spawn().unwrap();
+        let mut other = Command::new("sleep").arg("30").spawn().unwrap();
         let pid = other.id().to_string();
-        let ended_at = Instant::now() + Duration::from_secs(8);
-        let reused = stop_with_seen("seen-reused", &format!(" {pid}=MonJan100:00:001990"));
-        let seen = stop_with_seen("seen-same", &format!(" {pid}={}", start_of(&pid)));
-        let waited_for_it = Instant::now() + Duration::from_millis(500) >= ended_at;
+        let reused = stop_with_seen("seen-reused", &format!(" {pid}=1"));
         let _ = other.kill();
         let _ = other.wait();
         assert!(
             reused < Duration::from_secs(4),
             "the reused id didn't hold the stop: {reused:?}"
         );
+        // The positive control, with a process of its own that still has over 5 s to run as the stop starts: the stop
+        // lasts until it ends (SFL round 2 on #357).
+        let mut same = Command::new("sleep").arg("6").spawn().unwrap();
+        let ends = Instant::now() + Duration::from_secs(6);
+        let pid = same.id().to_string();
+        let seen = format!(" {pid}={}", start_of(&pid));
+        let left = ends.saturating_duration_since(Instant::now());
+        let took = stop_with_seen("seen-same", &seen);
+        let ended = same.try_wait().unwrap().is_some();
+        let _ = same.kill();
+        let _ = same.wait();
         assert!(
-            waited_for_it,
-            "the process seen, started then, held the stop until it ended: {seen:?}"
+            left > Duration::from_secs(5),
+            "the process ran as the stop started: {left:?} left"
+        );
+        assert!(
+            ended && took + Duration::from_millis(500) >= left,
+            "it held the stop until it ended: {took:?} of {left:?}"
         );
     }
 
