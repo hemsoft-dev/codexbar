@@ -306,9 +306,13 @@ while sleep 1; [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$1\" ] &
     /// since boot on Linux (`/proc/<pid>/stat`), which a change of the system clock leaves alone, unlike `ps`'s start
     /// time there, and the whole file is read, since a process's name can hold a line break (SFL round 3 on #357).
     /// macOS keeps each process's start time as it was, which `ps` is asked for in UTC and the C locale, so a change of
-    /// time zone doesn't change it (SFL rounds 2 and 3 on #357). Each id a look lists waits in `listed` until its start
-    /// is read, and a stop that interrupts the look reads only those still waiting: one read already may have ended,
-    /// and its id gone to another process, since the look listed it (SFL rounds 2 and 3 on #357). No
+    /// time zone doesn't change it (SFL rounds 2 and 3 on #357). Each process's start is read as the tree lists it,
+    /// with its parent, and it is taken only while that is still the parent it was listed under: an id that ended and
+    /// went to another process in between isn't taken for it, nor is that process's tree walked (SFL round 4 on
+    /// #357). A process whose parent ends at that moment is left out, as one that leaves the tree before a look is;
+    /// the session or group still holds it. What a look listed is kept with its starts, so a stop that interrupts the
+    /// look records it without reading any start again (SFL rounds 2 to 4 on #357). Before the CLI's terminate signal,
+    /// only the tree is listed; the session or group is first scanned by the look after it (SFL round 4 on #357). No
     /// process's
     /// environment is read (SFL round 7 on #347: PRIVACY.md says a
     /// cancelled sign-in never inspects the user's browser). Nothing running counts only when a second look agrees: a
@@ -347,17 +351,25 @@ mine() { [ \"$(ps -o ppid= -p $$ 2>/dev/null | tr -d \" \")\" = \"$script\" ]; }
 mine || exit 0
 touch \"$3\" 2>/dev/null
 mark=$3
-tree() { for child in $(pgrep -P \"$1\"); do [ \"$child\" = \"$$\" ] || { echo \"$child\"; tree \"$child\"; }; done; }
 stamp() {
+  want=$2
   if [ -r \"/proc/$1/stat\" ]; then
     line=$(cat \"/proc/$1/stat\" 2>/dev/null)
     [ -n \"$line\" ] || return 1
     set -- ${line##*\") \"}
-    [ $# -ge 20 ] && echo \"${20}\"
+    [ $# -ge 20 ] && { [ -z \"$want\" ] || [ \"$2\" = \"$want\" ]; } && echo \"${20}\"
   else
-    set -- $(LC_ALL=C TZ=UTC0 ps -o lstart= -p \"$1\" 2>/dev/null)
-    [ $# -gt 0 ] && echo \"$1$2$3$4$5\"
+    set -- $(LC_ALL=C TZ=UTC0 ps -o ppid= -o lstart= -p \"$1\" 2>/dev/null)
+    [ $# -gt 1 ] && { [ -z \"$want\" ] || [ \"$1\" = \"$want\" ]; } && echo \"$2$3$4$5$6\"
   fi
+}
+tree() {
+  for child in $(pgrep -P \"$1\"); do
+    [ \"$child\" != \"$$\" ] || continue
+    started=$(stamp \"$child\" \"$1\") || continue
+    echo \"$child=$started\"
+    tree \"$child\"
+  done
 }
 running() {
   set -- \"$1\" \"$2\" $(ps -o stat= -o ppid= -p \"$1\" 2>/dev/null)
@@ -372,15 +384,7 @@ reader=
 beat=
 seen=$(cat \"$mark.seen\" 2>/dev/null)
 listed=
-note() {
-  while rest=${listed# } && [ -n \"$rest\" ]; do
-    pid=${rest%% *}
-    if started=$(stamp \"$pid\"); then
-      case \" $seen \" in *\" $pid=$started \"*) ;; *) seen=\"$seen $pid=$started\" ;; esac
-    fi
-    listed=${rest#\"$pid\"}
-  done
-}
+note() { for entry in $listed; do case \" $seen \" in *\" $entry \"*) ;; *) seen=\"$seen $entry\" ;; esac; done; }
 keep() { echo \"$seen\" > \"$mark.seen.$$\" 2>/dev/null && mv -f \"$mark.seen.$$\" \"$mark.seen\" 2>/dev/null; }
 quit() { note; keep; for helper in $reader $beat; do child \"$helper\" && kill -KILL \"$helper\" 2>/dev/null; done; exit 0; }
 trap quit TERM
@@ -398,7 +402,7 @@ else
   [ \"$group\" = \"$1\" ] || group=
 fi
 look() {
-  listed=\" $(echo $(tree \"$script\"))\"
+  listed=$(tree \"$script\")
   note
   keep
   pids=$seen
@@ -421,8 +425,10 @@ busy() {
 }
 quiet=0
 settled() { if busy; then quiet=0; else quiet=$((quiet + 1)); fi; [ \"$quiet\" -ge 2 ]; }
-look
+listed=$(tree \"$script\")
 signal TERM \"$1\"
+note
+keep
 tries=0
 while [ \"$tries\" -lt 30 ]; do
   touch \"$3\" 2>/dev/null
@@ -1023,11 +1029,17 @@ n=0; while [ "$n" -lt 600 ]; do sleep 0.1; n=$((n + 1)); done"#,
         let path = holder.join("script.sh");
         std::fs::write(&path, script(&command, &dir)).unwrap();
         let mut shell = run_script(&path).spawn().unwrap();
-        shell.wait().unwrap();
+        // The helper's id and start, noted while it runs, so the cleanup kills only that process (SFL round 4 on #357).
+        let waiting = Instant::now();
+        while !pid_file.exists() && waiting.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let helper_id = std::fs::read_to_string(&pid_file).unwrap_or_default().trim().to_owned();
-        let running = !helper_id.is_empty() && runs(&helper_id);
+        let started = start_of(&helper_id);
         let named = std::fs::read_to_string(format!("/proc/{helper_id}/comm")).ok();
-        if running {
+        shell.wait().unwrap();
+        let running = !helper_id.is_empty() && runs(&helper_id);
+        if running && !started.is_empty() && start_of(&helper_id) == started {
             let _ = Command::new("kill").args(["-KILL", &helper_id]).status();
         }
         let _ = std::fs::remove_dir_all(&dir);
