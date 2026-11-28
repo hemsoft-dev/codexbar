@@ -69,15 +69,68 @@ pub fn seatless_note_names_only(message: &str, orgs: &[String]) -> Option<bool> 
     Some(true)
 }
 
-/// Whether `list` is one or more of `orgs` joined by " and ".
+/// Whether `list` is one or more of `orgs` joined by " and ", in any capitalization: Copilot groups an organization's
+/// billing that way, so a record that only recapitalizes it still bills the same one (#353). Each place a name can
+/// start is tried once, so a note naming one organization many times, from duplicate records, or names that themselves
+/// hold " and ", take time linear in its length rather than growing with every repeat (#353).
 fn names_only(list: &str, orgs: &[String]) -> bool {
-    orgs.iter().filter(|org| !org.is_empty()).any(|org| {
-        list == org.as_str()
-            || list
-                .strip_prefix(org.as_str())
-                .and_then(|rest| rest.strip_prefix(" and "))
-                .is_some_and(|rest| names_only(rest, orgs))
-    })
+    joined_from(list.as_bytes(), &distinct_names(orgs))
+}
+
+/// The non-empty names in `orgs`, each once whatever its capitalization.
+fn distinct_names(orgs: &[String]) -> Vec<&[u8]> {
+    // Each name once by its lowercase form, in one pass however many records there are (SFL round 2 on #356).
+    let mut seen = std::collections::HashSet::new();
+    orgs.iter()
+        .filter(|org| !org.is_empty() && seen.insert(org.to_ascii_lowercase()))
+        .map(|org| org.as_bytes())
+        .collect()
+}
+
+/// Whether `list` is one or more of `names` joined by " and ", ignoring ASCII case: `starts` marks where a name can
+/// begin, each tried once.
+fn joined_from(list: &[u8], names: &[&[u8]]) -> bool {
+    const AND: &[u8] = b" and ";
+    let mut starts = vec![false; list.len() + 1];
+    starts[0] = true;
+    for start in 0..list.len() {
+        if !starts[start] {
+            continue;
+        }
+        for name in names {
+            let end = start + name.len();
+            if end > list.len() || !list[start..end].eq_ignore_ascii_case(name) {
+                continue;
+            }
+            if end == list.len() {
+                return true;
+            }
+            if list[end..].starts_with(AND) {
+                starts[end + AND.len()] = true;
+            }
+        }
+    }
+    false
+}
+
+/// Adds `organization` to a seatless note's `names` unless they hold it in any capitalization: several records can bill
+/// one organization for the same user (#353).
+fn name_once(names: &mut Vec<String>, organization: &str) {
+    if !names.iter().any(|name| name.eq_ignore_ascii_case(organization)) {
+        names.push(organization.to_owned());
+    }
+}
+
+/// Notes in a seatless note's lists whether `organization`'s credits were `read` with one of its records. One read with
+/// any record shows them, as its card does (`add_org` keeps the read), so it is never also named as unreadable (SFL
+/// round 1 on #356).
+fn note_read(shown: &mut Vec<String>, unread: &mut Vec<String>, organization: &str, read: bool) {
+    if read {
+        unread.retain(|name| !name.eq_ignore_ascii_case(organization));
+        name_once(shown, organization);
+    } else if !shown.iter().any(|name| name.eq_ignore_ascii_case(organization)) {
+        name_once(unread, organization);
+    }
 }
 
 /// Usernames from `gh auth status` output ("✓ Logged in to github.com account HemSoft (keyring)"), with those whose
@@ -1254,10 +1307,8 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                     // quotas instead of failing.
                     let (mut shown, mut unread) = (Vec::new(), Vec::new());
                     for billing in self.org_only_billing(username) {
-                        match self.add_org(billing, &token, now, &mut orgs) {
-                            Ok(_) => shown.push(billing.organization.clone()),
-                            Err(_) => unread.push(billing.organization.clone()),
-                        }
+                        let read = self.add_org(billing, &token, now, &mut orgs).is_ok();
+                        note_read(&mut shown, &mut unread, &billing.organization, read);
                     }
                     let seatless = error == (ProviderError::Unexpected { detail: NO_SEAT });
                     if seatless && !(shown.is_empty() && unread.is_empty()) {
@@ -1409,6 +1460,54 @@ mod tests {
         assert_eq!(
             seatless_note_names_only(joined, &orgs(&["Acme", "globex"])),
             Some(false)
+        );
+    }
+
+    // SFL round 1 on #356: duplicate records for one organization whose reads went both ways show its credits, read
+    // with one of them, and don't also call them unreadable, whichever came first.
+    #[test]
+    fn an_organization_read_with_one_of_its_records_isn_t_named_unreadable() {
+        for reads in [[false, true], [true, false]] {
+            let (mut shown, mut unread) = (Vec::new(), Vec::new());
+            for (read, name) in reads.into_iter().zip(["acme", "ACME"]) {
+                note_read(&mut shown, &mut unread, name, read);
+            }
+            assert_eq!(shown.len(), 1, "{reads:?}: {shown:?}");
+            assert!(unread.is_empty(), "{reads:?}: {unread:?}");
+        }
+        let (mut shown, mut unread) = (Vec::new(), Vec::new());
+        note_read(&mut shown, &mut unread, "acme", false);
+        note_read(&mut shown, &mut unread, "Acme", false);
+        assert_eq!((shown.len(), unread), (0, vec!["acme".to_owned()]));
+    }
+
+    // #353: Copilot groups an organization's billing in any capitalization, so a record that only recapitalizes it
+    // still bills the one the note names.
+    #[test]
+    fn a_seatless_note_names_its_organization_in_any_capitalization() {
+        let note = "No Copilot seat on this account. It shows Acme-Biz and globex's AI credits.";
+        let orgs = ["acme-biz".to_owned(), "GLOBEX".to_owned()];
+        assert_eq!(seatless_note_names_only(note, &orgs), Some(true));
+        assert_eq!(seatless_note_names_only(note, &orgs[..1]), Some(false));
+    }
+
+    // #353: duplicate records name one organization many times, and the same name many times over in `orgs`: the note
+    // is still checked at once, not with work that doubles at every repeat.
+    #[test]
+    fn a_seatless_note_naming_an_organization_many_times_is_checked_at_once() {
+        let repeats = 64;
+        let names = vec!["acme"; repeats].join(" and ");
+        let note = format!("No Copilot seat on this account. It shows {names} and globex's AI credits.");
+        let mut orgs = vec!["acme".to_owned(); repeats];
+        orgs.push("acme and acme".to_owned());
+        let (sender, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(seatless_note_names_only(&note, &orgs));
+        });
+        assert_eq!(
+            answer.recv_timeout(StdDuration::from_secs(10)),
+            Ok(Some(false)),
+            "globex isn't billed, and saying so takes no time"
         );
     }
 
@@ -2456,6 +2555,33 @@ mod tests {
         };
         assert_eq!((*used, *limit), (4101, 10_000));
         assert_eq!(org.messages(), ["Its Copilot budgets couldn't be read."]);
+    }
+
+    // #353: records billing the same organization for one seatless owner, one of them in other capitals, name it once.
+    #[test]
+    fn a_seatless_owner_s_note_names_an_organization_once_however_many_records_bill_it() {
+        let http = Routes::new(vec![
+            ("ai_credit/usage", ok(ORG_REPORT)),
+            ("/budgets", HttpResponse::new(500, "")),
+        ]);
+        let shouted = OrgBilling {
+            organization: "ACME-BIZ".into(),
+            ..business(Some(10_000))
+        };
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("owner", "gho_own")
+            .with_billing("owner", business(Some(10_000)))
+            .with_billing("owner", business(Some(10_000)))
+            .with_billing("owner", shouted);
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(user) = &outcomes[0] else {
+            panic!("a seatless owner isn't a failure")
+        };
+        assert_eq!(
+            user.messages(),
+            ["No Copilot seat on this account. It shows acme-biz's AI credits."]
+        );
     }
 
     #[test]

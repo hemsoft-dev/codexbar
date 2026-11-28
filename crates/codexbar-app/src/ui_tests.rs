@@ -3511,6 +3511,130 @@ fn switching_off_a_business_billing_record_drops_a_seatless_user_s_row(cx: &mut 
     );
 }
 
+// #353: a refresh request that changes no setting writes no snapshots, and switching a record off, which drops a row,
+// writes them once.
+#[gpui_kit::test]
+fn a_settings_change_writes_the_snapshots_once_at_most(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-saves-once",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" },
+            { "id": "cp-cli", "providerId": "Copilot", "displayLabel": "All", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> = Arc::new(SeatlessAlice);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_: &SettingsHub| vec![seatless.clone()]);
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let writes = |cx: &mut TestAppContext| dashboard.read_with(cx, |dashboard, _| dashboard.snapshot_writes());
+    let alice = codexbar_providers::copilot::account_id("alice").as_str().to_owned();
+    assert!(ids(cx, &dashboard).contains(&alice));
+    let before = writes(cx);
+    cx.update(SettingsHub::request_refresh);
+    assert_eq!(writes(cx), before, "a refresh request alone saves nothing");
+    cx.run_until_parked();
+    let before = writes(cx);
+    switch_off(cx, "cp-alice");
+    assert!(!ids(cx, &dashboard).contains(&alice), "her seatless row goes");
+    assert_eq!(writes(cx), before + 1, "the change that dropped it writes once");
+}
+
+// SFL round 1 on #356: snapshots restored just as saved aren't written again by a refresh request before the first
+// fetch has landed.
+#[gpui_kit::test]
+fn a_refresh_request_before_the_first_fetch_doesn_t_rewrite_the_restored_snapshots(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore-unchanged", "{}");
+    let saved = AccountSnapshot::new(
+        AccountId::new("claude-1"),
+        Provider::Claude,
+        Vec::new(),
+        chrono::Utc::now(),
+    );
+    codexbar_store::snapshots::save_copilot_snapshots(&settings.0, &[saved], &[], &[]).unwrap();
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.4));
+    let dashboard = open_live(cx, &settings, vec![claude]);
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Restored);
+    cx.update(SettingsHub::request_refresh);
+    assert_eq!(
+        dashboard.read_with(cx, |dashboard, _| dashboard.snapshot_writes()),
+        0,
+        "nothing new to write"
+    );
+    cx.run_until_parked();
+    assert!(
+        dashboard.read_with(cx, |dashboard, _| dashboard.snapshot_writes()) >= 1,
+        "the fetch's usage is written"
+    );
+}
+
+// SFL round 2 on #356: snapshots saved before #350 don't say how each Copilot row was read. They are never taken as
+// written, so the next save, here a refresh request before the first fetch, records it.
+#[gpui_kit::test]
+fn snapshots_saved_without_how_copilot_read_them_are_written_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore-legacy", "{}");
+    let saved = AccountSnapshot::new(
+        AccountId::new("claude-1"),
+        Provider::Claude,
+        Vec::new(),
+        chrono::Utc::now(),
+    );
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    assert_eq!(codexbar_store::snapshots::load_discovered(&settings.0), None);
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.4));
+    let dashboard = open_live(cx, &settings, vec![claude]);
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Restored);
+    cx.update(SettingsHub::request_refresh);
+    assert_eq!(
+        dashboard.read_with(cx, |dashboard, _| dashboard.snapshot_writes()),
+        1,
+        "the legacy file is written with how its rows were read"
+    );
+    assert_eq!(
+        codexbar_store::snapshots::load_discovered(&settings.0),
+        Some(Vec::new())
+    );
+}
+
+// #353: Copilot groups an organization's billing in any capitalization. Alice's seatless row shows acme's credits;
+// her record recapitalized to Acme still bills that organization, so the row stays through rate-limited refreshes.
+#[gpui_kit::test]
+fn a_seatless_row_stays_when_its_organization_is_only_recapitalized(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "copilot-seatless-recapitalized",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cp-alice", "providerId": "Copilot", "displayLabel": "Alice (Acme)", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "alice", "copilotOrganization": "acme" } ] }"#,
+    );
+    let seatless: Arc<dyn UsageProvider> =
+        SeatlessNoted::new("No Copilot seat on this account. It shows acme's AI credits.", true);
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_: &SettingsHub| vec![seatless.clone()]);
+    let dashboard = open_live_factory(cx, &settings, factory, MemoryCredentialStore::default());
+    cx.run_until_parked();
+    assert!(alice_notes(cx, &dashboard, "acme's AI credits"));
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            let record = settings
+                .accounts()
+                .iter()
+                .find(|a| a.id == "cp-alice")
+                .cloned()
+                .unwrap();
+            settings.upsert(codexbar_store::settings::AccountRecord {
+                copilot_organization: Some("Acme".into()),
+                ..record
+            })
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    refresh(cx, &dashboard);
+    assert!(
+        alice_notes(cx, &dashboard, "acme's AI credits"),
+        "the recapitalized record still bills the organization the row names"
+    );
+}
+
 /// Copilot reading Alice with usage of her own and, when `note` is set, the note an enterprise's billing adds.
 struct AliceNoted {
     note: Option<&'static str>,
